@@ -119,6 +119,17 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringNotContainsString("paidPartCustomerAmount > 0 ? formatMoneyValue(paidPartCustomerAmount) : 'Yok'", $source);
     }
 
+    public function test_part_payment_copy_feedback_is_rendered_next_to_visible_actions(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('function renderCustomerChargeCopyFeedback', $source);
+        $this->assertStringContainsString('{renderCustomerChargeCopyFeedback(latestCustomerCharge.payment_url)}', $source);
+        $this->assertStringContainsString('{renderCustomerChargeCopyFeedback(partRequest.payment_url)}', $source);
+        $this->assertStringContainsString('Otomatik kopyalanamadı; metni manuel kopyalayın.', $source);
+        $this->assertStringContainsString('message_send_count: partRequestPayment?.message_send_count', $source);
+    }
+
     public function test_ops_detail_hides_address_check_when_not_actionable(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
@@ -155,12 +166,31 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('onJobsRefresh?: () => Promise<void>', $source);
     }
 
+    public function test_partner_jobs_page_job_deep_link_hydrates_exact_authorized_job_without_strict_mode_timer_race(): void
+    {
+        $source = $this->source('resources/js/pages/partner/portal-shell.tsx');
+        $controller = $this->source('app/Http/Controllers/PartnerPortalController.php');
+
+        $this->assertStringContainsString("'requestedJobId' => \$requestedJobId", $controller);
+        $this->assertStringContainsString('const initialRequestedJob = requestedJobId === null', $source);
+        $this->assertStringContainsString('useState<number | null>(initialRequestedJob?.id ?? null)', $source);
+        $this->assertStringContainsString('useState(initialRequestedJob !== null)', $source);
+        $this->assertStringContainsString('scopedServiceJobApiUrl(apiBase, `/${deepLinkJobId}`', $source);
+        $this->assertStringContainsString("url.searchParams.delete('job_id')", $source);
+        $this->assertStringContainsString('props: (props) => ({ ...props, requestedJobId: null })', $source);
+        $this->assertStringContainsString('initialRequestedJob?.id === deepLinkJobId', $source);
+        $this->assertStringNotContainsString('requestedJobAppliedRef', $source);
+    }
+
     public function test_earning_summary_displays_selected_locksmith_name(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
         $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
         $this->assertStringContainsString('const earningSummaryTechnicianName', $source);
+        $this->assertStringContainsString('const earningDispatchStatus = technicianEarningMessage?.status ?? assignmentOfferDispatchStatus', $source);
+        $this->assertStringContainsString('technicianAmountSourceLabel', $source);
+        $this->assertStringContainsString('Kaynak: ${technicianLaborCostSourceLabel}', $source);
         $this->assertStringContainsString('Usta Hakedişi / Operasyon Maliyeti', $source);
         $this->assertStringContainsString('{financeSummaryTitle}—{earningSummaryTechnicianName}', $compactSource);
         $this->assertStringContainsString('{earningSummaryTechnicianName}', $source);
@@ -275,6 +305,17 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('Kayıt detayı', $source);
         $this->assertStringNotContainsString("return '{$genericFallback}'", $source);
         $this->assertStringNotContainsString("? '{$genericFallback}' : value", $source);
+    }
+
+    public function test_cancel_action_uses_the_dedicated_reason_dialog(): void
+    {
+        $detailSource = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $pageSource = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        $this->assertStringContainsString('onClick={() => onCancel?.()}', $detailSource);
+        $this->assertStringContainsString("if (action === 'cancel')", $detailSource);
+        $this->assertStringContainsString('onCancel={openRequestCancellationDialog}', $pageSource);
+        $this->assertStringContainsString('<DialogTitle>Talebi iptal et</DialogTitle>', $pageSource);
     }
 
     private function source(string $relativePath): string

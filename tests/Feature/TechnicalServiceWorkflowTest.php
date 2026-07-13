@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceAssignmentOffer;
@@ -388,7 +389,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertNotSame('part_request_srv_created', TechnicalServiceUiLabelService::actionLabel('part_request_srv_created'));
     }
 
-    public function test_cancel_status_starts_ops_cancel_review_before_terminal_cancel(): void
+    public function test_cancel_status_atomically_finishes_cancel_with_one_reason(): void
     {
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-CANCEL-REVIEW-FIRST',
@@ -405,18 +406,15 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertOk();
 
         $request->refresh();
-        $this->assertNull($request->cancelled_at);
-        $this->assertSame('Devam Ediyor', $request->status);
-        $this->assertSame('Beklemede', $request->workflow_status);
-        $this->assertSame(TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON, $request->pending_reason);
-        $this->assertTrue((bool) $response->json('request.operational_state.is_cancellation_review'));
-        $this->assertSame('ops', $response->json('request.action_owner'));
-        $this->assertSame('İptal talebi incelenmeli', $response->json('request.operational_state.action_reason'));
-        $this->assertContains('cancel_review', $response->json('request.operational_state.action_filter_keys'));
+        $this->assertNotNull($request->cancelled_at);
+        $this->assertSame('İptal', $request->status);
+        $this->assertSame('İptal', $request->workflow_status);
+        $this->assertSame('Müşteri iptal istedi.', $request->cancellation_reason);
+        $this->assertFalse((bool) $response->json('request.operational_state.is_cancellation_review'));
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $request->id,
-            'event_type' => 'cancellation_requested',
-            'title' => 'İptal talebi incelemeye alındı',
+            'event_type' => 'cancellation_confirmed',
+            'title' => 'İş iptal edildi',
         ]);
     }
 
@@ -517,14 +515,6 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->postJson("/api/technical-service/requests/{$srv->id}/status", [
                 'status' => 'İptal',
                 'note' => 'SRV yanlışlıkla açıldı.',
-            ])
-            ->assertOk()
-            ->assertJsonPath('request.operational_state.is_cancellation_review', true);
-
-        $this->actingAs($this->adminUser())
-            ->postJson("/api/technical-service/requests/{$srv->id}/status", [
-                'status' => 'İptal',
-                'note' => 'SRV iptal onaylandı.',
             ])
             ->assertOk()
             ->assertJsonPath('request.workflow_status', 'İptal');
@@ -2694,7 +2684,8 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertGreaterThanOrEqual(6, substr_count($source, 'renderPaymentLinkSendAction('));
         $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*latestCustomerCharge\\s*,?\\s*\\)/', $source);
         $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*extraMountPayment\\s*,?\\s*\\)/', $source);
-        $this->assertMatchesRegularExpression('/id:\\s*partRequest\\.payment_id\\s*\\?\\?\\s*partRequest\\s*\\.\\s*customer_charge\\s*\\?\\.\\s*id\\s*\\?\\?\\s*null/s', $source);
+        $this->assertStringContainsString('const partRequestPaymentId = partRequest.payment_id ?? partRequest.customer_charge?.id ?? null', $source);
+        $this->assertStringContainsString('id: partRequestPaymentId', $source);
         $this->assertStringContainsString('Servis ödemesi', $source);
         $this->assertStringContainsString('Parça ödemesi', $source);
         $this->assertStringContainsString('Müşteriden alınan servis ücreti', $source);
@@ -2820,11 +2811,12 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
         $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $clipboardSource);
         $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $clipboardSource);
-        $this->assertStringContainsString('async function verifiedCopyResult(', $clipboardSource);
-        $this->assertStringContainsString('copied: boolean,', $clipboardSource);
         $this->assertStringContainsString('navigator.clipboard?.writeText', $clipboardSource);
         $this->assertStringContainsString("document.execCommand('copy')", $clipboardSource);
         $this->assertStringContainsString('textarea.setSelectionRange(0, textarea.value.length)', $clipboardSource);
+        $this->assertStringContainsString('if (verification !== false)', $clipboardSource);
+        $this->assertStringContainsString('if (textareaVerification === true)', $clipboardSource);
+        $this->assertStringNotContainsString('verified ?? true', $clipboardSource);
         $this->assertStringContainsString("status: 'manual'", $clipboardSource);
         $this->assertStringContainsString("setPaymentLinkCopyMessage('Kopyalanacak link yok.')", $source);
         $this->assertStringContainsString('paymentLinkCopyTarget', $source);
@@ -4465,6 +4457,11 @@ class TechnicalServiceWorkflowTest extends TestCase
             'display_name' => 'Reassign Message Locksmith',
             'active' => true,
         ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
         B2BPartnerTechnician::query()->create([
             'partner_id' => $partner->id,
             'technical_service_technician_id' => $newTechnician->id,
@@ -4827,6 +4824,11 @@ class TechnicalServiceWorkflowTest extends TestCase
             'event_type' => 'assignment_offer_revised',
             'title' => 'Hakediş revize talebi yanıtlandı',
         ]);
+        $revisionEvent = $request->events()->where('event_type', 'assignment_offer_revised')->latest('id')->firstOrFail();
+        $this->assertSame($user->id, (int) $revisionEvent->author_user_id);
+        $this->assertSame($user->id, (int) data_get($revisionEvent->metadata, 'actor_user_id'));
+        $this->assertSame('technical_service_admin', data_get($revisionEvent->metadata, 'source'));
+        $this->assertNotNull(data_get($revisionEvent->metadata, 'occurred_at_istanbul'));
 
         $partnerPayload = app(B2BPartnerPortalDataService::class)->safeServiceJobSummary($request->refresh(), $partner);
 
@@ -5767,6 +5769,17 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringNotContainsString('Usta adres/Plus Code var, gerçek koordinat eksik', $detailsSource);
         $this->assertStringNotContainsString('Usta adres bilgisi eksik', $detailsSource);
         $this->assertStringNotContainsString('Usta koordinatı eksik olduğu için yol hesabı yapılamadı', $detailsSource);
+        $this->assertStringContainsString("{ value: 'compatible', label: 'Uyumlu', tone: 'positive' }", $detailsSource);
+        $this->assertStringContainsString("operationControlChange('door_photos_checked', value", $detailsSource);
+
+        $approvalStateStart = strpos($detailsSource, 'const technicianApprovalState =');
+        $approvalStateEnd = strpos($detailsSource, 'const parseEventTimestamp =');
+        $this->assertIsInt($approvalStateStart);
+        $this->assertIsInt($approvalStateEnd);
+        $approvalStateSource = substr($detailsSource, $approvalStateStart, $approvalStateEnd - $approvalStateStart);
+        $this->assertStringContainsString('approvalFieldText', $approvalStateSource);
+        $this->assertStringNotContainsString('request.operationalState?.action_label', $approvalStateSource);
+        $this->assertStringNotContainsString('request.operationalState?.display_action_label', $approvalStateSource);
 
         foreach ([
             'visibleTechnicianAssignmentInsights',

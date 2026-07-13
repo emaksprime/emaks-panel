@@ -2,9 +2,10 @@
 
 namespace App\Services\TechnicalService;
 
-use App\Models\TechnicalServiceAuditLog;
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceAuditLog;
 use App\Models\TechnicalServiceEarningItem;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
@@ -14,6 +15,7 @@ use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -51,12 +53,26 @@ class TechnicalServiceWorkflowService
         'door_back_photo',
     ];
 
+    private const PAYMENT_LINK_DISPATCH_EVIDENCE_STATUSES = [
+        TechnicalServiceMessageDispatch::STATUS_QUEUED,
+        TechnicalServiceMessageDispatch::STATUS_SENDING,
+        TechnicalServiceMessageDispatch::STATUS_SENT,
+        TechnicalServiceMessageDispatch::STATUS_TEST_SENT,
+        TechnicalServiceMessageDispatch::STATUS_FAILED,
+        TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+        TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
+    ];
+
     private const OPS_DOOR_PHOTO_FIELDS = [
         'ops_door_front_photo',
         'ops_door_side_photo',
         'ops_door_back_photo',
         'ops_door_photo',
     ];
+
+    public function __construct(
+        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+    ) {}
 
     public const WORKFLOW_STATUSES = [
         'Yeni Talep',
@@ -83,10 +99,13 @@ class TechnicalServiceWorkflowService
     ];
 
     public const SLA_NORMAL = 'normal';
+
     public const SLA_APPROACHING = 'yaklaşan';
+
     public const SLA_OVERDUE = 'geciken';
 
     private const TERMINAL_STATUSES = ['Tamamlandı', 'İptal'];
+
     private const CHECKLIST_ITEMS = [
         'Ürün seri numarası kontrol edildi',
         'Kapı / montaj yeri kontrol edildi',
@@ -115,6 +134,11 @@ class TechnicalServiceWorkflowService
      * @var array<int, Collection<int, TechnicalServiceMountPayment>>
      */
     private array $mountPaymentsBySessionIdCache = [];
+
+    /**
+     * @var array<int, array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null}>
+     */
+    private array $paymentLinkMessageStateCache = [];
 
     /**
      * @var array<string, Collection<int, TechnicalServiceMountPayment>>
@@ -543,7 +567,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $attributes
+     * @param  array<string, mixed>  $attributes
      */
     public function initializeRequest(TechnicalServiceRequest $request, array $attributes = []): TechnicalServiceRequest
     {
@@ -560,7 +584,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function transition(TechnicalServiceRequest $request, string $targetWorkflowStatus, array $payload = [], ?Authenticatable $user = null, string $actionType = 'workflow_transition'): TechnicalServiceRequest
     {
@@ -600,7 +624,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function startCancellationReview(TechnicalServiceRequest $request, array $payload = [], ?Authenticatable $user = null): TechnicalServiceRequest
     {
@@ -653,19 +677,44 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function updateSchedule(TechnicalServiceRequest $request, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
     {
         $old = $this->snapshot($request);
         $scheduledAt = $this->scheduledAtFromPayload($payload);
 
+        $previousSchedule = [
+            'scheduled_date' => $request->scheduled_date?->toDateString(),
+            'scheduled_time' => $request->scheduled_time,
+            'scheduled_at' => $this->dateTimeString($request->scheduled_at),
+            'requires_reschedule' => (bool) $request->requires_reschedule,
+            'reschedule_reason' => $request->reschedule_reason,
+            'pending_reason' => $request->pending_reason,
+        ];
+        $nextRequiresReschedule = array_key_exists('requires_reschedule', $payload)
+            ? (bool) $payload['requires_reschedule']
+            : (bool) $request->requires_reschedule;
+        $nextRescheduleReason = array_key_exists('reschedule_reason', $payload)
+            ? $payload['reschedule_reason']
+            : $request->reschedule_reason;
+        $nextPendingReason = Arr::get($payload, 'pending_reason', $request->pending_reason);
+        $scheduleChanged = $previousSchedule['scheduled_date'] !== $payload['scheduled_date']
+            || $previousSchedule['scheduled_time'] !== $payload['scheduled_time'];
+        $controlChanged = $previousSchedule['requires_reschedule'] !== $nextRequiresReschedule
+            || $previousSchedule['reschedule_reason'] !== $nextRescheduleReason
+            || $previousSchedule['pending_reason'] !== $nextPendingReason;
+
+        if (! $scheduleChanged && ! $controlChanged) {
+            return $request->refresh();
+        }
+
         $request->scheduled_date = $payload['scheduled_date'];
         $request->scheduled_time = $payload['scheduled_time'];
         $request->scheduled_at = $scheduledAt;
-        $request->requires_reschedule = Arr::get($payload, 'requires_reschedule', false);
-        $request->reschedule_reason = Arr::get($payload, 'reschedule_reason');
-        $request->pending_reason = Arr::get($payload, 'pending_reason', $request->pending_reason);
+        $request->requires_reschedule = $nextRequiresReschedule;
+        $request->reschedule_reason = $nextRescheduleReason;
+        $request->pending_reason = $nextPendingReason;
         $request->updated_by_user_id = $user?->id;
 
         $preferredDate = $request->customer_preferred_date?->toDateString();
@@ -688,12 +737,23 @@ class TechnicalServiceWorkflowService
         }
 
         $hasTechnician = filled($request->technical_service_technician_id) || filled($request->technician_name);
-        $approveTechnician = (bool) Arr::get($payload, 'approve_technician', false);
+        $current = $this->currentWorkflowStatus($request);
+        $technicianApprovalStatus = $this->normalizeToken($request->technician_approval_status);
+        $alreadyApproved = $current === 'Planlı'
+            || $request->technician_approved_at !== null
+            || in_array($technicianApprovalStatus, ['onayladi', 'onaylandi', 'kabul edildi'], true);
+        $approveTechnician = array_key_exists('approve_technician', $payload)
+            ? (bool) $payload['approve_technician']
+            : $alreadyApproved;
         $target = $hasTechnician
             ? ($approveTechnician ? 'Planlı' : 'Usta Onayı Bekleyen')
             : 'Randevu Planlandı';
 
-        $current = $this->currentWorkflowStatus($request);
+        $preAppointmentStatuses = ['Yeni Talep', 'Müşteri Onayladı', 'Usta Ataması Bekleyen', 'Usta Onayı Bekleyen', 'Randevu Planlandı', 'Planlı'];
+        if (! in_array($current, $preAppointmentStatuses, true) && ! in_array($current, self::TERMINAL_STATUSES, true)) {
+            $target = $current;
+        }
+
         if ($current !== $target && ! in_array($current, self::TERMINAL_STATUSES, true)) {
             $this->assertTransitionAllowed($current, $target);
             $request->workflow_status = $target;
@@ -701,8 +761,10 @@ class TechnicalServiceWorkflowService
 
         if ($target === 'Planlı') {
             $request->technician_approval_status = 'onayladı';
-            $request->technician_approved_at = $this->castDateTime($payload['technician_approved_at'] ?? now());
-        } elseif ($target === 'Usta Onayı Bekleyen') {
+            $request->technician_approved_at = $this->castDateTime(
+                $payload['technician_approved_at'] ?? $request->technician_approved_at ?? now()
+            );
+        } elseif ($target === 'Usta Onayı Bekleyen' && in_array($current, $preAppointmentStatuses, true)) {
             $request->technician_approval_status = 'bekliyor';
             $request->technician_approved_at = null;
         }
@@ -710,14 +772,26 @@ class TechnicalServiceWorkflowService
         $this->applyDerivedState($request, $payload);
         $request->save();
 
+        $eventPayload = [
+            ...$payload,
+            'previous_schedule' => $previousSchedule,
+            'new_schedule' => [
+                'scheduled_date' => $request->scheduled_date?->toDateString(),
+                'scheduled_time' => $request->scheduled_time,
+                'scheduled_at' => $this->dateTimeString($request->scheduled_at),
+                'scheduled_time_end' => $payload['scheduled_time_end'] ?? null,
+            ],
+            'schedule_changed' => $scheduleChanged,
+        ];
+
         $this->writeAuditLog($request, 'schedule_updated', $old, $this->snapshot($request), $user, $payload['note'] ?? null);
-        $this->writeEvent($request, 'schedule_updated', $current, $this->currentWorkflowStatus($request), $user, $payload, 'Randevu güncellendi');
+        $this->writeEvent($request, 'schedule_updated', $current, $this->currentWorkflowStatus($request), $user, $eventPayload, 'Randevu güncellendi');
 
         return $request->refresh();
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function updateTechnician(TechnicalServiceRequest $request, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
     {
@@ -828,7 +902,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      * @return array{request:TechnicalServiceRequest,message_text:string,copy_text:string,whatsapp_url:string}
      */
     public function recordTechnicianEarningsMessage(
@@ -931,7 +1005,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function logCustomerContact(TechnicalServiceRequest $request, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
     {
@@ -954,7 +1028,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function updateFieldWorkflow(TechnicalServiceRequest $request, string $fieldAction, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
     {
@@ -1049,6 +1123,7 @@ class TechnicalServiceWorkflowService
 
             case 'complete':
                 $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Son Kontrol']);
+
                 return $this->completeFieldWorkflow($request, $payload, $user, $old, $current);
 
             default:
@@ -1235,7 +1310,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      */
     private function loadSerializationRelations(Collection $requests): void
     {
@@ -1274,8 +1349,8 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
-     * @param Collection<int, TechnicalServiceRequest> $roots
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $roots
      */
     private function seedRootFinancialContext(Collection $requests, Collection $roots): void
     {
@@ -1322,7 +1397,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      */
     private function preloadPaymentLookups(Collection $requests): void
     {
@@ -1373,10 +1448,100 @@ class TechnicalServiceWorkflowService
                 $this->mountPaymentsBySessionIdCache[$sessionId] = ($this->mountPaymentsBySessionIdCache[$sessionId] ?? collect())->push($payment);
             }
         });
+
+        $this->preloadPaymentLinkMessageStates($payments);
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceMountPayment>  $payments
+     */
+    private function preloadPaymentLinkMessageStates(Collection $payments): void
+    {
+        $payments = $payments
+            ->filter(fn (mixed $payment): bool => $payment instanceof TechnicalServiceMountPayment)
+            ->unique(fn (TechnicalServiceMountPayment $payment): int => (int) $payment->id)
+            ->values();
+        $paymentIds = $payments
+            ->pluck('id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter()
+            ->values();
+
+        $paymentIds->each(function (int $paymentId): void {
+            $this->paymentLinkMessageStateCache[$paymentId] ??= $this->emptyPaymentLinkMessageState();
+        });
+
+        if ($paymentIds->isEmpty()) {
+            return;
+        }
+
+        $requestIds = $payments
+            ->pluck('technical_service_request_id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($requestIds->isEmpty()) {
+            return;
+        }
+
+        $paymentIdLookup = $paymentIds->flip();
+        TechnicalServiceMessageDispatch::query()
+            ->whereIn('technical_service_request_id', $requestIds->all())
+            ->whereIn('message_type', ['payment_link_customer', 'part_fee_payment_link_customer'])
+            ->whereIn('status', self::PAYMENT_LINK_DISPATCH_EVIDENCE_STATUSES)
+            ->latest('id')
+            ->get()
+            ->each(function (TechnicalServiceMessageDispatch $dispatch) use ($paymentIdLookup): void {
+                $metadata = is_array($dispatch->metadata) ? $dispatch->metadata : [];
+                $paymentId = (int) ($metadata['payment_id'] ?? 0);
+                if ($paymentId <= 0 || ! $paymentIdLookup->has($paymentId)) {
+                    return;
+                }
+
+                $current = $this->paymentLinkMessageStateCache[$paymentId] ?? $this->emptyPaymentLinkMessageState();
+                if ($current['latest_dispatch_id'] !== null) {
+                    return;
+                }
+
+                $this->paymentLinkMessageStateCache[$paymentId] = [
+                    'send_count' => max(1, (int) ($metadata['message_send_count'] ?? 0)),
+                    'last_message_sent_at' => $this->dateTimeString($dispatch->sent_at ?? $dispatch->queued_at ?? $dispatch->created_at),
+                    'latest_dispatch_id' => (int) $dispatch->id,
+                    'latest_dispatch_status' => (string) $dispatch->status,
+                ];
+            });
+    }
+
+    /**
+     * @return array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null}
+     */
+    private function emptyPaymentLinkMessageState(): array
+    {
+        return [
+            'send_count' => 0,
+            'last_message_sent_at' => null,
+            'latest_dispatch_id' => null,
+            'latest_dispatch_status' => null,
+        ];
+    }
+
+    /**
+     * @return array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null}
+     */
+    public function paymentLinkMessageState(TechnicalServiceMountPayment $payment): array
+    {
+        $paymentId = (int) $payment->id;
+        if (! array_key_exists($paymentId, $this->paymentLinkMessageStateCache)) {
+            $this->preloadPaymentLinkMessageStates(collect([$payment]));
+        }
+
+        return $this->paymentLinkMessageStateCache[$paymentId] ?? $this->emptyPaymentLinkMessageState();
+    }
+
+    /**
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      */
     private function preloadPayoutStatuses(Collection $requests): void
     {
@@ -1408,7 +1573,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceMountPayment> $payments
+     * @param  Collection<int, TechnicalServiceMountPayment>  $payments
      * @return Collection<int, TechnicalServiceMountPayment>
      */
     private function sortedUniquePayments(Collection $payments): Collection
@@ -1544,6 +1709,7 @@ class TechnicalServiceWorkflowService
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
+        $payload['technician_job_card'] = $this->partnerJobScope->technicianJobCardContext($request);
         $payload['settlement'] = $this->settlementPayload($request->settlement);
         $payload['technician_revision_offer'] = $this->technicianRevisionOfferPayload($request);
         $payload['earning_breakdown'] = $this->earningBreakdownPayload($request);
@@ -1673,7 +1839,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $assignmentPayload
+     * @param  array<string, mixed>  $assignmentPayload
      */
     public function assertOperationControlsAllowAssignment(TechnicalServiceRequest $request, array $assignmentPayload = []): void
     {
@@ -1700,7 +1866,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function payloadHasCustomerDirectTechnicianDecision(array $payload): bool
     {
@@ -1714,7 +1880,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function applyPayloadForWorkflow(TechnicalServiceRequest $request, string $target, array $payload): void
     {
@@ -1863,7 +2029,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function resolveCancellationReview(TechnicalServiceRequest $request, array $payload, string $status): void
     {
@@ -1890,7 +2056,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function markAssignmentOffersCancelled(TechnicalServiceRequest $request, array $payload): void
     {
@@ -1915,7 +2081,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function applyDerivedState(TechnicalServiceRequest $request, array $payload = []): void
     {
@@ -1974,7 +2140,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function writeEvent(
         TechnicalServiceRequest $request,
@@ -1985,6 +2151,11 @@ class TechnicalServiceWorkflowService
         array $payload,
         ?string $title = null
     ): void {
+        $actorRole = trim((string) data_get($user, 'role_code')) ?: ($user === null ? 'system_worker' : 'authenticated_user');
+        $source = $payload['source'] ?? ($user === null
+            ? 'system_worker'
+            : (str_starts_with($actorRole, 'b2b_') ? 'partner_portal' : 'technical_service_admin'));
+
         $request->events()->create([
             'event_type' => $actionType,
             'title' => $title ?? (self::actionLabels()[$actionType] ?? 'Workflow güncellendi'),
@@ -1992,13 +2163,22 @@ class TechnicalServiceWorkflowService
             'from_status' => $fromStatus,
             'to_status' => $toStatus,
             'author_user_id' => $user?->id,
-            'metadata' => Arr::except($payload, ['note']),
+            'metadata' => [
+                ...Arr::except($payload, ['note', 'source']),
+                'actor_user_id' => $user?->getAuthIdentifier(),
+                'actor_role' => $actorRole,
+                'source' => $source,
+                'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+                'request_id' => $request->id,
+                'mrn' => $request->mrn,
+                'srv' => $request->service_code,
+            ],
         ]);
     }
 
     /**
-     * @param array<string, mixed> $old
-     * @param array<string, mixed> $new
+     * @param  array<string, mixed>  $old
+     * @param  array<string, mixed>  $new
      */
     private function writeAuditLog(
         TechnicalServiceRequest $request,
@@ -2177,9 +2357,9 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $paymentStatus
-     * @param array<string, mixed>|null $extraPayment
-     * @param array<string, mixed> $customerCharges
+     * @param  array<string, mixed>  $paymentStatus
+     * @param  array<string, mixed>|null  $extraPayment
+     * @param  array<string, mixed>  $customerCharges
      * @return array<string, mixed>
      */
     private function paymentSummaryPayload(
@@ -2269,7 +2449,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed>|null $extraPayment
+     * @param  array<string, mixed>|null  $extraPayment
      * @return array{received:bool,stage_label:string,amount:float|null}
      */
     private function mountPaymentSummaryPayload(TechnicalServiceRequest $request, ?array $extraPayment): array
@@ -2396,6 +2576,8 @@ class TechnicalServiceWorkflowService
         $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
         $paymentUrl = trim((string) ($payment->payment_url ?? ''));
 
+        $messageState = $this->paymentLinkMessageState($payment);
+
         return $this->extraMountPaymentCache[$requestId] = array_merge([
             'id' => $payment->id,
             'request_id' => $payment->technical_service_request_id,
@@ -2421,6 +2603,9 @@ class TechnicalServiceWorkflowService
             'reason' => $payload['reason'] ?? null,
             'purpose' => $payload['purpose'] ?? $payload['reason'] ?? null,
             'note' => $payload['note'] ?? null,
+            'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
+            'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
+                ?? $messageState['last_message_sent_at'],
             'selected_serial_ids' => is_array($payload['selected_serial_ids'] ?? null)
                 ? array_values($payload['selected_serial_ids'])
                 : [],
@@ -2432,7 +2617,9 @@ class TechnicalServiceWorkflowService
      */
     private function mountCustomerPaymentSummaryPayload(TechnicalServiceRequest $request): array
     {
-        $rows = $this->mountCustomerPaymentsForRequest($request)
+        $payments = $this->mountCustomerPaymentsForRequest($request);
+        $this->preloadPaymentLinkMessageStates($payments);
+        $rows = $payments
             ->map(fn (TechnicalServiceMountPayment $payment): array => $this->mountCustomerPaymentPayload($payment))
             ->values();
         $paidRows = $rows
@@ -2536,6 +2723,7 @@ class TechnicalServiceWorkflowService
     private function mountCustomerPaymentPayload(TechnicalServiceMountPayment $payment): array
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $messageState = $this->paymentLinkMessageState($payment);
         $amount = round((float) $payment->amount, 2);
         $source = (string) ($payload['source'] ?? '');
         $purpose = (string) ($payload['purpose'] ?? $payload['reason'] ?? '');
@@ -2578,6 +2766,9 @@ class TechnicalServiceWorkflowService
             'cancelled_at' => $payload['cancelled_at'] ?? null,
             'cancelled_by_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancelled_by_name'] ?? null),
             'cancellation_reason' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancellation_reason'] ?? null),
+            'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
+            'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
+                ?? $messageState['last_message_sent_at'],
             'source' => $source !== '' ? $source : null,
             'amount_source' => $payload['amount_source'] ?? null,
             'purpose' => $payload['purpose'] ?? null,
@@ -2650,7 +2841,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      * @return array<string, mixed>
      */
     private function finalPayoutApprovalPayload(TechnicalServiceRequest $request, Collection $requests): array
@@ -2850,7 +3041,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed>|null $completedSnapshot
+     * @param  array<string, mixed>|null  $completedSnapshot
      * @return array{technician_id:mixed,technician_name:string|null,source:string}
      */
     private function earningRowTechnicianPayload(
@@ -2896,7 +3087,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $earningBreakdown
+     * @param  array<string, mixed>  $earningBreakdown
      * @return array<string, mixed>
      */
     private function financeSummaryPayload(TechnicalServiceRequest $request, array $earningBreakdown): array
@@ -3042,7 +3233,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed>|null $row
+     * @param  array<string, mixed>|null  $row
      * @return array<string, mixed>
      */
     private function financePayoutFromRow(?array $row, TechnicalServiceRequest $request): array
@@ -3077,7 +3268,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payout
+     * @param  array<string, mixed>  $payout
      * @return array<string, mixed>
      */
     private function financeOperationCostPayload(array $payout, bool $warrantyCovered): array
@@ -3098,7 +3289,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $collection
+     * @param  array<string, mixed>  $collection
      * @return array<string, mixed>
      */
     private function financeWarrantyCustomerChargePayload(array $collection, bool $warrantyCovered): array
@@ -3119,7 +3310,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed>|null $rootTotal
+     * @param  array<string, mixed>|null  $rootTotal
      * @return array<string, mixed>
      */
     private function financePayoutFromRootTotal(?array $rootTotal): array
@@ -3169,12 +3360,14 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      * @return array<string, mixed>
      */
     private function customerChargeSummaryForRequests(Collection $requests): array
     {
-        $rows = $this->customerChargePaymentsForRequests($requests)
+        $payments = $this->customerChargePaymentsForRequests($requests);
+        $this->preloadPaymentLinkMessageStates($payments);
+        $rows = $payments
             ->map(fn (TechnicalServiceMountPayment $payment): array => $this->customerChargePaymentPayload($payment))
             ->values();
         $paidRows = $rows->filter(fn (array $row): bool => ($row['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID);
@@ -3203,7 +3396,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      * @return Collection<int, TechnicalServiceMountPayment>
      */
     private function customerChargePaymentsForRequests(Collection $requests): Collection
@@ -3242,7 +3435,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceMountPayment> $payments
+     * @param  Collection<int, TechnicalServiceMountPayment>  $payments
      * @return Collection<int, TechnicalServiceMountPayment>
      */
     private function filterCustomerChargePayments(Collection $payments): Collection
@@ -3262,6 +3455,7 @@ class TechnicalServiceWorkflowService
     private function customerChargePaymentPayload(TechnicalServiceMountPayment $payment): array
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $messageState = $this->paymentLinkMessageState($payment);
         $serviceAmount = (float) ($payload['service_amount'] ?? 0);
         $partAmount = (float) ($payload['part_amount'] ?? 0);
         $amount = (float) $payment->amount;
@@ -3304,6 +3498,9 @@ class TechnicalServiceWorkflowService
             'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
             'message_template' => $messageTemplate,
             'message_text' => $messageText,
+            'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
+            'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
+                ?? $messageState['last_message_sent_at'],
         ];
     }
 
@@ -3725,7 +3922,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $source
+     * @param  array<string, mixed>  $source
      */
     private function hiddenReasonLabel(?string $reason, array $source = []): string
     {
@@ -3744,7 +3941,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $source
+     * @param  array<string, mixed>  $source
      */
     private function responsibilityCodeLabel(array $source): string
     {
@@ -3922,8 +4119,7 @@ class TechnicalServiceWorkflowService
         TechnicalServiceRequest $request,
         bool $onlyPrevious = false,
         bool $includePrevious = false,
-    ): array
-    {
+    ): array {
         $request->loadMissing('uploads');
         $documents = $request->uploads
             ->filter(function (TechnicalServiceRequestUpload $upload) use ($request, $onlyPrevious, $includePrevious): bool {
@@ -4119,7 +4315,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $paymentStatus
+     * @param  array<string, mixed>  $paymentStatus
      */
     private function assignmentPaymentDecision(TechnicalServiceRequest $request, array $paymentStatus): string
     {
@@ -4333,6 +4529,7 @@ class TechnicalServiceWorkflowService
         }
 
         $action = $request->partnerJobActions
+            ->sortByDesc(fn (TechnicalServicePartnerJobAction $item): int => (int) $item->id)
             ->first(fn (TechnicalServicePartnerJobAction $item): bool => $item->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED
                 && ! $this->actionResolvedForNewWork($item)
                 && ! $this->recordPredatesActiveReopen($request, $item->created_at ?? $item->updated_at));
@@ -4357,6 +4554,7 @@ class TechnicalServiceWorkflowService
                 'resolved' => 'Yanıtlandı',
                 'accepted' => 'Kabul edildi',
                 'rejected' => 'Reddedildi',
+                'revision_requested' => 'Düzenleme istendi',
                 'countered' => 'Karşı teklif verildi',
                 default => TechnicalServiceUiLabelService::statusLabel($status),
             },
@@ -4386,6 +4584,10 @@ class TechnicalServiceWorkflowService
 
         if ($action->status === TechnicalServicePartnerJobAction::STATUS_REJECTED) {
             return 'rejected';
+        }
+
+        if ($action->status === TechnicalServicePartnerJobAction::STATUS_REVISION_REQUESTED) {
+            return 'revision_requested';
         }
 
         if ($this->priceRevisionResolvedByAssignmentOffer($request, $action)) {
@@ -4553,6 +4755,10 @@ class TechnicalServiceWorkflowService
         array $amounts,
     ): array {
         $phone = $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone);
+        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $jobLink = is_string($jobCardContext['canonical_url'] ?? null)
+            ? $jobCardContext['canonical_url']
+            : null;
 
         return [
             'channel' => 'system_payload',
@@ -4564,7 +4770,14 @@ class TechnicalServiceWorkflowService
             'customer_name' => $request->customer_name,
             'customer_phone' => $request->customer_phone,
             'address' => $request->location_formatted_address ?: $request->service_address,
-            'job_link' => url('/partner/service-jobs?job_id='.$request->id),
+            'job_link' => $jobLink,
+            'technician_job_card_url' => $jobLink,
+            'technician_job_card_short_url' => $jobLink,
+            'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
+            'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
+            'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,
+            'assignment_partner_id' => $jobCardContext['partner_id'] ?? null,
+            'assignment_partner_technician_link_id' => $jobCardContext['partner_technician_link_id'] ?? null,
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
@@ -4970,7 +5183,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      */
     private function loadServiceVisitHistoryRelations(Collection $requests): void
     {
@@ -4993,7 +5206,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
      * @return array<int, array<string, mixed>>
      */
     private function serviceVisitTimelineEvents(Collection $requests): array
@@ -5246,7 +5459,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $paymentStatus
+     * @param  array<string, mixed>  $paymentStatus
      */
     private function paymentStatusLabel(?string $status, array $paymentStatus): string
     {
@@ -5278,8 +5491,8 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $paymentStatus
-     * @param array<string, mixed>|null $extraPayment
+     * @param  array<string, mixed>  $paymentStatus
+     * @param  array<string, mixed>|null  $extraPayment
      */
     private function primaryMountPaidAmount(TechnicalServiceRequest $request, array $paymentStatus, ?array $extraPayment, array $mountPayments = []): ?float
     {
@@ -5454,7 +5667,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function scheduledAtFromPayload(array $payload): ?CarbonImmutable
     {
@@ -5487,7 +5700,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param list<string> $allowed
+     * @param  list<string>  $allowed
      */
     private function assertFieldWorkflowStatus(string $current, array $allowed): void
     {
@@ -5513,7 +5726,6 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param mixed $payload
      * @return array<string, bool>
      */
     private function normalizedChecklistPayload(mixed $payload): array
@@ -5529,7 +5741,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @param array<string, bool>|null $payload
+     * @param  array<string, bool>|null  $payload
      */
     private function isChecklistComplete(?array $payload): bool
     {
@@ -5573,21 +5785,21 @@ class TechnicalServiceWorkflowService
 
     private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
     {
-        return $request->reopened_at instanceof \Carbon\CarbonInterface
-            && $recordAt instanceof \Carbon\CarbonInterface
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThan($request->reopened_at);
     }
 
     private function fieldDocumentPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
     {
-        return $request->reopened_at instanceof \Carbon\CarbonInterface
-            && $recordAt instanceof \Carbon\CarbonInterface
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThanOrEqualTo($request->reopened_at);
     }
 
     /**
-     * @param array<string, mixed> $payload
-     * @param array<string, mixed> $old
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $old
      */
     private function completeFieldWorkflow(
         TechnicalServiceRequest $request,

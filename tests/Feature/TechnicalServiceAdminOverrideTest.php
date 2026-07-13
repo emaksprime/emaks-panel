@@ -259,7 +259,7 @@ class TechnicalServiceAdminOverrideTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicalServiceRequest(array $overrides = []): TechnicalServiceRequest
     {
@@ -310,7 +310,7 @@ class TechnicalServiceAdminOverrideTest extends TestCase
             'capability' => B2BPartner::TYPE_LOCKSMITH,
             'active' => true,
         ]);
-        B2BPartnerUserProfile::query()->create([
+        $profile = B2BPartnerUserProfile::query()->create([
             'user_id' => $user->id,
             'partner_id' => $partner->id,
             'title' => 'Portal kullanıcısı',
@@ -340,6 +340,11 @@ class TechnicalServiceAdminOverrideTest extends TestCase
             'is_primary' => true,
             'active' => true,
         ]);
+        $profile->forceFill([
+            'metadata' => [
+                'technical_service_technician_id' => $technician->id,
+            ],
+        ])->save();
 
         return [$user, $partner, $technician];
     }

@@ -2,6 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
@@ -361,6 +364,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->configureEvolution([
             'services.evolution.real_send_enabled' => true,
             'services.evolution.test_phone_min_seconds' => 0,
+            'services.partner_portal.public_url' => 'https://panel.test',
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -370,6 +374,23 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             'name' => 'Workflow Usta',
             'phone' => '+905559998877',
             'city' => 'Istanbul',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'WP-CONTRACT',
+            'display_name' => 'Workflow Contract Locksmith',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
             'active' => true,
         ]);
         $request = TechnicalServiceRequest::query()->create([
@@ -422,7 +443,9 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->assertSame('3.000 TRY', $payload['labor_amount']);
         $this->assertSame('350 TRY', $payload['route_fee_amount']);
         $this->assertSame('3.350 TRY', $payload['total_amount']);
-        $this->assertStringContainsString('/partner/service-jobs?job_id='.$request->id, $payload['job_link']);
+        $this->assertStringStartsWith('https://panel.test/partner/service-jobs?', $payload['job_link']);
+        $this->assertStringContainsString('partner_id='.$partner->id, $payload['job_link']);
+        $this->assertStringContainsString('job_id='.$request->id, $payload['job_link']);
         $this->assertStringContainsString((string) $payload['job_link'], $payload['text']);
         Http::assertSentCount(1);
     }

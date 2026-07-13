@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\TechnicalServiceAdminOverride;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
@@ -32,6 +33,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -104,14 +106,32 @@ class PartnerServiceJobController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $user = $this->authorizedUser($request, 'partner.service_jobs.view');
-        $partner = $this->scope->selectedLocksmithPartnerForPortal(
-            $user,
-            $request->integer('partner_id') ?: null,
-        );
+        if ($this->isOpsSupportMode($request)) {
+            $user = $this->authorizedUser($request, 'technical_service_manage');
+            $selection = $this->scope->assertOpsSupportSelection(
+                $request->integer('partner_id') ?: null,
+                $request->integer('technician_id') ?: null,
+            );
+            $partner = $selection['partner'];
+            $technicianId = (int) $selection['technician_id'];
+        } else {
+            $user = $this->authorizedUser($request, 'partner.service_jobs.view');
+            $partner = $this->scope->selectedLocksmithPartnerForPortal(
+                $user,
+                $request->integer('partner_id') ?: null,
+            );
+            $technicianId = $this->scope->portalTechnicianId($user, $partner);
+            if ($technicianId === null) {
+                throw new AuthorizationException('Portal kullanıcısının tekil usta kapsamı doğrulanamadı.');
+            }
+            $requestedTechnicianId = $request->integer('technician_id') ?: null;
+            if ($requestedTechnicianId !== null && $requestedTechnicianId !== $technicianId) {
+                throw new AuthorizationException('URL usta kapsamı authenticated portal kullanıcısıyla eşleşmiyor.');
+            }
+        }
 
         $activeJobs = $this->scope
-            ->serviceJobsQuery($partner)
+            ->serviceJobsQueryForTechnician($partner, $technicianId)
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
                 'partRequests' => fn ($query) => $query->latest(),
@@ -121,12 +141,14 @@ class PartnerServiceJobController extends Controller
             ->orderBy('scheduled_at')
             ->orderByDesc('updated_at')
             ->limit(100)
-            ->get()
+            ->get();
+        $activeJobs = $this->scope
+            ->filterForAssignmentPartner($activeJobs, $partner)
             ->reject(fn (TechnicalServiceRequest $job): bool => $this->scope->shouldHideActiveParentWithChild($job))
             ->values();
         $activeJobIds = $activeJobs->pluck('id')->map(fn (mixed $id): int => (int) $id)->all();
         $completedHistoryJobs = $this->scope
-            ->completedHistoryJobsQuery($partner)
+            ->completedHistoryJobsQueryForTechnician($partner, $technicianId)
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
                 'partRequests' => fn ($query) => $query->latest(),
@@ -136,19 +158,23 @@ class PartnerServiceJobController extends Controller
             ->latest('completed_at')
             ->latest('updated_at')
             ->limit(100)
-            ->get()
+            ->get();
+        $completedHistoryJobs = $this->scope
+            ->filterForAssignmentPartner($completedHistoryJobs, $partner)
             ->filter(fn (TechnicalServiceRequest $job): bool => $this->scope->isCompletedHistoryJob($job))
             ->values();
         $jobs = $activeJobs
             ->concat($completedHistoryJobs)
             ->unique('id')
-            ->map(fn (TechnicalServiceRequest $job): array => $this->portalData->safeServiceJobSummary($job, $partner))
+            ->map(fn (TechnicalServiceRequest $job): array => $this->jobSummary($job, $partner))
             ->values()
             ->all();
 
         return response()->json([
             'status' => 'ok',
             'partner_id' => $partner->id,
+            'technician_id' => $technicianId,
+            'ops_support_mode' => $this->isOpsSupportMode($request),
             'columns' => $this->kanbanColumns($jobs),
             'jobs' => $jobs,
             'appointment_slot_options' => $this->appointmentSlotOptions(),
@@ -157,13 +183,34 @@ class PartnerServiceJobController extends Controller
 
     public function show(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
-        [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
+        [$user, $job, $partner] = $this->readableJob($request, $technicalServiceRequest);
 
         return response()->json([
             'status' => 'ok',
             'partner_id' => $partner->id,
-            'job' => $this->portalData->safeServiceJobSummary($job, $partner),
+            'job' => $this->jobSummary($job, $partner),
             'appointment_slot_options' => $this->appointmentSlotOptions(),
+        ]);
+    }
+
+    public function showUpload(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        mixed $upload,
+    ) {
+        [, $job] = $this->readableJob($request, $technicalServiceRequest);
+
+        if (! $upload instanceof TechnicalServiceRequestUpload) {
+            $upload = TechnicalServiceRequestUpload::query()->findOrFail($upload);
+        }
+
+        abort_unless((int) $upload->technical_service_request_id === (int) $job->id, 404);
+        abort_unless($this->isPortalFieldDocument($upload), 404);
+        abort_unless(Storage::disk('public')->exists($upload->path), 404);
+
+        return response()->file(Storage::disk('public')->path($upload->path), [
+            'Content-Type' => $upload->mime ?: 'application/octet-stream',
+            'Content-Disposition' => 'inline; filename="'.$upload->original_name.'"',
         ]);
     }
 
@@ -294,7 +341,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -343,7 +390,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -370,7 +417,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -558,7 +605,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => 'ok',
             'uploads' => $uploads,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -674,7 +721,7 @@ class PartnerServiceJobController extends Controller
             'action' => $action->action,
             'dispatch' => $dispatchSummary,
             'message' => $this->dispatchUserMessage($dispatchSummary),
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -689,7 +736,7 @@ class PartnerServiceJobController extends Controller
             'quantity' => ['nullable', 'integer', 'min:1', 'max:999'],
         ]);
 
-        $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
+        $result = DB::transaction(function () use ($job, $partner, $user, $data): array {
             $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
                 'type' => $data['type'],
                 'type_label' => $this->supportTypeLabel($data['type']),
@@ -700,6 +747,7 @@ class PartnerServiceJobController extends Controller
                 'ops_review_required' => true,
             ], $data['description'], $job->workflow_status);
 
+            $partRequest = null;
             if ($data['type'] === 'spare_part') {
                 $partRequest = $this->partRequests->createFromPartnerSupport($job->refresh(), $user, $action, $data);
                 $action->forceFill([
@@ -711,31 +759,61 @@ class PartnerServiceJobController extends Controller
                 ])->save();
             }
 
-            return $action;
+            return ['action' => $action->refresh(), 'part_request' => $partRequest?->refresh()];
         });
 
-        $this->workflowMessages->queueSystemMessage(
-            $job->refresh(),
-            'support_request_ops',
-            'ops',
-            "Usta ek talep oluşturdu. MRN: {$job->mrn}. Talep: ".$this->supportTypeLabel($data['type']).". Açıklama: {$data['description']}",
-            [
-                'actor_name' => $user->name,
-                'support_subject' => $this->supportTypeLabel($data['type']),
-                'support_note' => $data['description'],
-                'created_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
-                'partner_id' => $partner->id,
-                'type' => $data['type'],
-            ],
-            $user,
-            $action,
-            ['triggered_by' => 'partner_portal_support_request'],
-        );
+        /** @var TechnicalServicePartnerJobAction $action */
+        $action = $result['action'];
+        /** @var TechnicalServicePartRequest|null $partRequest */
+        $partRequest = $result['part_request'];
+
+        $dispatchSummary = $data['type'] === 'spare_part' && $partRequest instanceof TechnicalServicePartRequest
+            ? $this->workflowMessages->queueWorkflowDispatches(
+                $job->refresh(),
+                'part_request_ops',
+                'ops',
+                [
+                    'actor_name' => $user->name,
+                    'part_name' => $partRequest->part_name,
+                    'part_code' => $partRequest->part_code,
+                    'part_quantity' => (string) $partRequest->quantity,
+                    'part_reason' => $partRequest->reason ?: $data['description'],
+                    'created_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+                    'next_action_text' => 'Parça talebini inceleyin ve ücret/garanti kararını verin.',
+                ],
+                $user,
+                $action,
+                [
+                    'triggered_by' => 'partner_portal_part_request',
+                    'event_version' => 'part-request:'.$partRequest->id.':'.($partRequest->created_at?->timestamp ?? 'missing'),
+                    'metadata' => [
+                        'part_request_id' => $partRequest->id,
+                        'workflow_event' => 'part_request_ops',
+                    ],
+                ],
+            )
+            : $this->workflowMessages->queueWorkflowDispatches(
+                $job->refresh(),
+                'support_request_ops',
+                'ops',
+                [
+                    'actor_name' => $user->name,
+                    'support_subject' => $this->supportTypeLabel($data['type']),
+                    'support_note' => $data['description'],
+                    'created_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+                    'partner_id' => $partner->id,
+                    'type' => $data['type'],
+                ],
+                $user,
+                $action,
+                ['triggered_by' => 'partner_portal_support_request'],
+            );
 
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'message_dispatches' => $dispatchSummary,
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -744,12 +822,37 @@ class PartnerServiceJobController extends Controller
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServicePartRequest $partRequest,
     ): JsonResponse {
-        $user = $this->authorizedUser($request, 'partner.service_jobs.view');
-        $job = $technicalServiceRequest;
-        $partner = $this->partnerForPartReceive($user, $job, $partRequest);
-        abort_unless((int) $partRequest->technical_service_request_id === (int) $job->id, 404);
+        [$user, $job, $partner, $result] = DB::transaction(function () use ($request, $technicalServiceRequest, $partRequest): array {
+            $job = TechnicalServiceRequest::query()
+                ->lockForUpdate()
+                ->findOrFail($technicalServiceRequest->id);
+            $partRequest = TechnicalServicePartRequest::query()
+                ->whereKey($partRequest->id)
+                ->where('technical_service_request_id', $job->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $result = $this->partRequests->receiveAndPrepareServiceVisit($partRequest, $user);
+            if ($this->isOpsSupportMode($request)) {
+                [$user, $job, $partner] = $this->authorizedJob($request, $job);
+            } else {
+                $user = $this->authorizedUser($request, 'partner.service_jobs.view');
+                $partner = $this->scope->assertCanReceivePart(
+                    $user,
+                    $job,
+                    $partRequest,
+                    $request->integer('partner_id') ?: null,
+                    $request->integer('technician_id') ?: null,
+                );
+                $this->assertActivePartnerProfile($user, $partner);
+            }
+
+            return [
+                $user,
+                $job,
+                $partner,
+                $this->partRequests->receiveAndPrepareServiceVisit($partRequest, $user),
+            ];
+        });
         $partRequest = $result['part_request'];
         $serviceVisit = $result['service_visit'];
         $receivedAt = $partRequest->received_at ?: now();
@@ -786,8 +889,8 @@ class PartnerServiceJobController extends Controller
                 'part_received_ops' => $dispatchSummary,
             ],
             'part_request' => $this->partRequests->serialize($partRequest, forPartner: true),
-            'parent_job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
-            'job' => $this->portalData->safeServiceJobSummary($serviceVisit->refresh(), $partner),
+            'parent_job' => $this->jobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($serviceVisit->refresh(), $partner),
         ]);
     }
 
@@ -838,7 +941,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -863,7 +966,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => 'ok',
             'action' => $action->action,
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
         ]);
     }
 
@@ -900,7 +1003,7 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => 'pending',
             'override' => $this->adminOverrides->serialize($override),
-            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'job' => $this->jobSummary($job->refresh(), $partner),
             'message' => 'Düzeltme talebi operasyona gönderildi.',
         ]);
     }
@@ -930,31 +1033,6 @@ class PartnerServiceJobController extends Controller
         ]);
     }
 
-    private function partnerForPartReceive(
-        User $user,
-        TechnicalServiceRequest $parent,
-        TechnicalServicePartRequest $partRequest,
-    ): B2BPartner {
-        try {
-            return $this->scope->assertCanViewServiceJob($user, $parent);
-        } catch (AuthorizationException $exception) {
-            $serviceVisitId = $partRequest->service_visit_request_id
-                ?? (is_array($partRequest->metadata) ? ($partRequest->metadata['service_visit_created']['request_id'] ?? null) : null);
-
-            if (! is_numeric($serviceVisitId)) {
-                throw $exception;
-            }
-
-            $serviceVisit = TechnicalServiceRequest::query()->find((int) $serviceVisitId);
-            if (! $serviceVisit instanceof TechnicalServiceRequest
-                || (int) $serviceVisit->parent_request_id !== (int) $parent->id) {
-                throw $exception;
-            }
-
-            return $this->scope->assertCanViewServiceJob($user, $serviceVisit);
-        }
-    }
-
     private function authorizedUser(Request $request, string $resourceCode): User
     {
         $user = $request->user();
@@ -968,10 +1046,51 @@ class PartnerServiceJobController extends Controller
      */
     private function authorizedJob(Request $request, TechnicalServiceRequest $job): array
     {
-        $user = $this->authorizedUser($request, 'partner.service_jobs.view');
-        $partner = $this->scope->assertCanViewServiceJob($user, $job);
+        [$user, $job, $partner] = $this->readableJob($request, $job);
+        if (! $this->isOpsSupportMode($request)) {
+            $this->assertActivePartnerProfile($user, $partner);
+        }
 
         return [$user, $job, $partner];
+    }
+
+    /**
+     * @return array{0: User, 1: TechnicalServiceRequest, 2: B2BPartner}
+     */
+    private function readableJob(Request $request, TechnicalServiceRequest $job): array
+    {
+        if ($this->isOpsSupportMode($request)) {
+            $user = $this->authorizedUser($request, 'technical_service_manage');
+            $selection = $this->scope->assertOpsSupportSelection(
+                $request->integer('partner_id') ?: null,
+                $request->integer('technician_id') ?: null,
+                $job,
+            );
+            $partner = $selection['partner'];
+        } else {
+            $user = $this->authorizedUser($request, 'partner.service_jobs.view');
+            $partner = $this->scope->assertCanViewServiceJob(
+                $user,
+                $job,
+                $request->integer('partner_id') ?: null,
+                $request->integer('technician_id') ?: null,
+            );
+        }
+
+        return [$user, $job, $partner];
+    }
+
+    private function assertActivePartnerProfile(User $user, B2BPartner $partner): void
+    {
+        $hasActiveProfile = B2BPartnerUserProfile::query()
+            ->where('user_id', $user->id)
+            ->where('partner_id', $partner->id)
+            ->where('active', true)
+            ->exists();
+
+        if (! $hasActiveProfile) {
+            throw new AuthorizationException('Partner portalı iş aksiyonları aktif partner kullanıcı profili gerektirir.');
+        }
     }
 
     private function archiveRejectedAssignment(
@@ -1065,6 +1184,31 @@ class PartnerServiceJobController extends Controller
         ?string $note,
         ?string $fromStatus,
     ): TechnicalServicePartnerJobAction {
+        $opsSupport = $this->isOpsSupportMode(request());
+        $auditContext = $opsSupport
+            ? [
+                'source' => 'ops_support_mode',
+                'acting_as_technician_id' => (int) $job->technical_service_technician_id,
+                'acting_as_partner_id' => (int) $partner->id,
+            ]
+            : [
+                'source' => 'partner_portal',
+            ];
+        $payload = [
+            ...$payload,
+            'audit_context' => [
+                ...$auditContext,
+                'actor_user_id' => (int) $user->id,
+                'actor_role' => $user->role_code ?: ($opsSupport ? 'ops' : 'partner_user'),
+                'request_id' => (int) $job->id,
+                'mrn' => $job->mrn,
+                'srv' => $job->service_code,
+                'action' => $action,
+                'previous_state' => $fromStatus,
+                'new_state' => $job->workflow_status,
+                'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+            ],
+        ];
         $record = TechnicalServicePartnerJobAction::query()->create([
             'technical_service_request_id' => $job->id,
             'partner_id' => $partner->id,
@@ -1077,8 +1221,8 @@ class PartnerServiceJobController extends Controller
         ]);
 
         $job->events()->create([
-            'event_type' => $this->eventType($action),
-            'title' => $this->eventTitle($action),
+            'event_type' => $this->eventType($action, $payload),
+            'title' => $this->eventTitle($action, $payload),
             'note' => $note,
             'from_status' => $fromStatus,
             'to_status' => $job->workflow_status,
@@ -1087,6 +1231,16 @@ class PartnerServiceJobController extends Controller
                 'partner_id' => $partner->id,
                 'partner_name' => $partner->display_name,
                 'portal_action_status' => $status,
+                'actor_user_id' => $user->id,
+                'actor_role' => $user->role_code ?: ($opsSupport ? 'ops' : 'partner_user'),
+                ...$auditContext,
+                'action' => $action,
+                'previous_state' => $fromStatus,
+                'new_state' => $job->workflow_status,
+                'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+                'request_id' => $job->id,
+                'mrn' => $job->mrn,
+                'srv' => $job->service_code,
                 'payload' => $payload,
             ],
         ]);
@@ -1096,8 +1250,16 @@ class PartnerServiceJobController extends Controller
         return $record;
     }
 
-    private function eventType(string $action): string
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function eventType(string $action, array $payload = []): string
     {
+        if ($action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+            && ($payload['type'] ?? null) === 'spare_part') {
+            return 'part_request_ops';
+        }
+
         return match ($action) {
             TechnicalServicePartnerJobAction::ACTION_ACCEPTED => 'Çilingir portalı: iş kabul edildi',
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => 'Çilingir portalı: randevu değişikliği istendi',
@@ -1106,8 +1268,16 @@ class PartnerServiceJobController extends Controller
         };
     }
 
-    private function eventTitle(string $action): string
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function eventTitle(string $action, array $payload = []): string
     {
+        if ($action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+            && ($payload['type'] ?? null) === 'spare_part') {
+            return 'Çilingir portalı: parça talebi oluşturuldu';
+        }
+
         return match ($action) {
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN => 'Çilingir portalı: randevu onaylandı',
             TechnicalServicePartnerJobAction::ACTION_ACCEPTED => 'Çilingir portalı: iş kabul edildi',
@@ -1507,8 +1677,29 @@ class PartnerServiceJobController extends Controller
     {
         return [
             'status' => $status,
-            'job' => $this->portalData->safeServiceJobSummary($job, $partner),
+            'job' => $this->jobSummary($job, $partner),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function jobSummary(TechnicalServiceRequest $job, ?B2BPartner $partner = null): array
+    {
+        $currentRequest = request();
+        $opsSupport = $currentRequest instanceof Request && $this->isOpsSupportMode($currentRequest);
+
+        return $this->portalData->safeServiceJobSummary(
+            $job,
+            $partner,
+            $opsSupport,
+            $opsSupport ? ($currentRequest->integer('technician_id') ?: null) : null,
+        );
+    }
+
+    private function isOpsSupportMode(Request $request): bool
+    {
+        return filter_var($request->route('ops_support_mode', false), FILTER_VALIDATE_BOOL);
     }
 
     /**

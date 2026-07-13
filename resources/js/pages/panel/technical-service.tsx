@@ -192,6 +192,7 @@ type ApiTechnicalServiceRequest = {
   previous_field_completion_documents?: ServiceRequest['previousFieldCompletionDocuments']
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
+  technician_job_card?: ServiceRequest['technicianJobCard']
   settlement?: ServiceRequest['settlement']
   technician_revision_offer?: ServiceRequest['technicianRevisionOffer']
   earning_breakdown?: ServiceRequest['earningBreakdown']
@@ -371,8 +372,7 @@ const normalizeFormCity = (value: string | null | undefined) => normalizeProvinc
 const normalizeFormDistrict = (city: string | null | undefined, value: string | null | undefined) =>
   normalizeDistrictName(city, value) ?? String(value ?? '').trim()
 
-const CLOSURE_REASONS = [
-  'Montaj tamamlandı',
+const CANCELLATION_REASONS = [
   'Müşterinin kapısı uygun değildi',
   'Müşteri siparişi iptal etti',
   'Müşteri randevuya gelmedi / evde yoktu',
@@ -392,10 +392,10 @@ const REOPEN_REASONS = [
 ] as const
 
 const APPOINTMENT_TIME_SLOTS = [
-  { value: '10:00 - 12:00', start: '10:00' },
-  { value: '12:00 - 14:00', start: '12:00' },
-  { value: '14:00 - 16:00', start: '14:00' },
-  { value: '16:00 - 18:00', start: '16:00' },
+  { value: '10:00 - 12:00', start: '10:00', end: '12:00' },
+  { value: '12:00 - 14:00', start: '12:00', end: '14:00' },
+  { value: '14:00 - 16:00', start: '14:00', end: '16:00' },
+  { value: '16:00 - 18:00', start: '16:00', end: '18:00' },
 ] as const
 
 const CONTACT_CONFIRMATION_METHODS = ['telefon', 'whatsapp', 'sms', 'eposta', 'panel'] as const
@@ -584,12 +584,14 @@ function technicianDisplayName(technician: ServiceTechnician): string {
   return [technician.first_name, technician.last_name].filter(Boolean).join(' ').trim() || technician.name
 }
 
-function technicianPrimaryPartnerId(technician: ServiceTechnician | null): string | null {
-  const activeLink = technician?.b2b_partner_links?.find((link) => link.active !== false && link.partner_id !== null && link.partner_id !== undefined)
-
-  return activeLink?.partner_id === null || activeLink?.partner_id === undefined
-    ? null
-    : String(activeLink.partner_id)
+function activeTechnicianPartnerLinks(technician: ServiceTechnician | null) {
+  return (technician?.b2b_partner_links ?? []).filter((link) => (
+    link.active !== false
+    && ['owner', 'field_technician'].includes(link.relationship_type ?? '')
+    && link.partner_id !== null
+    && link.partner_id !== undefined
+    && link.partner?.active !== false
+  ))
 }
 
 function normalizeLocationText(value: string | null | undefined): string {
@@ -734,6 +736,7 @@ type TechnicianAssignmentInsight = {
   scheduledCount: number
   availableSlots: string[]
   technicianAmountLabel: string
+  technicianAmountSourceLabel: string
   travelAmountLabel: string
   totalCostLabel: string
   costDeltaLabel: string
@@ -954,6 +957,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
+    technicianJobCard: request.technician_job_card ?? null,
     settlement: request.settlement ?? null,
     technicianRevisionOffer: request.technician_revision_offer ?? null,
     earningBreakdown: request.earning_breakdown ?? null,
@@ -1069,6 +1073,7 @@ export function TechnicalServiceOperationCenter() {
   const [contactDialogOpen, setContactDialogOpen] = useState(false)
   const [contactAction, setContactAction] = useState<string | null>(null)
   const [assignTechnicianOption, setAssignTechnicianOption] = useState('')
+  const [assignPartnerOption, setAssignPartnerOption] = useState('')
   const [assignOtherTechnician, setAssignOtherTechnician] = useState('')
   const [assignNote, setAssignNote] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
@@ -1088,6 +1093,8 @@ export function TechnicalServiceOperationCenter() {
   const [fieldDocumentReviewError, setFieldDocumentReviewError] = useState<string | null>(null)
   const [customerApprovalResendLoading, setCustomerApprovalResendLoading] = useState(false)
   const [customerApprovalResendError, setCustomerApprovalResendError] = useState<string | null>(null)
+  const [partnerActionReviewLoading, setPartnerActionReviewLoading] = useState<string | null>(null)
+  const [partnerActionReviewError, setPartnerActionReviewError] = useState<string | null>(null)
   const [opsDetailVisibility, setOpsDetailVisibility] = useState<OpsDetailVisibilitySettings>(DEFAULT_OPS_DETAIL_VISIBILITY)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
@@ -1143,6 +1150,11 @@ export function TechnicalServiceOperationCenter() {
   const [fieldLoading, setFieldLoading] = useState(false)
   const [fieldError, setFieldError] = useState<string | null>(null)
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
+  const [requestCancellationDialogOpen, setRequestCancellationDialogOpen] = useState(false)
+  const [requestCancellationReason, setRequestCancellationReason] = useState('')
+  const [requestCancellationNote, setRequestCancellationNote] = useState('')
+  const [requestCancellationLoading, setRequestCancellationLoading] = useState(false)
+  const [requestCancellationError, setRequestCancellationError] = useState<string | null>(null)
   const [completionReason, setCompletionReason] = useState('')
   const [completionOtherNote, setCompletionOtherNote] = useState('')
   const [installationCompletedAt, setInstallationCompletedAt] = useState('')
@@ -1977,6 +1989,7 @@ export function TechnicalServiceOperationCenter() {
     setFieldDialogOpen(true)
   }, [])
   const selectedAssignTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption) ?? null
+  const selectedAssignPartnerLinks = activeTechnicianPartnerLinks(selectedAssignTechnicianRecord)
   const modalRouteQuote = modalRequest?.routeQuote ?? null
   const modalFinanceSummary = modalRequest?.financeSummary ?? null
   const modalCurrentFinance = modalFinanceSummary?.current_visit ?? null
@@ -2035,6 +2048,11 @@ export function TechnicalServiceOperationCenter() {
     : typeof modalRequest?.technicianPaymentAmount === 'number' && Number.isFinite(modalRequest.technicianPaymentAmount)
     ? modalRequest.technicianPaymentAmount
     : assignPaymentPreview.customerAmount
+  const assignmentTechnicianLaborSourceLabel = activeModalFinancePayout
+    ? (activeModalFinancePayout.payout_status === 'confirmed' ? 'Onaylanan hakediş kaydı' : 'Mevcut taslak hakediş kaydı')
+    : modalRequest?.technicianPaymentAmount !== null && modalRequest?.technicianPaymentAmount !== undefined
+      ? 'Talep üzerindeki hakediş kaydı'
+      : assignPaymentPreview.technicianAmountSourceLabel
   const assignmentRouteFeeAmount = assignmentRouteQuote && typeof assignmentRouteQuote.fee_amount === 'number' && Number.isFinite(assignmentRouteQuote.fee_amount)
     ? assignmentRouteQuote.fee_amount
     : null
@@ -2087,10 +2105,10 @@ export function TechnicalServiceOperationCenter() {
   const selectedAssignTechnicianName = assignTechnicianOption === 'other'
     ? assignOtherTechnician.trim()
     : selectedAssignTechnicianRecord ? technicianDisplayName(selectedAssignTechnicianRecord) : ''
-  const selectedAssignTechnicianPartnerId = technicianPrimaryPartnerId(selectedAssignTechnicianRecord)
-  const assignmentPartnerJobPath = modalRequest?.id
+  const selectedAssignTechnicianPartnerId = assignPartnerOption || (selectedAssignPartnerLinks.length === 1 ? String(selectedAssignPartnerLinks[0].partner_id) : null)
+  const assignmentPartnerJobPath = modalRequest?.id && selectedAssignmentTechnicianId && selectedAssignTechnicianPartnerId
     ? `/partner/service-jobs?${new URLSearchParams({
-      ...(selectedAssignTechnicianPartnerId ? { partner_id: selectedAssignTechnicianPartnerId } : {}),
+      partner_id: selectedAssignTechnicianPartnerId,
       job_id: String(modalRequest.id),
     }).toString()}`
     : null
@@ -2238,6 +2256,7 @@ export function TechnicalServiceOperationCenter() {
     !assignLoading &&
     assignTechnicianOption &&
     (assignTechnicianOption !== 'other' || assignOtherTechnician.trim()) &&
+    (assignTechnicianOption === 'other' || selectedAssignPartnerLinks.length === 0 || Boolean(selectedAssignTechnicianPartnerId)) &&
     !hasAssignmentBlockers &&
     !paymentNeededNoDecision &&
     mountExclusionAckComplete
@@ -2347,6 +2366,7 @@ export function TechnicalServiceOperationCenter() {
         scheduledCount: scheduledJobs.length,
         availableSlots,
         technicianAmountLabel: paymentPreview.technicianAmountLabel,
+        technicianAmountSourceLabel: paymentPreview.technicianAmountSourceLabel,
         travelAmountLabel: paymentPreview.travelAmountLabel,
         totalCostLabel: paymentPreview.totalTechnicianCostLabel,
         costDeltaLabel: costDelta === null
@@ -2650,6 +2670,7 @@ export function TechnicalServiceOperationCenter() {
     routeQuoteAutoRequestSeq.current += 1
     routeQuoteLastAutoKey.current = ''
     setAssignTechnicianOption(modalRequest?.technicianId ?? '')
+    setAssignPartnerOption(modalRequest?.technicianJobCard?.partner_id ? String(modalRequest.technicianJobCard.partner_id) : '')
     setAssignOtherTechnician('')
     setAssignNote('')
     setTravelRoundTripKm(
@@ -2753,8 +2774,16 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const openCompleteDialog = () => {
+    setCompletionReason(modalRequest?.serviceType === 'Montaj' ? 'Montaj tamamlandı' : 'Servis tamamlandı')
     setInstallationCompletedAt(toTechnicalServiceDateTimeInputValue(modalRequest?.scheduledAt ?? null))
     setCompleteDialogOpen(true)
+  }
+
+  const openRequestCancellationDialog = () => {
+    setRequestCancellationReason('')
+    setRequestCancellationNote('')
+    setRequestCancellationError(null)
+    setRequestCancellationDialogOpen(true)
   }
 
   const handleReopenReset = () => {
@@ -2858,7 +2887,7 @@ export function TechnicalServiceOperationCenter() {
     }
 
     if (action === 'cancel') {
-      openCompleteDialog()
+      openRequestCancellationDialog()
 
       return
     }
@@ -2926,6 +2955,7 @@ export function TechnicalServiceOperationCenter() {
         body: JSON.stringify({
           scheduled_date: scheduleDate,
           scheduled_time: selectedTimeSlot?.start ?? '10:00',
+          scheduled_time_end: selectedTimeSlot?.end ?? null,
           note: scheduleNote || null,
         }),
       })
@@ -3492,7 +3522,7 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleMountPaymentSend = async (paymentId: number | string) => {
+  const handleMountPaymentSend = async (paymentId: number | string, payload?: { resend_reason?: string | null }) => {
     if (!selectedId) {
       return
     }
@@ -3500,7 +3530,7 @@ export function TechnicalServiceOperationCenter() {
     try {
       const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/send-link`, {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify(payload ?? {}),
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
@@ -3955,6 +3985,36 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handlePartnerActionReview = async (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    setPartnerActionReviewLoading(String(actionId))
+    setPartnerActionReviewError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-actions/${actionId}/review`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((item) => item.id === updatedRequest.id ? updatedRequest : item))
+          setSelectedListRequest((current) => current?.id === updatedRequest.id ? updatedRequest : current)
+          setSelectedDetailRequest(updatedRequest)
+          setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+        })
+      }
+    } catch (error) {
+      setPartnerActionReviewError(error instanceof Error ? error.message : 'OPS kararı kaydedilemedi.')
+    } finally {
+      setPartnerActionReviewLoading(null)
+    }
+  }
+
   const handleAssignmentFinalConfirmOpen = () => {
     const isManualTechnician = assignTechnicianOption === 'other'
     const selectedTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption)
@@ -3964,6 +4024,12 @@ export function TechnicalServiceOperationCenter() {
 
     if (!selectedTechnician) {
       setAssignError('Lütfen bir usta seçin veya manuel isim girin.')
+
+      return
+    }
+
+    if (!isManualTechnician && selectedAssignPartnerLinks.length > 0 && !selectedAssignTechnicianPartnerId) {
+      setAssignError('Ustanın iş kartı için partner kapsamını açıkça seçin.')
 
       return
     }
@@ -4017,6 +4083,12 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if (!isManualTechnician && selectedAssignPartnerLinks.length > 0 && !selectedAssignTechnicianPartnerId) {
+      setAssignError('Ustanın iş kartı için partner kapsamını açıkça seçin.')
+
+      return
+    }
+
     if (assignmentBlockerMessages.length > 0) {
       setAssignError(assignmentBlockerMessages.join(' '))
 
@@ -4062,7 +4134,10 @@ export function TechnicalServiceOperationCenter() {
         body: JSON.stringify({
           ...(isManualTechnician
             ? { technician_name: selectedTechnician }
-            : { technical_service_technician_id: assignTechnicianOption }),
+            : {
+                technical_service_technician_id: assignTechnicianOption,
+                b2b_partner_id: selectedAssignTechnicianPartnerId ? Number(selectedAssignTechnicianPartnerId) : null,
+              }),
           route_quote_id: assignmentRouteQuote?.id ?? null,
           travel_round_trip_km: parsedTravelRoundTripKm,
           mount_payment_missing: paymentNeededNoDecision,
@@ -4130,23 +4205,13 @@ export function TechnicalServiceOperationCenter() {
     }
 
     if (!completionReason) {
-      setCompleteError('Lütfen bir kapanış nedeni seçin.')
+      setCompleteError('Tamamlama türü belirlenemedi.')
 
       return
     }
 
-    const isOtherReason = completionReason === 'Diğer'
-    const notes = isOtherReason ? completionOtherNote.trim() : completionReason
-
-    if (isOtherReason && !notes) {
-      setCompleteError('Lütfen açıklama girin.')
-      setCompleteLoading(false)
-
-      return
-    }
-
-    const nextStatus = completionReason === 'Montaj tamamlandı' ? 'Tamamlandı' : 'İptal'
-    const isCompletingInstallation = nextStatus === 'Tamamlandı' && modalRequest?.serviceType === 'Montaj'
+    const notes = completionOtherNote.trim() || completionReason
+    const isCompletingInstallation = modalRequest?.serviceType === 'Montaj'
 
     if (isCompletingInstallation && !installationCompletedAt) {
       setCompleteError('Fiili montaj tarihi zorunludur.')
@@ -4183,13 +4248,14 @@ export function TechnicalServiceOperationCenter() {
       await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
         method: 'POST',
         body: JSON.stringify({
-          status: nextStatus,
+          status: 'Tamamlandı',
           resolution_notes: notes || null,
+          note: completionOtherNote.trim() || notes || null,
           ...(isCompletingInstallation
             ? {
                 installation_completed_at: installationCompletedAt,
                 installation_completion_note: installationCompletionNote || null,
-                note: installationCompletionNote || notes || null,
+                note: installationCompletionNote || completionOtherNote.trim() || notes || null,
               }
             : {}),
         }),
@@ -4204,6 +4270,53 @@ export function TechnicalServiceOperationCenter() {
       setCompleteError(caught instanceof Error ? caught.message : 'Talep kapatma işlemi başarısız oldu.')
     } finally {
       setCompleteLoading(false)
+    }
+  }
+
+  const handleRequestCancellationSubmit = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    const reason = requestCancellationReason === 'Diğer'
+      ? requestCancellationNote.trim()
+      : requestCancellationNote.trim()
+        ? `${requestCancellationReason}: ${requestCancellationNote.trim()}`
+        : requestCancellationReason
+
+    if (!reason) {
+      setRequestCancellationError('İptal nedeni zorunludur.')
+
+      return
+    }
+
+    setRequestCancellationLoading(true)
+    setRequestCancellationError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ status: 'İptal', note: reason }),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      setRequestCancellationDialogOpen(false)
+      setRequestCancellationReason('')
+      setRequestCancellationNote('')
+
+      if (updatedRequest) {
+        setRequests((current) => current.map((item) => item.id === updatedRequest.id ? updatedRequest : item))
+        setSelectedListRequest(updatedRequest)
+        setSelectedDetailRequest(updatedRequest)
+      }
+
+      await loadRequests({ silent: true, preserveSelection: true })
+      await loadSummary()
+      await loadRequestDetail(updatedRequest?.id ?? selectedId)
+    } catch (caught) {
+      setRequestCancellationError(caught instanceof Error ? caught.message : 'Talep iptal edilemedi.')
+    } finally {
+      setRequestCancellationLoading(false)
     }
   }
 
@@ -4753,6 +4866,8 @@ export function TechnicalServiceOperationCenter() {
                             onChange={() => {
                               resetAssignmentDraftForTechnicianChange()
                               setAssignTechnicianOption(match.technician.id)
+                              const links = activeTechnicianPartnerLinks(match.technician)
+                              setAssignPartnerOption(links.length === 1 ? String(links[0].partner_id) : '')
                               setTravelRoundTripKm('')
                               setShowNearbyTechnicians(false)
                             }}
@@ -4807,6 +4922,7 @@ export function TechnicalServiceOperationCenter() {
                         onChange={() => {
                           resetAssignmentDraftForTechnicianChange()
                           setAssignTechnicianOption('other')
+                          setAssignPartnerOption('')
                           setTravelRoundTripKm('')
                           setShowNearbyTechnicians(false)
                         }}
@@ -4816,6 +4932,32 @@ export function TechnicalServiceOperationCenter() {
                       </label>
                   </div>
                 </fieldset>
+
+                {selectedAssignTechnicianRecord && selectedAssignPartnerLinks.length > 0 ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Usta iş kartı partner kapsamı
+                    <select
+                      value={selectedAssignTechnicianPartnerId ?? ''}
+                      onChange={(event) => setAssignPartnerOption(event.target.value)}
+                      disabled={selectedAssignPartnerLinks.length === 1}
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    >
+                      {selectedAssignPartnerLinks.length > 1 ? <option value="">Partner seçin</option> : null}
+                      {selectedAssignPartnerLinks.map((link) => (
+                        <option key={String(link.id)} value={String(link.partner_id)}>
+                          {link.partner?.display_name || `Partner #${link.partner_id}`}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs font-normal text-slate-500">
+                      Mesajdaki canonical iş kartı bağlantısı bu açık atama kapsamından üretilir.
+                    </span>
+                  </label>
+                ) : selectedAssignTechnicianRecord ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    Bu ustanın aktif partner iş kartı bağlantısı yok. Atama kaydedilebilir; usta mesajı güvenlik nedeniyle bloklanır.
+                  </div>
+                ) : null}
 
                 {assignTechnicianOption === 'other' ? (
                   <div className="grid gap-4">
@@ -4914,6 +5056,7 @@ export function TechnicalServiceOperationCenter() {
                       <p className="mt-1 font-semibold text-slate-950">
                         {assignmentTechnicianLaborAmount !== null ? formatMoneyLabel(assignmentTechnicianLaborAmount) : 'Belirlenmedi'}
                       </p>
+                      <p className="mt-1 text-xs text-slate-500">Kaynak: {assignmentTechnicianLaborSourceLabel}</p>
                     </div>
                     <div className="rounded-xl bg-white p-3">
                       <p className="text-xs font-semibold text-slate-500">Usta yol hakedişi</p>
@@ -5048,10 +5191,8 @@ export function TechnicalServiceOperationCenter() {
                   <p className="mt-1 text-base font-semibold text-slate-950">
                     {selectedAssignTechnicianName || 'Usta seçilmedi'}
                   </p>
-                  {assignmentPartnerJobPath ? (
-                    <a className="mt-2 inline-flex text-xs font-semibold text-blue-700 underline" href={assignmentPartnerJobPath} target="_blank" rel="noreferrer">
-                      Partner iş kartı bağlantısı
-                    </a>
+                  {selectedAssignTechnicianPartnerId ? (
+                    <p className="mt-2 text-xs font-semibold text-blue-700">Canonical iş kartı kapsamı seçildi.</p>
                   ) : null}
                 </div>
 
@@ -5145,13 +5286,9 @@ export function TechnicalServiceOperationCenter() {
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Mesaj taslağı</p>
-                      <p className="mt-1 text-xs font-medium text-blue-800">Gönderim modu: sistem payload'ı hazırlanır; canlı WhatsApp gönderimi yapılmaz.</p>
+                      <p className="mt-1 text-xs font-medium text-blue-800">Atama sonrası mesaj durumu server ayarları ve kanal politikasıyla belirlenir; sonuç Kuyruk / Log ekranından izlenir.</p>
                     </div>
-                    {assignmentPartnerJobPath ? (
-                      <a className="text-xs font-semibold text-blue-700 underline" href={assignmentPartnerJobPath} target="_blank" rel="noreferrer">
-                        İş kartını aç
-                      </a>
-                    ) : null}
+                    {assignmentPartnerJobPath ? <span className="text-xs font-semibold text-blue-700">Canonical link atama sonrası server tarafından doğrulanır.</span> : null}
                   </div>
                   <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-xl border border-blue-100 bg-white p-3 text-xs leading-5 text-slate-800">
                     {assignmentFinalMessagePreview}
@@ -5529,9 +5666,9 @@ export function TechnicalServiceOperationCenter() {
                 </button>
               </DialogClose>
               <DialogHeader>
-                <DialogTitle>Talebi kapat / iptal et</DialogTitle>
+                <DialogTitle>Talebi tamamla</DialogTitle>
                 <DialogDescription>
-                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} talebinin sonucunu seçin.` : 'Seçili talep yok.'}
+                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} talebini tamamlayın.` : 'Seçili talep yok.'}
                 </DialogDescription>
                 {modalRequest?.serviceType ? (
                   <p className="text-sm leading-6 text-slate-600">
@@ -5547,39 +5684,18 @@ export function TechnicalServiceOperationCenter() {
               ) : null}
 
               <div className="grid gap-4 pt-2">
-                <fieldset className="grid gap-3">
-                  <legend className="text-sm font-medium text-slate-700">Kapanış / iptal nedeni</legend>
-                  <div className="grid gap-2">
-                    {CLOSURE_REASONS.map((reason) => (
-                      <label
-                        key={reason}
-                        className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300"
-                      >
-                        <input
-                          type="radio"
-                          name="completionReason"
-                          value={reason}
-                          checked={completionReason === reason}
-                          onChange={() => setCompletionReason(reason)}
-                          className="mr-3 h-4 w-4 accent-primary"
-                        />
-                        {reason}
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-
-                {completionReason === 'Diğer' ? (
-                  <label className="grid gap-2 text-sm font-medium text-slate-700">
-                    Açıklama
-                    <textarea
-                      value={completionOtherNote}
-                      onChange={(event) => setCompletionOtherNote(event.target.value)}
-                      className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                      placeholder="Açıklama"
-                    />
-                  </label>
-                ) : null}
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-950">
+                  {completionReason || 'Tamamlama'}
+                </div>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Kapanış notu
+                  <textarea
+                    value={completionOtherNote}
+                    onChange={(event) => setCompletionOtherNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    placeholder="Opsiyonel kapanış notu"
+                  />
+                </label>
 
                 {completionReason === 'Montaj tamamlandı' && modalRequest?.serviceType === 'Montaj' ? (
                   <div className="grid gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -5620,11 +5736,66 @@ export function TechnicalServiceOperationCenter() {
                   disabled={
                     completeLoading ||
                     !completionReason ||
-                    (completionReason === 'Diğer' && !completionOtherNote.trim()) ||
                     (completionReason === 'Montaj tamamlandı' && modalRequest?.serviceType === 'Montaj' && !installationCompletedAt)
                   }
                 >
                   {completeLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={requestCancellationDialogOpen} onOpenChange={(open) => {
+            setRequestCancellationDialogOpen(open)
+
+            if (!open) {
+              setRequestCancellationReason('')
+              setRequestCancellationNote('')
+              setRequestCancellationError(null)
+            }
+          }}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Talebi iptal et</DialogTitle>
+                <DialogDescription>
+                  {modalDisplayMrn ? `${modalDisplayMrn} için iptal nedenini kaydedin. Bu işlem kartı aksiyona kapatır.` : 'Seçili talep yok.'}
+                </DialogDescription>
+              </DialogHeader>
+              {requestCancellationError ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{requestCancellationError}</div>
+              ) : null}
+              <div className="grid gap-4">
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  İptal nedeni
+                  <select
+                    className={selectClassName}
+                    value={requestCancellationReason}
+                    onChange={(event) => setRequestCancellationReason(event.target.value)}
+                  >
+                    <option value="">Neden seçin</option>
+                    {CANCELLATION_REASONS.map((reason) => <option key={reason} value={reason}>{reason}</option>)}
+                  </select>
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Açıklama {requestCancellationReason === 'Diğer' ? '(zorunlu)' : '(opsiyonel)'}
+                  <textarea
+                    value={requestCancellationNote}
+                    onChange={(event) => setRequestCancellationNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                  />
+                </label>
+              </div>
+              <DialogFooter className="gap-2">
+                <Button type="button" variant="secondary" onClick={() => setRequestCancellationDialogOpen(false)} disabled={requestCancellationLoading}>
+                  Vazgeç
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={handleRequestCancellationSubmit}
+                  disabled={requestCancellationLoading || !requestCancellationReason || (requestCancellationReason === 'Diğer' && !requestCancellationNote.trim())}
+                >
+                  {requestCancellationLoading ? 'İptal ediliyor...' : 'İptali onayla'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -5828,6 +5999,7 @@ export function TechnicalServiceOperationCenter() {
                     onAssign={openAssignmentDialog}
                     onSchedule={() => setScheduleDialogOpen(true)}
                     onComplete={openCompleteDialog}
+                    onCancel={openRequestCancellationDialog}
                     onReopen={() => setReopenDialogOpen(true)}
                     onPriorityChange={handlePriorityChange}
                     onWorkflowAction={handleWorkflowAction}
@@ -5868,6 +6040,9 @@ export function TechnicalServiceOperationCenter() {
                     onTechnicianSelect={(technicianId) => {
                       resetAssignmentDraftForTechnicianChange()
                       setAssignTechnicianOption(technicianId)
+                      const technician = technicians.find((item) => item.id === technicianId) ?? null
+                      const links = activeTechnicianPartnerLinks(technician)
+                      setAssignPartnerOption(links.length === 1 ? String(links[0].partner_id) : '')
                       setExtraPaymentCreateError(null)
                       setTechnicianEarningMessageError(null)
                       setTravelRoundTripKm('')
@@ -5887,6 +6062,9 @@ export function TechnicalServiceOperationCenter() {
                     onPartRequestTransition={handlePartRequestTransition}
                     onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
+                    onPartnerActionReview={handlePartnerActionReview}
+                    partnerActionReviewInFlight={partnerActionReviewLoading}
+                    partnerActionReviewError={partnerActionReviewError}
                     onFieldDocumentReview={handleFieldDocumentReview}
                     onOpsExtraDocumentUpload={handleOpsExtraDocumentUpload}
                     onCustomerApprovalResend={handleCustomerApprovalResend}

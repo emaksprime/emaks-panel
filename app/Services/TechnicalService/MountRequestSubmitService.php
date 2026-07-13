@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
+use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
@@ -18,13 +19,15 @@ class MountRequestSubmitService
     public function __construct(
         private readonly TechnicalServiceGeocodingService $geocodingService,
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
+        private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
     ) {}
 
     public const MULTI_PRODUCT_OPERATION_WARNING = 'Müşteri birden fazla ürün montaj talebi iletti. Müşteri ile iletişime geçiniz.';
+
     public const CHECK_PENDING_WARNING = 'Seri / montaj kontrolü bekliyor.';
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function submit(TechnicalServiceMountSession $session, array $payload = []): TechnicalServiceRequest
     {
@@ -148,11 +151,54 @@ class MountRequestSubmitService
             'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
         ])->save();
 
+        $request->events()->create([
+            'event_type' => 'technical_service_request_created',
+            'title' => 'Teknik servis talebi oluşturuldu',
+            'note' => null,
+            'from_status' => null,
+            'to_status' => $request->workflow_status,
+            'author_user_id' => null,
+            'metadata' => [
+                'actor_user_id' => null,
+                'actor_role' => 'customer_public',
+                'source' => 'public_mount_request',
+                'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+                'request_id' => $request->id,
+                'mrn' => $request->mrn,
+                'srv' => $request->service_code,
+                'source_channel' => $request->source_channel,
+            ],
+        ]);
+
+        $this->workflowMessages->queueWorkflowDispatches(
+            $request->refresh(),
+            'new_request_created_ops',
+            'ops',
+            [
+                'actor_name' => 'Müşteri montaj formu',
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+                'product_name' => $request->product_name,
+                'address' => $request->location_formatted_address ?: $request->service_address,
+                'next_action_text' => 'Talebi inceleyin ve uygun ustayı atayın.',
+            ],
+            null,
+            null,
+            [
+                'triggered_by' => 'public_mount_request_created',
+                'event_version' => 'new-request:'.$request->id,
+                'metadata' => [
+                    'workflow_event' => 'new_request_created_ops',
+                    'source' => 'public_mount_request',
+                ],
+            ],
+        );
+
         return $request->fresh(['requestSerials', 'uploads']);
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      * @return array{latitude:?float,longitude:?float,formatted_address:?string,source:?string,accuracy:?string,note:?string,warning:?string,geocode_attempted:bool}
      */
     private function resolveLocation(array $payload): array
@@ -221,7 +267,7 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function customerAddressQuery(array $payload): ?string
     {
@@ -236,7 +282,7 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private function locationNote(array $result): string
     {
@@ -251,7 +297,7 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<string, mixed> $doorPhotos
+     * @param  array<string, mixed>  $doorPhotos
      */
     private function storeDoorPhotos(TechnicalServiceRequest $request, array $doorPhotos): void
     {
@@ -279,8 +325,8 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<int, array<string, mixed>> $invoiceRows
-     * @param array<int, string> $selectedSerials
+     * @param  array<int, array<string, mixed>>  $invoiceRows
+     * @param  array<int, string>  $selectedSerials
      */
     public function syncRequestSerials(
         TechnicalServiceRequest $request,
@@ -397,7 +443,7 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<string, mixed> $row
+     * @param  array<string, mixed>  $row
      * @return array<int, string>
      */
     private function warningLabels(array $row): array
@@ -456,7 +502,7 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return array{invoice_series:?string,invoice_number:?string,invoice_display_no:?string,dispatch_series:?string,dispatch_number:?string,dispatch_display_no:?string,order_series:?string,order_number:?string,order_display_no:?string}
      */
     private function documentContext(array $context): array
@@ -487,9 +533,9 @@ class MountRequestSubmitService
     }
 
     /**
-     * @param array<string, mixed> $context
-     * @param array<string, mixed> $decision
-     * @param array<int, string> $keys
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $decision
+     * @param  array<int, string>  $keys
      */
     private function firstText(array $context, array $decision, array $keys): ?string
     {

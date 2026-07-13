@@ -6,6 +6,7 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Support\PartnerPortalPublicUrl;
 
 class TechnicalServiceWorkflowMessageDispatchService
@@ -16,6 +17,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         private readonly TechnicalServiceMessagingSettingsService $settings,
         private readonly TechnicalServiceMessageTemplateService $templates,
         private readonly TechnicalServiceMessageChannelPlanner $channelPlanner,
+        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
     ) {}
 
     /**
@@ -35,6 +37,21 @@ class TechnicalServiceWorkflowMessageDispatchService
         $settings = $this->settings->payload();
         $global = (array) ($settings['global'] ?? []);
         $summary = $this->emptySummary($messageType, $recipientRole);
+        $jobCardContext = $recipientRole === 'technician'
+            ? $this->partnerJobScope->technicianJobCardContext($request)
+            : null;
+
+        if (is_array($jobCardContext)) {
+            $context = [
+                ...$context,
+                'job_link' => $jobCardContext['canonical_url'] ?? null,
+                'technician_job_card_url' => $jobCardContext['canonical_url'] ?? null,
+                'technician_job_card_short_url' => $jobCardContext['canonical_url'] ?? null,
+                'assignment_partner_id' => $jobCardContext['partner_id'] ?? null,
+                'assignment_technician_id' => $jobCardContext['technician_id'] ?? null,
+            ];
+            $options['requires_public_url'] = $jobCardContext['canonical_url'] ?? null;
+        }
 
         if (! (bool) ($global['messaging_enabled'] ?? false)) {
             return $this->blockedSummary($summary, 'messaging_disabled', 'Mesaj sistemi kapalı.');
@@ -108,6 +125,18 @@ class TechnicalServiceWorkflowMessageDispatchService
                 continue;
             }
 
+            if (is_array($jobCardContext) && ! (bool) ($jobCardContext['ready'] ?? false)) {
+                $summary = $this->addBlockedDispatch(
+                    $summary,
+                    $baseInput,
+                    $actor,
+                    (string) ($jobCardContext['blocker_code'] ?? 'active_assignment_partner_missing'),
+                    (string) ($jobCardContext['blocker_message'] ?? 'Aktif atamaya bağlı usta iş kartı bulunamadı.'),
+                );
+
+                continue;
+            }
+
             if ($manualE2e['blocker'] !== null) {
                 $summary = $this->addBlockedDispatch(
                     $summary,
@@ -121,8 +150,8 @@ class TechnicalServiceWorkflowMessageDispatchService
             }
 
             $publicUrl = $this->requiredPublicUrl($options, $context);
-            if ($publicUrl !== null && PartnerPortalPublicUrl::isLocalUrl($publicUrl)) {
-                $summary = $this->addBlockedDispatch($summary, $baseInput, $actor, 'public_url_missing', 'Müşteri onay linki telefondan açılabilir public URL gerektirir. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.');
+            if (! $testMode && $publicUrl !== null && PartnerPortalPublicUrl::isLocalUrl($publicUrl)) {
+                $summary = $this->addBlockedDispatch($summary, $baseInput, $actor, 'public_url_missing', 'Mesajdaki bağlantı gerçek gönderim için public URL olmalıdır. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.');
 
                 continue;
             }
@@ -419,6 +448,9 @@ class TechnicalServiceWorkflowMessageDispatchService
             'test_mode' => $testMode,
             'channel_policy' => $channelPolicy,
             'triggered_by' => (string) ($options['triggered_by'] ?? 'workflow_action'),
+            'parent_dispatch_id' => $options['parent_dispatch_id'] ?? null,
+            'force_resend' => (bool) ($options['force_resend'] ?? false),
+            'force_resend_reason' => $options['force_resend_reason'] ?? null,
             'payload' => [
                 'message_type' => $messageType,
                 'recipient_role' => $recipientRole,
@@ -506,6 +538,8 @@ class TechnicalServiceWorkflowMessageDispatchService
             $context['confirmation_link'] ?? null,
             $context['approval_url'] ?? null,
             $context['payment_link'] ?? null,
+            $context['technician_job_card_url'] ?? null,
+            $context['job_link'] ?? null,
         ] as $candidate) {
             if (is_string($candidate) && trim($candidate) !== '') {
                 return trim($candidate);

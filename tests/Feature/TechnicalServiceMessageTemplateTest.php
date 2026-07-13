@@ -1639,15 +1639,18 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->json('message_templates.templates'));
 
         foreach ($templates->where('active', true) as $template) {
-            $preview = $this->actingAs($this->admin())
+            $previewResponse = $this->actingAs($this->admin())
                 ->postJson('/api/technical-service/message-templates/preview', [
                     'message_type' => $template['message_type'],
                     'channel' => $template['channel'],
                     'provider_key' => $template['provider_key'] ?? null,
                 ])
-                ->assertOk()
-                ->assertJsonPath('preview.preview_ready', true)
-                ->json('preview');
+                ->assertOk();
+            $preview = $previewResponse->json('preview');
+            $this->assertTrue(
+                (bool) ($preview['preview_ready'] ?? false),
+                $template['template_key'].' blockers: '.json_encode($preview['blockers'] ?? [], JSON_UNESCAPED_UNICODE),
+            );
 
             $body = (string) $preview['rendered_body'];
             $this->assertStringNotContainsString('undefined', mb_strtolower($body, 'UTF-8'), $template['template_key']);

@@ -6,22 +6,25 @@ use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerOrder;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BPartnerUserProfile;
+use App\Models\TechnicalServiceAdminOverride;
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
-use App\Models\TechnicalServiceCustomerConfirmation;
-use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
-use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceAdminOverrideService;
+use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
+use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 
 class B2BPartnerPortalDataService
@@ -87,22 +90,37 @@ class B2BPartnerPortalDataService
         Collection $partners,
         ?User $user = null,
         bool $preview = false,
+        ?array $opsSupport = null,
+        ?int $serviceJobTechnicianId = null,
     ): array {
         $partner->loadMissing(['capabilities', 'profiles.user', 'activePartnerTechnicians.technician']);
+        $supportTechnicianId = is_numeric($opsSupport['technician_id'] ?? null)
+            ? (int) $opsSupport['technician_id']
+            : $serviceJobTechnicianId;
+        $serviceJobsBlocked = $view === 'service-jobs'
+            && ! $preview
+            && $opsSupport === null
+            && $supportTechnicianId === null;
+        $opsSupportEnabled = $opsSupport !== null;
+        $serviceJobs = $serviceJobsBlocked ? [] : $this->serviceJobsFor($partner, $supportTechnicianId, $opsSupportEnabled);
+        $serviceJobBoard = $serviceJobsBlocked
+            ? ['columns' => [], 'total' => 0]
+            : $this->serviceJobBoardFor($partner, $supportTechnicianId, $opsSupportEnabled);
 
         return [
             'view' => $view,
             'allowed' => $allowed,
             'deniedMessage' => $allowed ? null : $deniedMessage,
             'preview' => $preview,
+            'opsSupport' => $opsSupport,
             'partners' => $partners->map(fn (B2BPartner $item): array => $this->safePartnerSummary($item))->values()->all(),
             'selectedPartner' => $this->safePartnerSummary($partner),
             'navigation' => $this->navigationFor($partner, $user),
             'stats' => $this->statsFor($partner),
             'orders' => $this->ordersFor($partner),
             'products' => $this->safeProductCatalog(),
-            'serviceJobs' => $this->serviceJobsFor($partner),
-            'serviceJobBoard' => $this->serviceJobBoardFor($partner),
+            'serviceJobs' => $serviceJobs,
+            'serviceJobBoard' => $serviceJobBoard,
             'earnings' => $this->earningsFor($partner),
             'settings' => $this->settingsFor($partner),
             'messages' => [
@@ -239,10 +257,12 @@ class B2BPartnerPortalDataService
     /**
      * @return array<int, array<string, mixed>>
      */
-    public function serviceJobsFor(B2BPartner $partner): array
+    public function serviceJobsFor(B2BPartner $partner, ?int $technicianId = null, bool $opsSupport = false): array
     {
-        $activeJobs = $this->serviceJobScope
-            ->serviceJobsQuery($partner)
+        $activeQuery = $technicianId !== null
+            ? $this->serviceJobScope->serviceJobsQueryForTechnician($partner, $technicianId)
+            : $this->serviceJobScope->serviceJobsQuery($partner);
+        $activeJobs = $activeQuery
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
                 'partRequests' => fn ($query) => $query->latest(),
@@ -250,12 +270,16 @@ class B2BPartnerPortalDataService
             ])
             ->latest('updated_at')
             ->limit(50)
-            ->get()
+            ->get();
+        $activeJobs = $this->serviceJobScope
+            ->filterForAssignmentPartner($activeJobs, $partner)
             ->reject(fn (TechnicalServiceRequest $request): bool => $this->serviceJobScope->shouldHideActiveParentWithChild($request))
             ->values();
         $activeJobIds = $activeJobs->pluck('id')->map(fn (mixed $id): int => (int) $id)->all();
-        $completedHistoryJobs = $this->serviceJobScope
-            ->completedHistoryJobsQuery($partner)
+        $completedQuery = $technicianId !== null
+            ? $this->serviceJobScope->completedHistoryJobsQueryForTechnician($partner, $technicianId)
+            : $this->serviceJobScope->completedHistoryJobsQuery($partner);
+        $completedHistoryJobs = $completedQuery
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
                 'partRequests' => fn ($query) => $query->latest(),
@@ -265,14 +289,21 @@ class B2BPartnerPortalDataService
             ->latest('completed_at')
             ->latest('updated_at')
             ->limit(50)
-            ->get()
+            ->get();
+        $completedHistoryJobs = $this->serviceJobScope
+            ->filterForAssignmentPartner($completedHistoryJobs, $partner)
             ->filter(fn (TechnicalServiceRequest $request): bool => $this->serviceJobScope->isCompletedHistoryJob($request))
             ->values();
 
         return $activeJobs
             ->concat($completedHistoryJobs)
             ->unique('id')
-            ->map(fn (TechnicalServiceRequest $request): array => $this->safeServiceJobSummary($request, $partner))
+            ->map(fn (TechnicalServiceRequest $request): array => $this->safeServiceJobSummary(
+                $request,
+                $partner,
+                $opsSupport,
+                $technicianId,
+            ))
             ->values()
             ->all();
     }
@@ -280,9 +311,9 @@ class B2BPartnerPortalDataService
     /**
      * @return array<string, mixed>
      */
-    public function serviceJobBoardFor(B2BPartner $partner): array
+    public function serviceJobBoardFor(B2BPartner $partner, ?int $technicianId = null, bool $opsSupport = false): array
     {
-        $jobs = collect($this->serviceJobsFor($partner));
+        $jobs = collect($this->serviceJobsFor($partner, $technicianId, $opsSupport));
         $columns = collect([
             ['key' => 'new_jobs', 'label' => 'Yeni işler', 'tone' => 'blue'],
             ['key' => 'appointment_confirmed', 'label' => 'Randevu onaylandı', 'tone' => 'green'],
@@ -313,8 +344,12 @@ class B2BPartnerPortalDataService
     /**
      * @return array<string, mixed>
      */
-    public function safeServiceJobSummary(TechnicalServiceRequest $request, ?B2BPartner $viewerPartner = null): array
-    {
+    public function safeServiceJobSummary(
+        TechnicalServiceRequest $request,
+        ?B2BPartner $viewerPartner = null,
+        bool $opsSupport = false,
+        ?int $viewerTechnicianId = null,
+    ): array {
         $request->load('uploads');
         $request->loadMissing([
             'partnerJobActions' => fn ($query) => $query->latest(),
@@ -371,7 +406,7 @@ class B2BPartnerPortalDataService
             ->first(fn (TechnicalServiceCustomerConfirmation $confirmation): bool => ! $this->recordPredatesActiveReopen($request, $confirmation->created_at ?? $confirmation->updated_at));
         $customerClosureStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $request->customer_closure_approval_status);
         $customerClosureApprovalIsCurrent = $request->reopened_at === null
-            || ($request->customer_closure_approved_at instanceof \Carbon\CarbonInterface
+            || ($request->customer_closure_approved_at instanceof CarbonInterface
                 && $request->customer_closure_approved_at->greaterThan($request->reopened_at));
         $customerConfirmationReady = $latestCustomerConfirmation instanceof TechnicalServiceCustomerConfirmation
             ? $latestCustomerConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_APPROVED
@@ -586,18 +621,36 @@ class B2BPartnerPortalDataService
                 'general' => in_array('warranty_document_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
             ],
             'photos' => $currentPortalPhotos
-                ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload($request, $upload))
+                ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload(
+                    $request,
+                    $upload,
+                    $viewerPartner,
+                    $opsSupport,
+                    $viewerTechnicianId,
+                ))
                 ->values()
                 ->all(),
             'current_field_documents' => $isCompletedHistoryView ? $this->emptyPortalFieldDocuments() : collect(self::requiredPortalPhotoFields())
                 ->mapWithKeys(fn (string $label, string $field): array => [
                     $field => $currentPortalPhotoMap->has($field)
-                        ? $this->portalPhotoPayload($request, $currentPortalPhotoMap->get($field))
+                        ? $this->portalPhotoPayload(
+                            $request,
+                            $currentPortalPhotoMap->get($field),
+                            $viewerPartner,
+                            $opsSupport,
+                            $viewerTechnicianId,
+                        )
                         : null,
                 ])
                 ->all(),
             'previous_photos' => $previousPortalPhotos
-                ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload($request, $upload))
+                ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload(
+                    $request,
+                    $upload,
+                    $viewerPartner,
+                    $opsSupport,
+                    $viewerTechnicianId,
+                ))
                 ->values()
                 ->all(),
             'latest_partner_action' => $latestAction ? [
@@ -733,7 +786,7 @@ class B2BPartnerPortalDataService
             'can_request_price_revision' => $shouldShowCurrentActions && ! $isTerminal && ! $isRejectedInReview && $assignmentOffer !== null,
             'can_request_correction' => $shouldShowCurrentActions && ! $isTerminal,
             'correction_requests' => collect(app(TechnicalServiceAdminOverrideService::class)->serializeForRequest($request))
-                ->filter(fn (array $override): bool => ($override['source'] ?? null) === \App\Models\TechnicalServiceAdminOverride::SOURCE_PARTNER_REQUEST)
+                ->filter(fn (array $override): bool => ($override['source'] ?? null) === TechnicalServiceAdminOverride::SOURCE_PARTNER_REQUEST)
                 ->take(6)
                 ->values()
                 ->all(),
@@ -953,7 +1006,8 @@ class B2BPartnerPortalDataService
             ->orderByDesc('updated_at')
             ->limit(24)
             ->get()
-            ->map(fn (TechnicalServiceEarning $earning): array => $this->persistedEarningRow($earning))
+            ->map(fn (TechnicalServiceEarning $earning): array => $this->persistedEarningRow($earning, $partner))
+            ->filter(fn (array $row): bool => ($row['items'] ?? []) !== [])
             ->values();
         $earningRequestIds = $rows
             ->flatMap(fn (array $row): array => collect($row['items'] ?? [])->pluck('technical_service_request_id')->filter()->all())
@@ -1028,7 +1082,7 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @param array<int, int> $excludedRequestIds
+     * @param  array<int, int>  $excludedRequestIds
      * @return Collection<int, array<string, mixed>>
      */
     private function partnerCanonicalEarningRows(B2BPartner $partner, array $excludedRequestIds = []): Collection
@@ -1039,6 +1093,7 @@ class B2BPartnerPortalDataService
             ->latest('updated_at')
             ->limit(100)
             ->get();
+        $activeRows = $this->serviceJobScope->filterForAssignmentPartner($activeRows, $partner);
 
         $completedRows = $this->serviceJobScope
             ->completedHistoryJobsQuery($partner)
@@ -1054,6 +1109,7 @@ class B2BPartnerPortalDataService
             ->limit(100)
             ->get()
             ->filter(fn (TechnicalServiceRequest $request): bool => $this->serviceJobScope->isCompletedHistoryJob($request));
+        $completedRows = $this->serviceJobScope->filterForAssignmentPartner($completedRows, $partner);
 
         return $activeRows
             ->concat($completedRows)
@@ -1130,7 +1186,7 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @param array<string, mixed> $row
+     * @param  array<string, mixed>  $row
      * @return array<string, mixed>
      */
     private function completedEarningRowFromCanonical(array $row): array
@@ -1172,7 +1228,7 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @param array<string, mixed> $summary
+     * @param  array<string, mixed>  $summary
      */
     private function partnerEarningBucket(TechnicalServiceRequest $request, array $summary): string
     {
@@ -1257,9 +1313,9 @@ class B2BPartnerPortalDataService
     /**
      * @return array<string, mixed>
      */
-    private function persistedEarningRow(TechnicalServiceEarning $earning): array
+    private function persistedEarningRow(TechnicalServiceEarning $earning, B2BPartner $partner): array
     {
-        $items = $this->persistedEarningItems($earning);
+        $items = $this->persistedEarningItems($earning, $partner);
 
         return [
             'id' => $earning->id,
@@ -1284,12 +1340,18 @@ class B2BPartnerPortalDataService
     /**
      * @return Collection<int, array<string, mixed>>
      */
-    private function persistedEarningItems(TechnicalServiceEarning $earning): Collection
+    private function persistedEarningItems(TechnicalServiceEarning $earning, B2BPartner $partner): Collection
     {
         $seenGroups = [];
         $items = collect();
 
         foreach ($earning->items as $item) {
+            if (! $item->request instanceof TechnicalServiceRequest
+                || ! $this->serviceJobScope->requestBelongsToPartner($item->request, $partner)
+            ) {
+                continue;
+            }
+
             $groupKey = $this->persistedEarningGroupKey($item);
 
             if ($groupKey !== null && isset($seenGroups[$groupKey])) {
@@ -1684,8 +1746,8 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @param array<string, mixed>|null $completedSnapshot
-     * @param array<string, mixed>|null $earningPayload
+     * @param  array<string, mixed>|null  $completedSnapshot
+     * @param  array<string, mixed>|null  $earningPayload
      * @return array{technician_id:mixed,technician_name:string|null,source:string}
      */
     private function earningTechnicianPayload(
@@ -2054,7 +2116,7 @@ class B2BPartnerPortalDataService
         $revisedAt = $offer->updated_at;
         if (isset($metadata['revised_at'])) {
             try {
-                $revisedAt = \Carbon\CarbonImmutable::parse((string) $metadata['revised_at']);
+                $revisedAt = CarbonImmutable::parse((string) $metadata['revised_at']);
             } catch (\Throwable) {
                 $revisedAt = $offer->updated_at;
             }
@@ -2063,8 +2125,8 @@ class B2BPartnerPortalDataService
         $actionAt = $action->created_at ?? $action->updated_at;
 
         return $offer->status === TechnicalServiceAssignmentOffer::STATUS_REVISED
-            && $revisedAt instanceof \Carbon\CarbonInterface
-            && $actionAt instanceof \Carbon\CarbonInterface
+            && $revisedAt instanceof CarbonInterface
+            && $actionAt instanceof CarbonInterface
             && $revisedAt->greaterThanOrEqualTo($actionAt);
     }
 
@@ -2076,25 +2138,25 @@ class B2BPartnerPortalDataService
 
         $actionAt = $action->created_at ?? $action->updated_at;
 
-        return $actionAt instanceof \Carbon\CarbonInterface
+        return $actionAt instanceof CarbonInterface
             && $actionAt->lessThan($request->reopened_at);
     }
 
     private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
     {
-        return $request->reopened_at instanceof \Carbon\CarbonInterface
-            && $recordAt instanceof \Carbon\CarbonInterface
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThan($request->reopened_at);
     }
 
     private function portalDocumentPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
     {
-        return $request->reopened_at instanceof \Carbon\CarbonInterface
-            && $recordAt instanceof \Carbon\CarbonInterface
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThanOrEqualTo($request->reopened_at);
     }
 
-    private function latestVisiblePartnerAction(TechnicalServiceRequest $request, \Illuminate\Support\Collection $partnerActions): ?TechnicalServicePartnerJobAction
+    private function latestVisiblePartnerAction(TechnicalServiceRequest $request, Collection $partnerActions): ?TechnicalServicePartnerJobAction
     {
         return $partnerActions->first(function (TechnicalServicePartnerJobAction $action) use ($request): bool {
             if ($this->actionResolvedForCurrentWork($request, $action)) {
@@ -2483,17 +2545,35 @@ class B2BPartnerPortalDataService
     /**
      * @return array<string, mixed>
      */
-    private function portalPhotoPayload(TechnicalServiceRequest $request, TechnicalServiceRequestUpload $upload): array
-    {
+    private function portalPhotoPayload(
+        TechnicalServiceRequest $request,
+        TechnicalServiceRequestUpload $upload,
+        ?B2BPartner $viewerPartner = null,
+        bool $opsSupport = false,
+        ?int $viewerTechnicianId = null,
+    ): array {
+        $routeName = $opsSupport
+            ? 'api.technical-service.ops-support.service-jobs.uploads.show'
+            : 'api.partner.service-jobs.uploads.show';
+        $routeParameters = [
+            'technicalServiceRequest' => $request->id,
+            'upload' => $upload->id,
+        ];
+
+        if ($opsSupport) {
+            $routeParameters['partner_id'] = $viewerPartner?->id;
+            $routeParameters['technician_id'] = $viewerTechnicianId;
+        }
+
         return [
             'id' => $upload->id,
             'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
             'category' => $upload->category,
             'field_code' => $upload->field_code,
-            'preview_url' => route('api.technical-service.requests.uploads.show', [
-                'technicalServiceRequest' => $request->id,
-                'upload' => $upload->id,
-            ], false),
+            'preview_url' => route($routeName, array_filter(
+                $routeParameters,
+                static fn (mixed $value): bool => $value !== null,
+            ), false),
             'review_status' => $upload->review_status,
             'review_note' => $upload->review_note,
             'created_at' => $upload->created_at?->toIso8601String(),
@@ -2544,12 +2624,12 @@ class B2BPartnerPortalDataService
 
         if ($latestAction?->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
             && in_array($latestAction->action, [
-            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
-            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
-            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
-            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
-            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
-            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+                TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
             ], true)) {
             return 'ops_review';
         }
@@ -2671,7 +2751,6 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @param  mixed  $accounts
      * @return array<int, array<string, string|null>>
      */
     private function safeChildAccounts(mixed $accounts): array

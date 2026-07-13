@@ -19,6 +19,7 @@ class AssignTechnicalServiceRequest extends FormRequest
     {
         return [
             'technical_service_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
+            'b2b_partner_id' => ['nullable', 'integer', 'exists:b2b_partners,id'],
             'technician_name' => ['required_without:technical_service_technician_id', 'nullable', 'string', 'max:255'],
             'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
             'travel_round_trip_km' => ['required_without:route_quote_id', 'nullable', 'numeric', 'min:0'],

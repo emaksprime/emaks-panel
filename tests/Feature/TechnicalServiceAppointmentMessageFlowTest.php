@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMessageTemplate;
@@ -381,12 +383,14 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         app(TechnicalServiceMessagingSettingsService::class)->update([
             'test_mode_enabled' => false,
         ]);
+        config()->set('services.partner_portal.public_url', 'https://portal.example.test');
         $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
         $technician = $this->technician([
             'name' => 'Test Usta',
             'phone' => '0546 764 74 28',
             'phone_e164' => '905467647428',
         ]);
+        $this->linkTechnicianToPartner($technician);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-REL4E12-ASSIGN',
             'technical_service_technician_id' => null,
@@ -451,6 +455,12 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringContainsString('İşçilik/Montaj: 900,00 TL', $whatsappBody);
         $this->assertStringContainsString('Yol: 350,00 TL', $whatsappBody);
         $this->assertStringContainsString('Toplam: 1.250,00 TL', $whatsappBody);
+        $smsBody = (string) ($dispatches->firstWhere('channel', 'sms')?->request_payload['body'] ?? '');
+        $this->assertStringContainsString('Yeni iş teklifi', $smsBody);
+        $this->assertStringContainsString('REL4E12 Test Ürün', $smsBody);
+        $this->assertStringContainsString('REL4E12 test adresi', $smsBody);
+        $this->assertStringContainsString('1.250 TL', $smsBody);
+        $this->assertMatchesRegularExpression('/\nhttps:\/\/portal\.example\.test\/partner\/service-jobs\?[^\n]*job_id='.$request->id.'\n/', $smsBody);
         Http::assertNothingSent();
     }
 
@@ -569,6 +579,121 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_stale_blocked_payment_link_dispatch_does_not_turn_first_send_into_resend(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E16-STALE-PAYMENT',
+            'customer_phone' => '05372081633',
+        ]);
+        $session = $this->mountSession('REL4E16-STALE-PAYMENT');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e16-stale',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 450,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/mount/rel4e16-stale',
+            'raw_payload' => ['source' => 'rel4e16_stale_payment_test'],
+        ]);
+        TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'payment_link_customer',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'message_type' => 'payment_link_customer',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'customer',
+            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'last_error_code' => 'public_url_missing',
+            'metadata' => ['payment_id' => $payment->id],
+        ]);
+
+        $this->actingAs($actor)
+            ->getJson("/api/technical-service/requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('request.sale_and_payment.mount_payments.latest.message_send_count', 0);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2);
+
+        $newDispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_QUEUED)
+            ->get();
+        $this->assertCount(2, $newDispatches);
+        $this->assertTrue($newDispatches->every(fn (TechnicalServiceMessageDispatch $dispatch): bool => $dispatch->parent_dispatch_id === null && $dispatch->force_resend_reason === null
+        ));
+        Http::assertNothingSent();
+    }
+
+    public function test_legacy_sent_part_fee_dispatch_is_presented_as_resend_before_submit(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E16-LEGACY-PART-SEND',
+            'service_code' => 'SRV-REL4E16-LEGACY-PART-SEND',
+            'service_type' => 'Servis',
+            'customer_phone' => '05372081633',
+        ]);
+        $session = $this->mountSession('REL4E16-LEGACY-PART-SEND');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e16-legacy-part',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 700,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/service/rel4e16-legacy-part',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'part_payment',
+                'charge_type' => 'part_payment',
+                'part_request_id' => 987,
+            ],
+        ]);
+        $sentAt = now()->subMinute()->startOfSecond();
+        TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'part_fee_payment_link_customer',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'message_type' => 'part_fee_payment_link_customer',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'customer',
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
+            'sent_at' => $sentAt,
+            'provider_message_id' => 'legacy-part-message-id',
+            'metadata' => ['payment_id' => $payment->id],
+        ]);
+
+        $response = $this->actingAs($actor)
+            ->getJson("/api/technical-service/requests/{$request->id}")
+            ->assertOk();
+
+        $this->assertSame(1, $response->json('request.sale_and_payment.customer_charges.latest.message_send_count'));
+        $this->assertNotNull($response->json('request.sale_and_payment.customer_charges.latest.last_message_sent_at'));
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['resend_reason']);
+
+        Http::assertNothingSent();
+    }
+
     public function test_part_fee_payment_link_send_uses_part_fee_type_and_duplicate_guard(): void
     {
         Http::fake();
@@ -632,9 +757,25 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
         $this->actingAs($actor)
             ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['resend_reason']);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", [
+                'resend_reason' => 'Müşteri açıkça yeniden gönderim istedi.',
+            ])
             ->assertOk()
-            ->assertJsonPath('dispatches.queued', 0)
-            ->assertJsonPath('dispatches.duplicate_blocked', 2);
+            ->assertJsonPath('dispatches.queued', 2)
+            ->assertJsonPath('dispatches.duplicate_blocked', 0);
+
+        $resends = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'part_fee_payment_link_customer')
+            ->whereNotNull('parent_dispatch_id')
+            ->get();
+        $this->assertCount(2, $resends);
+        $this->assertTrue($resends->every(fn (TechnicalServiceMessageDispatch $dispatch): bool => $dispatch->force_resend_reason === 'Müşteri açıkça yeniden gönderim istedi.'
+        ));
 
         Http::assertNothingSent();
     }
@@ -710,6 +851,9 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->configureMessaging([
             'customer_approval_request' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'test_mode_enabled' => false,
+        ]);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-REL4E10-APPROVAL',
             'customer_phone' => '05372081633',
@@ -743,7 +887,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
     }
 
-    public function test_part_request_creates_ops_whatsapp_and_part_fee_customer_dispatches(): void
+    public function test_part_request_creates_ops_dispatch_without_automatically_sending_part_fee_link(): void
     {
         Http::fake();
         $actor = $this->admin();
@@ -788,13 +932,13 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'channel' => 'whatsapp',
             'recipient_role' => 'ops',
         ]);
-        $this->assertDatabaseHas('technical_service_message_dispatches', [
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
             'technical_service_request_id' => $request->id,
             'message_type' => 'part_fee_payment_link_customer',
             'channel' => 'whatsapp',
             'recipient_role' => 'customer',
         ]);
-        $this->assertDatabaseHas('technical_service_message_dispatches', [
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
             'technical_service_request_id' => $request->id,
             'message_type' => 'part_fee_payment_link_customer',
             'channel' => 'sms',
@@ -868,7 +1012,9 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $compactDetailSource = preg_replace('/\s+/', '', $detailSource) ?? $detailSource;
 
         $this->assertStringContainsString('Linki müşteriye gönder', $detailSource);
-        $this->assertStringContainsString('onMountPaymentSend(payment.id)', $detailSource);
+        $this->assertStringContainsString('onMountPaymentSend(payment.id, { resend_reason: resendReason })', $detailSource);
+        $this->assertStringContainsString('placeholder="Yeniden gönderim nedeni"', $detailSource);
+        $this->assertStringContainsString('Ödeme linkini neden kaydıyla yeniden gönder', $detailSource);
         $this->assertStringContainsString('/payments/${paymentId}/send-link', $pageSource);
         $this->assertStringContainsString('step="1"', $detailSource);
         $this->assertStringContainsString('inputMode="decimal"', $detailSource);
@@ -1044,6 +1190,209 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
     }
 
+    public function test_schedule_update_endpoint_preserves_approved_state_dispatches_four_messages_and_ignores_unchanged_repeat(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'appointment_updated_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            'appointment_updated_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $technician = $this->technician([
+            'name' => 'Randevu Güncelleme Ustası',
+            'phone' => '0546 764 74 28',
+            'phone_e164' => '905467647428',
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E16-SCHEDULE',
+            'customer_phone' => '05372081633',
+            'technical_service_technician_id' => $technician->id,
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now()->subHour(),
+            'scheduled_date' => '2026-07-08',
+            'scheduled_time' => '10:00',
+            'requires_reschedule' => true,
+            'reschedule_reason' => 'Önceki operasyon notu korunmalı.',
+        ]);
+        $payload = [
+            'scheduled_date' => '2026-07-09',
+            'scheduled_time' => '14:30',
+            'scheduled_time_end' => '16:00',
+            'note' => 'Müşteri ve usta ile teyit edildi.',
+        ];
+
+        $response = $this->actingAs($actor)
+            ->patchJson("/api/technical-service/requests/{$request->id}/schedule", $payload);
+        $response
+            ->assertOk()
+            ->assertJsonPath('schedule_changed', true)
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('request.requires_reschedule', true)
+            ->assertJsonPath('request.reschedule_reason', 'Önceki operasyon notu korunmalı.');
+        $this->assertSame(
+            4,
+            $response->json('message_dispatches.queued'),
+            json_encode($response->json('message_dispatches'), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+        );
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['appointment_updated_customer', 'appointment_updated_technician'])
+            ->get();
+        $this->assertCount(4, $dispatches);
+        $this->assertEqualsCanonicalizing(
+            ['appointment_updated_customer:sms', 'appointment_updated_customer:whatsapp', 'appointment_updated_technician:sms', 'appointment_updated_technician:whatsapp'],
+            $dispatches->map(fn (TechnicalServiceMessageDispatch $dispatch): string => $dispatch->message_type.':'.$dispatch->channel)->all(),
+        );
+        $customerBodies = $dispatches->where('message_type', 'appointment_updated_customer')->map->bodyForProvider()->implode("\n");
+        $technicianBodies = $dispatches->where('message_type', 'appointment_updated_technician')->map->bodyForProvider()->implode("\n");
+        $this->assertStringContainsString('13:00 - 19:00 arası', $customerBodies);
+        $this->assertStringContainsString('14:30 - 16:00', $technicianBodies);
+
+        $event = $request->events()->where('event_type', 'schedule_updated')->latest('id')->firstOrFail();
+        $this->assertSame($actor->id, $event->author_user_id);
+        $this->assertSame($actor->id, data_get($event->metadata, 'actor_user_id'));
+        $this->assertSame('technical_service_admin', data_get($event->metadata, 'source'));
+        $this->assertSame('2026-07-08', data_get($event->metadata, 'previous_schedule.scheduled_date'));
+        $this->assertSame('10:00', data_get($event->metadata, 'previous_schedule.scheduled_time'));
+        $this->assertSame('2026-07-09', data_get($event->metadata, 'new_schedule.scheduled_date'));
+        $this->assertSame('14:30', data_get($event->metadata, 'new_schedule.scheduled_time'));
+
+        $this->actingAs($actor)
+            ->patchJson("/api/technical-service/requests/{$request->id}/schedule", $payload)
+            ->assertOk()
+            ->assertJsonPath('schedule_changed', false)
+            ->assertJsonPath('message_dispatches', null);
+        $this->assertSame(4, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['appointment_updated_customer', 'appointment_updated_technician'])
+            ->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_new_request_creation_queues_ops_whatsapp_only_with_real_actor_and_no_duplicate(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'new_request_created_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+        ]);
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '905467647428',
+        ]);
+
+        $response = $this->actingAs($actor)
+            ->postJson('/api/technical-service/requests', [
+                'customer_name' => 'REL4E16 Yeni Talep Müşteri',
+                'customer_phone' => '05372081633',
+                'customer_city' => 'İstanbul',
+                'customer_district' => 'Kadıköy',
+                'service_address' => 'Test Mah. Yeni Talep Sok. No:1',
+                'product_name' => 'REL4E16 Test Kilit',
+                'service_type' => 'Montaj',
+                'description' => 'Yeni talep OPS bildirim testi.',
+                'source_channel' => 'panel',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('message_dispatches.queued', 1)
+            ->assertJsonPath('message_dispatches.blocked', 0);
+
+        $requestId = (int) $response->json('request.id');
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $requestId)
+            ->where('message_type', 'new_request_created_ops')
+            ->firstOrFail();
+        $this->assertSame('whatsapp', $dispatch->channel);
+        $this->assertSame('ops', $dispatch->recipient_role);
+        $this->assertStringContainsString('REL4E16 Yeni Talep Müşteri', $dispatch->bodyForProvider());
+        $this->assertStringContainsString('REL4E16 Test Kilit', $dispatch->bodyForProvider());
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $requestId)
+            ->where('message_type', 'new_request_created_ops')
+            ->where('channel', 'sms')
+            ->count());
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $requestId)
+            ->where('message_type', 'new_request_created_ops')
+            ->count());
+
+        $event = TechnicalServiceRequest::query()->findOrFail($requestId)->events()->where('event_type', 'created')->firstOrFail();
+        $this->assertSame($actor->id, $event->author_user_id);
+        $this->assertSame($actor->id, data_get($event->metadata, 'actor_user_id'));
+        $this->assertSame('technical_service_admin', data_get($event->metadata, 'source'));
+        Http::assertNothingSent();
+    }
+
+    public function test_cancellation_is_atomic_requires_reason_queues_both_roles_and_repeat_is_noop(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'appointment_cancelled_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            'appointment_cancelled_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $technician = $this->technician([
+            'name' => 'İptal Test Ustası',
+            'phone' => '0546 764 74 28',
+            'phone_e164' => '905467647428',
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E16-CANCEL',
+            'customer_phone' => '05372081633',
+            'technical_service_technician_id' => $technician->id,
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'scheduled_date' => '2026-07-09',
+            'scheduled_time' => '14:30',
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/status", ['status' => 'İptal'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['note']);
+
+        $response = $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'İptal',
+                'note' => 'Müşteri randevunun iptalini istedi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.status', 'İptal')
+            ->assertJsonPath('request.workflow_status', 'İptal');
+
+        $this->assertFalse((bool) $response->json('duplicate_noop'));
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['appointment_cancelled_customer', 'appointment_cancelled_technician'])
+            ->get();
+        $this->assertCount(4, $dispatches);
+        $this->assertTrue($dispatches->every(fn (TechnicalServiceMessageDispatch $dispatch): bool => str_contains($dispatch->bodyForProvider(), 'Müşteri randevunun iptalini istedi.')
+        ));
+        $request->refresh();
+        $this->assertNotNull($request->cancelled_at);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'cancellation_confirmed',
+            'author_user_id' => $actor->id,
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'İptal',
+                'note' => 'Aynı iptal tekrar gönderilmemeli.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('duplicate_noop', true);
+        $this->assertSame(4, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['appointment_cancelled_customer', 'appointment_cancelled_technician'])
+            ->count());
+        Http::assertNothingSent();
+    }
+
     public function test_missing_technician_exact_time_blocks_technician_dispatch(): void
     {
         $this->configureMessaging([
@@ -1176,7 +1525,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $technician = $this->technician()->id;
         }
 
-        return TechnicalServiceRequest::query()->create([
+        $request = TechnicalServiceRequest::query()->create([
             'mrn' => 'MRN-REL4E-'.Str::upper(Str::random(6)),
             'customer_name' => 'REL4E Müşteri',
             'customer_phone' => '+905559998877',
@@ -1192,6 +1541,45 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'scheduled_time' => '14:00',
             'source_channel' => 'panel',
             ...$overrides,
+        ]);
+
+        if (is_numeric($technician)) {
+            $this->linkTechnicianToPartner(
+                TechnicalServiceTechnician::query()->findOrFail((int) $technician),
+            );
+        }
+
+        return $request;
+    }
+
+    private function linkTechnicianToPartner(TechnicalServiceTechnician $technician): B2BPartnerTechnician
+    {
+        $existing = B2BPartnerTechnician::query()
+            ->where('technical_service_technician_id', $technician->id)
+            ->where('active', true)
+            ->first();
+        if ($existing instanceof B2BPartnerTechnician) {
+            return $existing;
+        }
+
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REL4E-LINK-'.Str::upper(Str::random(5)),
+            'display_name' => $technician->name.' Partner',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+
+        return B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'is_primary' => true,
+            'active' => true,
         ]);
     }
 

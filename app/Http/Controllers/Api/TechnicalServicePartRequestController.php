@@ -46,9 +46,6 @@ class TechnicalServicePartRequestController extends Controller
         $messageDispatches = [
             'part_request_ops' => $this->queuePartRequestOps($technicalServiceRequest->refresh(), $updated, $request, 'ops_part_request_created'),
         ];
-        if (! empty($partRequestPayload['payment_url'])) {
-            $messageDispatches['part_fee_payment_link_customer'] = $this->queuePartFeePaymentLink($technicalServiceRequest->refresh(), $updated, $partRequestPayload, $request, 'ops_part_fee_payment_link_created');
-        }
 
         return response()->json([
             'ok' => true,
@@ -91,9 +88,6 @@ class TechnicalServicePartRequestController extends Controller
         $partRequestPayload = $this->partRequests->serialize($updated);
         $requestPayload = $this->workflow->serialize($technicalServiceRequest->refresh(), true);
         $messageDispatches = [];
-        if (! empty($partRequestPayload['payment_url'])) {
-            $messageDispatches['part_fee_payment_link_customer'] = $this->queuePartFeePaymentLink($technicalServiceRequest->refresh(), $updated, $partRequestPayload, $request, 'ops_part_fee_payment_link_updated');
-        }
 
         return response()->json([
             'ok' => true,
@@ -159,50 +153,6 @@ class TechnicalServicePartRequestController extends Controller
                 'metadata' => [
                     'part_request_id' => $partRequest->id,
                     'workflow_event' => 'part_request',
-                ],
-            ],
-        );
-    }
-
-    /**
-     * @param  array<string, mixed>  $partRequestPayload
-     * @return array<string, mixed>
-     */
-    private function queuePartFeePaymentLink(
-        TechnicalServiceRequest $technicalServiceRequest,
-        TechnicalServicePartRequest $partRequest,
-        array $partRequestPayload,
-        Request $request,
-        string $triggeredBy,
-    ): array {
-        $paymentUrl = trim((string) ($partRequestPayload['payment_url'] ?? ''));
-        $amount = round((float) ($partRequestPayload['total_amount'] ?? 0), 2);
-        $amountLabel = $partRequestPayload['total_amount_label'] ?? number_format($amount, 2, ',', '.').' TL';
-
-        return $this->workflowMessages->queueWorkflowDispatches(
-            $technicalServiceRequest,
-            'part_fee_payment_link_customer',
-            'customer',
-            [
-                'part_name' => $partRequest->part_name,
-                'part_reason' => $partRequest->reason ?: $partRequest->technician_note ?: 'Parça talebi',
-                'payment_link' => $paymentUrl,
-                'payment_link_sms' => $paymentUrl,
-                'payment_amount_formatted' => $amountLabel,
-                'customer_payment_amount' => $amount,
-                'customer_payment_amount_formatted' => $amountLabel,
-            ],
-            $request->user(),
-            null,
-            [
-                'recipient_phone' => $technicalServiceRequest->customer_phone,
-                'triggered_by' => $triggeredBy,
-                'event_version' => 'part-fee-link:'.$partRequest->id.':'.hash('sha256', $paymentUrl),
-                'requires_public_url' => $paymentUrl,
-                'metadata' => [
-                    'part_request_id' => $partRequest->id,
-                    'payment_id' => $partRequestPayload['payment_id'] ?? null,
-                    'workflow_event' => 'part_fee_payment_link',
                 ],
             ],
         );

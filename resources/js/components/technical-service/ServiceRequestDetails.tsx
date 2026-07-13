@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, Pencil, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Eye, Pencil, Wrench, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { ReactNode, Ref } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
-import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
+import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
 type OpsDoorPhotoType = 'ops_door_front_photo' | 'ops_door_side_photo' | 'ops_door_back_photo' | 'ops_door_photo'
 type OpsExtraDocumentType = 'ops_extra_photo' | OpsDoorPhotoType | 'ops_additional_document'
@@ -18,6 +18,8 @@ type PaymentLinkSendTarget = {
   payment_url?: string | null
   copy_url?: string | null
   amount?: number | null
+  message_send_count?: number | null
+  last_message_sent_at?: string | null
 }
 
 const OPS_DOOR_PHOTO_FIELD_CODES = new Set<string>([
@@ -69,6 +71,7 @@ type ServiceRequestDetailsProps = {
   onAssign?: () => void
   onSchedule?: () => void
   onComplete?: () => void
+  onCancel?: () => void
   onReopen?: () => void
   onPriorityChange?: (priority: ServicePriority) => void | Promise<void>
   onWorkflowAction?: (action: string) => void
@@ -113,6 +116,7 @@ type ServiceRequestDetailsProps = {
     scheduledCount: number
     availableSlots: string[]
     technicianAmountLabel: string
+    technicianAmountSourceLabel: string
     travelAmountLabel: string
     totalCostLabel: string
     costDeltaLabel: string
@@ -147,7 +151,7 @@ type ServiceRequestDetailsProps = {
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
-  onMountPaymentSend?: (paymentId: number | string) => void | Promise<void>
+  onMountPaymentSend?: (paymentId: number | string, payload?: { resend_reason?: string | null }) => void | Promise<void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
@@ -158,6 +162,7 @@ type ServiceRequestDetailsProps = {
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
+  onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
   onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null, document_type?: string | null }) => void | Promise<void>
   onCustomerApprovalResend?: (payload?: { note?: string | null }) => void | Promise<void>
@@ -165,6 +170,8 @@ type ServiceRequestDetailsProps = {
   fieldDocumentReviewError?: string | null
   customerApprovalResendLoading?: boolean
   customerApprovalResendError?: string | null
+  partnerActionReviewInFlight?: string | null
+  partnerActionReviewError?: string | null
 }
 
 type OpsDetailVisibilitySettings = {
@@ -1332,19 +1339,15 @@ const technicianApprovalState = (request: ServiceRequest, events: ServiceRequest
     }
   }
 
-  const approvalHaystack = JSON.stringify([
+  const approvalFieldText = normalizeTechnicalServiceText([
     request.technicianApprovalStatus,
     request.technicianConfirmationStatus,
-    request.operationalState?.action_label,
-    request.operationalState?.display_action_label,
-  ]).toLocaleLowerCase('tr-TR')
+  ].filter(Boolean).join(' '))
   const technicianApproved = Boolean(request.technicianApprovedAt)
-    || approvalHaystack.includes('onay')
-    || approvalHaystack.includes('kabul')
-    || approvalHaystack.includes('accept')
-  const technicianRejected = approvalHaystack.includes('redd')
-    || approvalHaystack.includes('reject')
-    || approvalHaystack.includes('declin')
+    || ['onayladi', 'onaylandi', 'kabul edildi', 'accepted', 'approved', 'confirmed']
+      .some((token) => approvalFieldText.includes(token))
+  const technicianRejected = ['redd', 'reject', 'declin']
+    .some((token) => approvalFieldText.includes(token))
 
   if (technicianRejected) {
     return {
@@ -1363,14 +1366,17 @@ const technicianApprovalState = (request: ServiceRequest, events: ServiceRequest
   }
 
   const matchingEvent = [...events].reverse().find((event) => {
-    const haystack = JSON.stringify([
+    const haystack = normalizeTechnicalServiceText(JSON.stringify([
       event.event_type,
       event.title,
       event.note,
       event.metadata,
-    ]).toLocaleLowerCase('tr-TR')
+    ]))
+    const isPartnerDecision = haystack.includes('partner_portal') || haystack.includes('cilingir portali')
 
-    return ['kabul', 'accepted', 'onay', 'redd', 'reject', 'declin', 'revize', 'schedule change', 'değiştir'].some((keyword) => haystack.includes(keyword))
+    return isPartnerDecision
+      && ['kabul', 'accepted', 'redd', 'reject', 'declin', 'revize', 'schedule change', 'degistir']
+        .some((keyword) => haystack.includes(keyword))
   })
 
   if (!matchingEvent) {
@@ -1381,12 +1387,12 @@ const technicianApprovalState = (request: ServiceRequest, events: ServiceRequest
     }
   }
 
-  const haystack = JSON.stringify([
+  const haystack = normalizeTechnicalServiceText(JSON.stringify([
     matchingEvent.event_type,
     matchingEvent.title,
     matchingEvent.note,
     matchingEvent.metadata,
-  ]).toLocaleLowerCase('tr-TR')
+  ]))
   const metadata = matchingEvent.metadata ?? {}
   const rejectionReason = formatDisplayValue(String(
     metadata.rejection_reason
@@ -1404,7 +1410,7 @@ const technicianApprovalState = (request: ServiceRequest, events: ServiceRequest
     ?? '',
   ))
 
-  if (haystack.includes('revize') || haystack.includes('schedule change') || haystack.includes('değiş')) {
+  if (haystack.includes('revize') || haystack.includes('schedule change') || haystack.includes('degis')) {
     return {
       tone: 'border-indigo-200 bg-indigo-50 text-indigo-950',
       title: 'Randevu revize talebi var',
@@ -1420,7 +1426,7 @@ const technicianApprovalState = (request: ServiceRequest, events: ServiceRequest
     }
   }
 
-  if (haystack.includes('kabul') || haystack.includes('accepted') || haystack.includes('onay')) {
+  if (haystack.includes('kabul') || haystack.includes('accepted')) {
     return {
       tone: 'border-green-200 bg-green-50 text-green-950',
       title: 'Usta işi kabul etti',
@@ -1458,6 +1464,7 @@ export function ServiceRequestDetails({
   onAssign,
   onSchedule,
   onComplete,
+  onCancel,
   onReopen,
   onPriorityChange,
   onWorkflowAction,
@@ -1514,6 +1521,7 @@ export function ServiceRequestDetails({
   onPartRequestTransition,
   onPartRequestServiceVisitCreate,
   onAssignmentOfferUpdate,
+  onPartnerActionReview,
   onFieldDocumentReview,
   onOpsExtraDocumentUpload,
   onCustomerApprovalResend,
@@ -1521,6 +1529,8 @@ export function ServiceRequestDetails({
   fieldDocumentReviewError = null,
   customerApprovalResendLoading = false,
   customerApprovalResendError = null,
+  partnerActionReviewInFlight = null,
+  partnerActionReviewError = null,
 }: ServiceRequestDetailsProps) {
   const basePaymentInfo = getServicePaymentInfo(
     request.serviceType,
@@ -1544,7 +1554,11 @@ export function ServiceRequestDetails({
   const openAppointmentProposals = partnerPortalActions.filter((action) => ['appointment_proposed', 'appointment_change_requested'].includes(action.action) && action.status === 'ops_review')
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
   const customerApprovalRejections = partnerPortalActions.filter((action) => action.action === 'customer_approval_rejected' && action.status === 'ops_review')
-  const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
+  const supportRequests = partnerPortalActions.filter((action) => (
+    action.action === 'support_requested'
+    && action.status === 'ops_review'
+    && action.payload?.type !== 'spare_part'
+  ))
   const revisitRequests = partnerPortalActions.filter((action) => action.action === 'revisit_requested' && action.status === 'ops_review')
   const partRequests = request.partRequests ?? []
   const activePartRequests = partRequests.filter((partRequest) => ['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status))
@@ -1707,6 +1721,7 @@ export function ServiceRequestDetails({
   const [paymentCancelInFlight, setPaymentCancelInFlight] = useState<number | string | null>(null)
   const [paymentSyncInFlight, setPaymentSyncInFlight] = useState<number | string | null>(null)
   const [paymentSendInFlight, setPaymentSendInFlight] = useState<number | string | null>(null)
+  const [paymentResendReasons, setPaymentResendReasons] = useState<Record<string, string>>({})
   const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
   const [paymentLinkCopyMessage, setPaymentLinkCopyMessage] = useState<string | null>(null)
   const [paymentLinkManualCopyValue, setPaymentLinkManualCopyValue] = useState<string | null>(null)
@@ -1720,6 +1735,7 @@ export function ServiceRequestDetails({
   const [customerChargeModalOpen, setCustomerChargeModalOpen] = useState(false)
   const [customerChargeCopyMessage, setCustomerChargeCopyMessage] = useState<string | null>(null)
   const [customerChargeManualCopyValue, setCustomerChargeManualCopyValue] = useState<string | null>(null)
+  const [customerChargeCopyTarget, setCustomerChargeCopyTarget] = useState<string | null>(null)
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
   const [earningNoteInput, setEarningNoteInput] = useState('')
@@ -1734,6 +1750,7 @@ export function ServiceRequestDetails({
   const [offerLaborInput, setOfferLaborInput] = useState('')
   const [offerRouteInput, setOfferRouteInput] = useState('')
   const [offerNoteInput, setOfferNoteInput] = useState('')
+  const [partnerActionNotes, setPartnerActionNotes] = useState<Record<string, string>>({})
   const [partRequestNotes, setPartRequestNotes] = useState<Record<string, string>>({})
   const [partRequestPartnerMessages, setPartRequestPartnerMessages] = useState<Record<string, string>>({})
   const [partRequestProviders, setPartRequestProviders] = useState<Record<string, string>>({})
@@ -1832,8 +1849,7 @@ export function ServiceRequestDetails({
         : null
   const assignmentOfferMessageText = activeAssignmentOffer?.message_text
     ?? stringValue(assignmentOfferMessagePayload, 'message_text')
-  const assignmentOfferJobLink = activeAssignmentOffer?.job_link
-    ?? stringValue(assignmentOfferMessagePayload, 'job_link')
+  const technicianJobCard = request.technicianJobCard
   const routeQuoteTechnicianIdString = routeQuote?.technician_id !== null && routeQuote?.technician_id !== undefined
     ? String(routeQuote.technician_id)
     : null
@@ -2330,6 +2346,8 @@ export function ServiceRequestDetails({
     : basePaymentInfo.technicianAmountLabel && basePaymentInfo.technicianAmountLabel !== 'Belirlenmedi'
       ? basePaymentInfo.technicianAmountLabel
       : 'Hakediş ayarı eksik'
+  const fallbackTechnicianLaborCostSourceLabel = selectedTechnician?.technicianAmountSourceLabel
+    ?? basePaymentInfo.technicianAmountSourceLabel
   const fallbackTechnicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
     ? request.technicianPaymentAmount
     : basePaymentInfo.customerAmount
@@ -2355,6 +2373,13 @@ export function ServiceRequestDetails({
     : assignmentOfferLaborAmount !== null
     ? formatMoneyValue(assignmentOfferLaborAmount)
     : fallbackTechnicianLaborCostLabel
+  const technicianLaborCostSourceLabel = hasCanonicalPayout
+    ? activeAssignmentOffer
+      ? 'Onaylanan assignment kaydı'
+      : request.technicianPaymentAmount !== null
+        ? 'Talep üzerindeki hakediş kaydı'
+        : 'Mevcut hakediş özeti'
+    : fallbackTechnicianLaborCostSourceLabel
   const fallbackTravelCostLabel = hasRouteCostEvidence
     ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required
       ? 'Km başı ücret ayarı eksik'
@@ -2455,13 +2480,28 @@ export function ServiceRequestDetails({
         ? stringValue(activeAssignmentOffer.metadata.message_dispatch as Record<string, unknown>, 'status')
         : null
     )
-  const earningDispatchStatusLabel = technicianEarningMessage?.status === 'sent'
+  const earningDispatchStatus = technicianEarningMessage?.status ?? assignmentOfferDispatchStatus
+  const earningDispatchStatusLabel = earningDispatchStatus === 'sent'
     ? 'Hakediş bilgisi gönderildi'
-    : assignmentOfferDispatchStatus === 'sent'
-      ? 'Hakediş bilgisi gönderildi'
-      : assignmentOfferDispatchStatus
-        ? 'Hakediş mesajı hazırlandı, gerçek WhatsApp gönderimi kapalı'
-        : 'Hakediş bilgisi gönderilmedi'
+    : earningDispatchStatus === 'test_sent'
+      ? 'Hakediş bilgisi test kanalında işlendi'
+    : earningDispatchStatus === 'queued'
+      ? 'Hakediş mesajı WhatsApp ve SMS kuyruğuna alındı'
+      : earningDispatchStatus === 'sending'
+        ? 'Hakediş mesajı gönderiliyor'
+        : ['rate_limited', 'cooldown_blocked'].includes(String(earningDispatchStatus))
+          ? 'Hakediş mesajı sağlayıcı hız sınırı nedeniyle bekliyor'
+          : ['blocked', 'duplicate_blocked'].includes(String(earningDispatchStatus))
+            ? 'Hakediş mesajı bloklandı; Kuyruk / Log detayını kontrol edin'
+            : String(earningDispatchStatus).startsWith('suppressed')
+              ? 'Hakediş mesajı güvenlik/politika nedeniyle dış sağlayıcıya gönderilmedi'
+              : ['failed', 'provider_error', 'test_failed'].includes(String(earningDispatchStatus))
+                ? 'Hakediş mesajı gönderilemedi; Kuyruk / Log detayını kontrol edin'
+                : earningDispatchStatus === 'cancelled'
+                  ? 'Hakediş mesajı iptal edildi'
+                  : earningDispatchStatus
+                    ? `Hakediş mesajı durumu: ${earningDispatchStatus}`
+                    : 'Hakediş bilgisi gönderilmedi'
   const hasSupportRequestDetail = supportRequests.length > 0
   const hasSparePartDetail = partRequests.length > 0
   const hasPriceRevisionDetail = Boolean(String(request.technicianRevisionNote ?? '').trim())
@@ -2819,7 +2859,9 @@ export function ServiceRequestDetails({
     setPaymentCancelError(null)
 
     try {
-      await onMountPaymentSend(payment.id)
+      const resendReason = paymentResendReasons[String(payment.id)]?.trim() || null
+
+      await onMountPaymentSend(payment.id, { resend_reason: resendReason })
       setRouteFeeEditorMessage('Ödeme linki müşteriye gönderilmek üzere kuyruğa alındı.')
     } catch (caught) {
       setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme linki müşteriye gönderilemedi.')
@@ -2849,18 +2891,31 @@ export function ServiceRequestDetails({
   const renderPaymentLinkSendAction = (payment: PaymentLinkSendTarget | null | undefined) => {
     const blocker = paymentLinkSendBlocker(payment)
     const paymentId = payment?.id ?? null
+    const sendCount = Math.max(0, Number(payment?.message_send_count ?? 0))
+    const resendReason = paymentId === null ? '' : paymentResendReasons[String(paymentId)] ?? ''
 
     return (
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        disabled={Boolean(blocker) || paymentSendInFlight === paymentId}
-        title={blocker ?? 'Ödeme linkini müşteriye WhatsApp ve SMS kuyruğuna al'}
-        onClick={() => payment && void handlePendingPaymentSend(payment)}
-      >
-        {paymentSendInFlight === paymentId ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
-      </Button>
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+        {sendCount > 0 && paymentId !== null ? (
+          <Input
+            className="h-8 min-w-[220px] flex-1"
+            value={resendReason}
+            onChange={(event) => setPaymentResendReasons((current) => ({ ...current, [String(paymentId)]: event.target.value }))}
+            placeholder="Yeniden gönderim nedeni"
+            aria-label="Ödeme linki yeniden gönderim nedeni"
+          />
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={Boolean(blocker) || paymentSendInFlight === paymentId || (sendCount > 0 && resendReason.trim().length < 3)}
+          title={blocker ?? (sendCount > 0 ? 'Ödeme linkini neden kaydıyla yeniden gönder' : 'Ödeme linkini müşteriye WhatsApp ve SMS kuyruğuna al')}
+          onClick={() => payment && void handlePendingPaymentSend(payment)}
+        >
+          {paymentSendInFlight === paymentId ? 'Kuyruğa alınıyor...' : sendCount > 0 ? 'Yeniden gönder' : 'Linki müşteriye gönder'}
+        </Button>
+      </div>
     )
   }
   const handleCreatePaymentLinkAction = () => {
@@ -3139,6 +3194,7 @@ export function ServiceRequestDetails({
   const openCustomerChargeModal = () => {
     setCustomerChargeCopyMessage(null)
     setCustomerChargeManualCopyValue(null)
+    setCustomerChargeCopyTarget(null)
     setCustomerChargeModalOpen(true)
   }
   const customerChargeModal = customerChargeModalOpen ? (
@@ -3216,21 +3272,7 @@ export function ServiceRequestDetails({
               ) : null}
             </div>
           ) : null}
-          {customerChargeCopyMessage ? (
-            <p role="status" aria-live="polite" className="text-xs font-semibold text-blue-800">{customerChargeCopyMessage}</p>
-          ) : null}
-          {customerChargeManualCopyValue ? (
-            <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
-              Otomatik kopyalanamadı; metni manuel kopyalayın.
-              <input
-                readOnly
-                value={customerChargeManualCopyValue}
-                onClick={(event) => event.currentTarget.select()}
-                onFocus={(event) => event.currentTarget.select()}
-                className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
-              />
-            </label>
-          ) : null}
+          {renderCustomerChargeCopyFeedback(customerChargeCopyTarget)}
           {routeFeeEditorMessage ? (
             <p className="text-xs font-semibold text-slate-700">{routeFeeEditorMessage}</p>
           ) : null}
@@ -4306,13 +4348,43 @@ export function ServiceRequestDetails({
     if (text === '') {
       setCustomerChargeCopyMessage('Kopyalanacak ödeme bilgisi yok.')
       setCustomerChargeManualCopyValue(null)
+      setCustomerChargeCopyTarget(null)
 
       return
     }
 
+    setCustomerChargeCopyTarget(text)
     const result = await copyTextToClipboard(text)
     setCustomerChargeCopyMessage(result.copied ? `Kopyalandı — ${successMessage}` : 'Otomatik kopyalanamadı; metni manuel kopyalayın.')
     setCustomerChargeManualCopyValue(result.copied ? null : text)
+  }
+
+  function renderCustomerChargeCopyFeedback(value: string | null | undefined) {
+    const text = String(value ?? '').trim()
+
+    if (!text || text !== customerChargeCopyTarget || (!customerChargeCopyMessage && !customerChargeManualCopyValue)) {
+      return null
+    }
+
+    return (
+      <div className="grid gap-2">
+        {customerChargeCopyMessage ? (
+          <p role="status" aria-live="polite" className="text-xs font-semibold text-blue-800">{customerChargeCopyMessage}</p>
+        ) : null}
+        {customerChargeManualCopyValue ? (
+          <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+            Otomatik kopyalanamadı; metni manuel kopyalayın.
+            <input
+              readOnly
+              value={customerChargeManualCopyValue}
+              onClick={(event) => event.currentTarget.select()}
+              onFocus={(event) => event.currentTarget.select()}
+              className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+            />
+          </label>
+        ) : null}
+      </div>
+    )
   }
 
   async function copyReferenceValue(value: string | null | undefined, successMessage: string, manualLabel = 'bilgiyi') {
@@ -4469,8 +4541,14 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (action === 'complete' || action === 'cancel') {
+    if (action === 'complete') {
       onComplete?.()
+
+      return
+    }
+
+    if (action === 'cancel') {
+      onCancel?.()
 
       return
     }
@@ -4862,12 +4940,15 @@ export function ServiceRequestDetails({
               <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
               <p>Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
               {latestCustomerCharge.payment_url ? (
-                <div className="flex flex-wrap gap-2">
-                  <Button asChild size="sm" variant="outline">
-                    <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
-                  </Button>
-                  <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
-                  {renderPaymentLinkSendAction(latestCustomerCharge)}
+                <div className="grid gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <Button asChild size="sm" variant="outline">
+                      <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                    {renderPaymentLinkSendAction(latestCustomerCharge)}
+                  </div>
+                  {renderCustomerChargeCopyFeedback(latestCustomerCharge.payment_url)}
                 </div>
               ) : null}
             </div>
@@ -5169,12 +5250,15 @@ export function ServiceRequestDetails({
                     <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
                     <p className="mt-1">Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
                     {latestCustomerCharge.payment_url ? (
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <Button asChild size="sm" variant="outline">
-                          <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
-                        </Button>
-                        <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
-                        {renderPaymentLinkSendAction(latestCustomerCharge)}
+                      <div className="mt-2 grid gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          <Button asChild size="sm" variant="outline">
+                            <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
+                          </Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                          {renderPaymentLinkSendAction(latestCustomerCharge)}
+                        </div>
+                        {renderCustomerChargeCopyFeedback(latestCustomerCharge.payment_url)}
                       </div>
                     ) : null}
                   </div>
@@ -5452,7 +5536,7 @@ export function ServiceRequestDetails({
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
                   <MiniMetric label="Şehir" value={assignedTechnicianCityLabel} />
-                  <MiniMetric label="İşçilik" value={technicianLaborCostLabel} />
+                  <MiniMetric label="İşçilik" value={technicianLaborCostLabel} hint={`Kaynak: ${technicianLaborCostSourceLabel}`} />
                   <MiniMetric label="Yol" value={travelCostLabel} />
                   <MiniMetric label={locksmithPayoutTotalMetricLabel} value={totalTechnicianCostLabel} />
                 <MiniMetric label="Müşteri tahsilatı" value={totalCustomerCollectionDisplayLabel} />
@@ -5487,6 +5571,8 @@ export function ServiceRequestDetails({
                     || (partRequest.charge_decision === 'chargeable' && partRequest.is_payment_paid !== true && partRequest.charge_status !== 'paid')
                   const canShipPart = partRequest.can_ship !== false && !paymentRequired
                   const showShipmentInputs = (partRequest.status === 'approved' || partRequest.status === 'ordered') && canShipPart
+                  const partRequestPaymentId = partRequest.payment_id ?? partRequest.customer_charge?.id ?? null
+                  const partRequestPayment = customerChargeSummary?.rows?.find((payment) => String(payment.id) === String(partRequestPaymentId)) ?? null
                   const transition = (status: string) => onPartRequestTransition?.(partRequest.id, {
                     status,
                     note: note || null,
@@ -5530,15 +5616,20 @@ export function ServiceRequestDetails({
                                 <p>Referans: {displayOrEmpty(partRequest.customer_charge?.payment_reference ?? partRequest.payment_reference ?? partRequest.provider_reference, '-')}</p>
                               ) : null}
                               {partRequest.payment_url ? (
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
-                                  <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequest.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
-                                  {renderPaymentLinkSendAction({
-                                    id: partRequest.payment_id ?? partRequest.customer_charge?.id ?? null,
-                                    status: partRequest.customer_charge?.status ?? 'pending',
-                                    payment_url: partRequest.payment_url,
-                                    amount: partRequest.customer_charge?.amount ?? ((Number(partRequest.service_amount ?? 0) || 0) + (Number(partRequest.part_amount ?? 0) || 0)),
-                                  })}
+                                <div className="grid gap-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequest.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                                    {renderPaymentLinkSendAction({
+                                      id: partRequestPaymentId,
+                                      status: partRequest.customer_charge?.status ?? 'pending',
+                                      payment_url: partRequest.payment_url,
+                                      amount: partRequest.customer_charge?.amount ?? ((Number(partRequest.service_amount ?? 0) || 0) + (Number(partRequest.part_amount ?? 0) || 0)),
+                                      message_send_count: partRequestPayment?.message_send_count ?? partRequest.customer_charge?.message_send_count,
+                                      last_message_sent_at: partRequestPayment?.last_message_sent_at ?? partRequest.customer_charge?.last_message_sent_at,
+                                    })}
+                                  </div>
+                                  {renderCustomerChargeCopyFeedback(partRequest.payment_url)}
                                 </div>
                               ) : null}
                             </div>
@@ -5672,13 +5763,52 @@ export function ServiceRequestDetails({
                   <div key={String(action.id)} className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-amber-950">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <p className="font-semibold">Yedek parça / ek talep</p>
+                        <p className="font-semibold">Destek / ek bilgi talebi</p>
                         <p className="mt-1 text-xs">{String(action.payload?.description ?? action.note ?? 'Açıklama yok')}</p>
                       </div>
                       <Badge variant="warning">Operasyon incelemede</Badge>
                     </div>
+                    <div className="mt-3 grid gap-2">
+                      <Input
+                        value={partnerActionNotes[String(action.id)] ?? ''}
+                        onChange={(event) => setPartnerActionNotes((current) => ({ ...current, [String(action.id)]: event.target.value }))}
+                        placeholder="OPS karar notu"
+                        disabled={partnerActionReviewInFlight === String(action.id)}
+                      />
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={partnerActionReviewInFlight === String(action.id)}
+                          onClick={() => void onPartnerActionReview?.(action.id, { decision: 'reviewed', note: partnerActionNotes[String(action.id)] || null })}
+                        >
+                          İncelendi
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={partnerActionReviewInFlight === String(action.id) || !(partnerActionNotes[String(action.id)] ?? '').trim()}
+                          onClick={() => void onPartnerActionReview?.(action.id, { decision: 'more_info', note: partnerActionNotes[String(action.id)] })}
+                        >
+                          Ek bilgi iste
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={partnerActionReviewInFlight === String(action.id)}
+                          onClick={() => void onPartnerActionReview?.(action.id, { decision: 'resolved', note: partnerActionNotes[String(action.id)] || null })}
+                        >
+                          Çözüldü
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 ))}
+                {partnerActionReviewError ? (
+                  <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-900">{partnerActionReviewError}</p>
+                ) : null}
                 {revisitRequests.slice(0, 3).map((action) => (
                   <div key={String(action.id)} className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-violet-950">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -5726,6 +5856,41 @@ export function ServiceRequestDetails({
                     <p className="text-xs">
                       Bu teklif onaylanan hakedişi otomatik değiştirmez; aşağıdaki onaylanan hakediş kartı canonical kaynaktır.
                     </p>
+                    {technicianRevisionOfferPending ? (
+                      <div className="grid gap-2">
+                        <Input value={offerNoteInput} onChange={(event) => setOfferNoteInput(event.target.value)} placeholder="OPS karar notu" />
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={partnerActionReviewInFlight === String(technicianRevisionOffer.id) || !offerNoteInput.trim()}
+                            onClick={() => void onPartnerActionReview?.(technicianRevisionOffer.id, { decision: 'rejected', note: offerNoteInput })}
+                          >
+                            Reddet
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={partnerActionReviewInFlight === String(technicianRevisionOffer.id) || !offerNoteInput.trim()}
+                            onClick={() => void onPartnerActionReview?.(technicianRevisionOffer.id, { decision: 'revision_requested', note: offerNoteInput })}
+                          >
+                            Düzenleme iste
+                          </Button>
+                          <Button
+                            type="button"
+                            disabled={!assignmentOffer || !onAssignmentOfferUpdate}
+                            onClick={() => assignmentOffer && void onAssignmentOfferUpdate?.(assignmentOffer.id, {
+                              labor_amount: technicianRevisionOffer.labor_earning ?? assignmentOffer.labor_amount,
+                              route_fee_amount: technicianRevisionOffer.route_earning ?? assignmentOffer.route_fee_amount,
+                              total_amount: technicianRevisionOffer.total_earning ?? assignmentOffer.total_amount,
+                              note: offerNoteInput || null,
+                            })}
+                          >
+                            Teklifi onayla
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
                 {assignmentOffer ? (
@@ -6211,7 +6376,7 @@ export function ServiceRequestDetails({
                 {showFinanceCollectionMetrics && showPaymentControl ? (
                   <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
                 ) : null}
-                <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
+                <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} hint={`Kaynak: ${technicianLaborCostSourceLabel}`} />
                 <MiniMetric label="Usta yol hakedişi" value={travelCostLabel} />
                 <MiniMetric label={locksmithPayoutTotalMetricLabel} value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />
                 {showFinanceCollectionMetrics ? (
@@ -6314,10 +6479,19 @@ export function ServiceRequestDetails({
                           </a>
                         </Button>
                       ) : null}
-                      {assignmentOfferJobLink ? (
+                      {technicianJobCard?.ops_support_url ? (
                         <Button asChild type="button" size="sm" variant="outline">
-                          <a href={assignmentOfferJobLink} target="_blank" rel="noreferrer">
-                            İş kartını aç
+                          <a href={technicianJobCard.ops_support_url} target="_blank" rel="noreferrer">
+                            <Wrench className="mr-1 h-4 w-4" />
+                            Usta İş Kartını OPS Olarak Yönet
+                          </a>
+                        </Button>
+                      ) : null}
+                      {technicianJobCard?.preview_url ? (
+                        <Button asChild type="button" size="sm" variant="outline">
+                          <a href={technicianJobCard.preview_url} target="_blank" rel="noreferrer">
+                            <Eye className="mr-1 h-4 w-4" />
+                            Usta Portalını Önizle
                           </a>
                         </Button>
                       ) : null}
@@ -6425,7 +6599,7 @@ export function ServiceRequestDetails({
                 type="button"
                 variant="outline"
                 className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800"
-                onClick={() => onComplete?.()}
+                onClick={() => onCancel?.()}
               >
                 İşi İptal Et
               </Button>

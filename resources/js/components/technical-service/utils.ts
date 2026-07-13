@@ -173,15 +173,22 @@ export function getServicePaymentInfo(
 ) {
   const base = serviceBaseAmount(serviceType)
   const travel = calculateTravelPreview(travelKm)
+  const hasPersistedTechnicianAmount = typeof persistedTechnicianPaymentAmount === 'number'
+    && Number.isFinite(persistedTechnicianPaymentAmount)
   const billableKm = typeof persistedBillableKm === 'number' && Number.isFinite(persistedBillableKm)
     ? persistedBillableKm
     : travel.billableKm
   const travelAmount = typeof persistedTravelFeeAmount === 'number' && Number.isFinite(persistedTravelFeeAmount)
     ? persistedTravelFeeAmount
     : travel.travelFeeAmount
-  const technicianBaseAmount = typeof persistedTechnicianPaymentAmount === 'number' && Number.isFinite(persistedTechnicianPaymentAmount)
+  const technicianBaseAmount = hasPersistedTechnicianAmount
     ? persistedTechnicianPaymentAmount
     : base.amount
+  const technicianAmountSourceLabel = hasPersistedTechnicianAmount
+    ? 'Talep üzerindeki hakediş kaydı'
+    : base.amount !== null
+      ? `${base.serviceTypeLabel} hizmet tarifesi`
+      : 'Hakediş kaynağı bulunamadı'
 
   if (base.amount !== null || technicianBaseAmount !== null) {
     return {
@@ -189,6 +196,7 @@ export function getServicePaymentInfo(
       customerAmountLabel: base.amount === null ? 'Belirlenmedi' : `${formatCurrency(base.amount)} KDV dahil`,
       customerAmount: base.amount,
       technicianAmountLabel: technicianBaseAmount === null ? 'Belirlenmedi' : formatCurrency(technicianBaseAmount),
+      technicianAmountSourceLabel,
       roundTripKmLabel: travel.roundTripKm === null ? 'Yol km bilgisi girilmedi' : formatKm(travel.roundTripKm),
       freeKmLabel: formatKm(travel.freeKm),
       billableKmLabel: billableKm === null ? 'Yol km bilgisi girilmedi' : formatKm(billableKm),
@@ -207,6 +215,7 @@ export function getServicePaymentInfo(
     customerAmountLabel: 'Belirlenmedi',
     customerAmount: null,
     technicianAmountLabel: 'Belirlenmedi',
+    technicianAmountSourceLabel,
     roundTripKmLabel: travel.roundTripKm === null ? 'Yol km bilgisi girilmedi' : formatKm(travel.roundTripKm),
     freeKmLabel: formatKm(travel.freeKm),
     billableKmLabel: billableKm === null ? 'Yol km bilgisi girilmedi' : formatKm(billableKm),

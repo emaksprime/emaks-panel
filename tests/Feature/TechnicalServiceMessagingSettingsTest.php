@@ -669,7 +669,9 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Gönderimleri Dondur', $source);
         $this->assertStringNotContainsString("['real_send_enabled', 'Gerçek gönderim aktif']", $source);
         $this->assertStringContainsString('Duplicate cooldown dakika', $source);
-        $this->assertStringContainsString('Queue sender', $source);
+        $this->assertStringContainsString('Güvenli queue', $source);
+        $this->assertStringContainsString('messagingRuntimeHeadline(messaging)', $source);
+        $this->assertStringNotContainsString('REL-4D', $source);
         $this->assertStringContainsString('Mesaj tipi', $source);
         $this->assertStringContainsString('Test telefonu doğrula', $source);
         $this->assertStringContainsString('Test mesajı gönder', $source);

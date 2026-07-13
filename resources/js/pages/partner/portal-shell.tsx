@@ -1,4 +1,4 @@
-import { Head, Link } from '@inertiajs/react'
+import { Head, Link, router } from '@inertiajs/react'
 import { ChevronDown } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
@@ -381,6 +381,7 @@ type PendingEarningRow = {
 }
 
 type PartnerPortalProps = {
+  requestedJobId?: number | null
   preview?: {
     read_only: boolean
     warning: string
@@ -392,6 +393,20 @@ type PartnerPortalProps = {
     allowed: boolean
     deniedMessage: string | null
     preview: boolean
+    opsSupport?: {
+      enabled: boolean
+      partner_id: number
+      technician_id: number
+      technician_options: Array<{
+        partner_id: number
+        technician_id: number
+        partner_technician_link_id: number
+        partner_name: string
+        technician_name: string
+      }>
+      api_base: string
+      route_path: string
+    } | null
     partners: PartnerSummary[]
     selectedPartner: PartnerSummary
     navigation: Array<{ key: ViewKey, label: string, href: string }>
@@ -629,6 +644,21 @@ const jobReadyForCompletionSubmit = (job: ServiceJob): boolean => (
 
 const portalHref = (path: string, partnerId: number) => `${path}?partner_id=${partnerId}`
 
+const scopedServiceJobApiUrl = (
+  apiBase: string,
+  path: string,
+  partnerId: number,
+  technicianId?: number | null,
+) => {
+  const params = new URLSearchParams({ partner_id: String(partnerId) })
+
+  if (technicianId) {
+    params.set('technician_id', String(technicianId))
+  }
+
+  return `${apiBase}${path}?${params.toString()}`
+}
+
 const locationLabel = (partner: PartnerSummary) => [partner.city, partner.district].filter(Boolean).join(' / ') || '-'
 
 function CapabilityChips({ capabilities }: { capabilities: Capability[] }) {
@@ -643,17 +673,21 @@ function CapabilityChips({ capabilities }: { capabilities: Capability[] }) {
   )
 }
 
-function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
+function PortalShell({ partnerPortal, preview, requestedJobId }: PartnerPortalProps) {
   const { selectedPartner, stats, view } = partnerPortal
   const isPreview = Boolean(preview?.read_only || partnerPortal.preview)
+  const opsSupport = partnerPortal.opsSupport?.enabled ? partnerPortal.opsSupport : null
+  const isOpsSupport = opsSupport !== null
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-950">
-      <Head title={`${viewTitle(view)} - Partner Portal`} />
+      <Head title={isOpsSupport ? 'Usta İş Kartı OPS Destek Modu' : `${viewTitle(view)} - Partner Portal`} />
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Emaks Prime Partner Portal</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+              {isOpsSupport ? 'Emaks Prime OPS Destek Modu' : 'Emaks Prime Partner Portal'}
+            </p>
             <h1 className="mt-1 break-words text-2xl font-semibold text-slate-950">{selectedPartner.display_name}</h1>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
               <span>{locationLabel(selectedPartner)}</span>
@@ -663,7 +697,31 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
           <div className="flex flex-col gap-3 lg:items-end">
             <CapabilityChips capabilities={selectedPartner.capabilities} />
             <div className="flex flex-wrap gap-2">
-              {partnerPortal.partners.length > 1 && !isPreview && (
+              {isOpsSupport && (
+                <select
+                  aria-label="Destek verilecek ustayı seç"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                  value={`${opsSupport.partner_id}:${opsSupport.technician_id}`}
+                  onChange={(event) => {
+                    const [partnerId, technicianId] = event.target.value.split(':').map(Number)
+                    const params = new URLSearchParams({
+                      partner_id: String(partnerId),
+                      technician_id: String(technicianId),
+                    })
+                    window.location.href = `/technical-service/ops-support/service-jobs?${params.toString()}`
+                  }}
+                >
+                  {opsSupport.technician_options.map((option) => (
+                    <option
+                      key={option.partner_technician_link_id}
+                      value={`${option.partner_id}:${option.technician_id}`}
+                    >
+                      {option.technician_name} / {option.partner_name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {partnerPortal.partners.length > 1 && !isPreview && !isOpsSupport && (
                 <select
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
                   defaultValue={selectedPartner.id}
@@ -676,10 +734,27 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
                   ))}
                 </select>
               )}
-              {preview ? (
-                <Link href={preview.back_url} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white">
-                  Partner yönetimine dön
+              {isOpsSupport ? (
+                <Link href="/technical-service" className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white">
+                  Teknik Servise dön
                 </Link>
+              ) : isPreview ? (
+                <>
+                  {preview ? (
+                    <Link href={preview.back_url} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white">
+                      Partner yönetimine dön
+                    </Link>
+                  ) : (
+                    <span className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                      Salt okunur önizleme
+                    </span>
+                  )}
+                  {!preview ? (
+                    <Link href="/logout" method="post" as="button" className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700">
+                      Çıkış
+                    </Link>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <Link href={portalHref('/partner/settings', selectedPartner.id)} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700">
@@ -693,7 +768,7 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
             </div>
           </div>
         </div>
-        <nav className="mx-auto flex max-w-7xl flex-wrap gap-2 px-4 pb-4">
+        {!isOpsSupport && <nav className="mx-auto flex max-w-7xl flex-wrap gap-2 px-4 pb-4">
           {partnerPortal.navigation.map((item) => {
             const active = item.key === view
             const href = isPreview && preview?.portal_url
@@ -715,13 +790,22 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
               </Link>
             )
           })}
-        </nav>
+        </nav>}
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6">
-        {preview && (
+        {isPreview && (
           <section className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">
-            {preview.warning}
+            {preview?.warning ?? 'Bu ekran salt okunur önizlemedir. İş aksiyonları yalnız giriş yapan aktif partner kullanıcısı tarafından uygulanabilir.'}
+          </section>
+        )}
+
+        {isOpsSupport && (
+          <section className="mb-5 border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+            <p className="font-semibold">OPS destek modu aktiftir.</p>
+            <p className="mt-1">
+              İşlemler seçili ustanın kapsamıyla doğrulanır; Operasyon Geçmişi gerçek OPS kullanıcısını aktör olarak kaydeder.
+            </p>
           </section>
         )}
 
@@ -748,7 +832,15 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
           <ProductsView products={partnerPortal.products} readOnly={isPreview} />
         )}
         {partnerPortal.allowed && view === 'service-jobs' && (
-          <ServiceJobsView partnerId={selectedPartner.id} board={partnerPortal.serviceJobBoard} readOnly={isPreview} />
+          <ServiceJobsView
+            key={requestedJobId ?? 'service-jobs-list'}
+            partnerId={selectedPartner.id}
+            technicianId={opsSupport?.technician_id}
+            apiBase={opsSupport?.api_base ?? '/api/partner/service-jobs'}
+            board={partnerPortal.serviceJobBoard}
+            readOnly={isPreview}
+            requestedJobId={requestedJobId ?? null}
+          />
         )}
         {partnerPortal.allowed && view === 'earnings' && (
           <EarningsView earnings={partnerPortal.earnings} />
@@ -1189,15 +1281,34 @@ const slotValidationMessage = (slots: AppointmentSlotDraft[]) => {
   return null
 }
 
-function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
+function ServiceJobsView({
+  partnerId,
+  technicianId,
+  apiBase,
+  board,
+  readOnly,
+  requestedJobId,
+}: {
+  partnerId: number
+  technicianId?: number | null
+  apiBase: string
+  board: PartnerPortalProps['partnerPortal']['serviceJobBoard']
+  readOnly: boolean
+  requestedJobId: number | null
+}) {
   const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
+  const initialRequestedJob = requestedJobId === null
+    ? null
+    : initialJobs.find((job) => job.id === requestedJobId) ?? null
   const [jobs, setJobs] = useState<ServiceJob[]>(initialJobs)
-  const [selectedJobId, setSelectedJobId] = useState<number | null>(null)
-  const [detailOpen, setDetailOpen] = useState(false)
+  const [deepLinkJobId, setDeepLinkJobId] = useState<number | null>(requestedJobId)
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(initialRequestedJob?.id ?? null)
+  const [detailOpen, setDetailOpen] = useState(initialRequestedJob !== null)
   const [message, setMessage] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [detailActionOpen, setDetailActionOpen] = useState(false)
-  const requestedJobAppliedRef = useRef(false)
+  const deepLinkRequestRef = useRef<{ jobId: number, request: Promise<{ job?: ServiceJob }> } | null>(null)
+  const refreshInFlightRef = useRef<Promise<void> | null>(null)
   const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
   const refreshJobs = useCallback(async (silent = true, force = false) => {
     if (readOnly) {
@@ -1208,27 +1319,38 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
       return
     }
 
+    if (refreshInFlightRef.current) {
+      return refreshInFlightRef.current
+    }
+
     if (!silent) {
       setRefreshing(true)
       setMessage(null)
     }
 
-    try {
-      const response = await apiRequest(`/api/partner/service-jobs?partner_id=${partnerId}`) as { jobs?: ServiceJob[] }
+    const refreshPromise = (async () => {
+      try {
+        const response = await apiRequest(scopedServiceJobApiUrl(apiBase, '', partnerId, technicianId)) as { jobs?: ServiceJob[] }
 
-      if (Array.isArray(response.jobs)) {
-        setJobs(response.jobs)
+        if (Array.isArray(response.jobs)) {
+          setJobs(response.jobs)
+        }
+      } catch (error) {
+        if (!silent) {
+          setMessage(error instanceof Error ? error.message : 'İşler yenilenemedi.')
+        }
+      } finally {
+        if (!silent) {
+          setRefreshing(false)
+        }
+
+        refreshInFlightRef.current = null
       }
-    } catch (error) {
-      if (!silent) {
-        setMessage(error instanceof Error ? error.message : 'İşler yenilenemedi.')
-      }
-    } finally {
-      if (!silent) {
-        setRefreshing(false)
-      }
-    }
-  }, [detailActionOpen, partnerId, readOnly])
+    })()
+    refreshInFlightRef.current = refreshPromise
+
+    return refreshPromise
+  }, [apiBase, detailActionOpen, partnerId, readOnly, technicianId])
   const columns = serviceJobColumns.map((column) => {
     const columnJobs = jobs
       .filter((job) => job.kanban_column === column.key)
@@ -1256,33 +1378,72 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
   const closeJobDetail = () => {
     setDetailOpen(false)
     setDetailActionOpen(false)
+
+    if (deepLinkJobId !== null && typeof window !== 'undefined') {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('job_id')
+      router.replace({
+        url: `${url.pathname}${url.search}${url.hash}`,
+        props: (props) => ({ ...props, requestedJobId: null }),
+        preserveScroll: true,
+      })
+      setDeepLinkJobId(null)
+    }
   }
 
   useEffect(() => {
-    if (requestedJobAppliedRef.current || typeof window === 'undefined') {
-      return
+    if (deepLinkJobId === null || initialRequestedJob?.id === deepLinkJobId) {
+      return undefined
     }
 
-    const jobId = Number(new URLSearchParams(window.location.search).get('job_id'))
-
-    if (!Number.isFinite(jobId) || jobId <= 0) {
-      requestedJobAppliedRef.current = true
-
-      return
+    if (deepLinkRequestRef.current?.jobId !== deepLinkJobId) {
+      deepLinkRequestRef.current = {
+        jobId: deepLinkJobId,
+        request: apiRequest(scopedServiceJobApiUrl(apiBase, `/${deepLinkJobId}`, partnerId, technicianId)) as Promise<{ job?: ServiceJob }>,
+      }
     }
 
-    if (jobs.some((job) => job.id === jobId)) {
-      requestedJobAppliedRef.current = true
+    let active = true
+    const request = deepLinkRequestRef.current.request
 
-      const timeoutId = window.setTimeout(() => {
-        setSelectedJobId(jobId)
+    void request
+      .then((response) => {
+        if (!active) {
+          return
+        }
+
+        const job = response.job
+
+        if (!job || job.id !== deepLinkJobId) {
+          setMessage('İş kartı bulunamadı veya erişim yetkiniz yok.')
+
+          return
+        }
+
+        setJobs((current) => current.some((item) => item.id === job.id)
+          ? current.map((item) => item.id === job.id ? job : item)
+          : [...current, job])
+        setSelectedJobId(job.id)
         setDetailOpen(true)
         setDetailActionOpen(false)
-      }, 0)
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return
+        }
 
-      return () => window.clearTimeout(timeoutId)
+        const status = error instanceof Error && 'status' in error
+          ? Number((error as Error & { status?: unknown }).status)
+          : null
+        setMessage(status === 404
+          ? 'İş kartı bulunamadı.'
+          : 'Bu iş kartına erişim yetkiniz yok.')
+      })
+
+    return () => {
+      active = false
     }
-  }, [jobs])
+  }, [apiBase, deepLinkJobId, initialRequestedJob, partnerId, technicianId])
 
   useEffect(() => {
     if (readOnly) {
@@ -1424,6 +1585,9 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
               <ServiceJobDetail
                 job={selectedJob}
                 readOnly={readOnly}
+                apiBase={apiBase}
+                partnerId={partnerId}
+                technicianId={technicianId}
                 onJobUpdated={updateJob}
                 onJobsRefresh={() => refreshJobs(true, true)}
                 onMessage={setMessage}
@@ -1440,6 +1604,9 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
 function ServiceJobDetail({
   job,
   readOnly,
+  apiBase,
+  partnerId,
+  technicianId,
   onJobUpdated,
   onJobsRefresh,
   onMessage,
@@ -1447,11 +1614,15 @@ function ServiceJobDetail({
 }: {
   job: ServiceJob
   readOnly: boolean
+  apiBase: string
+  partnerId: number
+  technicianId?: number | null
   onJobUpdated: (job: ServiceJob) => void
   onJobsRefresh?: () => Promise<void>
   onMessage: (message: string | null) => void
   onActionDialogOpenChange: (open: boolean) => void
 }) {
+  const jobApiUrl = (path: string) => scopedServiceJobApiUrl(apiBase, `/${job.id}${path}`, partnerId, technicianId)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [acceptNote, setAcceptNote] = useState('')
   const [appointmentSlots, setAppointmentSlots] = useState<AppointmentSlotDraft[]>([{ date: tomorrowDateValue(), slot: '10:00-11:00' }])
@@ -1627,7 +1798,7 @@ function ServiceJobDetail({
     onMessage(null)
 
     try {
-      const response = await apiRequest(`/api/partner/service-jobs/${job.id}/${action}`, {
+      const response = await apiRequest(jobApiUrl(`/${action}`), {
         method: 'POST',
         body: JSON.stringify(payload),
       }) as { job?: ServiceJob, message?: string }
@@ -1661,7 +1832,7 @@ function ServiceJobDetail({
     onMessage(null)
 
     try {
-      const response = await apiRequest(`/api/partner/service-jobs/${job.id}/correction-request`, {
+      const response = await apiRequest(jobApiUrl('/correction-request'), {
         method: 'POST',
         body: JSON.stringify({
           field_key: correctionFieldKey,
@@ -1765,33 +1936,10 @@ function ServiceJobDetail({
     onMessage(null)
 
     try {
-      const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
-      const response = await fetch(`/api/partner/service-jobs/${job.id}/photos`, {
+      const payload = await apiRequest(jobApiUrl('/photos'), {
         method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          Accept: 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-          ...(token ? { 'X-CSRF-TOKEN': token } : {}),
-        },
         body: formData,
-      })
-
-      if (!response.ok) {
-        let message = 'Fotoğraf yüklenemedi.'
-
-        try {
-          const payload = await response.json() as { message?: string, errors?: Record<string, string[]> }
-          const firstError = payload.errors ? Object.values(payload.errors).flat()[0] : null
-          message = firstError || payload.message || message
-        } catch {
-          // Keep non-JSON error responses out of the portal UI.
-        }
-
-        throw new Error(message)
-      }
-
-      const payload = await response.json() as { job?: ServiceJob }
+      }) as { job?: ServiceJob }
 
       if (payload.job) {
         onJobUpdated(payload.job)

@@ -82,8 +82,15 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertStringContainsString('manual-e2e/freeze', $source);
         $this->assertStringContainsString('manual-e2e-enable-confirmation', $source);
         $this->assertStringContainsString('Gerçek gönderim riskini kabul et ve aç', $source);
+        $this->assertStringContainsString('messagingRuntimeHeadline(messaging)', $source);
+        $this->assertStringContainsString('messagingQueueStatus(messaging)', $source);
+        $this->assertStringNotContainsString('REL-4D bekliyor', $source);
         $this->assertStringNotContainsString("['real_send_enabled', 'Gerçek gönderim aktif']", $source);
         $this->assertStringNotContainsString("['queue_paused', 'Kuyruk duraklatıldı']", $source);
+
+        $operationSource = File::get(resource_path('js/pages/panel/technical-service.tsx'));
+        $this->assertStringContainsString('Atama sonrası mesaj durumu server ayarları ve kanal politikasıyla belirlenir', $operationSource);
+        $this->assertStringNotContainsString('canlı WhatsApp gönderimi yapılmaz', $operationSource);
     }
 
     public function test_manual_e2e_readiness_is_read_only_complete_and_does_not_expose_secrets(): void
@@ -111,6 +118,11 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
                     'pending_external_count',
                     'unsafe_external_count',
                     'worker_lock_available',
+                    'worker_lock_raw_available',
+                    'worker_state',
+                    'worker_run_id',
+                    'worker_heartbeat_at',
+                    'worker_stale_recoverable',
                     'lifecycle_lock_available',
                     'active_run_id',
                     'ttl_seconds',
@@ -161,6 +173,8 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ->assertJsonPath('messaging_settings.global.queue_paused', false)
             ->assertJsonPath('messaging_settings.global.test_mode_enabled', false)
             ->assertJsonPath('messaging_settings.global.ops_whatsapp_enabled', true)
+            ->assertJsonPath('messaging_settings.readiness.queue_ready', true)
+            ->assertJsonPath('messaging_settings.readiness.can_send_real', true)
             ->json('messaging_settings');
 
         $runId = (string) $payload['manual_e2e']['active_run_id'];
@@ -253,8 +267,8 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         try {
             $this->actingAs($admin)
                 ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
-                ->assertUnprocessable()
-                ->assertJsonPath('errors.manual_e2e.0', 'Başka bir Manual E2E worker çalışıyor.');
+                ->assertConflict()
+                ->assertJsonPath('message', 'Başka bir Manual E2E worker çalışıyor veya worker lock sahipliği güvenli biçimde doğrulanamadı.');
         } finally {
             $workerLock->release();
         }
@@ -383,6 +397,104 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertTrue($payload['global']['queue_paused']);
         $this->assertFalse($payload['global']['ops_whatsapp_enabled']);
         $this->assertNull($payload['manual_e2e']['active_run_id']);
+        Http::assertNothingSent();
+    }
+
+    public function test_stale_owned_worker_lock_is_reconciled_before_enable(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+        $workerLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 14400);
+        $this->assertTrue($workerLock->get());
+
+        Cache::put(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY, [
+            'run_id' => 'MANUAL-E2E-FULL-20260713-080000-OLD1',
+            'lock_owner' => $workerLock->owner(),
+            'process_id' => 12345,
+            'started_at' => now()->subMinutes(10)->toIso8601String(),
+            'heartbeat_at' => now()->subMinutes(5)->toIso8601String(),
+            'expires_at' => now()->addHour()->toIso8601String(),
+            'invalidated_at' => null,
+        ], 14400);
+
+        $this->actingAs($admin)
+            ->getJson('/api/technical-service/messaging-settings/manual-e2e/readiness')
+            ->assertOk()
+            ->assertJsonPath('manual_e2e_readiness.worker_lock_raw_available', false)
+            ->assertJsonPath('manual_e2e_readiness.worker_state', 'stale')
+            ->assertJsonPath('manual_e2e_readiness.worker_stale_recoverable', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.global.manual_e2e_enabled', true);
+
+        $this->assertNull(Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY));
+        $replacementLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 30);
+        $this->assertTrue($replacementLock->get());
+        $replacementLock->release();
+        $settings->freezeManualE2E();
+        Http::assertNothingSent();
+    }
+
+    public function test_stale_lease_with_wrong_owner_cannot_bypass_live_worker_lock(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+        $workerLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 14400);
+        $this->assertTrue($workerLock->get());
+
+        Cache::put(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY, [
+            'run_id' => 'MANUAL-E2E-FULL-20260713-080000-OLD2',
+            'lock_owner' => 'wrong-owner-token',
+            'process_id' => 54321,
+            'started_at' => now()->subMinutes(10)->toIso8601String(),
+            'heartbeat_at' => now()->subMinutes(5)->toIso8601String(),
+            'expires_at' => now()->addHour()->toIso8601String(),
+            'invalidated_at' => null,
+        ], 14400);
+
+        try {
+            $this->actingAs($admin)
+                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+                ->assertConflict()
+                ->assertJsonPath('message', 'Başka bir Manual E2E worker çalışıyor veya worker lock sahipliği güvenli biçimde doğrulanamadı.');
+
+            $this->assertNull($settings->payload()['manual_e2e']['active_run_id']);
+            $this->assertNotNull(Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY));
+        } finally {
+            $workerLock->release();
+            Cache::forget(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_freeze_invalidates_matching_worker_lease_and_releases_owned_lock(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+        $active = $settings->enableManualE2E()['manual_e2e'];
+        $runId = (string) $active['active_run_id'];
+        $workerLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 14400);
+        $this->assertTrue($workerLock->get());
+
+        $settings->registerManualE2EWorkerLease(
+            $runId,
+            $workerLock->owner(),
+            now()->toImmutable(),
+            now()->addHour()->toImmutable(),
+        );
+        $settings->freezeManualE2E();
+
+        $this->assertNull(Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY));
+        $this->assertFalse($settings->heartbeatManualE2EWorkerLease($runId, $workerLock->owner()));
+        $replacementLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 30);
+        $this->assertTrue($replacementLock->get());
+        $replacementLock->release();
         Http::assertNothingSent();
     }
 

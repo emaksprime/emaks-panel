@@ -93,6 +93,7 @@ class TechnicalServiceMessageVariableRegistry
             'support_note' => $this->definition('Destek açıklaması', 'OPS destek talebi açıklaması.', 'Müşteri ek parça talep etti; OPS onayı gerekiyor.', 'technical_service_event'),
             'created_at_formatted' => $this->definition('Oluşturma tarihi', 'Event oluşturma zamanı.', '03.07.2026 14:30', 'technical_service_event'),
             'rejection_reason' => $this->definition('Reddetme nedeni', 'Usta iş reddi gerekçesi.', 'Usta belirtilen saat aralığında uygun değil.', 'technical_service_event'),
+            'cancellation_reason' => $this->definition('İptal nedeni', 'İş/randevu iptal gerekçesi.', 'Müşteri randevunun iptalini istedi.', 'technical_service_event'),
             'rejected_at_formatted' => $this->definition('Reddetme tarihi', 'İş reddi zamanı.', '03.07.2026 14:35', 'technical_service_event'),
             'old_amount_formatted' => $this->definition('Önceki tutar', 'Revizyon öncesi tutar.', '1.250,00 TL', 'technical_service_event'),
             'requested_amount_formatted' => $this->definition('Talep edilen tutar', 'Revizyonla istenen yeni tutar.', '1.650,00 TL', 'technical_service_event'),

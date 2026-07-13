@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceMessageDispatch;
@@ -11,6 +10,7 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
@@ -38,6 +38,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         private readonly TechnicalServiceAppointmentMessageDispatchService $appointmentMessages,
         private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
         private readonly TechnicalServiceServiceVisitService $serviceVisits,
+        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
     ) {}
 
     public function approveAppointmentProposal(
@@ -673,11 +674,122 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     'total_amount' => $totalAmount,
                     'message_payload' => $metadata['message_payload'],
                     'resolved_price_revision_action_ids' => $resolvedPriceRevisionActionIds,
+                    'actor_user_id' => $request->user()?->id,
+                    'actor_role' => $request->user()?->role_code ?: 'authenticated_user',
+                    'source' => 'technical_service_admin',
+                    'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+                    'request_id' => $job->id,
+                    'mrn' => $job->mrn,
+                    'srv' => $job->service_code,
                 ],
             ]);
 
             return [
                 'status' => 'revised',
+                'request' => $this->workflow->serialize($job->refresh(), true),
+            ];
+        });
+
+        return response()->json($result);
+    }
+
+    public function reviewPartnerAction(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePartnerJobAction $partnerJobAction,
+    ): JsonResponse {
+        abort_unless((int) $partnerJobAction->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+        abort_unless(in_array($partnerJobAction->action, [
+            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+        ], true), 404);
+
+        $allowedDecisions = $partnerJobAction->action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+            ? ['reviewed', 'resolved', 'more_info']
+            : ['rejected', 'revision_requested'];
+        $validated = $request->validate([
+            'decision' => ['required', 'string', Rule::in($allowedDecisions)],
+            'note' => ['nullable', 'string', 'max:2000'],
+        ]);
+        if (in_array($validated['decision'], ['more_info', 'rejected', 'revision_requested'], true) && ! filled($validated['note'] ?? null)) {
+            throw ValidationException::withMessages([
+                'note' => 'Bu karar için açıklama zorunludur.',
+            ]);
+        }
+
+        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
+            $action = TechnicalServicePartnerJobAction::query()
+                ->whereKey($partnerJobAction->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $payload = is_array($action->payload) ? $action->payload : [];
+            $existingDecision = data_get($payload, 'ops_review.decision');
+
+            if ($existingDecision === $validated['decision']) {
+                return [
+                    'status' => 'duplicate_noop',
+                    'action' => $action,
+                    'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
+                ];
+            }
+
+            if ($action->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+                throw ValidationException::withMessages([
+                    'decision' => 'Bu talep için daha önce karar verilmiş. Yeni karar uygulanmadı.',
+                ]);
+            }
+
+            $targetStatus = match ($validated['decision']) {
+                'reviewed' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+                'resolved' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                'more_info', 'revision_requested' => TechnicalServicePartnerJobAction::STATUS_REVISION_REQUESTED,
+                'rejected' => TechnicalServicePartnerJobAction::STATUS_REJECTED,
+            };
+            $review = [
+                'decision' => $validated['decision'],
+                'decision_label' => $this->partnerActionDecisionLabel($validated['decision']),
+                'note' => $validated['note'] ?? null,
+                'reviewed_at' => now()->toISOString(),
+                'reviewed_by_user_id' => $request->user()?->id,
+                'reviewed_by_name' => $request->user()?->name,
+                'actor_role' => $request->user()?->role_code ?: 'authenticated_user',
+                'source' => 'technical_service_admin',
+            ];
+            $payload['ops_review'] = $review;
+            $payload['ops_review_required'] = $targetStatus === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
+            $action->forceFill([
+                'status' => $targetStatus,
+                'payload' => $payload,
+            ])->save();
+
+            $job = $technicalServiceRequest->refresh();
+            $job->events()->create([
+                'event_type' => $action->action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+                    ? 'support_request_reviewed'
+                    : 'price_revision_reviewed',
+                'title' => $action->action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+                    ? 'Destek talebi karara bağlandı'
+                    : 'Hakediş revizyon talebi karara bağlandı',
+                'note' => $validated['note'] ?? null,
+                'from_status' => $job->workflow_status,
+                'to_status' => $job->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'partner_job_action_id' => $action->id,
+                    'decision' => $validated['decision'],
+                    'actor_user_id' => $request->user()?->id,
+                    'actor_role' => $request->user()?->role_code ?: 'authenticated_user',
+                    'source' => 'technical_service_admin',
+                    'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+                    'request_id' => $job->id,
+                    'mrn' => $job->mrn,
+                    'srv' => $job->service_code,
+                ],
+            ]);
+
+            return [
+                'status' => $targetStatus,
+                'action' => $action->refresh(),
                 'request' => $this->workflow->serialize($job->refresh(), true),
             ];
         });
@@ -731,6 +843,18 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             })
             ->values()
             ->all();
+    }
+
+    private function partnerActionDecisionLabel(string $decision): string
+    {
+        return match ($decision) {
+            'reviewed' => 'İncelendi',
+            'resolved' => 'Çözüldü',
+            'more_info' => 'Ek bilgi istendi',
+            'rejected' => 'Reddedildi',
+            'revision_requested' => 'Düzenleme istendi',
+            default => $decision,
+        };
     }
 
     public function resendCustomerApprovalRequest(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
@@ -1178,6 +1302,11 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             return null;
         }
 
+        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $jobLink = is_string($jobCardContext['canonical_url'] ?? null)
+            ? $jobCardContext['canonical_url']
+            : null;
+
         return [
             'channel' => 'system_payload',
             'recipient' => 'technician',
@@ -1190,6 +1319,12 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $request->location_formatted_address ?: $request->service_address,
             'maps_link' => $this->mapsLink($request, $request->location_formatted_address ?: $request->service_address),
+            'job_link' => $jobLink,
+            'technician_job_card_url' => $jobLink,
+            'technician_job_card_short_url' => $jobLink,
+            'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
+            'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
+            'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
             'route_fee_amount' => round((float) ($amounts['route_fee_amount'] ?? 0), 2),
             'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
@@ -1219,6 +1354,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'İşçilik / montaj: '.($payload['labor_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
             'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
             'Toplam: '.($payload['total_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            'İş kartı:',
+            $payload['job_link'] ?? null,
             $payload['note'] ?? null,
         ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
@@ -1244,28 +1381,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
     private function partnerIdForRequest(TechnicalServiceRequest $request): ?int
     {
-        if ($request->technical_service_technician_id !== null) {
-            $link = B2BPartnerTechnician::query()
-                ->active()
-                ->where('technical_service_technician_id', $request->technical_service_technician_id)
-                ->whereIn('relationship_type', ['owner', 'field_technician'])
-                ->orderByDesc('is_primary')
-                ->latest('id')
-                ->first();
-
-            if ($link instanceof B2BPartnerTechnician) {
-                return (int) $link->partner_id;
-            }
-        }
-
-        $action = $request->partnerJobActions()
-            ->whereNotNull('partner_id')
-            ->latest('id')
-            ->first();
-
-        return $action instanceof TechnicalServicePartnerJobAction
-            ? (int) $action->partner_id
-            : null;
+        return $this->partnerJobScope->activeAssignmentLink($request)?->partner_id;
     }
 
     private function customerApprovalMessageText(TechnicalServiceRequest $job, string $approvalUrl): string

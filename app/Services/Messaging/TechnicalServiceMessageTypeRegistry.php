@@ -70,6 +70,15 @@ class TechnicalServiceMessageTypeRegistry
     public function requiredVariables(string $messageType): array
     {
         return match ($messageType) {
+            'new_request_created_ops' => [
+                'internal_job_reference',
+                'actor_name',
+                'customer_name',
+                'customer_phone',
+                'product_name',
+                'address',
+                'next_action_text',
+            ],
             'appointment_approved_customer',
             'appointment_updated_customer' => [
                 'customer_name',
@@ -92,11 +101,12 @@ class TechnicalServiceMessageTypeRegistry
             'appointment_cancelled_customer' => [
                 'customer_name',
                 'customer_reference_phrase',
+                'cancellation_reason',
             ],
             'appointment_cancelled_technician' => [
                 'mrn',
                 'customer_name',
-                'technician_job_card_url',
+                'cancellation_reason',
             ],
             'customer_approval_request' => [
                 'customer_name',
@@ -125,7 +135,9 @@ class TechnicalServiceMessageTypeRegistry
                 'mrn',
                 'customer_name',
                 'customer_phone',
+                'product_name',
                 'address',
+                'technician_earning_total_formatted',
                 'technician_job_card_url',
             ],
             'appointment_proposed_ops' => [
@@ -183,6 +195,7 @@ class TechnicalServiceMessageTypeRegistry
                 'actor_name',
                 'part_name',
                 'part_reason',
+                'created_at_formatted',
                 'next_action_text',
             ],
             'part_received_ops' => [
@@ -355,6 +368,7 @@ class TechnicalServiceMessageTypeRegistry
                     'customer_payment_amount',
                     'customer_reference_phrase',
                 ],
+                'new_request_created_ops',
                 'completion_submitted_ops',
                 'part_request_ops',
                 'part_received_ops',
@@ -494,6 +508,9 @@ class TechnicalServiceMessageTypeRegistry
         }
 
         return match ($messageType) {
+            'new_request_created_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nYeni teknik servis talebi.\nİş: {internal_job_reference}\nMüşteri: {customer_name}\nÜrün: {product_name}\nAksiyon: {next_action_text}"
+                : "EMAKS Prime Teknik Servis\n\nYeni teknik servis talebi oluşturuldu.\n\nİş: {internal_job_reference}\nTalebi Açan: {actor_name}\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nÜrün: {product_name}\nAdres / Bölge: {address}\n\nSonraki Aksiyon: {next_action_text}",
             'appointment_approved_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_appointment_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}\n{sms_payment_line}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_appointment_action_phrase}\n\nRandevu Bilgileri\nTarih: {appointment_date_formatted}\nSaat Aralığı: {appointment_customer_window}\n\n{payment_instruction_block}\n\nRandevu aralığında adreste olunmasını rica ederiz.\n{customer_visible_note_block}",
@@ -507,11 +524,11 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\nİş kartı güncellendi.\nMRN: {mrn}\nMüşteri: {customer_name}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nİş Kartı: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nServis randevusu güncellendi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_date_formatted} {appointment_exact_time_range}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_visible_note_block}",
             'appointment_cancelled_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\n{customer_reference_phrase} randevunuz iptal edilmiştir."
-                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} randevunuz iptal edilmiştir.\n\nDetay için operasyon ekibimiz sizinle iletişime geçecektir.",
+                ? "EMAKS Prime\n{customer_reference_phrase} işiniz iptal edilmiştir.\nNeden: {cancellation_reason}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işiniz iptal edilmiştir.\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nNeden: {cancellation_reason}\n\nDetay için operasyon ekibimiz sizinle iletişime geçecektir.",
             'appointment_cancelled_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\nİş iptal edildi.\nMRN: {mrn}\nKart: {technician_job_card_short_url}"
-                : "EMAKS Prime Teknik Servis\n\nİş/randevu iptal edildi.\n\nMRN: {mrn}\nMüşteri: {customer_name}\nİş Kartı: {technician_job_card_url}",
+                ? "EMAKS Prime\nİş iptal edildi.\nMRN: {mrn}\nNeden: {cancellation_reason}"
+                : "EMAKS Prime Teknik Servis\n\nİş/randevu iptal edildi.\n\nMRN: {mrn}\nMüşteri: {customer_name}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nNeden: {cancellation_reason}",
             'customer_approval_request' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} işleminizi onaylamak için:\n{confirmation_link_sms}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır.\n\nİşlemi kontrol edip onaylamak için:\n{confirmation_link}",
@@ -528,7 +545,7 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\n{customer_reference_phrase}\nUstaya ödenecek tutar: {customer_payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar:\n\n{customer_payment_amount_formatted}\n\nRandevu aralığında adreste olunmasını rica ederiz.",
             'assignment_offer_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS\nYeni iş teklifi {mrn}\nMüşteri {customer_name}\nTel {customer_phone}\nRandevu saati öneriniz.\nKart {technician_job_card_short_url}"
+                ? "EMAKS\nYeni iş teklifi\n{mrn}\nMüşteri: {customer_name}\nÜrün: {product_name}\nBölge: {sms_short_address}\nToplam hakediş: {technician_earning_total_formatted}\n{technician_job_card_short_url}\nLütfen randevu saati öneriniz."
                 : "EMAKS Prime Teknik Servis\n\nYeni iş teklifi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\nÜrün: {product_name}\n{maps_url_line}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}\n\nİş Kartı\n{technician_job_card_url}\n\nLütfen randevu saati öneriniz.",
             'appointment_proposed_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
@@ -556,7 +573,7 @@ class TechnicalServiceMessageTypeRegistry
                 : "EMAKS Prime Teknik Servis\n\nUsta işi tamamladığını bildirdi.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nTamamlama Tarihi: {completed_at_formatted}\nSonraki Aksiyon: OPS son kontrol / müşteri onayı",
             'part_request_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nParça talebi.\nİş: {internal_job_reference}\nParça: {part_name}\nAksiyon: {next_action_text}"
-                : "EMAKS Prime Teknik Servis\n\nParça talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nParça: {part_name}\nAdet: {part_quantity}\nNeden: {part_reason}\nSonraki Aksiyon: {next_action_text}",
+                : "EMAKS Prime Teknik Servis\n\nParça talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nParça: {part_name}\nAdet: {part_quantity}\nNeden: {part_reason}\nTarih: {created_at_formatted}\nSonraki Aksiyon: {next_action_text}",
             'part_received_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nParça teslim alındı.\nİş: {internal_job_reference}\nParça: {part_name}\nAksiyon: {next_action_text}"
                 : "EMAKS Prime Teknik Servis\n\nUsta parçayı teslim aldı.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nParça: {part_name}\nDetay: {part_details}\nTeslim Alma: {part_received_at_formatted}\nSonraki Aksiyon: {next_action_text}",
@@ -581,6 +598,7 @@ class TechnicalServiceMessageTypeRegistry
         $channelLabel = self::CHANNELS[$channel] ?? $channel;
 
         return match ($messageType) {
+            'new_request_created_ops' => "OPS yeni teknik servis talebi - {$channelLabel}",
             'appointment_approved_customer' => "Müşteri randevu onayı - {$channelLabel}",
             'appointment_updated_customer' => "Müşteri randevu güncelleme - {$channelLabel}",
             'appointment_approved_technician' => "Usta randevu bildirimi - {$channelLabel}",
@@ -620,7 +638,9 @@ class TechnicalServiceMessageTypeRegistry
             'assignment_offer_technician' => [
                 'mrn',
                 'customer_name',
-                'customer_phone',
+                'product_name',
+                'sms_short_address',
+                'technician_earning_total_formatted',
                 'technician_job_card_short_url',
             ],
             'appointment_proposed_ops' => [

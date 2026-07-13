@@ -146,6 +146,22 @@ class ProcessTechnicalServiceMessageDispatches extends Command
             return self::SUCCESS;
         }
 
+        $runId = (string) $initialContext->activeRunId();
+        $lockOwner = $lock->owner();
+        try {
+            $settings->registerManualE2EWorkerLease($runId, $lockOwner, $startedAt, $expiresAt);
+        } catch (\Throwable $exception) {
+            $lock->release();
+            $this->line(json_encode([
+                'manual_e2e_worker_started' => false,
+                'stop_reason' => 'manual_e2e_worker_lease_rejected',
+                'active_run_id' => $initialContext->activeRunId(),
+                'error' => $exception->getMessage(),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return self::SUCCESS;
+        }
+
         $this->line(json_encode([
             'manual_e2e_worker_started_at' => $startedAt->toIso8601String(),
             'manual_e2e_worker_expires_at' => $expiresAt->toIso8601String(),
@@ -161,6 +177,11 @@ class ProcessTechnicalServiceMessageDispatches extends Command
 
         try {
             while (CarbonImmutable::now()->lt($expiresAt)) {
+                if (! $settings->heartbeatManualE2EWorkerLease($runId, $lockOwner)) {
+                    $stopReason = 'manual_e2e_worker_lease_invalid';
+                    break;
+                }
+
                 $runtimeBlock = $this->runtimeBlockReason($settings, $options, (bool) $this->option('dry-run'));
                 if ($runtimeBlock !== null) {
                     $stopReason = $runtimeBlock;
@@ -173,6 +194,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
                 $count = (int) ($result['count'] ?? 0);
                 $processed += $count;
                 $cycles++;
+                $settings->heartbeatManualE2EWorkerLease($runId, $lockOwner);
 
                 if ($count === 0) {
                     $idleCycles++;
@@ -189,6 +211,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
                 }
             }
         } finally {
+            $settings->clearManualE2EWorkerLease($runId, $lockOwner);
             $lock->release();
         }
 

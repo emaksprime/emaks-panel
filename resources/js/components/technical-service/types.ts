@@ -120,6 +120,7 @@ export type ServiceRequest = {
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
+  technicianJobCard?: ServiceRequestTechnicianJobCard | null
   settlement?: ServiceRequestSettlement | null
   technicianRevisionOffer?: ServiceRequestTechnicianRevisionOffer | null
   earningBreakdown?: ServiceRequestEarningBreakdown | null
@@ -379,6 +380,18 @@ export type ServiceRequestAssignmentOffer = {
   dispatch_status?: string | null
 }
 
+export type ServiceRequestTechnicianJobCard = {
+  ready: boolean
+  blocker_code?: string | null
+  blocker_message?: string | null
+  partner_id?: number | string | null
+  technician_id?: number | string | null
+  partner_technician_link_id?: number | string | null
+  canonical_url?: string | null
+  ops_support_url?: string | null
+  preview_url?: string | null
+}
+
 export type ServiceRequestTechnicianRevisionOffer = {
   exists: boolean
   id?: number | string | null
@@ -603,6 +616,7 @@ export type ServiceRequestPartRequest = {
     id?: number | string | null
     status?: string | null
     status_label?: string | null
+    amount?: number | null
     service_amount?: number | null
     service_amount_label?: string | null
     part_amount?: number | null
@@ -615,6 +629,8 @@ export type ServiceRequestPartRequest = {
     payment_reference?: string | null
     paid_at?: string | null
     currency?: string | null
+    message_send_count?: number | null
+    last_message_sent_at?: string | null
   } | null
   created_at?: string | null
   updated_at?: string | null
@@ -796,6 +812,8 @@ export type ServiceRequestExtraMountPayment = {
   is_extra_payment?: boolean
   readonly?: boolean
   can_cancel?: boolean
+  message_send_count?: number | null
+  last_message_sent_at?: string | null
   selected_serial_ids?: Array<number | string>
 }
 
@@ -846,6 +864,8 @@ export type ServiceRequestCustomerCharge = {
   note?: string | null
   message_template?: string | null
   message_text?: string | null
+  message_send_count?: number | null
+  last_message_sent_at?: string | null
 }
 
 export type ServiceRequestCustomerChargeSummary = {

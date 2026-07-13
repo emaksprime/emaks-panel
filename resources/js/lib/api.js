@@ -49,13 +49,17 @@ const refreshCsrfToken = async () => {
 
 const requestOptions = (options = {}) => {
     const token = csrfToken();
+    const hasFormDataBody =
+        typeof FormData !== 'undefined' && options.body instanceof FormData;
 
     return {
         credentials: 'same-origin',
         ...options,
         headers: {
             Accept: 'application/json',
-            'Content-Type': 'application/json',
+            ...(!hasFormDataBody
+                ? { 'Content-Type': 'application/json' }
+                : {}),
             ...(token ? { 'X-CSRF-TOKEN': token } : {}),
             ...(options.headers ?? {}),
         },
@@ -75,9 +79,16 @@ export async function apiRequest(path, options = {}) {
 
         try {
             const parsed = JSON.parse(detail);
+            const firstValidationError = parsed.errors
+                ? Object.values(parsed.errors).flat()[0]
+                : null;
 
             if (response.status < 500) {
-                message = parsed.message || parsed.error || message;
+                message =
+                    firstValidationError ||
+                    parsed.message ||
+                    parsed.error ||
+                    message;
             }
         } catch {
             // Keep raw Cloudflare/proxy HTML or JSON-like text out of the UI.

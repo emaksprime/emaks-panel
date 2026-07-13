@@ -14,6 +14,10 @@ class TechnicalServiceManualE2ERunContext
 
     public const WORKER_LOCK_KEY = 'technical-service:manual-e2e-worker';
 
+    public const WORKER_LEASE_KEY = 'technical-service:manual-e2e-worker-lease';
+
+    public const WORKER_HEARTBEAT_STALE_AFTER_SECONDS = 180;
+
     public const LIFECYCLE_LOCK_KEY = 'technical-service:manual-e2e-lifecycle';
 
     private function __construct(

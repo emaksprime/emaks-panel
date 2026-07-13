@@ -4,9 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerOrder;
+use App\Models\B2B\B2BPartnerUserProfile;
+use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerPortalDataService;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,6 +25,7 @@ class PartnerPortalController extends Controller
         private readonly B2BPartnerAccessService $partnerAccess,
         private readonly B2BPartnerPortalDataService $portalData,
         private readonly PanelAccessService $panelAccess,
+        private readonly B2BPartnerServiceJobScopeService $serviceJobScope,
     ) {}
 
     public function dashboard(Request $request): Response
@@ -52,6 +56,53 @@ class PartnerPortalController extends Controller
     public function serviceJobs(Request $request): Response
     {
         return $this->renderPortal($request, 'service-jobs', 'partner.service_jobs.view', 'technical_service');
+    }
+
+    public function opsSupportServiceJobs(Request $request): Response
+    {
+        $user = $request->user();
+        abort_unless($user instanceof User && $this->panelAccess->userCanAccess($user, 'technical_service_manage'), 403);
+
+        $jobId = $request->integer('job_id');
+        $job = $jobId > 0 ? TechnicalServiceRequest::query()->findOrFail($jobId) : null;
+        $selection = $this->serviceJobScope->assertOpsSupportSelection(
+            $request->integer('partner_id') ?: null,
+            $request->integer('technician_id') ?: null,
+            $job,
+        );
+        $partner = $selection['partner'];
+        $technicianId = (int) $selection['technician_id'];
+        $query = http_build_query([
+            'partner_id' => (int) $partner->id,
+            'technician_id' => $technicianId,
+            ...($job instanceof TechnicalServiceRequest ? ['job_id' => (int) $job->id] : []),
+        ]);
+
+        return Inertia::render('partner/service-jobs', [
+            'requestedJobId' => $job?->id,
+            'page' => [
+                'title' => 'Usta İş Kartı OPS Destek Modu',
+                'routePath' => '/technical-service/ops-support/service-jobs',
+                'layoutType' => 'module',
+            ],
+            'partnerPortal' => $this->portalData->payload(
+                $partner,
+                'service-jobs',
+                true,
+                null,
+                collect([$partner]),
+                $user,
+                false,
+                [
+                    'enabled' => true,
+                    'partner_id' => (int) $partner->id,
+                    'technician_id' => $technicianId,
+                    'technician_options' => $this->serviceJobScope->opsSupportTechnicianOptions(),
+                    'api_base' => '/api/technical-service/ops-support/service-jobs',
+                    'route_path' => '/technical-service/ops-support/service-jobs?'.$query,
+                ],
+            ),
+        ]);
     }
 
     public function earnings(Request $request): Response
@@ -165,8 +216,42 @@ class PartnerPortalController extends Controller
 
         $allowed = $this->panelAccess->userCanAccess($user, $resourceCode)
             && $this->scopeAllowed($user, $partner, $scope);
+        $requestedJobId = null;
+        $serviceJobTechnicianId = $view === 'service-jobs'
+            ? $this->serviceJobScope->portalTechnicianId($user, $partner)
+            : null;
+        if ($view === 'service-jobs' && $serviceJobTechnicianId === null) {
+            $allowed = false;
+        }
+        if ($view === 'service-jobs' && $request->integer('job_id') > 0 && ! $allowed) {
+            abort(403, 'Bu iş kartı için doğrulanmış portal usta kapsamınız yok.');
+        }
+        if ($view === 'service-jobs' && $allowed) {
+            $requestedTechnicianId = $request->integer('technician_id') ?: null;
+            if ($requestedTechnicianId !== null && $requestedTechnicianId !== $serviceJobTechnicianId) {
+                abort(403, 'URL usta kapsamı authenticated portal kullanıcısıyla eşleşmiyor.');
+            }
+
+            $jobId = $request->integer('job_id');
+            if ($jobId > 0) {
+                $job = TechnicalServiceRequest::query()->findOrFail($jobId);
+                $this->serviceJobScope->assertCanViewServiceJob(
+                    $user,
+                    $job,
+                    (int) $partner->id,
+                    $requestedTechnicianId ?? $serviceJobTechnicianId,
+                );
+                $requestedJobId = (int) $job->id;
+            }
+        }
+        $preview = ! B2BPartnerUserProfile::query()
+            ->where('user_id', $user->id)
+            ->where('partner_id', $partner->id)
+            ->where('active', true)
+            ->exists();
 
         return Inertia::render('partner/'.$view, [
+            'requestedJobId' => $requestedJobId,
             'page' => [
                 'title' => $this->titleFor($view),
                 'routePath' => '/partner/'.$view,
@@ -179,6 +264,9 @@ class PartnerPortalController extends Controller
                 'Bu ekrana erişiminiz yok.',
                 $partners,
                 $user,
+                $preview,
+                null,
+                $serviceJobTechnicianId,
             ),
         ]);
     }

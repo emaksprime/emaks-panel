@@ -54,19 +54,6 @@ async function clipboardMatchesText(text: string): Promise<boolean | null> {
     }
 }
 
-async function verifiedCopyResult(
-    copied: boolean,
-    text: string,
-): Promise<boolean> {
-    if (!copied) {
-        return false;
-    }
-
-    const verified = await clipboardMatchesText(text);
-
-    return verified ?? true;
-}
-
 export async function copyTextToClipboard(
     value: string,
 ): Promise<ClipboardCopyResult> {
@@ -78,8 +65,11 @@ export async function copyTextToClipboard(
             navigator.clipboard?.writeText
         ) {
             await navigator.clipboard.writeText(text);
+            const verification = await clipboardMatchesText(text);
 
-            if (await verifiedCopyResult(true, text)) {
+            // A resolved modern Clipboard API write is authoritative unless a
+            // readable clipboard proves that a different value was written.
+            if (verification !== false) {
                 return {
                     status: 'copied',
                     copied: true,
@@ -92,7 +82,14 @@ export async function copyTextToClipboard(
         // Fall through to textarea fallback for denied permissions, HTTP contexts, and focus-trap edge cases.
     }
 
-    if (await verifiedCopyResult(copyTextWithTextarea(text), text)) {
+    const textareaCopied = copyTextWithTextarea(text);
+    const textareaVerification = textareaCopied
+        ? await clipboardMatchesText(text)
+        : false;
+
+    // execCommand only reports that the command ran. Do not claim success
+    // unless the actual clipboard can be read back and matches exactly.
+    if (textareaVerification === true) {
         return {
             status: 'copied',
             copied: true,

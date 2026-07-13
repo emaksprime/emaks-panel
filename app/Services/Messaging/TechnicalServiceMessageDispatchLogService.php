@@ -61,6 +61,7 @@ class TechnicalServiceMessageDispatchLogService
     ];
 
     private const MESSAGE_TYPE_LABELS = [
+        'new_request_created_ops' => 'Yeni teknik servis talebi',
         'appointment_approved_customer' => 'Müşteri randevu onayı',
         'appointment_approved_technician' => 'Usta randevu bildirimi',
         'appointment_updated_customer' => 'Müşteri randevu güncelleme',

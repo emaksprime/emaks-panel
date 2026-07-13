@@ -4,11 +4,13 @@ namespace Tests\Feature;
 
 use App\Models\DataSource;
 use App\Models\PageConfig;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\N8nPanelDataGateway;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
@@ -19,12 +21,14 @@ use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -1097,7 +1101,8 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_QR_SANDBOX_API_KEY', 'TEST_QR_SANDBOX_SECRET_KEY');
 
-        $client = new class implements PaymentProviderGatewayClient {
+        $client = new class implements PaymentProviderGatewayClient
+        {
             public bool $called = false;
 
             public ?PaymentProviderGatewayRequest $lastRequest = null;
@@ -1596,6 +1601,56 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         }
     }
 
+    public function test_public_mount_submit_queues_single_new_request_ops_event_with_public_actor(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+        Storage::fake('public');
+        Http::fake();
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)->update([
+                'messaging_enabled' => true,
+                'test_mode_enabled' => true,
+                'shared_test_phone' => '0555 000 00 00',
+                'ops_whatsapp_enabled' => true,
+                'ops_whatsapp_phone' => '0555 000 00 00',
+                'message_types' => [
+                    'new_request_created_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+                ],
+            ]);
+            $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+            [, $token] = $this->qrLink();
+
+            $this->submitMountRequest($token)->assertOk();
+
+            $request = TechnicalServiceRequest::query()->where('mrn', 'MRN-2606MP030001')->firstOrFail();
+            $event = $request->events()->where('event_type', 'technical_service_request_created')->sole();
+            $dispatch = TechnicalServiceMessageDispatch::query()
+                ->where('technical_service_request_id', $request->id)
+                ->where('message_type', 'new_request_created_ops')
+                ->sole();
+
+            $this->assertNull($event->author_user_id);
+            $this->assertSame('customer_public', data_get($event->metadata, 'actor_role'));
+            $this->assertSame('public_mount_request', data_get($event->metadata, 'source'));
+            $this->assertSame('whatsapp', $dispatch->channel);
+            $this->assertSame('ops', $dispatch->recipient_role);
+            $this->assertNull($dispatch->sent_at);
+            $this->assertNull($dispatch->provider_message_id);
+            $this->assertDatabaseMissing('technical_service_message_dispatches', [
+                'technical_service_request_id' => $request->id,
+                'message_type' => 'new_request_created_ops',
+                'channel' => 'sms',
+            ]);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_paid_mount_amount_is_used_as_customer_collection(): void
     {
         config([
@@ -1757,17 +1812,17 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
     }
 
     /**
-     * @param array<int, array<string, mixed>> $rows
+     * @param  array<int, array<string, mixed>>  $rows
      */
     private function fakeInvoiceSerialRows(array $rows): void
     {
         $this->app->instance(
             MikroInvoiceSerialsService::class,
-            new class($rows) extends MikroInvoiceSerialsService {
+            new class($rows) extends MikroInvoiceSerialsService
+            {
                 public function __construct(
                     private readonly array $rows,
-                ) {
-                }
+                ) {}
 
                 public function forSerial(string $serialNo): array
                 {
@@ -1806,7 +1861,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         ];
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('responsibilityCodeCaseProvider')]
+    #[DataProvider('responsibilityCodeCaseProvider')]
     public function test_multi_product_check_uses_responsibility_code_for_selectability(?string $responsibilityCode, bool $expectedSelectable): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
@@ -2232,18 +2287,16 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         string $saleMountStatus,
         string $suggestedLinkType = TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
         string $currentSerialState = 'sold_current',
-    ): void
-    {
+    ): void {
         $this->app->instance(
             SerialProductContextResolver::class,
-            new class($saleMountStatus, $suggestedLinkType, $currentSerialState) extends SerialProductContextResolver {
+            new class($saleMountStatus, $suggestedLinkType, $currentSerialState) extends SerialProductContextResolver
+            {
                 public function __construct(
                     private readonly string $saleMountStatus,
                     private readonly string $suggestedLinkType,
                     private readonly string $currentSerialState,
-                )
-                {
-                }
+                ) {}
 
                 public function resolve(string $serialNumber, array $knownContext = []): array
                 {
@@ -2272,10 +2325,9 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
     {
         $this->app->instance(
             SerialProductContextResolver::class,
-            new class extends SerialProductContextResolver {
-                public function __construct()
-                {
-                }
+            new class extends SerialProductContextResolver
+            {
+                public function __construct() {}
 
                 public function resolve(string $serialNumber, array $knownContext = []): array
                 {
@@ -2304,14 +2356,13 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
     {
         $this->app->instance(
             SerialProductContextResolver::class,
-            new class extends SerialProductContextResolver {
-                public function __construct()
-                {
-                }
+            new class extends SerialProductContextResolver
+            {
+                public function __construct() {}
 
                 public function resolve(string $serialNumber, array $knownContext = []): array
                 {
-                    throw new \RuntimeException('Fixture Mikro resolver failed.');
+                    throw new RuntimeException('Fixture Mikro resolver failed.');
                 }
             },
         );

@@ -76,7 +76,7 @@ const adminSectionTabs: Array<{
     {
         key: 'queue',
         label: 'Kuyruk / Loglar',
-        summary: 'REL-4D outbox hazırlığı',
+        summary: 'Outbox, provider sonucu ve güvenlik logları',
     },
     {
         key: 'integrations',
@@ -430,6 +430,11 @@ type ManualE2EReadiness = {
     pending_external_count: number;
     unsafe_external_count: number;
     worker_lock_available: boolean;
+    worker_lock_raw_available: boolean;
+    worker_state: 'none' | 'active' | 'stale' | 'invalidated';
+    worker_run_id: string | null;
+    worker_heartbeat_at: string | null;
+    worker_stale_recoverable: boolean;
     lifecycle_lock_available: boolean;
     active_run_id: string | null;
     active_run_status: string;
@@ -1072,6 +1077,64 @@ function formatManualE2ERunDate(value: string | null): string {
     }).format(date);
 }
 
+function messagingRuntimeHeadline(settings: MessagingSettings): string {
+    if (
+        settings.global.manual_e2e_enabled &&
+        settings.global.real_send_enabled &&
+        !settings.global.queue_paused &&
+        settings.manual_e2e.active
+    ) {
+        return 'Manual E2E açık; gerçek gönderim kontrollü.';
+    }
+
+    if (settings.global.real_send_enabled) {
+        return settings.global.queue_paused
+            ? 'Gerçek gönderim açık; provider kuyruğu duraklatıldı.'
+            : 'Gerçek gönderim açık.';
+    }
+
+    if (settings.global.test_mode_enabled) {
+        return 'Gerçek gönderim kapalı; test modu açık.';
+    }
+
+    return 'Gönderimler donduruldu.';
+}
+
+function messagingEffectiveModeLabel(mode: string): string {
+    const labels: Record<string, string> = {
+        disabled: 'Mesaj sistemi kapalı',
+        blocked_provider_disabled: 'Sağlayıcı kapalı',
+        blocked_provider_contract_pending: 'Sağlayıcı sözleşmesi bekliyor',
+        blocked_missing_test_phone: 'Test telefonu eksik',
+        test_redirect: 'Kontrollü test yönlendirmesi',
+        blocked_provider_missing: 'Sağlayıcı ayarları eksik',
+        blocked_real_send_disabled: 'Gerçek gönderim kapalı',
+        blocked_provider_not_ready: 'Sağlayıcı hazır değil',
+        real_ready: 'Kontrollü gerçek gönderim',
+    };
+
+    return labels[mode] ?? mode;
+}
+
+function messagingQueueStatus(settings: MessagingSettings): {
+    label: string;
+    ready: boolean;
+} {
+    if (settings.global.queue_paused) {
+        return { label: 'Duraklatıldı', ready: false };
+    }
+
+    if (
+        settings.global.manual_e2e_enabled &&
+        settings.manual_e2e.active &&
+        settings.readiness.queue_ready
+    ) {
+        return { label: 'Manual E2E queue açık', ready: true };
+    }
+
+    return { label: 'Aktif run context eksik', ready: false };
+}
+
 function csrfToken(): string {
     if (typeof document === 'undefined') {
         return '';
@@ -1124,6 +1187,7 @@ export default function TechnicalServiceAdmin({
     const manualE2EContextLocked =
         messaging.global.manual_e2e_enabled ||
         messaging.manual_e2e.active_run_id !== null;
+    const messagingQueueState = messagingQueueStatus(messaging);
     const [messageTemplates, setMessageTemplates] = useState(
         messageTemplateSettings,
     );
@@ -5015,15 +5079,15 @@ export default function TechnicalServiceAdmin({
                                         ? 'Entegrasyonlar'
                                         : 'Mesajlaşma Sağlayıcı Ayarları'}
                                 </p>
-                                <h2 className="mt-2 text-lg font-bold text-slate-950">
-                                    {activeAdminSection === 'integrations'
-                                        ? 'Mikro ve provider credential hazırlığı ayrı yönetilir.'
-                                        : 'Gerçek gönderim kapalı, test modu kontrollü.'}
-                                </h2>
+                                 <h2 className="mt-2 text-lg font-bold text-slate-950">
+                                     {activeAdminSection === 'integrations'
+                                         ? 'Mikro ve provider credential hazırlığı ayrı yönetilir.'
+                                         : messagingRuntimeHeadline(messaging)}
+                                 </h2>
                                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                                    {activeAdminSection === 'integrations'
-                                        ? 'Mikro API, provider credentials ve operation catalog hazırlığı mesajlaşma ayarlarından ayrıdır. Yazma işlemleri onay/audit olmadan hazır sayılmaz.'
-                                        : 'Evo WhatsApp mevcut pratik sağlayıcıdır. Voibot ses/mesaj sağlayıcısı sözleşme kesinleşince aynı provider altyapısına bağlanacak. Randevu mesajı usta seçildiğinde değil OPS randevu onayında bağlanacak.'}
+                                     {activeAdminSection === 'integrations'
+                                         ? 'Mikro API, provider credentials ve operation catalog hazırlığı mesajlaşma ayarlarından ayrıdır. Yazma işlemleri onay/audit olmadan hazır sayılmaz.'
+                                         : 'Provider readiness, kanal politikası ve Manual E2E yaşam döngüsü ayrı durumlar olarak server verisinden gösterilir. Randevu mesajı usta seçildiğinde değil OPS randevu onayında kuyruğa alınır.'}
                                 </p>
                                 {messagingMessage ? (
                                     <p className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800">
@@ -5117,10 +5181,11 @@ export default function TechnicalServiceAdmin({
                         ) ? (
                             <div className="mt-5 grid gap-3 md:grid-cols-5">
                                 {[
-                                    {
-                                        label: 'Etkin mod',
-                                        value: messaging.readiness
-                                            .effective_mode,
+                                     {
+                                         label: 'Etkin mod',
+                                         value: messagingEffectiveModeLabel(
+                                             messaging.readiness.effective_mode,
+                                         ),
                                         ok:
                                             messaging.readiness.can_send_test ||
                                             messaging.readiness.can_send_real,
@@ -5152,13 +5217,11 @@ export default function TechnicalServiceAdmin({
                                         ok: messaging.evo_whatsapp
                                             .direct_api_ready,
                                     },
-                                    {
-                                        label: 'Queue sender',
-                                        value: messaging.readiness.queue_ready
-                                            ? 'Hazır'
-                                            : 'REL-4D bekliyor',
-                                        ok: messaging.readiness.queue_ready,
-                                    },
+                                     {
+                                         label: 'Güvenli queue',
+                                         value: messagingQueueState.label,
+                                         ok: messagingQueueState.ready,
+                                     },
                                 ].map((item) => (
                                     <div
                                         key={item.label}
@@ -5192,9 +5255,9 @@ export default function TechnicalServiceAdmin({
                                         </p>
                                         <p className="mt-1 text-sm leading-6 text-slate-600">
                                             Message type ayarları provider
-                                            bağımsız kalır; gönderim REL-4D
-                                            provider router üzerinden sıraya
-                                            alınacak.
+                                            bağımsız kalır; gönderim mevcut
+                                            provider router ve güvenli queue
+                                            guard üzerinden işlenir.
                                         </p>
                                     </div>
                                     <p className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
@@ -6365,6 +6428,20 @@ export default function TechnicalServiceAdmin({
                                                         0,
                                                 ),
                                             ],
+                                            [
+                                                'Worker',
+                                                !manualE2EReadiness
+                                                    ? 'Kontrol edilmedi'
+                                                    : manualE2EReadiness.worker_state ===
+                                                        'active'
+                                                      ? 'Aktif'
+                                                      : manualE2EReadiness.worker_stale_recoverable
+                                                        ? 'Stale lock / güvenli temizlenebilir'
+                                                        : manualE2EReadiness.worker_state ===
+                                                            'invalidated'
+                                                          ? 'Geçersiz kılındı'
+                                                          : 'Yok',
+                                            ],
                                         ].map(([label, value]) => (
                                             <div key={label} className="min-w-0">
                                                 <dt className="font-semibold text-slate-500">
@@ -6403,6 +6480,18 @@ export default function TechnicalServiceAdmin({
                                                 / OPS SMS: Kapalı / TTL:{' '}
                                                 {manualE2EReadiness.ttl_seconds}{' '}
                                                 saniye
+                                            </p>
+                                            <p className="mt-1">
+                                                Worker:{' '}
+                                                {manualE2EReadiness.worker_state ===
+                                                'active'
+                                                    ? 'Aktif'
+                                                    : manualE2EReadiness.worker_stale_recoverable
+                                                      ? 'Stale lock; güvenli açma sırasında owner/run doğrulanarak temizlenecek'
+                                                      : 'Yok'}
+                                                {manualE2EReadiness.worker_heartbeat_at
+                                                    ? ` / Son heartbeat: ${formatManualE2ERunDate(manualE2EReadiness.worker_heartbeat_at)}`
+                                                    : ''}
                                             </p>
                                             <p className="mt-1 break-words">
                                                 Allowlist:{' '}
@@ -7597,8 +7686,8 @@ export default function TechnicalServiceAdmin({
                                 <p className="mt-1 leading-6">
                                     Bu fazda Voibot gerçek çağrısı yok. Voice
                                     script preview REL-4C şablon altyapısında
-                                    kalır; provider router REL-4D sonrası
-                                    bağlanır.
+                                    kalır; sözleşme doğrulanırsa mevcut provider
+                                    router’a açık bir provider olarak bağlanır.
                                 </p>
                             </div>
                         ) : null}
@@ -8989,6 +9078,19 @@ export default function TechnicalServiceAdmin({
                                             {
                                                 manualE2EReadiness.unsafe_external_count
                                             }
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            Worker durumu
+                                        </dt>
+                                        <dd className="mt-1 font-semibold text-slate-950">
+                                            {manualE2EReadiness.worker_state ===
+                                            'active'
+                                                ? 'Aktif'
+                                                : manualE2EReadiness.worker_stale_recoverable
+                                                  ? 'Stale lock; owner/run kontrolüyle temizlenecek'
+                                                  : 'Worker yok'}
                                         </dd>
                                     </div>
                                 </dl>

@@ -35,6 +35,10 @@ class UpdateTechnicalServiceRequestStatus extends FormRequest
         return [
             function (Validator $validator): void {
                 $technicalServiceRequest = $this->route('technicalServiceRequest');
+                if ($this->input('status') === 'İptal' && ! filled($this->input('note'))) {
+                    $validator->errors()->add('note', 'İptal nedeni zorunludur.');
+                }
+
                 $isReopen = $this->input('status') === 'Yeni'
                     && $technicalServiceRequest
                     && in_array($technicalServiceRequest->status, ['Tamamlandı', 'İptal'], true);

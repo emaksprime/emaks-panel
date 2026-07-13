@@ -277,6 +277,7 @@ class TechnicalServiceMessageContextBuilder
         $context['support_note'] = $this->filledString($context['support_note'] ?? null) ?: '';
         $context['created_at_formatted'] = $this->filledString($context['created_at_formatted'] ?? null) ?: '';
         $context['rejection_reason'] = $this->filledString($context['rejection_reason'] ?? null) ?: '';
+        $context['cancellation_reason'] = $this->filledString($context['cancellation_reason'] ?? null) ?: '';
         $context['rejected_at_formatted'] = $this->filledString($context['rejected_at_formatted'] ?? null) ?: '';
         $context['old_amount_formatted'] = $this->filledString($context['old_amount_formatted'] ?? null) ?: '';
         $context['requested_amount_formatted'] = $this->filledString($context['requested_amount_formatted'] ?? null) ?: '';

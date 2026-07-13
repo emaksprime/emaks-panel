@@ -6,6 +6,7 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Support\PartnerPortalPublicUrl;
 
 class TechnicalServiceAppointmentMessageDispatchService
@@ -16,6 +17,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         private readonly TechnicalServiceMessageChannelPlanner $channelPlanner,
         private readonly TechnicalServiceMessageDispatchQueue $dispatchQueue,
         private readonly TechnicalServiceMessageIdempotencyService $idempotency,
+        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
     ) {}
 
     /**
@@ -180,6 +182,36 @@ class TechnicalServiceAppointmentMessageDispatchService
         }
 
         $context = $this->contextOverrides($request, $sourceAction, $options);
+        if ($recipientRole === 'technician' && ! (bool) ($context['technician_job_card_ready'] ?? false)) {
+            return $this->addBlocked(
+                $request,
+                $actor,
+                $summary,
+                $messageType,
+                $recipientRole,
+                $channel,
+                $providerKey,
+                (string) ($context['technician_job_card_blocker_code'] ?? 'active_assignment_partner_missing'),
+                (string) ($context['technician_job_card_blocker_message'] ?? 'Aktif atamaya bağlı usta iş kartı bulunamadı.'),
+            );
+        }
+        $requiredPublicUrl = $recipientRole === 'technician'
+            ? $this->filledString($context['technician_job_card_url'] ?? null)
+            : null;
+        if (! $testMode && $requiredPublicUrl !== null && PartnerPortalPublicUrl::isLocalUrl($requiredPublicUrl)) {
+            return $this->addBlocked(
+                $request,
+                $actor,
+                $summary,
+                $messageType,
+                $recipientRole,
+                $channel,
+                $providerKey,
+                'public_url_missing',
+                'Usta iş kartı bağlantısı gerçek gönderim için public URL olmalıdır. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.',
+            );
+        }
+
         $preview = $this->templates->preview([
             'message_type' => $messageType,
             'channel' => $channel,
@@ -405,8 +437,10 @@ class TechnicalServiceAppointmentMessageDispatchService
         $end = $this->filledString($slot['end_time'] ?? null);
         $range = $start !== null && $end !== null ? "{$start} - {$end}" : $start;
         $customerWindow = $this->customerAppointmentWindow($start);
-        $jobCardUrl = $this->technicianJobCardUrl($request, $sourceAction);
-        $jobCardShortUrl = $this->technicianJobCardShortUrl($request);
+        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $jobCardUrl = is_string($jobCardContext['canonical_url'] ?? null)
+            ? $jobCardContext['canonical_url']
+            : null;
 
         return [
             ...$explicitContext,
@@ -420,7 +454,12 @@ class TechnicalServiceAppointmentMessageDispatchService
             'appointment_customer_window_label' => $customerWindow === '09:00 - 13:00 arası' ? 'sabah' : ($customerWindow === null ? null : 'öğleden sonra'),
             'appointment_slot_text' => $slot['label'] ?? $slot['slot'] ?? null,
             'technician_job_card_url' => $jobCardUrl,
-            'technician_job_card_short_url' => $jobCardShortUrl,
+            'technician_job_card_short_url' => $jobCardUrl,
+            'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
+            'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
+            'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,
+            'assignment_partner_id' => $jobCardContext['partner_id'] ?? null,
+            'assignment_technician_id' => $jobCardContext['technician_id'] ?? null,
         ];
     }
 
@@ -436,23 +475,6 @@ class TechnicalServiceAppointmentMessageDispatchService
         return $hour < 13
             ? '09:00 - 13:00 arası'
             : '13:00 - 19:00 arası';
-    }
-
-    private function technicianJobCardUrl(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $sourceAction): string
-    {
-        $query = array_filter([
-            'partner_id' => $sourceAction?->partner_id,
-            'job_id' => $request->id,
-        ], fn (mixed $value): bool => $value !== null && $value !== '');
-
-        return PartnerPortalPublicUrl::url('/partner/service-jobs?'.http_build_query($query));
-    }
-
-    private function technicianJobCardShortUrl(TechnicalServiceRequest $request): string
-    {
-        return PartnerPortalPublicUrl::url('/partner/service-jobs?'.http_build_query([
-            'job_id' => $request->id,
-        ]));
     }
 
     /**

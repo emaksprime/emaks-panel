@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Throwable;
 
 class TechnicalServiceMessagingSettingsService
 {
@@ -125,12 +126,12 @@ class TechnicalServiceMessagingSettingsService
         'nac_sms' => [
             'label' => 'NAC SMS',
             'channel' => 'sms',
-            'description' => 'NAC SMS API doğrudan Laravel adapter adayı; Basic Auth ve gönderici ayarları admin panelden yönetilir.',
+            'description' => 'NAC SMS API doğrudan Laravel adapter ile çalışır; Basic Auth ve gönderici ayarları admin panelden yönetilir.',
             'status_label' => 'SMS sağlayıcısı',
             'default_enabled' => false,
             'contract_confirmed' => true,
             'current_practical' => true,
-            'disabled_reason' => 'SMS gerçek gönderimi REL-4D kuyruk ve REL-4F tekil test kanıtı tamamlanana kadar kapalıdır.',
+            'disabled_reason' => 'NAC gerçek gönderimi yalnız aktif Manual E2E run context ve güvenli queue worker ile yapılır.',
             'capabilities' => [
                 'supports_text' => true,
                 'supports_sms' => true,
@@ -236,6 +237,11 @@ class TechnicalServiceMessagingSettingsService
     ];
 
     public const MESSAGE_TYPES = [
+        'new_request_created_ops' => [
+            'label' => 'OPS yeni teknik servis talebi',
+            'recipient_role' => 'ops',
+            'description' => 'Yeni teknik servis talebi oluştuğunda OPS WhatsApp bilgilendirmesi.',
+        ],
         'appointment_approved_customer' => [
             'label' => 'Müşteri randevu onayı',
             'recipient_role' => 'customer',
@@ -445,21 +451,21 @@ class TechnicalServiceMessagingSettingsService
             'admin_sections' => $this->adminSections($settings, $readiness),
             'message_types' => $this->messageTypePayload($settings['message_types']),
             'warnings' => [
-                'Gerçek gönderim açılmadan önce tekil test mesajı zorunludur.',
+                'Gerçek gönderim yalnız Manual E2E kontrol panelindeki güvenli açma/dondurma yaşam döngüsüyle yönetilir.',
                 'Randevu mesajları usta seçildiğinde değil OPS randevu onayında gider.',
                 'Test modu açıkken hedef numara test numarasına çevrilir.',
-                'Queue/rate limit REL-4D’de aktif gönderim yoluna bağlanacak.',
+                'Provider dispatch’leri allowlist, run context, queue, rate limit ve idempotency kontrollerinden geçer.',
                 'Voibot ses/mesaj sağlayıcısı API sözleşmesi doğrulanana kadar kapalıdır.',
                 'Evo Direct API, NAC SMS ve Mikro API canlı aksiyonları credential/readiness/queue/onay tamamlanmadan çalışmaz.',
             ],
             'helper_texts' => [
                 'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
-                'queue' => 'Queue sender REL-4D’de bağlanana kadar gerçek gönderim yolu hazır sayılmaz.',
+                'queue' => 'Gerçek provider kuyruğu yalnız aktif Manual E2E run context ve üretilen güvenli worker komutuyla işlenir.',
                 'test_phone' => 'Test modu açıkken müşteri/usta yerine ortak test telefonuna yönlenir.',
                 'active_provider' => 'Öncelikli sağlayıcı manuel test/readiness için varsayılan bakılan sağlayıcıdır.',
                 'default_provider' => 'Varsayılan test sağlayıcısı otomasyon değil, güvenli preview/test tercihidir.',
-                'fallback_provider' => 'Hata durumunda yedek sağlayıcı REL-4D router kuyruğunda kullanılacak; bu fazda otomatik fallback gönderimi yoktur.',
-                'channel_policy' => 'Kanal politikası WhatsApp/SMS seçimini tanımlar; birlikte gönderim ve fallback REL-4D kuyruk/idempotency olmadan canlıya bağlanmaz.',
+                'fallback_provider' => 'Otomatik provider fallback bu kontrollü akışta kapalıdır; kanal politikası açık provider seçimini kullanır.',
+                'channel_policy' => 'Kanal politikası WhatsApp/SMS seçimini tanımlar; birlikte gönderim güvenli queue ve idempotency kontrolleriyle yürür.',
             ],
         ];
     }
@@ -626,6 +632,11 @@ class TechnicalServiceMessagingSettingsService
         $lock = $this->acquireLifecycleLock();
 
         try {
+            $this->reconcileStaleManualE2EWorkerLease();
+            if (! $this->lockAvailable(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY)) {
+                throw new ConflictHttpException('Başka bir Manual E2E worker çalışıyor veya worker lock sahipliği güvenli biçimde doğrulanamadı.');
+            }
+
             DB::transaction(function () use ($values): void {
                 $page = $this->lockedPageConfig();
                 $current = $this->settingsFromLayout((array) $page->layout_json);
@@ -693,16 +704,25 @@ class TechnicalServiceMessagingSettingsService
     public function freezeManualE2E(): array
     {
         $lock = $this->acquireLifecycleLock();
+        $activeRunId = null;
 
         try {
-            DB::transaction(function (): void {
+            DB::transaction(function () use (&$activeRunId): void {
                 $page = $this->lockedPageConfig();
                 $current = $this->settingsFromLayout((array) $page->layout_json);
-                $next = $this->deactivateManualE2EContext($current, TechnicalServiceManualE2ERunContext::fromSettings($current));
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                $activeRunId = $context->activeRunId();
+                $next = $this->deactivateManualE2EContext($current, $context);
                 $next['test_mode_enabled'] = false;
                 $this->validateSettings($next);
                 $this->persistSettingsToPage($page, $next);
             });
+
+            if ($activeRunId !== null) {
+                $this->invalidateManualE2EWorkerLease($activeRunId);
+            } else {
+                $this->reconcileStaleManualE2EWorkerLease();
+            }
         } finally {
             $lock->release();
         }
@@ -713,6 +733,86 @@ class TechnicalServiceMessagingSettingsService
     public function manualE2EContext(): TechnicalServiceManualE2ERunContext
     {
         return TechnicalServiceManualE2ERunContext::fromSettings($this->settings());
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function registerManualE2EWorkerLease(
+        string $runId,
+        string $lockOwner,
+        CarbonImmutable $startedAt,
+        CarbonImmutable $expiresAt,
+    ): array {
+        $context = $this->manualE2EContext();
+        if (! $context->isActive() || $context->activeRunId() !== $runId || trim($lockOwner) === '') {
+            throw new ConflictHttpException('Worker lease aktif Manual E2E run ile eşleşmiyor.');
+        }
+
+        $now = CarbonImmutable::now();
+        $lease = [
+            'run_id' => $runId,
+            'lock_owner' => $lockOwner,
+            'process_id' => getmypid() ?: null,
+            'started_at' => $startedAt->toIso8601String(),
+            'heartbeat_at' => $now->toIso8601String(),
+            'expires_at' => $expiresAt->toIso8601String(),
+            'invalidated_at' => null,
+        ];
+        Cache::put(
+            TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY,
+            $lease,
+            max(60, $context->remainingTtlSeconds() + 60),
+        );
+
+        return $this->workerLeasePublicPayload($lease, $now);
+    }
+
+    public function heartbeatManualE2EWorkerLease(string $runId, string $lockOwner): bool
+    {
+        $lease = $this->manualE2EWorkerLease();
+        $context = $this->manualE2EContext();
+        if ($lease === null
+            || ($lease['run_id'] ?? null) !== $runId
+            || ($lease['lock_owner'] ?? null) !== $lockOwner
+            || filled($lease['invalidated_at'] ?? null)
+            || ! $context->isActive()
+            || $context->activeRunId() !== $runId) {
+            return false;
+        }
+
+        $lease['heartbeat_at'] = CarbonImmutable::now()->toIso8601String();
+        Cache::put(
+            TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY,
+            $lease,
+            max(60, $context->remainingTtlSeconds() + 60),
+        );
+
+        return true;
+    }
+
+    public function clearManualE2EWorkerLease(string $runId, string $lockOwner): bool
+    {
+        $lease = $this->manualE2EWorkerLease();
+        if ($lease === null
+            || ($lease['run_id'] ?? null) !== $runId
+            || ($lease['lock_owner'] ?? null) !== $lockOwner) {
+            return false;
+        }
+
+        Cache::forget(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+
+        return true;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function manualE2EWorkerLeaseStatus(): array
+    {
+        $lease = $this->manualE2EWorkerLease();
+
+        return $this->workerLeasePublicPayload($lease, CarbonImmutable::now());
     }
 
     /**
@@ -1155,6 +1255,12 @@ class TechnicalServiceMessagingSettingsService
     {
         $defaults = [];
         $coreWorkflowDefaults = [
+            'new_request_created_ops' => [
+                'enabled' => true,
+                'channel_policy' => 'whatsapp_only',
+                'whatsapp_mode' => 'test',
+                'sms_mode' => 'disabled',
+            ],
             'payment_received_ops' => [
                 'enabled' => true,
                 'channel_policy' => 'whatsapp_only',
@@ -1367,7 +1473,9 @@ class TechnicalServiceMessagingSettingsService
             $blockers[] = ['code' => 'unsafe_provider_dispatch', 'message' => 'Allowlist dışı pending provider dispatch bulundu.'];
         }
 
-        $workerLockAvailable = $this->lockAvailable(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY);
+        $workerLease = $this->manualE2EWorkerLeaseStatus();
+        $rawWorkerLockAvailable = $this->lockAvailable(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY);
+        $workerLockAvailable = $rawWorkerLockAvailable || (bool) ($workerLease['stale_recoverable'] ?? false);
         if (! $workerLockAvailable) {
             $blockers[] = ['code' => 'manual_e2e_worker_active', 'message' => 'Başka bir Manual E2E worker çalışıyor.'];
         }
@@ -1392,6 +1500,12 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $publicWarnings = [];
+        if (! $rawWorkerLockAvailable && (bool) ($workerLease['stale_recoverable'] ?? false)) {
+            $publicWarnings[] = [
+                'code' => 'manual_e2e_worker_stale_lock_recoverable',
+                'message' => 'Önceki Manual E2E worker lease süresi dolmuş; güvenli açma işlemi owner/run doğrulamasıyla stale lock temizleyecek.',
+            ];
+        }
         $publicUrl = PartnerPortalPublicUrl::normalizeBaseUrl((string) (config('services.partner_portal.public_url') ?: config('services.public_urls.app_url') ?: config('app.url')));
         if ($publicUrl === null) {
             $publicWarnings[] = ['code' => 'public_url_missing', 'message' => 'Partner/müşteri public URL tanımlı değil; telefon linkleri canlı akışta açılamaz.'];
@@ -1428,6 +1542,11 @@ class TechnicalServiceMessagingSettingsService
             'pending_external_count' => $pending,
             'unsafe_external_count' => $unsafe,
             'worker_lock_available' => $workerLockAvailable,
+            'worker_lock_raw_available' => $rawWorkerLockAvailable,
+            'worker_state' => $workerLease['state'],
+            'worker_run_id' => $workerLease['run_id'],
+            'worker_heartbeat_at' => $workerLease['heartbeat_at'],
+            'worker_stale_recoverable' => $workerLease['stale_recoverable'],
             'lifecycle_lock_available' => $lifecycleLockAvailable,
             'active_run_id' => $context->activeRunId(),
             'active_run_status' => $context->payload()['status'],
@@ -1522,7 +1641,7 @@ class TechnicalServiceMessagingSettingsService
             if (($typeSettings['whatsapp_mode'] ?? 'test') === 'live'
                 || ($typeSettings['sms_mode'] ?? 'disabled') === 'live') {
                 throw ValidationException::withMessages([
-                    'message_types' => "{$messageType} için canlı kanal modu REL-4D kuyruk/rate-limit ve REL-4F tekil test kanıtı tamamlanmadan açılamaz.",
+                    'message_types' => "{$messageType} doğrudan canlı kanal moduna alınamaz; kontrollü gerçek gönderim Manual E2E yaşam döngüsü ve queue guard üzerinden yönetilir.",
                 ]);
             }
         }
@@ -1555,6 +1674,8 @@ class TechnicalServiceMessagingSettingsService
             ->values()
             ->all();
 
+        $manualE2eContext = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $queueReady = $this->safeQueueReady($settings, $manualE2eContext);
         $disabledReasons = [];
 
         if (! (bool) $settings['messaging_enabled']) {
@@ -1584,7 +1705,13 @@ class TechnicalServiceMessagingSettingsService
         if ($realAllowedTypes === []) {
             $disabledReasons[] = 'Gerçek gönderime açık mesaj tipi yok.';
         }
-        $disabledReasons[] = 'Queue sender REL-4D bekliyor.';
+        if ((bool) ($settings['queue_paused'] ?? true)) {
+            $disabledReasons[] = 'Provider kuyruğu duraklatıldı.';
+        } elseif (! $manualE2eContext->isActive()) {
+            $disabledReasons[] = 'Provider kuyruğu açık ancak aktif Manual E2E run context yok.';
+        } elseif ($manualE2eContext->workerCommand() === null) {
+            $disabledReasons[] = 'Manual E2E güvenli worker komutu hazır değil.';
+        }
 
         $canSendTest = (bool) $settings['messaging_enabled']
             && (bool) $settings['test_mode_enabled']
@@ -1597,8 +1724,8 @@ class TechnicalServiceMessagingSettingsService
             && ! (bool) $settings['test_mode_enabled']
             && $testPhoneConfigured
             && $realAllowedTypes !== []
-            && $activeProviderRealReady;
-        $manualE2eContext = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+            && $activeProviderRealReady
+            && $queueReady;
 
         return [
             'messaging_enabled' => (bool) $settings['messaging_enabled'],
@@ -1622,7 +1749,7 @@ class TechnicalServiceMessagingSettingsService
             'active_provider_contract_confirmed' => (bool) ($activeProviderDefinition['contract_confirmed'] ?? false),
             'active_provider_credentials_ready' => $activeProviderCredentialsReady,
             'active_provider_real_ready' => $activeProviderRealReady,
-            'queue_ready' => false,
+            'queue_ready' => $queueReady,
             'manual_e2e_active' => $manualE2eContext->isActive(),
             'manual_e2e_worker_command_ready' => $manualE2eContext->workerCommand() !== null,
             'manual_e2e_blocker_code' => $manualE2eContext->contextBlockingReason()['code'] ?? null,
@@ -1672,6 +1799,23 @@ class TechnicalServiceMessagingSettingsService
         }
 
         return 'real_ready';
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function safeQueueReady(
+        array $settings,
+        ?TechnicalServiceManualE2ERunContext $context = null,
+    ): bool {
+        $context ??= TechnicalServiceManualE2ERunContext::fromSettings($settings);
+
+        return (bool) ($settings['messaging_enabled'] ?? false)
+            && (bool) ($settings['real_send_enabled'] ?? false)
+            && ! (bool) ($settings['test_mode_enabled'] ?? false)
+            && ! (bool) ($settings['queue_paused'] ?? true)
+            && $context->isActive()
+            && $context->workerCommand() !== null;
     }
 
     /**
@@ -2260,7 +2404,7 @@ class TechnicalServiceMessagingSettingsService
             ? (string) $settings['test_phone']
             : (string) ($nac['test_phone'] ?? '');
         $testPhoneReady = $this->validPhone($testPhone);
-        $queueReady = false;
+        $queueReady = $this->safeQueueReady($settings);
         $liveReady = (bool) $nac['enabled']
             && $credentialsReady
             && $senderReady
@@ -2285,7 +2429,11 @@ class TechnicalServiceMessagingSettingsService
         if (! $testPhoneReady) {
             $blocking[] = 'Ortak test telefonu eksik veya geçersiz.';
         }
-        $blocking[] = 'Business SMS gönderimi REL-4D kuyruk bağlanana kadar kapalı; açık onaylı test SMS sadece ortak test telefonuna gider.';
+        if ((bool) ($settings['queue_paused'] ?? true)) {
+            $blocking[] = 'Provider kuyruğu duraklatıldı.';
+        } elseif (! $queueReady) {
+            $blocking[] = 'NAC gerçek gönderimi için aktif Manual E2E run context ve güvenli worker komutu zorunlu.';
+        }
 
         return [
             'enabled' => (bool) $nac['enabled'],
@@ -2409,7 +2557,7 @@ class TechnicalServiceMessagingSettingsService
             ['key' => 'voibot', 'label' => 'Voibot Hazırlık', 'ready' => false, 'summary' => 'Voibot API sözleşmesi bekleniyor.'],
             ['key' => 'mikro_api', 'label' => 'Mikro API', 'ready' => $mikro['read_ready'], 'summary' => 'Mikro API credential, lisans ve yazma onayı altyapısı.'],
             ['key' => 'templates', 'label' => 'Şablonlar', 'ready' => true, 'summary' => 'Template/preview/variable validation aktif; gönderim yok.'],
-            ['key' => 'queue', 'label' => 'Kuyruk / Gönderim Logları', 'ready' => false, 'summary' => 'REL-4D outbox, duplicate ve rate-limit bekliyor.'],
+            ['key' => 'queue', 'label' => 'Kuyruk / Gönderim Logları', 'ready' => true, 'summary' => 'Outbox, duplicate, rate-limit ve provider gönderim logları aktif.'],
             ['key' => 'health', 'label' => 'Entegrasyon Sağlığı', 'ready' => false, 'summary' => 'Canlı readiness blok nedenleri ve provider sağlık özeti.'],
         ];
     }
@@ -2542,6 +2690,125 @@ class TechnicalServiceMessagingSettingsService
         $lock->release();
 
         return true;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function manualE2EWorkerLease(): ?array
+    {
+        $lease = Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+
+        return is_array($lease) ? $lease : null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $lease
+     * @return array<string, mixed>
+     */
+    private function workerLeasePublicPayload(?array $lease, CarbonImmutable $now): array
+    {
+        if ($lease === null) {
+            return [
+                'state' => 'none',
+                'run_id' => null,
+                'started_at' => null,
+                'heartbeat_at' => null,
+                'expires_at' => null,
+                'stale_recoverable' => false,
+            ];
+        }
+
+        $heartbeat = $this->parseWorkerLeaseDate($lease['heartbeat_at'] ?? null);
+        $expiresAt = $this->parseWorkerLeaseDate($lease['expires_at'] ?? null);
+        $invalidated = filled($lease['invalidated_at'] ?? null);
+        $stale = $invalidated
+            || $heartbeat === null
+            || $heartbeat->addSeconds(TechnicalServiceManualE2ERunContext::WORKER_HEARTBEAT_STALE_AFTER_SECONDS)->lte($now)
+            || ($expiresAt !== null && $expiresAt->lte($now));
+
+        return [
+            'state' => $invalidated ? 'invalidated' : ($stale ? 'stale' : 'active'),
+            'run_id' => TechnicalServiceManualE2ERunContext::normalizeRunId($lease['run_id'] ?? null),
+            'started_at' => $this->parseWorkerLeaseDate($lease['started_at'] ?? null)?->toIso8601String(),
+            'heartbeat_at' => $heartbeat?->toIso8601String(),
+            'expires_at' => $expiresAt?->toIso8601String(),
+            'stale_recoverable' => $stale && filled($lease['lock_owner'] ?? null),
+        ];
+    }
+
+    private function invalidateManualE2EWorkerLease(string $runId): bool
+    {
+        $lease = $this->manualE2EWorkerLease();
+        if ($lease === null || ($lease['run_id'] ?? null) !== $runId) {
+            return false;
+        }
+
+        $lease['invalidated_at'] = CarbonImmutable::now()->toIso8601String();
+        Cache::put(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY, $lease, 60);
+
+        return $this->releaseOwnedWorkerLockAndLease($lease);
+    }
+
+    private function reconcileStaleManualE2EWorkerLease(): bool
+    {
+        $lease = $this->manualE2EWorkerLease();
+        if ($lease === null) {
+            return false;
+        }
+
+        $state = $this->workerLeasePublicPayload($lease, CarbonImmutable::now());
+        if (! (bool) ($state['stale_recoverable'] ?? false)) {
+            return false;
+        }
+
+        return $this->releaseOwnedWorkerLockAndLease($lease);
+    }
+
+    /**
+     * @param  array<string, mixed>  $lease
+     */
+    private function releaseOwnedWorkerLockAndLease(array $lease): bool
+    {
+        $owner = trim((string) ($lease['lock_owner'] ?? ''));
+        if ($owner === '') {
+            return false;
+        }
+
+        try {
+            $released = Cache::restoreLock(
+                TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY,
+                $owner,
+            )->release();
+        } catch (Throwable) {
+            return false;
+        }
+
+        if (! $released) {
+            return false;
+        }
+
+        $current = $this->manualE2EWorkerLease();
+        if ($current !== null
+            && ($current['run_id'] ?? null) === ($lease['run_id'] ?? null)
+            && ($current['lock_owner'] ?? null) === $owner) {
+            Cache::forget(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+        }
+
+        return true;
+    }
+
+    private function parseWorkerLeaseDate(mixed $value): ?CarbonImmutable
+    {
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            return null;
+        }
+
+        try {
+            return CarbonImmutable::parse((string) $value);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function normalizePhone(?string $phone): string

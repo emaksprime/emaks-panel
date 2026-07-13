@@ -3193,6 +3193,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'active' => true,
             'is_primary' => false,
         ]);
+        $this->mapPortalUserToTechnician($user, $partner, $fieldTechnician);
         $visibleRequest = $this->serviceRequestForTechnician($fieldTechnician, 'MRN-PORTAL-FIELD');
         $this->serviceRequestForTechnician($contractedTechnician, 'MRN-PORTAL-CONTRACTED');
 
@@ -3747,6 +3748,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $linkedTechnician);
 
         $this->actingAs($portalUser)
             ->get('/partner/service-jobs')
@@ -3903,6 +3905,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->get('/partner/service-jobs?partner_id='.$partner->id)
@@ -4023,6 +4026,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->get('/partner/service-jobs?partner_id='.$partner->id)
@@ -4231,7 +4235,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             );
     }
 
-    public function test_locksmith_partner_service_jobs_api_returns_scoped_kanban_columns(): void
+    public function test_locksmith_partner_service_jobs_api_returns_authenticated_technician_kanban_columns(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
@@ -4267,7 +4271,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'workflow_status' => 'Usta Onayı Bekleyen',
             'status' => 'Atandı',
         ]);
-        $plannedJob = $this->serviceRequestForTechnician($field, 'MRN-KANBAN-PLANLI', [
+        $plannedJob = $this->serviceRequestForTechnician($owner, 'MRN-KANBAN-PLANLI', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
             'scheduled_at' => now()->addDay(),
@@ -4305,25 +4309,37 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $profile = B2BPartnerUserProfile::query()
+            ->where('user_id', $portalUser->id)
+            ->where('partner_id', $partner->id)
+            ->firstOrFail();
+        $profile->forceFill([
+            'metadata' => [
+                ...(is_array($profile->metadata) ? $profile->metadata : []),
+                'technical_service_technician_id' => $owner->id,
+            ],
+        ])->save();
 
         $this->actingAs($portalUser)
             ->getJson('/api/partner/service-jobs')
             ->assertOk()
             ->assertJsonPath('columns.0.key', 'new_jobs')
-            ->assertJsonPath('columns.0.count', 2)
+            ->assertJsonPath('columns.0.count', 1)
             ->assertJsonPath('columns.1.key', 'appointment_confirmed')
             ->assertJsonPath('columns.1.count', 1)
             ->assertJsonPath('columns.2.key', 'ops_review')
             ->assertJsonPath('columns.2.count', 0)
             ->assertJsonPath('columns.3.key', 'revisit')
-            ->assertJsonPath('columns.3.count', 1)
+            ->assertJsonPath('columns.3.count', 0)
             ->assertJsonPath('columns.4.key', 'final_check')
             ->assertJsonPath('columns.4.count', 0)
             ->assertJsonPath('columns.5.key', 'completed')
-            ->assertJsonPath('columns.5.count', 1)
+            ->assertJsonPath('columns.5.count', 0)
             ->assertJsonPath('appointment_slot_options.0.value', '10:00-11:00')
             ->assertJsonPath('appointment_slot_options.6.value', '16:00-17:00')
-            ->assertJsonFragment(['mrn' => 'MRN-KANBAN-REOPENED', 'kanban_column' => 'new_jobs'])
+            ->assertJsonMissing(['mrn' => 'MRN-KANBAN-REOPENED'])
+            ->assertJsonMissing(['mrn' => 'MRN-KANBAN-REVISIT'])
+            ->assertJsonMissing(['mrn' => 'MRN-KANBAN-DONE'])
             ->assertJsonMissing(['mrn' => 'MRN-KANBAN-CONTRACTED']);
 
         $this->actingAs($portalUser)
@@ -4395,11 +4411,14 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $userA = $this->userWithRole('b2b_locksmith');
         $userB = $this->userWithRole('b2b_locksmith');
-        foreach ([[$userA, $partnerA], [$userB, $partnerB]] as [$user, $partner]) {
+        foreach ([[$userA, $partnerA, $technicianA], [$userB, $partnerB, $technicianB]] as [$user, $partner, $technician]) {
             B2BPartnerUserProfile::query()->create([
                 'user_id' => $user->id,
                 'partner_id' => $partner->id,
                 'active' => true,
+                'metadata' => [
+                    'technical_service_technician_id' => $technician->id,
+                ],
             ]);
             $this->grantPartnerAccess($user, $partner, 'view');
             $this->grantPartnerAccess($user, $partner, 'technical_service');
@@ -4977,6 +4996,26 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_super_admin_partner_route_is_read_only_without_active_partner_profile(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $scope = $this->partnerPortalScopeFixture(seedPermissions: false);
+
+        $this->actingAs($admin)
+            ->get('/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/service-jobs')
+                ->where('partnerPortal.preview', true)
+                ->where('partnerPortal.selectedPartner.id', $scope['partnerB']->id)
+            );
+
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+        $this->assertStringContainsString('Salt okunur önizleme', $source);
+        $this->assertStringContainsString('İş aksiyonları yalnız giriş yapan aktif partner kullanıcısı tarafından uygulanabilir.', $source);
+    }
+
     public function test_locksmith_partner_service_job_actions_are_scoped_and_audited(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -5028,6 +5067,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$unplannedAcceptJob->id}/accept-appointment", ['note' => 'Randevu yok'])
@@ -5200,6 +5240,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
@@ -5350,6 +5391,173 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.next_action_payload.title', 'Usta randevu önerecek');
     }
 
+    public function test_partner_actions_keep_real_actor_and_ops_can_resolve_support_price_and_part_requests(): void
+    {
+        Http::fake();
+        $fixture = $this->locksmithPortalJobFixture('MRN-REL4E16-ACTOR');
+        $admin = $fixture['admin'];
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '0546 764 74 28',
+            'message_types' => [
+                'support_request_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+                'price_revision_requested_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+                'part_request_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'technical_support',
+                'description' => 'Admin partner portalı aktörü gibi davranmamalı.',
+            ])
+            ->assertForbidden();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'technical_support',
+                'description' => 'Kablolama kontrolü için teknik destek gerekiyor.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+
+        $supportAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED)
+            ->latest('id')
+            ->firstOrFail();
+        $supportEvent = $job->events()
+            ->where('event_type', 'partner_portal_support_requested')
+            ->latest('id')
+            ->firstOrFail();
+        $this->assertSame($portalUser->id, (int) $supportAction->user_id);
+        $this->assertSame($portalUser->id, (int) $supportEvent->author_user_id);
+        $this->assertSame($portalUser->id, (int) data_get($supportEvent->metadata, 'actor_user_id'));
+        $this->assertSame('b2b_locksmith', data_get($supportEvent->metadata, 'actor_role'));
+        $this->assertSame('partner_portal', data_get($supportEvent->metadata, 'source'));
+
+        $reviewUrl = "/api/technical-service/requests/{$job->id}/partner-actions/{$supportAction->id}/review";
+        $this->actingAs($admin)
+            ->postJson($reviewUrl, ['decision' => 'reviewed'])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+        $this->actingAs($admin)
+            ->postJson($reviewUrl, ['decision' => 'reviewed'])
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop');
+        $this->actingAs($admin)
+            ->postJson($reviewUrl, ['decision' => 'resolved', 'note' => 'Kablolama bilgisi paylaşıldı.'])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED);
+
+        $supportReviewEvent = $job->events()
+            ->where('event_type', 'support_request_reviewed')
+            ->latest('id')
+            ->firstOrFail();
+        $this->assertSame($admin->id, (int) $supportReviewEvent->author_user_id);
+        $this->assertSame($admin->id, (int) data_get($supportReviewEvent->metadata, 'actor_user_id'));
+        $this->assertSame('technical_service_admin', data_get($supportReviewEvent->metadata, 'source'));
+        $this->assertSame(2, $job->events()->where('event_type', 'support_request_reviewed')->count());
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/price-revision-request", [
+                'labor_amount' => 1400,
+                'route_fee_amount' => 250,
+                'note' => 'Ek saha işlemi gerekiyor.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+        $priceAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED)
+            ->latest('id')
+            ->firstOrFail();
+        $this->assertSame($portalUser->id, (int) $priceAction->user_id);
+
+        $priceReviewUrl = "/api/technical-service/requests/{$job->id}/partner-actions/{$priceAction->id}/review";
+        $this->actingAs($admin)
+            ->postJson($priceReviewUrl, ['decision' => 'rejected'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('note');
+        $this->actingAs($admin)
+            ->postJson($priceReviewUrl, ['decision' => 'rejected', 'note' => 'Mevcut tarife uygulanacak.'])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_REJECTED);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/price-revision-request", [
+                'labor_amount' => 1450,
+                'route_fee_amount' => 300,
+                'note' => 'Revize teklif tekrar değerlendirilmeli.',
+            ])
+            ->assertOk();
+        $revisionRequestedAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED)
+            ->latest('id')
+            ->firstOrFail();
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-actions/{$revisionRequestedAction->id}/review", [
+                'decision' => 'revision_requested',
+                'note' => 'Tutar kalemlerini açıklayarak yeniden gönderin.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_REVISION_REQUESTED)
+            ->assertJsonPath('request.technician_revision_offer.status', 'revision_requested')
+            ->assertJsonPath('request.technician_revision_offer.status_label', 'Düzenleme istendi');
+
+        $supportDispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('message_type', 'support_request_ops')
+            ->count();
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'spare_part',
+                'description' => 'Kilit karşılığı değiştirilmeli.',
+                'product_name' => 'Kilit karşılığı',
+                'quantity' => 1,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+
+        $partAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED)
+            ->latest('id')
+            ->firstOrFail();
+        $partEvent = $job->events()->where('event_type', 'part_request_ops')->latest('id')->firstOrFail();
+        $partDispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('message_type', 'part_request_ops')
+            ->latest('id')
+            ->firstOrFail();
+        $partBody = (string) data_get($partDispatch->request_payload, 'body');
+
+        $this->assertSame($portalUser->id, (int) $partAction->user_id);
+        $this->assertSame($portalUser->id, (int) $partEvent->author_user_id);
+        $this->assertSame('partner_portal', data_get($partEvent->metadata, 'source'));
+        $this->assertSame('whatsapp', $partDispatch->channel);
+        $this->assertSame('ops', $partDispatch->recipient_role);
+        $this->assertStringContainsString('Kilit karşılığı', $partBody);
+        $this->assertStringContainsString('Kilit karşılığı değiştirilmeli.', $partBody);
+        $this->assertMatchesRegularExpression('/Tarih: \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}/u', $partBody);
+        $this->assertSame($supportDispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('message_type', 'support_request_ops')
+            ->count());
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'message_type' => 'part_request_ops',
+            'channel' => 'sms',
+        ]);
+        Http::assertNothingSent();
+    }
+
     public function test_technical_service_full_locksmith_part_return_journey(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -5435,6 +5643,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
         $this->actingAs($admin)
             ->postJson("/api/b2b/partners/{$otherPartner->id}/provision-admin-user")
             ->assertCreated();
@@ -5442,6 +5651,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $otherPartner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($otherPortalUser, $otherPartner, $otherTechnician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/accept-appointment", ['note' => 'İş kabul edildi.'])
@@ -6287,6 +6497,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/request-revisit", ['reason' => 'MÃ¼ÅŸteri tekrar kontrol istedi'])
@@ -6458,6 +6669,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $response = $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs?partner_id={$partner->id}")
@@ -6615,6 +6827,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $response = $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
@@ -6794,6 +7007,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
@@ -6862,6 +7076,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
@@ -6940,6 +7155,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
@@ -7011,6 +7227,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
         $oldConfirmation = TechnicalServiceCustomerConfirmation::query()->create([
             'technical_service_request_id' => $job->id,
             'token' => 'old-partner-approval-token',
@@ -7197,6 +7414,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
@@ -7268,6 +7486,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}?partner_id={$partner->id}")
@@ -7498,6 +7717,37 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(0, $job->refresh()->uploads()
             ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
             ->count());
+    }
+
+    public function test_partner_can_preview_own_portal_upload_but_not_another_partners_upload(): void
+    {
+        Storage::fake('public');
+        $ownerFixture = $this->locksmithPortalJobFixture('MRN-PARTNER-UPLOAD-PREVIEW-OWNER');
+        $otherFixture = $this->locksmithPortalJobFixture('MRN-PARTNER-UPLOAD-PREVIEW-OTHER');
+        $job = $ownerFixture['job'];
+        $upload = $this->createPortalFieldDocument($job, 'before_photo');
+        Storage::disk('public')->put($upload->path, 'partner-preview-image');
+
+        $previewUrl = route('api.partner.service-jobs.uploads.show', [
+            'technicalServiceRequest' => $job->id,
+            'upload' => $upload->id,
+        ], false);
+
+        $this->actingAs($ownerFixture['portalUser'])
+            ->get($previewUrl)
+            ->assertOk()
+            ->assertHeader('Content-Type', 'image/jpeg');
+
+        $this->actingAs($otherFixture['portalUser'])
+            ->get($previewUrl)
+            ->assertForbidden();
+
+        $this->actingAs($ownerFixture['portalUser'])
+            ->get(route('api.partner.service-jobs.uploads.show', [
+                'technicalServiceRequest' => $otherFixture['job']->id,
+                'upload' => $upload->id,
+            ], false))
+            ->assertForbidden();
     }
 
     public function test_failed_reupload_does_not_replace_current_documents_or_counts(): void
@@ -7861,6 +8111,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
@@ -7982,6 +8233,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
         $otpAction = TechnicalServicePartnerJobAction::query()->create([
             'technical_service_request_id' => $job->id,
             'partner_id' => $partner->id,
@@ -8340,6 +8592,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
@@ -8638,6 +8891,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
         $proposalDate = now()->addDay()->toDateString();
 
         $this->actingAs($portalUser)
@@ -8790,6 +9044,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/reject", [
@@ -8876,6 +9131,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $newPartner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($newPortalUser, $newPartner, $newTechnician);
 
         $newPortalJobResponse = $this->actingAs($newPortalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
@@ -9037,6 +9293,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
@@ -9189,6 +9446,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
@@ -9241,6 +9499,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         $beforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
         $afterDocument = $this->createPortalFieldDocument($job, 'after_photo');
@@ -9626,6 +9885,20 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Aktif SRV eksik fotoğraf şartları bu karta yansımaz.', $source);
     }
 
+    public function test_partner_photo_upload_uses_csrf_retrying_api_helper_for_form_data(): void
+    {
+        $portalSource = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+        $apiSource = file_get_contents(resource_path('js/lib/api.js'));
+
+        $this->assertIsString($portalSource);
+        $this->assertIsString($apiSource);
+        $this->assertStringContainsString("apiRequest(jobApiUrl('/photos')", $portalSource);
+        $this->assertStringNotContainsString('fetch(`/api/partner/service-jobs/${job.id}/photos`', $portalSource);
+        $this->assertStringContainsString("typeof FormData !== 'undefined' && options.body instanceof FormData", $apiSource);
+        $this->assertStringContainsString('if (response.status === 419 && (await refreshCsrfToken()))', $apiSource);
+        $this->assertStringContainsString("? { 'Content-Type': 'application/json' }", $apiSource);
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -9706,11 +9979,14 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $userA = $this->userWithRole('b2b_locksmith');
         $userB = $this->userWithRole('b2b_locksmith');
-        foreach ([[$userA, $partnerA], [$userB, $partnerB]] as [$user, $partner]) {
+        foreach ([[$userA, $partnerA, $technicianA], [$userB, $partnerB, $technicianB]] as [$user, $partner, $technician]) {
             B2BPartnerUserProfile::query()->create([
                 'user_id' => $user->id,
                 'partner_id' => $partner->id,
                 'active' => true,
+                'metadata' => [
+                    'technical_service_technician_id' => $technician->id,
+                ],
             ]);
             foreach (['view', 'technical_service', 'finance'] as $scope) {
                 $this->grantPartnerAccess($user, $partner, $scope);
@@ -10038,6 +10314,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $this->mapPortalUserToTechnician($portalUser, $partner, $technician);
 
         return [
             'admin' => $admin,
@@ -10046,6 +10323,25 @@ class B2BPartnerPanelAccessTest extends TestCase
             'job' => $job,
             'portalUser' => $portalUser,
         ];
+    }
+
+    private function mapPortalUserToTechnician(
+        User $user,
+        B2BPartner $partner,
+        TechnicalServiceTechnician $technician,
+    ): void {
+        $profile = B2BPartnerUserProfile::query()
+            ->where('user_id', $user->id)
+            ->where('partner_id', $partner->id)
+            ->where('active', true)
+            ->firstOrFail();
+
+        $profile->forceFill([
+            'metadata' => [
+                ...(is_array($profile->metadata) ? $profile->metadata : []),
+                'technical_service_technician_id' => $technician->id,
+            ],
+        ])->save();
     }
 
     private function approveCustomerForJob(TechnicalServiceRequest $job, int $partnerId, string $token): TechnicalServiceCustomerConfirmation

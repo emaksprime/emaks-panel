@@ -1166,7 +1166,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'assignmentPartnerJobPath',
             'assignmentFinalMessagePreview',
             'Son hakediş onayı',
-            'Gönderim modu: sistem payload',
+            'Atama sonrası mesaj durumu server ayarları ve kanal politikasıyla belirlenir',
             'İş kartı:',
             'Atamayı onayla ve mesajı hazırla',
             'loadRequestDetail(updatedRequest?.id ?? selectedId)',

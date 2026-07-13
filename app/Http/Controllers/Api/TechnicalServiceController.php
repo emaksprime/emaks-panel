@@ -16,6 +16,7 @@ use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
@@ -24,6 +25,8 @@ use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
@@ -40,7 +43,6 @@ use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
-use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -57,9 +59,11 @@ class TechnicalServiceController extends Controller
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,
         private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
+        private readonly TechnicalServiceAppointmentMessageDispatchService $appointmentMessages,
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
         private readonly TechnicalServiceServiceVisitService $serviceVisitService,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlementService,
+        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -169,13 +173,44 @@ class TechnicalServiceController extends Controller
                 'author_user_id' => $user?->id,
                 'metadata' => [
                     'source_channel' => $payload['source_channel'] ?? null,
+                    'actor_user_id' => $user?->id,
+                    'actor_role' => $user?->role_code ?: 'authenticated_user',
+                    'source' => 'technical_service_admin',
+                    'occurred_at_istanbul' => now('Europe/Istanbul')->toIso8601String(),
+                    'request_id' => $requestModel->id,
+                    'mrn' => $requestModel->mrn,
+                    'srv' => $requestModel->service_code,
                 ],
             ]);
 
             return $requestModel;
         });
 
-        return response()->json(['request' => $this->workflowService->serialize($requestModel, true)], 201);
+        $messageDispatches = $this->workflowMessages->queueWorkflowDispatches(
+            $requestModel->refresh(),
+            'new_request_created_ops',
+            'ops',
+            [
+                'actor_name' => $user?->name ?: 'Teknik servis formu',
+                'customer_name' => $requestModel->customer_name,
+                'customer_phone' => $requestModel->customer_phone,
+                'product_name' => $requestModel->product_name,
+                'address' => $requestModel->location_formatted_address ?: $requestModel->service_address,
+                'next_action_text' => 'Talebi inceleyin ve uygun ustayı atayın.',
+            ],
+            $user,
+            null,
+            [
+                'triggered_by' => 'technical_service_request_created',
+                'event_version' => 'new-request:'.$requestModel->id,
+                'metadata' => ['workflow_event' => 'new_request_created_ops'],
+            ],
+        );
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($requestModel, true),
+            'message_dispatches' => $messageDispatches,
+        ], 201);
     }
 
     public function update(UpdateTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
@@ -279,17 +314,12 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        if ($isCancelRequest && ! $isCancellationReview && ! $this->isCancelledStatusValue($previousLegacyStatus)) {
-            $technicalServiceRequest = $this->workflowService->startCancellationReview(
-                $technicalServiceRequest,
-                [
-                    'note' => $payload['note'] ?? null,
-                    'cancellation_reason' => $payload['note'] ?? null,
-                ],
-                $request->user(),
-            );
-
-            return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+        if ($isCancelRequest && $this->isCancelledStatusValue($previousLegacyStatus)) {
+            return response()->json([
+                'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+                'duplicate_noop' => true,
+                'message_dispatches' => [],
+            ]);
         }
 
         if ($isReopen) {
@@ -332,15 +362,15 @@ class TechnicalServiceController extends Controller
             'cancellation_reason' => $targetWorkflowStatus === 'İptal' ? ($payload['note'] ?? null) : null,
         ];
 
-        $technicalServiceRequest = $this->workflowService->transition(
+        $technicalServiceRequest = DB::transaction(fn (): TechnicalServiceRequest => $this->workflowService->transition(
             $technicalServiceRequest,
             $targetWorkflowStatus,
             $workflowPayload,
             $request->user(),
             $isReopen
                 ? 'technical_service_request_reopened'
-                : ($isCancellationReview && $targetIsCancelled ? 'cancellation_confirmed' : 'legacy_status_update')
-        );
+                : ($targetIsCancelled ? 'cancellation_confirmed' : 'legacy_status_update')
+        ));
 
         if ($isReopen) {
             $technicalServiceRequest->events()->create([
@@ -358,7 +388,49 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+        $messageDispatches = [];
+        if ($targetIsCancelled) {
+            $cancelContext = [
+                'cancellation_reason' => $payload['note'],
+                'customer_visible_note' => $payload['note'],
+                'technician_visible_note' => $payload['note'],
+                'appointment_date_formatted' => $technicalServiceRequest->scheduled_date?->format('d.m.Y'),
+                'appointment_exact_time_range' => $technicalServiceRequest->scheduled_time,
+            ];
+            $messageDispatches['customer'] = $this->workflowMessages->queueWorkflowDispatches(
+                $technicalServiceRequest->refresh(),
+                'appointment_cancelled_customer',
+                'customer',
+                $cancelContext,
+                $request->user(),
+                null,
+                [
+                    'triggered_by' => 'ops_request_cancelled',
+                    'event_version' => 'cancel:'.$technicalServiceRequest->id.':'.$technicalServiceRequest->cancelled_at?->timestamp,
+                    'metadata' => ['workflow_event' => 'cancellation_confirmed'],
+                ],
+            );
+            if ($technicalServiceRequest->technical_service_technician_id !== null || filled($technicalServiceRequest->technician_name)) {
+                $messageDispatches['technician'] = $this->workflowMessages->queueWorkflowDispatches(
+                    $technicalServiceRequest->refresh(),
+                    'appointment_cancelled_technician',
+                    'technician',
+                    $cancelContext,
+                    $request->user(),
+                    null,
+                    [
+                        'triggered_by' => 'ops_request_cancelled',
+                        'event_version' => 'cancel:'.$technicalServiceRequest->id.':'.$technicalServiceRequest->cancelled_at?->timestamp,
+                        'metadata' => ['workflow_event' => 'cancellation_confirmed'],
+                    ],
+                );
+            }
+        }
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest, true),
+            'message_dispatches' => $messageDispatches,
+        ]);
     }
 
     private function isCompletedRequestForCleanServiceVisit(TechnicalServiceRequest $request, ?string $legacyStatus = null): bool
@@ -453,13 +525,46 @@ class TechnicalServiceController extends Controller
 
     public function updateSchedule(UpdateTechnicalServiceScheduleRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
+        $payload = $request->validated();
+        $previousDate = $technicalServiceRequest->scheduled_date?->toDateString();
+        $previousTime = $technicalServiceRequest->scheduled_time;
         $technicalServiceRequest = $this->workflowService->updateSchedule(
             $technicalServiceRequest,
-            $request->validated(),
+            $payload,
             $request->user()
         );
 
-        return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+        $scheduleChanged = $previousDate !== $technicalServiceRequest->scheduled_date?->toDateString()
+            || $previousTime !== $technicalServiceRequest->scheduled_time;
+        $messageDispatches = null;
+        if ($scheduleChanged) {
+            $start = (string) $technicalServiceRequest->scheduled_time;
+            $end = trim((string) ($payload['scheduled_time_end'] ?? '')) ?: null;
+            $messageDispatches = $this->appointmentMessages->dispatchUpdate(
+                $technicalServiceRequest->refresh(),
+                null,
+                $request->user(),
+                [
+                    'trigger_source' => 'ops_schedule_update',
+                    'slot' => [
+                        'start_time' => $start,
+                        'end_time' => $end,
+                        'label' => $end === null ? $start : "{$start} - {$end}",
+                    ],
+                    'metadata' => [
+                        'previous_scheduled_date' => $previousDate,
+                        'previous_scheduled_time' => $previousTime,
+                        'updated_by_user_id' => $request->user()?->id,
+                    ],
+                ],
+            );
+        }
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest, true),
+            'schedule_changed' => $scheduleChanged,
+            'message_dispatches' => $messageDispatches,
+        ]);
     }
 
     public function updateTechnician(UpdateTechnicalServiceTechnicianWorkflowRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
@@ -468,13 +573,7 @@ class TechnicalServiceController extends Controller
         $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
         $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
         $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
-        $oldPartnerId = $oldTechnicianId
-            ? B2BPartnerTechnician::query()
-                ->where('technical_service_technician_id', $oldTechnicianId)
-                ->where('active', true)
-                ->whereIn('relationship_type', ['owner', 'field_technician'])
-                ->value('partner_id')
-            : null;
+        $oldPartnerId = $this->partnerJobScope->activeAssignmentLink($technicalServiceRequest)?->partner_id;
 
         if (! empty($payload['technical_service_technician_id'])) {
             $technician = TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id']);
@@ -483,18 +582,16 @@ class TechnicalServiceController extends Controller
             $technician = null;
         }
 
+        $assignmentLink = $this->assignmentLinkForTechnician($technician, $payload['b2b_partner_id'] ?? null);
+
         $payload['reassign_after_review'] = $isReviewReassignment;
         $technicalServiceRequest = $this->workflowService->updateTechnician($technicalServiceRequest, $payload, $request->user());
 
-        $newPartnerId = $technician
-            ? B2BPartnerTechnician::query()
-                ->where('technical_service_technician_id', $technician->id)
-                ->where('active', true)
-                ->whereIn('relationship_type', ['owner', 'field_technician'])
-                ->value('partner_id')
-            : null;
+        $newPartnerId = $assignmentLink?->partner_id;
 
-        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0) || $isReviewReassignment) {
+        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0)
+            || (int) ($oldPartnerId ?? 0) !== (int) ($newPartnerId ?? 0)
+            || $isReviewReassignment) {
             TechnicalServiceAssignmentArchive::query()->create([
                 'technical_service_request_id' => $technicalServiceRequest->id,
                 'old_technician_id' => $oldTechnicianId,
@@ -956,77 +1053,121 @@ class TechnicalServiceController extends Controller
         TechnicalServiceMountPayment $payment,
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
-
-        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
-            throw ValidationException::withMessages([
-                'payment' => 'Yalnızca bekleyen ödeme linkleri müşteriye gönderilebilir.',
-            ]);
-        }
-
-        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
-        if ($paymentUrl === '') {
-            throw ValidationException::withMessages([
-                'payment' => 'Ödeme linki olmadan müşteriye mesaj kuyruğu oluşturulamaz.',
-            ]);
-        }
-
-        $amount = round((float) $payment->amount, 2);
-        if ($amount <= 0) {
-            throw ValidationException::withMessages([
-                'amount' => 'Ödeme tutarı 0 TL üzerinde olmalı.',
-            ]);
-        }
-
-        $amountLabel = number_format($amount, 2, ',', '.').' TL';
-        $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $purpose = (string) ($rawPayload['purpose'] ?? $rawPayload['charge_type'] ?? '');
-        $partRequestId = $rawPayload['part_request_id'] ?? null;
-        $isPartFeePayment = $partRequestId !== null || in_array($purpose, ['part_payment', 'service_and_part_payment'], true);
-        $messageType = $isPartFeePayment ? 'part_fee_payment_link_customer' : 'payment_link_customer';
-        $triggeredBy = $isPartFeePayment ? 'ops_part_fee_payment_link_manual_send' : 'ops_payment_link_send';
-        $eventVersion = $isPartFeePayment && $partRequestId !== null
-            ? 'part-fee-link:'.$partRequestId.':'.hash('sha256', $paymentUrl)
-            : 'payment-link:'.$payment->id.':'.$payment->status.':'.hash('sha256', $paymentUrl);
-        $summary = $this->workflowMessages->queueWorkflowDispatches(
-            $technicalServiceRequest->refresh(),
-            $messageType,
-            'customer',
-            [
-                'payment_link' => $paymentUrl,
-                'payment_link_sms' => $paymentUrl,
-                'payment_amount_formatted' => $amountLabel,
-                'customer_payment_amount' => $amount,
-                'customer_payment_amount_formatted' => $amountLabel,
-            ],
-            $request->user(),
-            null,
-            [
-                'recipient_phone' => $technicalServiceRequest->customer_phone,
-                'triggered_by' => $triggeredBy,
-                'event_version' => $eventVersion,
-                'requires_public_url' => $paymentUrl,
-                'metadata' => [
-                    'payment_id' => $payment->id,
-                    'part_request_id' => $partRequestId,
-                    'payment_provider' => $payment->provider,
-                    'manual_ui_send' => true,
-                    'workflow_event' => $isPartFeePayment ? 'part_fee_payment_link' : 'payment_link',
-                ],
-            ],
-        );
-
-        $technicalServiceRequest->events()->create([
-            'event_type' => 'mount_payment_link_send_requested',
-            'title' => 'Ödeme linki mesaj kuyruğuna alındı',
-            'note' => null,
-            'from_status' => $technicalServiceRequest->workflow_status,
-            'to_status' => $technicalServiceRequest->workflow_status,
-            'author_user_id' => $request->user()?->id,
-            'metadata' => [
-                'payment_id' => $payment->id,
-                'message_dispatches' => $summary,
-            ],
+        $validated = $request->validate([
+            'resend_reason' => ['nullable', 'string', 'min:3', 'max:500'],
         ]);
+
+        $result = DB::transaction(function () use ($technicalServiceRequest, $payment, $validated, $request): array {
+            $lockedPayment = TechnicalServiceMountPayment::query()->whereKey($payment->id)->lockForUpdate()->firstOrFail();
+            if ($lockedPayment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+                throw ValidationException::withMessages([
+                    'payment' => 'Yalnızca bekleyen ödeme linkleri müşteriye gönderilebilir.',
+                ]);
+            }
+
+            $paymentUrl = trim((string) ($lockedPayment->payment_url ?? ''));
+            if ($paymentUrl === '') {
+                throw ValidationException::withMessages([
+                    'payment' => 'Ödeme linki olmadan müşteriye mesaj kuyruğu oluşturulamaz.',
+                ]);
+            }
+
+            $amount = round((float) $lockedPayment->amount, 2);
+            if ($amount <= 0) {
+                throw ValidationException::withMessages([
+                    'amount' => 'Ödeme tutarı 0 TL üzerinde olmalı.',
+                ]);
+            }
+
+            $rawPayload = is_array($lockedPayment->raw_payload) ? $lockedPayment->raw_payload : [];
+            $messageState = $this->workflowService->paymentLinkMessageState($lockedPayment);
+            $sendCount = max((int) ($rawPayload['message_send_count'] ?? 0), $messageState['send_count']);
+            $parentDispatch = $this->latestPaymentLinkDispatch($technicalServiceRequest, $lockedPayment);
+            $isResend = $sendCount > 0 || $parentDispatch instanceof TechnicalServiceMessageDispatch;
+            if ($isResend && ! filled($validated['resend_reason'] ?? null)) {
+                throw ValidationException::withMessages([
+                    'resend_reason' => 'Ödeme linkini yeniden göndermek için neden zorunludur.',
+                ]);
+            }
+
+            $amountLabel = number_format($amount, 2, ',', '.').' TL';
+            $purpose = (string) ($rawPayload['purpose'] ?? $rawPayload['charge_type'] ?? '');
+            $partRequestId = $rawPayload['part_request_id'] ?? null;
+            $isPartFeePayment = $partRequestId !== null || in_array($purpose, ['part_payment', 'service_and_part_payment'], true);
+            $messageType = $isPartFeePayment ? 'part_fee_payment_link_customer' : 'payment_link_customer';
+            $nextSendCount = $sendCount + 1;
+            $summary = $this->workflowMessages->queueWorkflowDispatches(
+                $technicalServiceRequest->refresh(),
+                $messageType,
+                'customer',
+                [
+                    'payment_link' => $paymentUrl,
+                    'payment_link_sms' => $paymentUrl,
+                    'payment_amount_formatted' => $amountLabel,
+                    'customer_payment_amount' => $amount,
+                    'customer_payment_amount_formatted' => $amountLabel,
+                ],
+                $request->user(),
+                null,
+                [
+                    'recipient_phone' => $technicalServiceRequest->customer_phone,
+                    'triggered_by' => $isResend ? 'ops_payment_link_resend' : 'ops_payment_link_send',
+                    'event_version' => 'payment-link:'.$lockedPayment->id.':send:'.$nextSendCount,
+                    'requires_public_url' => $paymentUrl,
+                    'parent_dispatch_id' => $parentDispatch?->id,
+                    'force_resend' => $isResend,
+                    'force_resend_reason' => $validated['resend_reason'] ?? null,
+                    'metadata' => [
+                        'payment_id' => $lockedPayment->id,
+                        'part_request_id' => $partRequestId,
+                        'payment_provider' => $lockedPayment->provider,
+                        'manual_ui_send' => true,
+                        'resend' => $isResend,
+                        'resend_reason' => $validated['resend_reason'] ?? null,
+                        'parent_dispatch_id' => $parentDispatch?->id,
+                        'message_send_count' => $nextSendCount,
+                        'workflow_event' => $isPartFeePayment ? 'part_fee_payment_link' : 'payment_link',
+                    ],
+                ],
+            );
+
+            if (($summary['queued'] ?? 0) > 0) {
+                $history = is_array($rawPayload['message_send_history'] ?? null) ? $rawPayload['message_send_history'] : [];
+                $history[] = [
+                    'send_count' => $nextSendCount,
+                    'requested_at' => now()->toISOString(),
+                    'requested_by_user_id' => $request->user()?->id,
+                    'resend_reason' => $validated['resend_reason'] ?? null,
+                    'parent_dispatch_id' => $parentDispatch?->id,
+                    'dispatch_ids' => collect($summary['dispatches'] ?? [])->pluck('id')->values()->all(),
+                ];
+                $rawPayload['message_send_count'] = $nextSendCount;
+                $rawPayload['message_send_history'] = $history;
+                $lockedPayment->forceFill(['raw_payload' => $rawPayload])->save();
+            }
+
+            $technicalServiceRequest->events()->create([
+                'event_type' => $isResend ? 'mount_payment_link_resend_requested' : 'mount_payment_link_send_requested',
+                'title' => ($summary['queued'] ?? 0) > 0
+                    ? ($isResend ? 'Ödeme linki yeniden mesaj kuyruğuna alındı' : 'Ödeme linki mesaj kuyruğuna alındı')
+                    : 'Ödeme linki mesaj kuyruğu isteği bloklandı',
+                'note' => $validated['resend_reason'] ?? null,
+                'from_status' => $technicalServiceRequest->workflow_status,
+                'to_status' => $technicalServiceRequest->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'payment_id' => $lockedPayment->id,
+                    'message_send_count' => ($summary['queued'] ?? 0) > 0 ? $nextSendCount : $sendCount,
+                    'parent_dispatch_id' => $parentDispatch?->id,
+                    'resend_reason' => $validated['resend_reason'] ?? null,
+                    'message_dispatches' => $summary,
+                ],
+            ]);
+
+            return ['summary' => $summary, 'payment' => $lockedPayment->refresh()];
+        });
+        $summary = $result['summary'];
+        $payment = $result['payment'];
 
         return response()->json([
             'ok' => true,
@@ -1147,6 +1288,32 @@ class TechnicalServiceController extends Controller
     /**
      * @return array<string, mixed>
      */
+    private function latestPaymentLinkDispatch(
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceMountPayment $payment,
+    ): ?TechnicalServiceMessageDispatch {
+        $messageState = $this->workflowService->paymentLinkMessageState($payment);
+        $dispatchId = $messageState['latest_dispatch_id'];
+        if ($dispatchId === null) {
+            return null;
+        }
+
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->whereKey($dispatchId)
+            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->first();
+        if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
+            return null;
+        }
+
+        $metadata = is_array($dispatch->metadata) ? $dispatch->metadata : [];
+
+        return (int) ($metadata['payment_id'] ?? 0) === (int) $payment->id ? $dispatch : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     private function mountPaymentResponse(TechnicalServiceMountPayment $payment, array $overrides = []): array
     {
         $payment->loadMissing('technicalServiceRequest');
@@ -1166,6 +1333,7 @@ class TechnicalServiceController extends Controller
             ?? $providerGatewaySync['raw_status']
             ?? $providerGateway['raw_status']
             ?? $payment->status;
+        $messageState = $this->workflowService->paymentLinkMessageState($payment);
 
         return array_merge([
             'id' => $payment->id,
@@ -1203,6 +1371,9 @@ class TechnicalServiceController extends Controller
             'cancelled_at' => $payload['cancelled_at'] ?? null,
             'cancelled_by_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancelled_by_name'] ?? null),
             'cancellation_reason' => $payload['cancellation_reason'] ?? null,
+            'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
+            'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
+                ?? $messageState['last_message_sent_at'],
             'created_at' => $payment->created_at?->toISOString(),
             'updated_at' => $payment->updated_at?->toISOString(),
         ], TechnicalServicePaymentActionPresenter::forPayment($payment), $overrides);
@@ -1670,13 +1841,8 @@ class TechnicalServiceController extends Controller
         $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
         $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
         $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
-        $oldPartnerId = $oldTechnicianId
-            ? B2BPartnerTechnician::query()
-                ->where('technical_service_technician_id', $oldTechnicianId)
-                ->where('active', true)
-                ->whereIn('relationship_type', ['owner', 'field_technician'])
-                ->value('partner_id')
-            : null;
+        $oldPartnerId = $this->partnerJobScope->activeAssignmentLink($technicalServiceRequest)?->partner_id;
+        $assignmentLink = $this->assignmentLinkForTechnician($technician, $payload['b2b_partner_id'] ?? null);
 
         $technicianPayload = [
             'technical_service_technician_id' => $technician?->id,
@@ -1703,19 +1869,17 @@ class TechnicalServiceController extends Controller
             'metadata' => [
                 'technician_id' => $technician?->id,
                 'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
+                'assignment_partner_id' => $assignmentLink?->partner_id,
+                'assignment_partner_technician_link_id' => $assignmentLink?->id,
                 'source' => 'technical_service_assign',
             ],
         ]);
 
-        $newPartnerId = $technician
-            ? B2BPartnerTechnician::query()
-                ->where('technical_service_technician_id', $technician->id)
-                ->where('active', true)
-                ->whereIn('relationship_type', ['owner', 'field_technician'])
-                ->value('partner_id')
-            : null;
+        $newPartnerId = $assignmentLink?->partner_id;
 
-        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0) || $isReviewReassignment) {
+        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0)
+            || (int) ($oldPartnerId ?? 0) !== (int) ($newPartnerId ?? 0)
+            || $isReviewReassignment) {
             TechnicalServiceAssignmentArchive::query()->create([
                 'technical_service_request_id' => $technicalServiceRequest->id,
                 'old_technician_id' => $oldTechnicianId,
@@ -1792,6 +1956,7 @@ class TechnicalServiceController extends Controller
                 $routeQuote,
                 $assignmentOfferPayload,
                 $request->user(),
+                $assignmentLink,
             );
         }
 
@@ -2152,6 +2317,7 @@ class TechnicalServiceController extends Controller
         ?TechnicalServiceRouteQuote $routeQuote,
         array $offerPayload,
         mixed $user,
+        ?B2BPartnerTechnician $assignmentLink,
     ): TechnicalServiceAssignmentOffer {
         $laborAmount = $this->nullableMoney($offerPayload['labor_amount'] ?? null)
             ?? $this->nullableMoney($request->technician_payment_amount)
@@ -2172,7 +2338,7 @@ class TechnicalServiceController extends Controller
             'total_amount' => $totalAmount,
             'currency' => $currency,
             'note' => $note !== '' ? $note : null,
-        ]);
+        ], $assignmentLink);
         $messageText = $this->technicianAssignmentMessageText($messagePayload);
         $messagePayload['message_text'] = $messageText;
 
@@ -2204,6 +2370,8 @@ class TechnicalServiceController extends Controller
                 'confirmed_by_ops' => (bool) ($offerPayload['confirmed_by_ops'] ?? false),
                 'message_payload' => $messagePayload,
                 'route_quote_id' => $routeQuote?->id,
+                'assignment_partner_id' => $assignmentLink?->partner_id,
+                'assignment_partner_technician_link_id' => $assignmentLink?->id,
             ],
         ]);
 
@@ -2226,6 +2394,8 @@ class TechnicalServiceController extends Controller
                 'route_fee_amount' => $routeFeeAmount,
                 'total_amount' => $totalAmount,
                 'currency' => $currency,
+                'assignment_partner_id' => $assignmentLink?->partner_id,
+                'assignment_partner_technician_link_id' => $assignmentLink?->id,
                 'message_payload' => $messagePayload,
             ],
         ]);
@@ -2242,6 +2412,7 @@ class TechnicalServiceController extends Controller
                 'triggered_by' => 'technical_service_assignment_offer',
                 'fallback_body' => $messageText,
                 'event_version' => 'assignment-offer:'.$offer->id,
+                'requires_public_url' => $messagePayload['technician_job_card_url'],
                 'metadata' => [
                     'assignment_offer_id' => $offer->id,
                     'manual_ui_send' => false,
@@ -2390,12 +2561,19 @@ class TechnicalServiceController extends Controller
      * @param  array<string, mixed>  $amounts
      * @return array<string, mixed>
      */
-    private function technicianAssignmentMessagePayload(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician, array $amounts): array
-    {
+    private function technicianAssignmentMessagePayload(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        array $amounts,
+        ?B2BPartnerTechnician $assignmentLink,
+    ): array {
         $phone = $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone);
         $address = $request->location_formatted_address ?: $request->service_address;
         $mapsLink = $this->mapsLink($request, $address);
-        $jobLink = $this->partnerJobLink($request, $technician);
+        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request, $assignmentLink);
+        $jobLink = is_string($jobCardContext['canonical_url'] ?? null)
+            ? $jobCardContext['canonical_url']
+            : null;
 
         return [
             'channel' => 'system_payload',
@@ -2409,6 +2587,7 @@ class TechnicalServiceController extends Controller
             'customer_phone' => $this->normalizedMessagePhone($request->customer_phone) ?: $request->customer_phone,
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $address,
+            'sms_short_address' => Str::limit((string) $address, 72, '…'),
             'maps_link' => $mapsLink,
             'maps_url' => $mapsLink,
             'product_name' => $request->product_name,
@@ -2420,6 +2599,11 @@ class TechnicalServiceController extends Controller
             'job_link' => $jobLink,
             'technician_job_card_url' => $jobLink,
             'technician_job_card_short_url' => $jobLink,
+            'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
+            'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
+            'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,
+            'assignment_partner_id' => $jobCardContext['partner_id'] ?? null,
+            'assignment_partner_technician_link_id' => $jobCardContext['partner_technician_link_id'] ?? null,
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
@@ -2472,20 +2656,22 @@ class TechnicalServiceController extends Controller
         ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
 
-    private function partnerJobLink(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician): string
-    {
-        $partnerId = B2BPartnerTechnician::query()
-            ->where('technical_service_technician_id', $technician->id)
-            ->where('active', true)
-            ->whereIn('relationship_type', ['owner', 'field_technician'])
-            ->value('partner_id');
+    private function assignmentLinkForTechnician(
+        ?TechnicalServiceTechnician $technician,
+        mixed $preferredPartnerId,
+    ): ?B2BPartnerTechnician {
+        if (! $technician instanceof TechnicalServiceTechnician) {
+            return null;
+        }
 
-        $query = http_build_query(array_filter([
-            'partner_id' => $partnerId,
-            'job_id' => $request->id,
-        ], fn ($value) => $value !== null && $value !== ''));
+        $preferredPartnerId = is_numeric($preferredPartnerId) ? (int) $preferredPartnerId : null;
+        $links = $this->partnerJobScope->activeAssignmentLinksForTechnician((int) $technician->id);
 
-        return PartnerPortalPublicUrl::url('/partner/service-jobs'.($query !== '' ? '?'.$query : ''));
+        if ($links->isEmpty() && $preferredPartnerId === null) {
+            return null;
+        }
+
+        return $this->partnerJobScope->resolveAssignmentPartnerLink((int) $technician->id, $preferredPartnerId);
     }
 
     private function messageMoney(mixed $amount): string

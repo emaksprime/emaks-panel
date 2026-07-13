@@ -3,18 +3,27 @@
 namespace App\Services\B2B;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerTechnician;
+use App\Models\B2B\B2BPartnerUserProfile;
+use App\Models\TechnicalServiceAssignmentArchive;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 
 class B2BPartnerServiceJobScopeService
 {
     private const CANCELLED_STATUSES = ['İptal', 'Iptal', 'Ä°ptal'];
 
+    /** @var array<int, Collection<int, B2BPartnerTechnician>> */
+    private array $technicianLinks = [];
 
     public function __construct(
         private readonly B2BPartnerAccessService $partnerAccess,
@@ -31,11 +40,387 @@ class B2BPartnerServiceJobScopeService
 
         return $partner->activePartnerTechnicians()
             ->whereIn('relationship_type', ['owner', 'field_technician'])
+            ->whereHas('technician', fn (Builder $query): Builder => $query->where('active', true))
             ->pluck('technical_service_technician_id')
             ->map(fn (mixed $id): int => (int) $id)
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @return Collection<int, B2BPartnerTechnician>
+     */
+    public function activeAssignmentLinksForTechnician(int $technicianId): Collection
+    {
+        if ($technicianId <= 0) {
+            return collect();
+        }
+
+        if (array_key_exists($technicianId, $this->technicianLinks)) {
+            return $this->technicianLinks[$technicianId];
+        }
+
+        return $this->technicianLinks[$technicianId] = B2BPartnerTechnician::query()
+            ->active()
+            ->where('technical_service_technician_id', $technicianId)
+            ->whereIn('relationship_type', ['owner', 'field_technician'])
+            ->whereHas('technician', fn (Builder $query): Builder => $query->where('active', true))
+            ->whereHas('partner', fn (Builder $query): Builder => $query->where('active', true))
+            ->with(['partner.capabilities', 'technician'])
+            ->orderByDesc('is_primary')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (B2BPartnerTechnician $link): bool => $link->partner?->hasCapability(B2BPartner::TYPE_LOCKSMITH) === true)
+            ->values();
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    public function resolveAssignmentPartnerLink(int $technicianId, ?int $preferredPartnerId = null): B2BPartnerTechnician
+    {
+        $links = $this->activeAssignmentLinksForTechnician($technicianId);
+
+        if ($preferredPartnerId !== null && $preferredPartnerId > 0) {
+            $selected = $links->first(
+                fn (B2BPartnerTechnician $link): bool => (int) $link->partner_id === $preferredPartnerId,
+            );
+
+            if (! $selected instanceof B2BPartnerTechnician) {
+                throw ValidationException::withMessages([
+                    'b2b_partner_id' => 'Seçilen partner, bu ustanın aktif iş kartı kapsamına bağlı değil.',
+                ]);
+            }
+
+            return $selected;
+        }
+
+        if ($links->count() !== 1) {
+            throw ValidationException::withMessages([
+                'b2b_partner_id' => $links->isEmpty()
+                    ? 'Seçilen ustanın aktif çilingir partner bağlantısı bulunamadı.'
+                    : 'Ustanın birden fazla aktif partner bağlantısı var. İş kartı kapsamını açıkça seçin.',
+            ]);
+        }
+
+        return $links->firstOrFail();
+    }
+
+    public function activeAssignmentLink(TechnicalServiceRequest $request): ?B2BPartnerTechnician
+    {
+        $technicianId = (int) ($request->technical_service_technician_id ?? 0);
+        if ($technicianId <= 0) {
+            return null;
+        }
+
+        $offer = $request->relationLoaded('latestAssignmentOffer')
+            ? $request->latestAssignmentOffer
+            : TechnicalServiceAssignmentOffer::query()
+                ->where('technical_service_request_id', $request->id)
+                ->where('technical_service_technician_id', $technicianId)
+                ->whereIn('status', [
+                    TechnicalServiceAssignmentOffer::STATUS_SENT,
+                    TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                    TechnicalServiceAssignmentOffer::STATUS_REVISED,
+                ])
+                ->latest('id')
+                ->first();
+        $metadata = $offer instanceof TechnicalServiceAssignmentOffer && is_array($offer->metadata)
+            ? $offer->metadata
+            : [];
+        $boundPartnerId = data_get($metadata, 'assignment_partner_id');
+        $boundLinkId = data_get($metadata, 'assignment_partner_technician_link_id');
+        $links = $this->activeAssignmentLinksForTechnician($technicianId);
+
+        if (! is_numeric($boundPartnerId) && ! is_numeric($boundLinkId) && $links->count() === 1) {
+            return $links->first();
+        }
+
+        if (! is_numeric($boundPartnerId) && ! is_numeric($boundLinkId)) {
+            $archive = TechnicalServiceAssignmentArchive::query()
+                ->where('technical_service_request_id', $request->id)
+                ->where('new_technician_id', $technicianId)
+                ->whereNotNull('new_partner_id')
+                ->latest('id')
+                ->first();
+            $boundPartnerId = $archive?->new_partner_id;
+        }
+
+        if (is_numeric($boundPartnerId) || is_numeric($boundLinkId)) {
+            return $links->first(function (B2BPartnerTechnician $link) use ($boundPartnerId, $boundLinkId): bool {
+                if (is_numeric($boundLinkId) && (int) $link->id !== (int) $boundLinkId) {
+                    return false;
+                }
+
+                return ! is_numeric($boundPartnerId) || (int) $link->partner_id === (int) $boundPartnerId;
+            });
+        }
+
+        return $links->count() === 1 ? $links->first() : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function technicianJobCardContext(
+        TechnicalServiceRequest $request,
+        ?B2BPartnerTechnician $assignmentLink = null,
+    ): array {
+        $technicianId = (int) ($request->technical_service_technician_id ?? 0);
+        if ($technicianId <= 0) {
+            return $this->blockedJobCardContext($request, 'active_assignment_missing', 'Aktif usta ataması bulunamadı.');
+        }
+
+        $link = $assignmentLink ?? $this->activeAssignmentLink($request);
+        if ($link instanceof B2BPartnerTechnician
+            && ((int) $link->technical_service_technician_id !== $technicianId || ! $this->isActiveLocksmithLink($link))
+        ) {
+            $link = null;
+        }
+        if (! $link instanceof B2BPartnerTechnician) {
+            $linkCount = $this->activeAssignmentLinksForTechnician($technicianId)->count();
+
+            return $this->blockedJobCardContext(
+                $request,
+                $linkCount > 1 ? 'active_assignment_partner_ambiguous' : 'active_assignment_partner_missing',
+                $linkCount > 1
+                    ? 'Aktif atamanın partner kapsamı belirsiz. Usta iş kartı bağlantısı üretilemez.'
+                    : 'Aktif atamaya bağlı çilingir partneri bulunamadı.',
+            );
+        }
+
+        $canonicalQuery = http_build_query([
+            'partner_id' => (int) $link->partner_id,
+            'job_id' => (int) $request->id,
+        ]);
+        $opsSupportQuery = http_build_query([
+            'partner_id' => (int) $link->partner_id,
+            'technician_id' => $technicianId,
+            'job_id' => (int) $request->id,
+        ]);
+
+        return [
+            'ready' => true,
+            'blocker_code' => null,
+            'blocker_message' => null,
+            'partner_id' => (int) $link->partner_id,
+            'technician_id' => $technicianId,
+            'partner_technician_link_id' => (int) $link->id,
+            'canonical_url' => PartnerPortalPublicUrl::url('/partner/service-jobs?'.$canonicalQuery),
+            'ops_support_url' => '/technical-service/ops-support/service-jobs?'.$opsSupportQuery,
+            'preview_url' => '/panel/b2b/partners/'.(int) $link->partner_id.'/portal-preview?'.http_build_query([
+                'view' => 'service-jobs',
+                'job_id' => (int) $request->id,
+            ]),
+        ];
+    }
+
+    public function canonicalTechnicianJobCardUrl(TechnicalServiceRequest $request): ?string
+    {
+        $context = $this->technicianJobCardContext($request);
+
+        return ($context['ready'] ?? false) === true
+            ? (string) $context['canonical_url']
+            : null;
+    }
+
+    public function portalTechnicianId(User $user, B2BPartner $partner): ?int
+    {
+        try {
+            return $this->resolveAuthenticatedTechnicianOrFail($user, $partner);
+        } catch (AuthorizationException) {
+            return null;
+        }
+    }
+
+    /**
+     * @throws AuthorizationException
+     */
+    public function resolveAuthenticatedTechnicianOrFail(User $user, B2BPartner $partner): int
+    {
+        if (! (bool) $user->aktif) {
+            throw new AuthorizationException('Portal kullanıcısı aktif değil.');
+        }
+
+        $profiles = B2BPartnerUserProfile::query()
+            ->where('user_id', $user->id)
+            ->where('partner_id', $partner->id)
+            ->where('active', true)
+            ->get();
+        if ($profiles->count() !== 1) {
+            throw new AuthorizationException('Portal kullanıcısının tekil aktif partner profili bulunamadı.');
+        }
+
+        $profileTechnicianId = data_get($profiles->first()?->metadata, 'technical_service_technician_id');
+        if (! is_numeric($profileTechnicianId) || (int) $profileTechnicianId <= 0) {
+            throw new AuthorizationException('Portal kullanıcısının açık usta eşlemesi bulunamadı.');
+        }
+
+        $technicianId = (int) $profileTechnicianId;
+        $link = $this->activeAssignmentLinksForTechnician($technicianId)
+            ->first(fn (B2BPartnerTechnician $candidate): bool => (int) $candidate->partner_id === (int) $partner->id);
+        if (! $link instanceof B2BPartnerTechnician || ! $this->isActiveLocksmithLink($link)) {
+            throw new AuthorizationException('Portal kullanıcısının usta eşlemesi bu partner için aktif değil.');
+        }
+
+        return $technicianId;
+    }
+
+    public function requestBelongsToPartner(TechnicalServiceRequest $request, B2BPartner $partner): bool
+    {
+        $link = $this->activeAssignmentLink($request);
+
+        return $link instanceof B2BPartnerTechnician
+            && (int) $link->partner_id === (int) $partner->id;
+    }
+
+    /**
+     * @return Collection<int, TechnicalServiceRequest>
+     */
+    public function filterForAssignmentPartner(Collection $requests, B2BPartner $partner): Collection
+    {
+        return $requests
+            ->filter(fn (TechnicalServiceRequest $request): bool => $this->requestBelongsToPartner($request, $partner))
+            ->values();
+    }
+
+    /**
+     * @throws AuthorizationException
+     */
+    public function assertCanReceivePart(
+        User $user,
+        TechnicalServiceRequest $request,
+        TechnicalServicePartRequest $partRequest,
+        ?int $requestedPartnerId = null,
+        ?int $requestedTechnicianId = null,
+    ): B2BPartner {
+        if ((int) $partRequest->technical_service_request_id !== (int) $request->id) {
+            throw new AuthorizationException('Parça kaydı istenen iş kapsamına ait değil.');
+        }
+
+        $expectedRootId = (int) ($request->parent_request_id ?: $request->id);
+        if ((int) $partRequest->root_request_id !== $expectedRootId) {
+            throw new AuthorizationException('Parça kaydının ana talep kapsamı eşleşmiyor.');
+        }
+
+        $parentPartner = $this->assertAssignedServiceJobScope(
+            $user,
+            $request,
+            $requestedPartnerId,
+            $requestedTechnicianId,
+        );
+
+        if (! is_numeric($partRequest->service_visit_request_id)) {
+            return $parentPartner;
+        }
+
+        $serviceVisit = TechnicalServiceRequest::query()
+            ->whereKey((int) $partRequest->service_visit_request_id)
+            ->where('parent_request_id', $request->id)
+            ->where('source_part_request_id', $partRequest->id)
+            ->first();
+        if (! $serviceVisit instanceof TechnicalServiceRequest
+            || trim((string) $serviceVisit->root_mrn) !== trim((string) ($request->root_mrn ?: $request->mrn))
+        ) {
+            throw new AuthorizationException('Parça kaydının SRV ilişkisi doğrulanamadı.');
+        }
+
+        $requestLink = $this->activeAssignmentLink($request);
+        $serviceVisitLink = $this->activeAssignmentLink($serviceVisit);
+        if (! $requestLink instanceof B2BPartnerTechnician
+            || ! $serviceVisitLink instanceof B2BPartnerTechnician
+            || (int) $requestLink->partner_id !== (int) $serviceVisitLink->partner_id
+            || (int) $requestLink->technical_service_technician_id !== (int) $serviceVisitLink->technical_service_technician_id
+        ) {
+            throw new AuthorizationException('Parça ve SRV aktif atama kapsamları eşleşmiyor.');
+        }
+
+        $partner = $this->assertAssignedServiceJobScope(
+            $user,
+            $serviceVisit,
+            $requestedPartnerId,
+            $requestedTechnicianId,
+        );
+        if ((int) $partner->id !== (int) $requestLink->partner_id) {
+            throw new AuthorizationException('Parça kaydının partner kapsamı eşleşmiyor.');
+        }
+        if ((int) $partner->id !== (int) $parentPartner->id) {
+            throw new AuthorizationException('Parça ve SRV yetkili partner kapsamları eşleşmiyor.');
+        }
+
+        return $partner;
+    }
+
+    /**
+     * @return array<int, array<string, int|string>>
+     */
+    public function opsSupportTechnicianOptions(): array
+    {
+        return B2BPartnerTechnician::query()
+            ->active()
+            ->whereIn('relationship_type', ['owner', 'field_technician'])
+            ->whereHas('partner', fn (Builder $query): Builder => $query->where('active', true))
+            ->with(['partner.capabilities', 'technician'])
+            ->orderByDesc('is_primary')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (B2BPartnerTechnician $link): bool => $link->partner?->hasCapability(B2BPartner::TYPE_LOCKSMITH) === true
+                && $link->technician !== null)
+            ->map(fn (B2BPartnerTechnician $link): array => [
+                'partner_id' => (int) $link->partner_id,
+                'technician_id' => (int) $link->technical_service_technician_id,
+                'partner_technician_link_id' => (int) $link->id,
+                'partner_name' => (string) $link->partner?->display_name,
+                'technician_name' => (string) $link->technician?->name,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array{link:B2BPartnerTechnician,partner:B2BPartner,technician_id:int}
+     *
+     * @throws AuthorizationException
+     */
+    public function assertOpsSupportSelection(
+        ?int $partnerId,
+        ?int $technicianId,
+        ?TechnicalServiceRequest $request = null,
+    ): array {
+        if ($request instanceof TechnicalServiceRequest) {
+            $link = $this->activeAssignmentLink($request);
+            if (! $link instanceof B2BPartnerTechnician) {
+                throw new AuthorizationException('Bu iş için doğrulanmış aktif usta/partner ataması yok.');
+            }
+
+            if (($partnerId !== null && $partnerId > 0 && (int) $link->partner_id !== $partnerId)
+                || ($technicianId !== null && $technicianId > 0 && (int) $link->technical_service_technician_id !== $technicianId)
+            ) {
+                throw new AuthorizationException('OPS destek kapsamı aktif atamayla eşleşmiyor.');
+            }
+        } else {
+            if (($partnerId ?? 0) <= 0 || ($technicianId ?? 0) <= 0) {
+                throw new AuthorizationException('OPS destek modu için partner ve usta seçimi zorunludur.');
+            }
+
+            $link = $this->activeAssignmentLinksForTechnician((int) $technicianId)
+                ->first(fn (B2BPartnerTechnician $candidate): bool => (int) $candidate->partner_id === (int) $partnerId);
+            if (! $link instanceof B2BPartnerTechnician) {
+                throw new AuthorizationException('Seçilen usta ve partner arasında aktif iş kartı kapsamı yok.');
+            }
+        }
+
+        $partner = $link->partner;
+        if (! $partner instanceof B2BPartner) {
+            throw new AuthorizationException('Seçilen partner bulunamadı.');
+        }
+
+        return [
+            'link' => $link,
+            'partner' => $partner,
+            'technician_id' => (int) $link->technical_service_technician_id,
+        ];
     }
 
     /**
@@ -108,8 +493,12 @@ class B2BPartnerServiceJobScopeService
     /**
      * @throws AuthorizationException
      */
-    public function assertCanViewServiceJob(User $user, TechnicalServiceRequest $request): B2BPartner
-    {
+    public function assertCanViewServiceJob(
+        User $user,
+        TechnicalServiceRequest $request,
+        ?int $requestedPartnerId = null,
+        ?int $requestedTechnicianId = null,
+    ): B2BPartner {
         $isCancelledOrReview = $this->isCancelled($request) || $this->isCancellationReview($request);
         if (! $isCancelledOrReview && $this->hasNonCancelledChildServiceVisit($request) && ! $this->isCompletedHistoryJob($request)) {
             throw new AuthorizationException('Bu ana talebin SRV kaydi var; partner islerinde SRV karti gorunur.');
@@ -119,16 +508,46 @@ class B2BPartnerServiceJobScopeService
             throw new AuthorizationException('Bu iş usta reddi sonrası operasyon incelemesinde.');
         }
 
-        $technicianId = (int) ($request->technical_service_technician_id ?? 0);
-        if ($technicianId <= 0) {
-            throw new AuthorizationException('Bu iş için görünür usta bağlantısı yok.');
+        return $this->assertAssignedServiceJobScope(
+            $user,
+            $request,
+            $requestedPartnerId,
+            $requestedTechnicianId,
+        );
+    }
+
+    /**
+     * Authorize the exact active assignment without applying portal card visibility rules.
+     *
+     * @throws AuthorizationException
+     */
+    public function assertAssignedServiceJobScope(
+        User $user,
+        TechnicalServiceRequest $request,
+        ?int $requestedPartnerId = null,
+        ?int $requestedTechnicianId = null,
+    ): B2BPartner {
+        $link = $this->activeAssignmentLink($request);
+        if (! $link instanceof B2BPartnerTechnician) {
+            throw new AuthorizationException('Bu iş için doğrulanmış aktif usta/partner bağlantısı yok.');
+        }
+
+        if (($requestedPartnerId !== null && $requestedPartnerId > 0 && (int) $link->partner_id !== $requestedPartnerId)
+            || ($requestedTechnicianId !== null && $requestedTechnicianId > 0 && (int) $link->technical_service_technician_id !== $requestedTechnicianId)
+        ) {
+            throw new AuthorizationException('URL kapsamı aktif usta atamasıyla eşleşmiyor.');
         }
 
         $partner = $this->visibleLocksmithPartnersForPortal($user)
-            ->first(fn (B2BPartner $partner): bool => in_array($technicianId, $this->activeTechnicianIds($partner), true));
+            ->first(fn (B2BPartner $candidate): bool => (int) $candidate->id === (int) $link->partner_id);
 
         if (! $partner instanceof B2BPartner) {
             throw new AuthorizationException('Bu işe erişim yetkiniz yok.');
+        }
+
+        $portalTechnicianId = $this->resolveAuthenticatedTechnicianOrFail($user, $partner);
+        if ($portalTechnicianId !== (int) $link->technical_service_technician_id) {
+            throw new AuthorizationException('Bu iş başka bir ustanın aktif kapsamındadır.');
         }
 
         return $partner;
@@ -137,6 +556,7 @@ class B2BPartnerServiceJobScopeService
     public function serviceJobsQuery(B2BPartner $partner): Builder
     {
         return TechnicalServiceRequest::query()
+            ->with('latestAssignmentOffer')
             ->whereIn('technical_service_technician_id', $this->activeTechnicianIds($partner))
             ->whereNull('cancelled_at')
             ->whereDoesntHave('childRequests', fn (Builder $query): Builder => $this->nonCancelledChildServiceVisitQuery($query))
@@ -148,9 +568,18 @@ class B2BPartnerServiceJobScopeService
                 ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
     }
 
+    public function serviceJobsQueryForTechnician(B2BPartner $partner, int $technicianId): Builder
+    {
+        $this->assertPartnerTechnicianLink($partner, $technicianId);
+
+        return $this->serviceJobsQuery($partner)
+            ->where('technical_service_technician_id', $technicianId);
+    }
+
     public function completedHistoryJobsQuery(B2BPartner $partner): Builder
     {
         return TechnicalServiceRequest::query()
+            ->with('latestAssignmentOffer')
             ->whereIn('technical_service_technician_id', $this->activeTechnicianIds($partner))
             ->whereNull('cancelled_at')
             ->where(fn (Builder $query): Builder => $this->completedHistoryQuery($query))
@@ -160,6 +589,14 @@ class B2BPartnerServiceJobScopeService
             ->whereDoesntHave('partnerJobActions', fn (Builder $query): Builder => $query
                 ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
                 ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
+    }
+
+    public function completedHistoryJobsQueryForTechnician(B2BPartner $partner, int $technicianId): Builder
+    {
+        $this->assertPartnerTechnicianLink($partner, $technicianId);
+
+        return $this->completedHistoryJobsQuery($partner)
+            ->where('technical_service_technician_id', $technicianId);
     }
 
     public function shouldHideActiveParentWithChild(TechnicalServiceRequest $request): bool
@@ -234,5 +671,47 @@ class B2BPartnerServiceJobScopeService
             ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
             ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
             ->exists();
+    }
+
+    private function assertPartnerTechnicianLink(B2BPartner $partner, int $technicianId): void
+    {
+        $linked = $this->activeAssignmentLinksForTechnician($technicianId)
+            ->contains(fn (B2BPartnerTechnician $link): bool => (int) $link->partner_id === (int) $partner->id);
+
+        if (! $linked) {
+            throw new AuthorizationException('Seçilen usta bu partnerin aktif iş kartı kapsamında değil.');
+        }
+    }
+
+    private function isActiveLocksmithLink(B2BPartnerTechnician $link): bool
+    {
+        $link->loadMissing(['partner.capabilities', 'technician']);
+
+        return (bool) $link->active
+            && in_array($link->relationship_type, ['owner', 'field_technician'], true)
+            && $link->technician?->active === true
+            && $link->technician?->deleted_at === null
+            && $link->partner?->active === true
+            && $link->partner?->hasCapability(B2BPartner::TYPE_LOCKSMITH) === true;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function blockedJobCardContext(TechnicalServiceRequest $request, string $code, string $message): array
+    {
+        return [
+            'ready' => false,
+            'blocker_code' => $code,
+            'blocker_message' => $message,
+            'partner_id' => null,
+            'technician_id' => $request->technical_service_technician_id !== null
+                ? (int) $request->technical_service_technician_id
+                : null,
+            'partner_technician_link_id' => null,
+            'canonical_url' => null,
+            'ops_support_url' => null,
+            'preview_url' => null,
+        ];
     }
 }

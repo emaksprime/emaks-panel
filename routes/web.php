@@ -200,6 +200,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::get('service-jobs/{technicalServiceRequest}', [PartnerServiceJobController::class, 'show'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.show');
+                Route::get('service-jobs/{technicalServiceRequest}/uploads/{upload}', [PartnerServiceJobController::class, 'showUpload'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.uploads.show');
                 Route::post('service-jobs/{technicalServiceRequest}/accept', [PartnerServiceJobController::class, 'accept'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.accept');
@@ -245,6 +248,27 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             });
 
         Route::prefix('technical-service')->group(function () {
+            Route::prefix('ops-support/service-jobs')
+                ->middleware('panel.access:technical_service_manage')
+                ->group(function () {
+                    Route::get('/', [PartnerServiceJobController::class, 'index'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.index');
+                    Route::get('{technicalServiceRequest}', [PartnerServiceJobController::class, 'show'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.show');
+                    Route::get('{technicalServiceRequest}/uploads/{upload}', [PartnerServiceJobController::class, 'showUpload'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.uploads.show');
+                    Route::post('{technicalServiceRequest}/accept', [PartnerServiceJobController::class, 'accept'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.accept');
+                    Route::post('{technicalServiceRequest}/accept-appointment', [PartnerServiceJobController::class, 'accept'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.accept-appointment');
+                    Route::post('{technicalServiceRequest}/appointment-proposal', [PartnerServiceJobController::class, 'appointmentProposal'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.appointment-proposal');
+                    Route::post('{technicalServiceRequest}/reject', [PartnerServiceJobController::class, 'reject'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.reject');
+                    Route::post('{technicalServiceRequest}/photos', [PartnerServiceJobController::class, 'uploadPhotos'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.photos');
+                    Route::post('{technicalServiceRequest}/customer-otp-request', [PartnerServiceJobController::class, 'customerOtpRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.customer-otp-request');
+                    Route::post('{technicalServiceRequest}/support-request', [PartnerServiceJobController::class, 'supportRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.support-request');
+                    Route::post('{technicalServiceRequest}/part-requests/{partRequest}/received', [PartnerServiceJobController::class, 'receivePart'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.part-requests.received');
+                    Route::post('{technicalServiceRequest}/price-revision-request', [PartnerServiceJobController::class, 'priceRevisionRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.price-revision-request');
+                    Route::post('{technicalServiceRequest}/request-revisit', [PartnerServiceJobController::class, 'requestRevisit'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.request-revisit');
+                    Route::post('{technicalServiceRequest}/submit-completion', [PartnerServiceJobController::class, 'submitCompletion'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.submit-completion');
+                    Route::post('{technicalServiceRequest}/note', [PartnerServiceJobController::class, 'note'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.note');
+                    Route::post('{technicalServiceRequest}/correction-request', [PartnerServiceJobController::class, 'correctionRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.correction-request');
+                });
+
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
                 ->middleware('panel.access:technical_service,technical_service_technicians')
                 ->name('api.technical-service.technicians.index');
@@ -326,6 +350,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::patch('requests/{technicalServiceRequest}/assignment-offers/{assignmentOffer}', [TechnicalServicePartnerPortalOpsController::class, 'updateAssignmentOffer'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assignment-offers.update');
+            Route::post('requests/{technicalServiceRequest}/partner-actions/{partnerJobAction}/review', [TechnicalServicePartnerPortalOpsController::class, 'reviewPartnerAction'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-actions.review');
             Route::patch('requests/{technicalServiceRequest}/workflow', [TechnicalServiceController::class, 'updateWorkflow'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.workflow');
@@ -428,6 +455,10 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::get('service-jobs', [PartnerPortalController::class, 'serviceJobs'])->name('partner.service-jobs');
             Route::get('earnings', [PartnerPortalController::class, 'earnings'])->name('partner.earnings');
         });
+
+    Route::get('technical-service/ops-support/service-jobs', [PartnerPortalController::class, 'opsSupportServiceJobs'])
+        ->middleware('panel.access:technical_service_manage')
+        ->name('technical-service.ops-support.service-jobs');
 
     Route::get('support', [SupportController::class, 'index'])
         ->middleware('panel.access:support')

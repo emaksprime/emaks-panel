@@ -9,7 +9,7 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
-use App\Support\PartnerPortalPublicUrl;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Http;
@@ -26,6 +26,10 @@ class EvolutionWhatsAppMessageService
         'TEST-',
         'SMOKE-',
     ];
+
+    public function __construct(
+        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $context
@@ -234,6 +238,9 @@ class EvolutionWhatsAppMessageService
             $request?->scheduled_date,
         );
         $currency = $this->firstFilled($flat['currency'] ?? null, 'TRY');
+        $jobLink = $targetType === 'technician' && $request instanceof TechnicalServiceRequest
+            ? $this->partnerJobScope->canonicalTechnicianJobCardUrl($request)
+            : $this->firstFilled($flat['job_link'] ?? null);
 
         return [
             'event' => $event,
@@ -272,7 +279,7 @@ class EvolutionWhatsAppMessageService
                 $flat['public_url'] ?? null,
             ),
             'approval_url' => $this->firstFilled($flat['approval_url'] ?? null, $flat['confirmation_url'] ?? null),
-            'job_link' => $this->firstFilled($flat['job_link'] ?? null, $request ? PartnerPortalPublicUrl::url('/partner/service-jobs?job_id='.$request->id) : null),
+            'job_link' => $jobLink,
             'labor_amount' => $this->moneyForWorkflow($flat['labor_amount'] ?? null, $currency),
             'route_fee_amount' => $this->moneyForWorkflow($flat['route_fee_amount'] ?? null, $currency),
             'total_amount' => $this->moneyForWorkflow($flat['total_amount'] ?? null, $currency),
