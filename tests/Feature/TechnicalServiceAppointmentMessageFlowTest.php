@@ -1193,6 +1193,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_schedule_update_endpoint_preserves_approved_state_dispatches_four_messages_and_ignores_unchanged_repeat(): void
     {
         Http::fake();
+        config()->set('services.partner_portal.public_url', 'https://technician-portal.example.test');
         $actor = $this->admin();
         $this->configureMessaging([
             'appointment_updated_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
