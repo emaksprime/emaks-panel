@@ -1511,6 +1511,71 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         }
     }
 
+    public function test_assignment_offer_sms_keeps_required_business_fields_with_guarded_short_url_under_segment_policy(): void
+    {
+        $context = [
+            'mrn' => 'MRN-2607MM180001',
+            'customer_name' => 'REL 4E Test Müşteri',
+            'customer_phone' => '905372081633',
+            'address' => 'Pamukkale Test Mahallesi Güvenli Sokak No 17 Denizli',
+            'product_name' => 'Çelik Kapı Kilidi Test Ürünü',
+            'labor_amount_formatted' => '3.000,00 TL',
+            'route_fee_formatted' => '200,00 TL',
+            'technician_earning_total_formatted' => '3.200,00 TL',
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=81&job_id=247',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/247',
+        ];
+
+        $sms = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'assignment_offer_technician',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $body = $sms['rendered_body'];
+        foreach ([
+            'EMAKS Yeni Is',
+            'MRN-2607MM180001',
+            'REL 4E Test Musteri',
+            '905372081633',
+            'Pamukkale Test Mahallesi Guvenli Sokak No 17 Denizli',
+            'Celik Kapi Kilidi Test Urunu',
+            'Is:3.000,00 TL',
+            'Yol:200,00 TL',
+            'Top:3.200,00 TL',
+            'Saat oner:',
+            'http://10.0.28.64:8000/pj/247',
+        ] as $required) {
+            $this->assertStringContainsString($required, $body);
+        }
+        $this->assertSame('gsm', $sms['sms']['encoding']);
+        $this->assertLessThan(4, $sms['sms']['segments']);
+        $this->assertStringNotContainsString('/technical-service/ops-support/', $body);
+        $this->assertStringNotContainsString('/portal-preview', $body);
+        $this->assertStringNotContainsString('undefined', $body);
+        $this->assertStringNotContainsString('null', $body);
+
+        $whatsapp = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'assignment_offer_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('EMAKS Prime Teknik Servis', $whatsapp);
+        $this->assertStringContainsString($context['technician_job_card_url'], $whatsapp);
+        $this->assertStringNotContainsString($context['technician_job_card_short_url'], $whatsapp);
+    }
+
     public function test_sms_compliance_sms_footer_is_separate_from_internal_custom_id(): void
     {
         $preview = $this->actingAs($this->admin())

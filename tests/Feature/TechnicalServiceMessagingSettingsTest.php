@@ -678,6 +678,71 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('NAC altyapı test SMS’i gönder', $source);
         $this->assertStringContainsString('Generic altyapı testi içindir.', $source);
         $this->assertStringNotContainsString('/sms/create', $source);
+        $this->assertStringContainsString('Portal / Manuel E2E', $source);
+        $this->assertStringContainsString('Manuel E2E Yerel Usta Portalı', $source);
+        $this->assertStringContainsString('Live public portal HTTPS:', $source);
+    }
+
+    public function test_manual_e2e_lan_origin_can_be_saved_without_marking_live_https_ready(): void
+    {
+        config([
+            'services.partner_portal.public_url' => null,
+            'app.url' => 'http://127.0.0.1:8000',
+        ]);
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'manual_e2e_partner_portal_origin_enabled' => true,
+                'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000/',
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.global.manual_e2e_partner_portal_origin', 'http://10.0.28.64:8000')
+            ->assertJsonPath('messaging_settings.portal_origins.manual_e2e.ready', true)
+            ->assertJsonPath('messaging_settings.portal_origins.manual_e2e.phone_ready', true)
+            ->assertJsonPath('messaging_settings.portal_origins.live_public.ready', false);
+
+        $layout = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
+            ->value('layout_json');
+        $this->assertSame(
+            'http://10.0.28.64:8000',
+            data_get($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.manual_e2e_partner_portal_origin'),
+        );
+    }
+
+    public function test_manual_e2e_lan_origin_rejects_path_query_fragment_credentials_and_unsafe_schemes(): void
+    {
+        foreach ([
+            'http://10.0.28.64:8000/path',
+            'http://10.0.28.64:8000?job=1',
+            'http://10.0.28.64:8000#fragment',
+            'http://user:password@10.0.28.64:8000',
+            'javascript:alert(1)',
+            '//10.0.28.64:8000',
+            'https://untrusted.example.test',
+        ] as $origin) {
+            $this->actingAs($this->admin())
+                ->patchJson('/api/technical-service/messaging-settings', [
+                    'manual_e2e_partner_portal_origin_enabled' => true,
+                    'manual_e2e_partner_portal_origin' => $origin,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('manual_e2e_partner_portal_origin');
+        }
+    }
+
+    public function test_loopback_manual_e2e_origin_is_saved_for_preview_but_not_phone_ready(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'manual_e2e_partner_portal_origin_enabled' => true,
+                'manual_e2e_partner_portal_origin' => 'http://127.0.0.1:8000',
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.portal_origins.manual_e2e.valid', true)
+            ->assertJsonPath('messaging_settings.portal_origins.manual_e2e.loopback', true)
+            ->assertJsonPath('messaging_settings.portal_origins.manual_e2e.phone_ready', false)
+            ->assertJsonPath('messaging_settings.portal_origins.manual_e2e.ready', false);
     }
 
     private function admin(): User

@@ -155,6 +155,92 @@ class PartnerPortalPublicUrl
         return rtrim($normalized, '/');
     }
 
+    public static function normalizeOrigin(?string $url): ?string
+    {
+        $url = trim((string) $url);
+
+        if ($url === ''
+            || preg_match('/[\x00-\x20\x7f]/', $url) === 1
+            || ! preg_match('#^https?://#i', $url)
+        ) {
+            return null;
+        }
+
+        $parts = parse_url($url);
+        if (! is_array($parts)
+            || empty($parts['scheme'])
+            || empty($parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])
+            || (isset($parts['path']) && ! in_array($parts['path'], ['', '/'], true))
+        ) {
+            return null;
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+        if (! in_array($scheme, ['http', 'https'], true)) {
+            return null;
+        }
+
+        $host = strtolower((string) $parts['host']);
+        if ($host === '' || str_contains($host, '..')) {
+            return null;
+        }
+
+        $origin = $scheme.'://'.$host;
+        if (isset($parts['port'])) {
+            $port = (int) $parts['port'];
+            if ($port < 1 || $port > 65535) {
+                return null;
+            }
+
+            $origin .= ':'.$port;
+        }
+
+        return $origin;
+    }
+
+    public static function isPrivateLanOrigin(?string $url): bool
+    {
+        $origin = self::normalizeOrigin($url);
+        if ($origin === null) {
+            return false;
+        }
+
+        $host = (string) parse_url($origin, PHP_URL_HOST);
+        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+            return false;
+        }
+
+        return str_starts_with($host, '10.')
+            || str_starts_with($host, '192.168.')
+            || preg_match('/^172\.(1[6-9]|2\d|3[0-1])\./', $host) === 1;
+    }
+
+    public static function isLoopbackOrigin(?string $url): bool
+    {
+        $origin = self::normalizeOrigin($url);
+        if ($origin === null) {
+            return false;
+        }
+
+        $host = strtolower((string) parse_url($origin, PHP_URL_HOST));
+
+        return in_array($host, ['localhost', '::1', '0.0.0.0'], true)
+            || str_starts_with($host, '127.');
+    }
+
+    public static function isPublicHttpsUrl(?string $url): bool
+    {
+        $baseUrl = self::normalizeBaseUrl($url);
+
+        return $baseUrl !== null
+            && strtolower((string) parse_url($baseUrl, PHP_URL_SCHEME)) === 'https'
+            && ! self::isLocalUrl($baseUrl);
+    }
+
     public static function isLocalUrl(string $url): bool
     {
         $host = strtolower((string) parse_url($url, PHP_URL_HOST));
@@ -196,7 +282,7 @@ class PartnerPortalPublicUrl
     }
 
     /**
-     * @param list<string> $keys
+     * @param  list<string>  $keys
      */
     private static function guardedConfiguredBaseUrl(string $context, array $keys): string
     {

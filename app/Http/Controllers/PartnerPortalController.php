@@ -12,6 +12,7 @@ use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -56,6 +57,24 @@ class PartnerPortalController extends Controller
     public function serviceJobs(Request $request): Response
     {
         return $this->renderPortal($request, 'service-jobs', 'partner.service_jobs.view', 'technical_service');
+    }
+
+    public function shortServiceJob(Request $request, TechnicalServiceRequest $technicalServiceRequest): RedirectResponse
+    {
+        $user = $request->user();
+        abort_unless($user instanceof User, 403);
+
+        $partner = $this->serviceJobScope->assertCanViewServiceJob($user, $technicalServiceRequest);
+        abort_unless(
+            $this->panelAccess->userCanAccess($user, 'partner.service_jobs.view')
+                && $this->partnerAccess->canAccessScope($user, $partner, 'technical_service', 'view'),
+            403,
+        );
+
+        return redirect()->route('partner.service-jobs', [
+            'partner_id' => (int) $partner->id,
+            'job_id' => (int) $technicalServiceRequest->id,
+        ]);
     }
 
     public function opsSupportServiceJobs(Request $request): Response

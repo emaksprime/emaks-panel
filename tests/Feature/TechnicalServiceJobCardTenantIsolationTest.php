@@ -14,7 +14,10 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
+use App\Services\Messaging\TechnicalServiceTechnicianPortalLinkResolver;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use Carbon\CarbonImmutable;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -267,6 +270,170 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
             ->assertJsonPath('job.mrn', $fixture['job']->mrn);
     }
 
+    public function test_technician_short_job_link_redirects_authorized_user(): void
+    {
+        $fixture = $this->tenantFixture();
+
+        $this->actingAs($fixture['userA'])
+            ->get('/pj/'.$fixture['job']->id)
+            ->assertRedirectToRoute('partner.service-jobs', [
+                'partner_id' => $fixture['partnerA']->id,
+                'job_id' => $fixture['job']->id,
+            ]);
+    }
+
+    public function test_technician_short_job_link_preserves_intended_login(): void
+    {
+        $fixture = $this->tenantFixture();
+
+        $this->get('/pj/'.$fixture['job']->id)->assertRedirect('/login');
+        $this->assertStringEndsWith('/pj/'.$fixture['job']->id, (string) session('url.intended'));
+    }
+
+    public function test_technician_short_job_link_denies_wrong_technician_without_pii(): void
+    {
+        $fixture = $this->tenantFixture();
+        $response = $this->actingAs($fixture['userB'])->get('/pj/'.$fixture['job']->id);
+
+        $response->assertForbidden();
+        $this->assertStringNotContainsString('Tenant Secret Customer', $response->getContent());
+    }
+
+    public function test_technician_short_job_link_denies_after_reassignment(): void
+    {
+        $fixture = $this->tenantFixture();
+        $this->reassign($fixture['job'], $fixture['otherTechnicianA'], $fixture['otherLinkA']);
+
+        $this->actingAs($fixture['userA'])
+            ->get('/pj/'.$fixture['job']->id)
+            ->assertForbidden();
+        $this->actingAs($fixture['otherUserA'])
+            ->get('/pj/'.$fixture['job']->id)
+            ->assertRedirectToRoute('partner.service-jobs', [
+                'partner_id' => $fixture['partnerA']->id,
+                'job_id' => $fixture['job']->id,
+            ]);
+    }
+
+    public function test_technician_short_job_link_uses_manual_e2e_origin_only_when_guarded(): void
+    {
+        $fixture = $this->tenantFixture();
+        [$settings, $metadata] = $this->manualE2ELinkContext('905467647428');
+
+        $resolved = app(TechnicalServiceTechnicianPortalLinkResolver::class)->resolveForDispatch(
+            $fixture['job'],
+            $settings,
+            'technician',
+            '905467647428',
+            $metadata,
+        );
+
+        $this->assertTrue($resolved['ready']);
+        $this->assertSame('manual_e2e_local', $resolved['mode']);
+        $this->assertSame('admin_manual_e2e_partner_portal_origin', $resolved['source']);
+        $this->assertSame('http://10.0.28.64:8000/pj/'.$fixture['job']->id, $resolved['short_url']);
+        $this->assertStringContainsString('/partner/service-jobs?', $resolved['canonical_url']);
+        $this->assertStringNotContainsString('ops-support', $resolved['short_url']);
+        $this->assertStringNotContainsString('portal-preview', $resolved['short_url']);
+    }
+
+    public function test_non_manual_non_allowlisted_and_customer_contexts_ignore_lan_origin(): void
+    {
+        $fixture = $this->tenantFixture();
+        [$settings, $metadata] = $this->manualE2ELinkContext('905467647428');
+        $resolver = app(TechnicalServiceTechnicianPortalLinkResolver::class);
+
+        $nonManual = $settings;
+        $nonManual['global']['manual_e2e_enabled'] = false;
+        $this->assertSame('public_live', $resolver->resolveForDispatch(
+            $fixture['job'],
+            $nonManual,
+            'technician',
+            '905467647428',
+            $metadata,
+        )['mode']);
+
+        $this->assertSame('public_live', $resolver->resolveForDispatch(
+            $fixture['job'],
+            $settings,
+            'technician',
+            '905500000000',
+            $metadata,
+        )['mode']);
+
+        $this->assertSame('public_live', $resolver->resolveForDispatch(
+            $fixture['job'],
+            $settings,
+            'customer',
+            '905467647428',
+            $metadata,
+        )['mode']);
+    }
+
+    public function test_production_ignores_manual_e2e_lan_origin(): void
+    {
+        $fixture = $this->tenantFixture();
+        [$settings, $metadata] = $this->manualE2ELinkContext('905467647428');
+        $previousEnvironment = app()->environment();
+
+        try {
+            app()->detectEnvironment(fn (): string => 'production');
+            $resolved = app(TechnicalServiceTechnicianPortalLinkResolver::class)->resolveForDispatch(
+                $fixture['job'],
+                $settings,
+                'technician',
+                '905467647428',
+                $metadata,
+            );
+            $this->assertSame('public_live', $resolved['mode']);
+            $this->assertStringStartsWith('https://portal.example.test/', $resolved['short_url']);
+        } finally {
+            app()->detectEnvironment(fn (): string => $previousEnvironment);
+        }
+    }
+
+    public function test_non_local_environment_ignores_manual_e2e_lan_origin(): void
+    {
+        $fixture = $this->tenantFixture();
+        [$settings, $metadata] = $this->manualE2ELinkContext('905467647428');
+        $previousEnvironment = app()->environment();
+
+        try {
+            app()->detectEnvironment(fn (): string => 'staging');
+            $resolved = app(TechnicalServiceTechnicianPortalLinkResolver::class)->resolveForDispatch(
+                $fixture['job'],
+                $settings,
+                'technician',
+                '905467647428',
+                $metadata,
+            );
+            $this->assertSame('public_live', $resolved['mode']);
+            $this->assertStringStartsWith('https://portal.example.test/', $resolved['short_url']);
+        } finally {
+            app()->detectEnvironment(fn (): string => $previousEnvironment);
+        }
+    }
+
+    public function test_live_short_job_link_requires_public_https_origin(): void
+    {
+        $fixture = $this->tenantFixture();
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.28.64:8000',
+            'app.url' => 'http://10.0.28.64:8000',
+        ]);
+
+        $resolved = app(TechnicalServiceTechnicianPortalLinkResolver::class)->resolveForDispatch(
+            $fixture['job'],
+            ['global' => ['test_mode_enabled' => false, 'manual_e2e_enabled' => false]],
+            'technician',
+            '905467647428',
+        );
+
+        $this->assertFalse($resolved['ready']);
+        $this->assertSame('public_url_missing', $resolved['blocker_code']);
+        $this->assertNull($resolved['short_url']);
+    }
+
     public function test_job_deep_link_page_exposes_only_authorized_requested_job_id(): void
     {
         $fixture = $this->tenantFixture();
@@ -338,6 +505,29 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
             'userB',
             'job',
         );
+    }
+
+    /**
+     * @return array{0:array<string, mixed>,1:array<string, mixed>}
+     */
+    private function manualE2ELinkContext(string $targetPhone): array
+    {
+        $now = CarbonImmutable::now();
+        $global = [
+            'test_mode_enabled' => false,
+            'manual_e2e_enabled' => true,
+            'manual_e2e_active_run_id' => 'MANUAL-E2E-REL4E17A1-TEST',
+            'manual_e2e_started_at' => $now->subMinute()->toIso8601String(),
+            'manual_e2e_created_after' => $now->subMinute()->toIso8601String(),
+            'manual_e2e_expires_at' => $now->addHour()->toIso8601String(),
+            'manual_e2e_allowlisted_phones' => [$targetPhone],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+        ];
+        $metadata = TechnicalServiceManualE2ERunContext::fromSettings($global)
+            ->dispatchMetadata('MRN-TENANT-A', $targetPhone, 'technician');
+
+        return [['global' => $global], $metadata];
     }
 
     /**

@@ -24,6 +24,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 class TechnicalServiceMessageDispatchQueueTest extends TestCase
@@ -2123,6 +2124,76 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     {
         $this->assertSame(0, TechnicalServiceMessageDispatch::query()->where('message_type', 'appointment_approved_customer')->count());
         $this->assertSame(0, TechnicalServiceMessageDispatch::query()->where('recipient_role', 'customer')->count());
+    }
+
+    public function test_blocked_unsent_dispatch_can_be_reconciled_without_losing_audit(): void
+    {
+        $request = $this->technicalServiceRequest();
+        $creator = $this->admin();
+        $actor = $this->admin();
+        $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->blocked([
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'message_type' => 'assignment_offer_technician',
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+            'recipient_role' => 'technician',
+            'target_phone' => '905467647428',
+            'metadata' => ['provider_send_attempted' => false],
+        ], $creator, 'public_url_missing', 'Portal URL eksik.');
+
+        $reconciled = app(TechnicalServiceMessageDispatchQueue::class)->reconcileBlockedUnsent(
+            $dispatch,
+            'public_url_missing_before_local_portal_configuration',
+            $actor,
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_CANCELLED, $reconciled->status);
+        $this->assertSame(0, $reconciled->attempt_count);
+        $this->assertNull($reconciled->sent_at);
+        $this->assertNull($reconciled->provider_message_id);
+        $this->assertFalse((bool) data_get($reconciled->metadata, 'provider_send_attempted'));
+        $this->assertTrue((bool) data_get($reconciled->metadata, 'retained_for_audit'));
+        $this->assertSame(
+            'public_url_missing_before_local_portal_configuration',
+            data_get($reconciled->metadata, 'reconciliation_reason'),
+        );
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'message_blocked_reconciled',
+            'author_user_id' => $actor->id,
+        ]);
+        $event = TechnicalServiceRequestEvent::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('event_type', 'message_blocked_reconciled')
+            ->firstOrFail();
+        $this->assertSame(
+            'public_url_missing_before_local_portal_configuration',
+            data_get($event->metadata, 'reconciliation_reason'),
+        );
+        $this->assertTrue((bool) data_get($event->metadata, 'retained_for_audit'));
+    }
+
+    public function test_reconciliation_rejects_blocked_dispatch_after_provider_attempt(): void
+    {
+        $request = $this->technicalServiceRequest();
+        $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->blocked([
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'message_type' => 'assignment_offer_technician',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'technician',
+            'target_phone' => '905467647428',
+            'metadata' => ['provider_send_attempted' => true],
+        ], $this->admin(), 'public_url_missing', 'Portal URL eksik.');
+
+        $this->expectException(ValidationException::class);
+        app(TechnicalServiceMessageDispatchQueue::class)->reconcileBlockedUnsent(
+            $dispatch,
+            'must_not_reconcile_attempted_dispatch',
+            $this->admin(),
+        );
     }
 
     private function enqueueDispatch(array $overrides = []): TechnicalServiceMessageDispatch

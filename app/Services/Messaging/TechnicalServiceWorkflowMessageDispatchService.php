@@ -6,7 +6,6 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
-use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Support\PartnerPortalPublicUrl;
 
 class TechnicalServiceWorkflowMessageDispatchService
@@ -17,7 +16,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         private readonly TechnicalServiceMessagingSettingsService $settings,
         private readonly TechnicalServiceMessageTemplateService $templates,
         private readonly TechnicalServiceMessageChannelPlanner $channelPlanner,
-        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+        private readonly TechnicalServiceTechnicianPortalLinkResolver $technicianPortalLinks,
     ) {}
 
     /**
@@ -37,21 +36,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         $settings = $this->settings->payload();
         $global = (array) ($settings['global'] ?? []);
         $summary = $this->emptySummary($messageType, $recipientRole);
-        $jobCardContext = $recipientRole === 'technician'
-            ? $this->partnerJobScope->technicianJobCardContext($request)
-            : null;
-
-        if (is_array($jobCardContext)) {
-            $context = [
-                ...$context,
-                'job_link' => $jobCardContext['canonical_url'] ?? null,
-                'technician_job_card_url' => $jobCardContext['canonical_url'] ?? null,
-                'technician_job_card_short_url' => $jobCardContext['canonical_url'] ?? null,
-                'assignment_partner_id' => $jobCardContext['partner_id'] ?? null,
-                'assignment_technician_id' => $jobCardContext['technician_id'] ?? null,
-            ];
-            $options['requires_public_url'] = $jobCardContext['canonical_url'] ?? null;
-        }
+        $jobCardContext = null;
 
         if (! (bool) ($global['messaging_enabled'] ?? false)) {
             return $this->blockedSummary($summary, 'messaging_disabled', 'Mesaj sistemi kapalı.');
@@ -91,6 +76,28 @@ class TechnicalServiceWorkflowMessageDispatchService
         $testRedirectApplied = $testMode && $targetPhone !== '' && $targetPhone !== $recipientPhone;
         $manualE2e = $this->manualE2ePreparation($global, $recipientRole, $targetPhone, $request);
         $manualE2eMetadata = $manualE2e['metadata'];
+        if ($recipientRole === 'technician') {
+            $jobCardContext = $this->technicianPortalLinks->resolveForDispatch(
+                $request,
+                $settings,
+                $recipientRole,
+                $targetPhone,
+                $manualE2eMetadata,
+            );
+            if ((bool) ($jobCardContext['ready'] ?? false)) {
+                $context = [
+                    ...$context,
+                    'job_link' => $jobCardContext['canonical_url'],
+                    'technician_job_card_url' => $jobCardContext['canonical_url'],
+                    'technician_job_card_short_url' => $jobCardContext['short_url'],
+                    'technician_job_card_origin_source' => $jobCardContext['source'],
+                    'technician_job_card_origin_mode' => $jobCardContext['mode'],
+                    'assignment_partner_id' => $jobCardContext['partner_id'] ?? null,
+                    'assignment_technician_id' => $jobCardContext['technician_id'] ?? null,
+                ];
+                $options['requires_public_url'] = $jobCardContext['canonical_url'];
+            }
+        }
 
         foreach ($plans as $plan) {
             $channel = (string) ($plan['channel'] ?? 'system');
@@ -150,7 +157,13 @@ class TechnicalServiceWorkflowMessageDispatchService
             }
 
             $publicUrl = $this->requiredPublicUrl($options, $context);
-            if (! $testMode && $publicUrl !== null && PartnerPortalPublicUrl::isLocalUrl($publicUrl)) {
+            $guardedManualTechnicianUrl = $recipientRole === 'technician'
+                && ($jobCardContext['mode'] ?? null) === 'manual_e2e_local';
+            if (! $testMode
+                && $publicUrl !== null
+                && ! $guardedManualTechnicianUrl
+                && ! PartnerPortalPublicUrl::isPublicHttpsUrl($publicUrl)
+            ) {
                 $summary = $this->addBlockedDispatch($summary, $baseInput, $actor, 'public_url_missing', 'Mesajdaki bağlantı gerçek gönderim için public URL olmalıdır. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.');
 
                 continue;

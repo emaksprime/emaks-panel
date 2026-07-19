@@ -43,6 +43,7 @@ type MessagingSectionKey =
     | 'message_types';
 type TemplateSectionKey = 'whatsapp' | 'sms' | 'voice' | 'variables';
 type IntegrationSectionKey =
+    | 'manual_e2e_portal'
     | 'mikro_api'
     | 'provider_credentials'
     | 'operation_catalog';
@@ -81,7 +82,7 @@ const adminSectionTabs: Array<{
     {
         key: 'integrations',
         label: 'Entegrasyonlar',
-        summary: 'Mikro ve provider credential hazırlığı',
+        summary: 'Portal, Mikro ve provider hazırlığı',
     },
 ];
 
@@ -106,6 +107,7 @@ const integrationSectionTabs: Array<{
     key: IntegrationSectionKey;
     label: string;
 }> = [
+    { key: 'manual_e2e_portal', label: 'Portal / Manuel E2E' },
     { key: 'mikro_api', label: 'Mikro API' },
     { key: 'provider_credentials', label: 'Provider Credentials' },
     { key: 'operation_catalog', label: 'Operation Catalog' },
@@ -461,6 +463,8 @@ type MessagingSettings = {
         manual_e2e_last_stopped_at: string | null;
         manual_e2e_ttl_seconds: number;
         manual_e2e_allowlisted_phones: string[];
+        manual_e2e_partner_portal_origin_enabled: boolean;
+        manual_e2e_partner_portal_origin: string | null;
         test_phone: string | null;
         test_phone_masked: string | null;
         queue_paused: boolean;
@@ -503,12 +507,36 @@ type MessagingSettings = {
         manual_e2e_active: boolean;
         manual_e2e_worker_command_ready: boolean;
         manual_e2e_blocker_code: string | null;
+        manual_e2e_partner_portal_ready: boolean;
+        live_public_partner_portal_ready: boolean;
         can_send_test: boolean;
         can_send_real: boolean;
         effective_mode: string;
         disabled_reasons: string[];
         real_allowed_message_types: string[];
         test_allowed_message_types: string[];
+    };
+    portal_origins: {
+        manual_e2e: {
+            enabled: boolean;
+            origin: string | null;
+            valid: boolean;
+            private_lan: boolean;
+            loopback: boolean;
+            phone_ready: boolean;
+            ready: boolean;
+            status: 'ready' | 'missing' | 'invalid';
+            status_label: 'Ready' | 'Missing' | 'Invalid';
+            source: string;
+            warning: string | null;
+        };
+        live_public: {
+            origin: string | null;
+            ready: boolean;
+            status: 'ready' | 'missing';
+            status_label: 'Ready' | 'Missing';
+            source: string;
+        };
     };
     manual_e2e: {
         enabled: boolean;
@@ -1314,6 +1342,11 @@ export default function TechnicalServiceAdmin({
             messagingSettings.global.allow_browser_smoke_send,
         allow_test_fixture_send:
             messagingSettings.global.allow_test_fixture_send,
+        manual_e2e_partner_portal_origin_enabled:
+            messagingSettings.global
+                .manual_e2e_partner_portal_origin_enabled,
+        manual_e2e_partner_portal_origin:
+            messagingSettings.global.manual_e2e_partner_portal_origin ?? '',
     });
     const [nacSmsInputs, setNacSmsInputs] = useState(() =>
         nacSmsInputsFromSettings(messagingSettings),
@@ -1792,6 +1825,11 @@ export default function TechnicalServiceAdmin({
                 nextSettings.global.allow_browser_smoke_send,
             allow_test_fixture_send:
                 nextSettings.global.allow_test_fixture_send,
+            manual_e2e_partner_portal_origin_enabled:
+                nextSettings.global
+                    .manual_e2e_partner_portal_origin_enabled,
+            manual_e2e_partner_portal_origin:
+                nextSettings.global.manual_e2e_partner_portal_origin ?? '',
         });
         setNacSmsInputs(nacSmsInputsFromSettings(nextSettings));
         setEvoWhatsappInputs(evoWhatsappInputsFromSettings(nextSettings));
@@ -2152,6 +2190,10 @@ export default function TechnicalServiceAdmin({
                             messagingInputs.allow_browser_smoke_send,
                         allow_test_fixture_send:
                             messagingInputs.allow_test_fixture_send,
+                        manual_e2e_partner_portal_origin_enabled:
+                            messagingInputs.manual_e2e_partner_portal_origin_enabled,
+                        manual_e2e_partner_portal_origin:
+                            messagingInputs.manual_e2e_partner_portal_origin,
                         shared_test_phone: messagingInputs.test_phone,
                         nac_sms: {
                             enabled: nacSmsInputs.enabled,
@@ -5081,12 +5123,12 @@ export default function TechnicalServiceAdmin({
                                 </p>
                                  <h2 className="mt-2 text-lg font-bold text-slate-950">
                                      {activeAdminSection === 'integrations'
-                                         ? 'Mikro ve provider credential hazırlığı ayrı yönetilir.'
+                                         ? 'Portal, Mikro ve provider hazırlığı ayrı yönetilir.'
                                          : messagingRuntimeHeadline(messaging)}
                                  </h2>
                                 <p className="mt-2 text-sm leading-6 text-slate-600">
                                      {activeAdminSection === 'integrations'
-                                         ? 'Mikro API, provider credentials ve operation catalog hazırlığı mesajlaşma ayarlarından ayrıdır. Yazma işlemleri onay/audit olmadan hazır sayılmaz.'
+                                         ? 'Yerel Manual E2E portalı, Mikro API, provider credentials ve operation catalog hazırlığı ayrı readiness kurallarıyla yönetilir.'
                                          : 'Provider readiness, kanal politikası ve Manual E2E yaşam döngüsü ayrı durumlar olarak server verisinden gösterilir. Randevu mesajı usta seçildiğinde değil OPS randevu onayında kuyruğa alınır.'}
                                 </p>
                                 {messagingMessage ? (
@@ -6085,6 +6127,119 @@ export default function TechnicalServiceAdmin({
                                         </button>
                                     </div>
                                 </div>
+                            </div>
+                        ) : null}
+
+                        {activeAdminSection === 'integrations' &&
+                        activeIntegrationSection === 'manual_e2e_portal' ? (
+                            <div
+                                data-testid="manual-e2e-portal-origin-panel"
+                                className="mt-5 border-y border-slate-200 py-5"
+                            >
+                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                    <div className="max-w-3xl">
+                                        <h3 className="text-base font-bold text-slate-950">
+                                            Manuel E2E Yerel Usta Portalı
+                                        </h3>
+                                        <p className="mt-1 text-sm leading-6 text-slate-600">
+                                            Bu adres yalnız kontrollü ve
+                                            allowlist&apos;li yerel test
+                                            gönderimlerinde kullanılır. Canlı
+                                            mesajlarda public HTTPS
+                                            zorunluluğunu kaldırmaz.
+                                        </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2 text-xs font-bold">
+                                        <span
+                                            data-testid="manual-e2e-portal-readiness"
+                                            className={[
+                                                'rounded-lg border px-3 py-2',
+                                                messaging.portal_origins
+                                                    .manual_e2e.ready
+                                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                                                    : messaging.portal_origins
+                                                            .manual_e2e
+                                                            .status ===
+                                                        'invalid'
+                                                      ? 'border-red-200 bg-red-50 text-red-900'
+                                                      : 'border-amber-200 bg-amber-50 text-amber-900',
+                                            ].join(' ')}
+                                        >
+                                            Local Manual E2E portal:{' '}
+                                            {
+                                                messaging.portal_origins
+                                                    .manual_e2e.status_label
+                                            }
+                                        </span>
+                                        <span
+                                            data-testid="live-public-portal-readiness"
+                                            className={[
+                                                'rounded-lg border px-3 py-2',
+                                                messaging.portal_origins
+                                                    .live_public.ready
+                                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                                                    : 'border-amber-200 bg-amber-50 text-amber-900',
+                                            ].join(' ')}
+                                        >
+                                            Live public portal HTTPS:{' '}
+                                            {
+                                                messaging.portal_origins
+                                                    .live_public.status_label
+                                            }
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(240px,0.7fr)_minmax(320px,1.3fr)]">
+                                    <label className="flex items-center gap-3 border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                                        <input
+                                            data-testid="manual-e2e-portal-origin-enabled"
+                                            type="checkbox"
+                                            disabled={manualE2EContextLocked}
+                                            checked={
+                                                messagingInputs.manual_e2e_partner_portal_origin_enabled
+                                            }
+                                            onChange={(event) =>
+                                                setMessagingInputs({
+                                                    ...messagingInputs,
+                                                    manual_e2e_partner_portal_origin_enabled:
+                                                        event.target.checked,
+                                                })
+                                            }
+                                            className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                                        />
+                                        Yerel portal adresini kullan
+                                    </label>
+                                    <label className="grid gap-1 text-sm font-semibold text-slate-800">
+                                        Yerel portal origin
+                                        <input
+                                            data-testid="manual-e2e-portal-origin-input"
+                                            type="url"
+                                            disabled={manualE2EContextLocked}
+                                            value={
+                                                messagingInputs.manual_e2e_partner_portal_origin
+                                            }
+                                            onChange={(event) =>
+                                                setMessagingInputs({
+                                                    ...messagingInputs,
+                                                    manual_e2e_partner_portal_origin:
+                                                        event.target.value,
+                                                })
+                                            }
+                                            placeholder="http://10.0.28.64:8000"
+                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                        />
+                                    </label>
+                                </div>
+
+                                {messaging.portal_origins.manual_e2e.warning ? (
+                                    <p className="mt-3 border-l-4 border-amber-400 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                                        {
+                                            messaging.portal_origins.manual_e2e
+                                                .warning
+                                        }
+                                    </p>
+                                ) : null}
                             </div>
                         ) : null}
 
@@ -7693,7 +7848,7 @@ export default function TechnicalServiceAdmin({
                         ) : null}
 
                         {activeAdminSection === 'integrations' &&
-                        !['evo', 'mikro_api'].includes(
+                        !['evo', 'mikro_api', 'manual_e2e_portal'].includes(
                             activeIntegrationSection,
                         ) ? (
                             <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">

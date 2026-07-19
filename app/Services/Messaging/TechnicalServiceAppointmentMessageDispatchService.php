@@ -6,8 +6,6 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
-use App\Services\B2B\B2BPartnerServiceJobScopeService;
-use App\Support\PartnerPortalPublicUrl;
 
 class TechnicalServiceAppointmentMessageDispatchService
 {
@@ -17,7 +15,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         private readonly TechnicalServiceMessageChannelPlanner $channelPlanner,
         private readonly TechnicalServiceMessageDispatchQueue $dispatchQueue,
         private readonly TechnicalServiceMessageIdempotencyService $idempotency,
-        private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+        private readonly TechnicalServiceTechnicianPortalLinkResolver $technicianPortalLinks,
     ) {}
 
     /**
@@ -181,7 +179,16 @@ class TechnicalServiceAppointmentMessageDispatchService
             );
         }
 
-        $context = $this->contextOverrides($request, $sourceAction, $options);
+        $jobCardContext = $recipientRole === 'technician'
+            ? $this->technicianPortalLinks->resolveForDispatch(
+                $request,
+                $settings,
+                $recipientRole,
+                $targetPhone,
+                $manualE2eMetadata,
+            )
+            : null;
+        $context = $this->contextOverrides($request, $sourceAction, $options, $jobCardContext);
         if ($recipientRole === 'technician' && ! (bool) ($context['technician_job_card_ready'] ?? false)) {
             return $this->addBlocked(
                 $request,
@@ -195,23 +202,6 @@ class TechnicalServiceAppointmentMessageDispatchService
                 (string) ($context['technician_job_card_blocker_message'] ?? 'Aktif atamaya bağlı usta iş kartı bulunamadı.'),
             );
         }
-        $requiredPublicUrl = $recipientRole === 'technician'
-            ? $this->filledString($context['technician_job_card_url'] ?? null)
-            : null;
-        if (! $testMode && $requiredPublicUrl !== null && PartnerPortalPublicUrl::isLocalUrl($requiredPublicUrl)) {
-            return $this->addBlocked(
-                $request,
-                $actor,
-                $summary,
-                $messageType,
-                $recipientRole,
-                $channel,
-                $providerKey,
-                'public_url_missing',
-                'Usta iş kartı bağlantısı gerçek gönderim için public URL olmalıdır. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.',
-            );
-        }
-
         $preview = $this->templates->preview([
             'message_type' => $messageType,
             'channel' => $channel,
@@ -430,6 +420,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         TechnicalServiceRequest $request,
         ?TechnicalServicePartnerJobAction $sourceAction,
         array $options,
+        ?array $jobCardContext = null,
     ): array {
         $explicitContext = is_array($options['context'] ?? null) ? $options['context'] : [];
         $slot = is_array($options['slot'] ?? null) ? $options['slot'] : [];
@@ -437,7 +428,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         $end = $this->filledString($slot['end_time'] ?? null);
         $range = $start !== null && $end !== null ? "{$start} - {$end}" : $start;
         $customerWindow = $this->customerAppointmentWindow($start);
-        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $jobCardContext ??= [];
         $jobCardUrl = is_string($jobCardContext['canonical_url'] ?? null)
             ? $jobCardContext['canonical_url']
             : null;
@@ -454,7 +445,9 @@ class TechnicalServiceAppointmentMessageDispatchService
             'appointment_customer_window_label' => $customerWindow === '09:00 - 13:00 arası' ? 'sabah' : ($customerWindow === null ? null : 'öğleden sonra'),
             'appointment_slot_text' => $slot['label'] ?? $slot['slot'] ?? null,
             'technician_job_card_url' => $jobCardUrl,
-            'technician_job_card_short_url' => $jobCardUrl,
+            'technician_job_card_short_url' => $jobCardContext['short_url'] ?? null,
+            'technician_job_card_origin_source' => $jobCardContext['source'] ?? null,
+            'technician_job_card_origin_mode' => $jobCardContext['mode'] ?? null,
             'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
             'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
             'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,

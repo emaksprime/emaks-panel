@@ -444,6 +444,10 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
     Route::get('orders', [PanelPageController::class, 'orders'])->name('orders.redirect');
 
+    Route::get('pj/{technicalServiceRequest}', [PartnerPortalController::class, 'shortServiceJob'])
+        ->middleware('panel.access:partner.portal.view')
+        ->name('partner.service-jobs.short');
+
     Route::prefix('partner')
         ->middleware('panel.access:partner.portal.view')
         ->group(function () {

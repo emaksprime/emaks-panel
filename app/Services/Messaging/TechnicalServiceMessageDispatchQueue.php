@@ -6,6 +6,7 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestEvent;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceMessageDispatchQueue
@@ -127,6 +128,68 @@ class TechnicalServiceMessageDispatchQueue
         return $dispatch;
     }
 
+    public function reconcileBlockedUnsent(
+        TechnicalServiceMessageDispatch $dispatch,
+        string $reason,
+        ?User $actor = null,
+    ): TechnicalServiceMessageDispatch {
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw ValidationException::withMessages([
+                'reason' => 'Blocked dispatch reconciliation nedeni zorunlu.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($dispatch, $reason, $actor): TechnicalServiceMessageDispatch {
+            $locked = TechnicalServiceMessageDispatch::query()->lockForUpdate()->findOrFail($dispatch->id);
+            $providerSendAttempted = filter_var(
+                data_get($locked->metadata, 'provider_send_attempted', false),
+                FILTER_VALIDATE_BOOL,
+            );
+
+            if ($locked->status !== TechnicalServiceMessageDispatch::STATUS_BLOCKED
+                || (int) $locked->attempt_count !== 0
+                || $locked->sent_at !== null
+                || filled($locked->provider_message_id)
+                || $providerSendAttempted
+            ) {
+                throw ValidationException::withMessages([
+                    'dispatch' => 'Yalnız provider denemesi yapılmamış blocked dispatch audit olarak reconcile edilebilir.',
+                ]);
+            }
+
+            $locked->forceFill([
+                'status' => TechnicalServiceMessageDispatch::STATUS_CANCELLED,
+                'queued_at' => null,
+                'next_attempt_at' => null,
+                'last_error_code' => 'manual_e2e_public_url_readiness_reconciled',
+                'last_error_message_redacted' => 'Public URL readiness öncesi blocked dispatch, gönderilmeden audit olarak kapatıldı.',
+                'metadata' => [
+                    ...((array) $locked->metadata),
+                    'reconciliation_reason' => $reason,
+                    'provider_send_attempted' => false,
+                    'retained_for_audit' => true,
+                    'reconciled_by' => $actor?->id,
+                    'reconciled_at' => now()->toIso8601String(),
+                ],
+            ])->save();
+
+            $this->recordEvent(
+                $locked,
+                'message_blocked_reconciled',
+                'Bloklu mesaj gönderilmeden audit olarak kapatıldı.',
+                $actor,
+                [
+                    'reconciliation_reason' => $reason,
+                    'provider_send_attempted' => false,
+                    'retained_for_audit' => true,
+                ],
+            );
+
+            return $locked;
+        });
+    }
+
     /**
      * @param  array<string, mixed>  $input
      */
@@ -184,8 +247,16 @@ class TechnicalServiceMessageDispatchQueue
         return $dispatch;
     }
 
-    public function recordEvent(TechnicalServiceMessageDispatch $dispatch, string $eventType, string $title): void
-    {
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    public function recordEvent(
+        TechnicalServiceMessageDispatch $dispatch,
+        string $eventType,
+        string $title,
+        ?User $actor = null,
+        array $metadata = [],
+    ): void {
         $requestId = $dispatch->request_id ?? $dispatch->technical_service_request_id;
 
         if ($requestId === null) {
@@ -206,7 +277,7 @@ class TechnicalServiceMessageDispatchQueue
                 $dispatch->effective_target_phone_mask,
                 $dispatch->last_error_message_redacted,
             ])),
-            'author_user_id' => $dispatch->created_by,
+            'author_user_id' => $actor?->id ?? $dispatch->created_by,
             'metadata' => [
                 'dispatch_id' => $dispatch->id,
                 'status' => $dispatch->status,
@@ -214,6 +285,7 @@ class TechnicalServiceMessageDispatchQueue
                 'channel' => $dispatch->channel,
                 'target_masked' => $dispatch->effective_target_phone_mask,
                 'error_redacted' => $dispatch->last_error_message_redacted,
+                ...$metadata,
             ],
         ]);
     }

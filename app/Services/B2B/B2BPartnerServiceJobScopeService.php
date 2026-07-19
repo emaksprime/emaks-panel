@@ -207,6 +207,8 @@ class B2BPartnerServiceJobScopeService
             'partner_id' => (int) $link->partner_id,
             'technician_id' => $technicianId,
             'partner_technician_link_id' => (int) $link->id,
+            'canonical_path' => '/partner/service-jobs?'.$canonicalQuery,
+            'short_path' => '/pj/'.(int) $request->id,
             'canonical_url' => PartnerPortalPublicUrl::url('/partner/service-jobs?'.$canonicalQuery),
             'ops_support_url' => '/technical-service/ops-support/service-jobs?'.$opsSupportQuery,
             'preview_url' => '/panel/b2b/partners/'.(int) $link->partner_id.'/portal-preview?'.http_build_query([
@@ -709,6 +711,8 @@ class B2BPartnerServiceJobScopeService
                 ? (int) $request->technical_service_technician_id
                 : null,
             'partner_technician_link_id' => null,
+            'canonical_path' => null,
+            'short_path' => null,
             'canonical_url' => null,
             'ops_support_url' => null,
             'preview_url' => null,

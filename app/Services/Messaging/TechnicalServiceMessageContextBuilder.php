@@ -6,6 +6,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Str;
 
 class TechnicalServiceMessageContextBuilder
 {
@@ -91,6 +92,9 @@ class TechnicalServiceMessageContextBuilder
             'serial_no_line',
             'maps_url_line',
             'sms_short_address',
+            'sms_customer_name',
+            'sms_service_address',
+            'product_sms_label',
             'customer_visible_note_line',
             'technician_visible_note_line',
             'customer_visible_note_block',
@@ -245,6 +249,9 @@ class TechnicalServiceMessageContextBuilder
         $context['serial_no_line'] = $this->line('Seri No', $context['serial_no'] ?? null);
         $context['maps_url_line'] = $this->line('Harita', $context['maps_url'] ?? null);
         $context['sms_short_address'] = $this->smsShortAddress($context);
+        $context['sms_customer_name'] = $this->smsSafeText($context['customer_name'] ?? null);
+        $context['sms_service_address'] = $this->smsSafeText($context['address'] ?? null);
+        $context['product_sms_label'] = $this->smsSafeText($context['product_name'] ?? null);
         $context['customer_visible_note_line'] = $this->line('Not', $context['customer_visible_note'] ?? null);
         $context['technician_visible_note_line'] = $this->line('Not', $context['technician_visible_note'] ?? null);
         $context['customer_visible_note_block'] = $this->block('Not', $context['customer_visible_note'] ?? null);
@@ -829,6 +836,16 @@ class TechnicalServiceMessageContextBuilder
             $this->filledString($context['district'] ?? null),
             $this->filledString($context['city'] ?? null),
         ])) ?: 'Bölge bilgisi panelde';
+    }
+
+    private function smsSafeText(mixed $value): string
+    {
+        $text = $this->filledString($value);
+        if ($text === null) {
+            return '';
+        }
+
+        return trim((string) preg_replace('/\s+/', ' ', Str::ascii($text)));
     }
 
     private function shortLink(mixed $value, string $sampleFallback, bool $allowSampleFallback): string

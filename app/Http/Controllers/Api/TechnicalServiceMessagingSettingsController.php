@@ -32,6 +32,8 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'manual_e2e_ttl_seconds' => ['sometimes', 'required', 'integer', 'min:60', 'max:14400'],
             'manual_e2e_allowlisted_phones' => ['sometimes', 'array'],
             'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],
+            'manual_e2e_partner_portal_origin_enabled' => ['sometimes', 'required', 'boolean'],
+            'manual_e2e_partner_portal_origin' => ['sometimes', 'nullable', 'string', 'max:255'],
             'ops_whatsapp_enabled' => ['sometimes', 'required', 'boolean'],
             'ops_whatsapp_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'shared_test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],

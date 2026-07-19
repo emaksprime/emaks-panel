@@ -209,7 +209,11 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $body = (string) ($dispatch->request_payload['body'] ?? '');
             $this->assertStringContainsString('14:00 - 16:00', $body);
             $this->assertMatchesRegularExpression('/(?:İş Kartı|Kart\s+https?:\/\/)/u', $body);
-            $this->assertStringContainsString('job_id='.$request->id, $body);
+            if ($dispatch->channel === 'sms') {
+                $this->assertStringContainsString('/pj/'.$request->id, $body);
+            } else {
+                $this->assertStringContainsString('job_id='.$request->id, $body);
+            }
             $this->assertStringNotContainsString('Sayın PR88 REL4E6 Test Müşteri', $body);
             $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
         }
@@ -382,8 +386,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
         app(TechnicalServiceMessagingSettingsService::class)->update([
             'test_mode_enabled' => false,
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
         ]);
-        config()->set('services.partner_portal.public_url', 'https://portal.example.test');
+        config()->set('services.partner_portal.public_url', 'http://10.0.28.64:8000');
         $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
         $technician = $this->technician([
             'name' => 'Test Usta',
@@ -443,10 +449,16 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $this->assertSame($activeRunId, data_get($dispatch->metadata, 'manual_e2e_run_id'));
             $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
             $this->assertStringContainsString('MRN-REL4E12-ASSIGN', $body);
-            $this->assertStringContainsString('REL4E12 Müşteri', $body);
             $this->assertStringContainsString('905372081633', $body);
-            $this->assertStringContainsString('randevu saati öneriniz', mb_strtolower($body, 'UTF-8'));
-            $this->assertStringContainsString('job_id='.$request->id, $body);
+            if ($dispatch->channel === 'sms') {
+                $this->assertStringContainsString('REL4E12 Musteri', $body);
+                $this->assertStringContainsString('Saat oner:', $body);
+                $this->assertStringContainsString('/pj/'.$request->id, $body);
+            } else {
+                $this->assertStringContainsString('REL4E12 Müşteri', $body);
+                $this->assertStringContainsString('randevu saati öneriniz', mb_strtolower($body, 'UTF-8'));
+                $this->assertStringContainsString('job_id='.$request->id, $body);
+            }
         }
 
         $whatsappBody = (string) ($dispatches->firstWhere('channel', 'whatsapp')->request_payload['body'] ?? '');
@@ -456,11 +468,25 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringContainsString('Yol: 350,00 TL', $whatsappBody);
         $this->assertStringContainsString('Toplam: 1.250,00 TL', $whatsappBody);
         $smsBody = (string) ($dispatches->firstWhere('channel', 'sms')?->request_payload['body'] ?? '');
-        $this->assertStringContainsString('Yeni iş teklifi', $smsBody);
-        $this->assertStringContainsString('REL4E12 Test Ürün', $smsBody);
-        $this->assertStringContainsString('REL4E12 test adresi', $smsBody);
-        $this->assertStringContainsString('1.250 TL', $smsBody);
-        $this->assertMatchesRegularExpression('/\nhttps:\/\/portal\.example\.test\/partner\/service-jobs\?[^\n]*job_id='.$request->id.'\n/', $smsBody);
+        $this->assertStringContainsString('Yeni Is', $smsBody);
+        $this->assertStringContainsString('REL4E12 Test Urun', $smsBody);
+        $this->assertStringContainsString('REL4E12 test adresi Kadikoy Istanbul', $smsBody);
+        $this->assertStringContainsString('Top:1.250,00 TL', $smsBody);
+        $this->assertStringContainsString('http://10.0.28.64:8000/pj/'.$request->id, $smsBody);
+        $this->assertStringContainsString(
+            'http://10.0.28.64:8000/partner/service-jobs?partner_id=',
+            $whatsappBody,
+        );
+        foreach ($dispatches as $dispatch) {
+            $this->assertSame(
+                'manual_e2e_local',
+                data_get($dispatch->request_payload, 'context.technician_job_card_origin_mode'),
+            );
+            $this->assertSame(
+                'admin_manual_e2e_partner_portal_origin',
+                data_get($dispatch->request_payload, 'context.technician_job_card_origin_source'),
+            );
+        }
         Http::assertNothingSent();
     }
 

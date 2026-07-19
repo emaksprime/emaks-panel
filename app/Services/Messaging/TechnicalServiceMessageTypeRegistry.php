@@ -137,6 +137,8 @@ class TechnicalServiceMessageTypeRegistry
                 'customer_phone',
                 'product_name',
                 'address',
+                'labor_amount_formatted',
+                'route_fee_formatted',
                 'technician_earning_total_formatted',
                 'technician_job_card_url',
             ],
@@ -545,7 +547,7 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\n{customer_reference_phrase}\nUstaya ödenecek tutar: {customer_payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar:\n\n{customer_payment_amount_formatted}\n\nRandevu aralığında adreste olunmasını rica ederiz.",
             'assignment_offer_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS\nYeni iş teklifi\n{mrn}\nMüşteri: {customer_name}\nÜrün: {product_name}\nBölge: {sms_short_address}\nToplam hakediş: {technician_earning_total_formatted}\n{technician_job_card_short_url}\nLütfen randevu saati öneriniz."
+                ? "EMAKS Yeni Is {mrn}\n{sms_customer_name} {customer_phone}\nAdr:{sms_service_address}\nUrun:{product_sms_label}\nIs:{labor_amount_formatted} Yol:{route_fee_formatted} Top:{technician_earning_total_formatted}\nSaat oner: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nYeni iş teklifi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\nÜrün: {product_name}\n{maps_url_line}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}\n\nİş Kartı\n{technician_job_card_url}\n\nLütfen randevu saati öneriniz.",
             'appointment_proposed_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
@@ -637,9 +639,12 @@ class TechnicalServiceMessageTypeRegistry
             ],
             'assignment_offer_technician' => [
                 'mrn',
-                'customer_name',
-                'product_name',
-                'sms_short_address',
+                'sms_customer_name',
+                'customer_phone',
+                'sms_service_address',
+                'product_sms_label',
+                'labor_amount_formatted',
+                'route_fee_formatted',
                 'technician_earning_total_formatted',
                 'technician_job_card_short_url',
             ],
@@ -699,6 +704,9 @@ class TechnicalServiceMessageTypeRegistry
             'technician_job_card_short_url',
             'sms_payment_line',
             'sms_short_address',
+            'sms_customer_name',
+            'sms_service_address',
+            'product_sms_label',
             'sms_title',
             'sms_custom_id',
             'payment_amount_formatted',

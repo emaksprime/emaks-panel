@@ -197,6 +197,8 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
             'shared_test_phone' => '905467647428',
             'ops_whatsapp_phone' => '905467647428',
             'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
             'active_provider' => 'evo_whatsapp',
             'provider_key' => 'evo_whatsapp',
             'evo_whatsapp' => [

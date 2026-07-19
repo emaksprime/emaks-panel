@@ -11,6 +11,7 @@ class TechnicalServiceMessageVariableRegistry
     {
         return [
             'customer_name' => $this->definition('Müşteri adı', 'Mesaj alıcısı müşteri adı.', 'PR88 Test Müşteri', 'technical_service_request.customer_name'),
+            'sms_customer_name' => $this->definition('SMS müşteri adı', 'SMS segment güvenliği için ASCII normalize müşteri adı.', 'PR88 Test Musteri', 'context_builder'),
             'customer_phone' => $this->definition('Müşteri telefonu', 'Normalize müşteri telefonu.', '905555555555', 'technical_service_request.customer_phone'),
             'request_code' => $this->definition('Talep kodu', 'MRN/SRV için genel talep kodu.', 'MRN-REL4C-0001', 'technical_service_request.mrn'),
             'mrn' => $this->definition('MRN', 'Ana talep numarası.', 'MRN-REL4C-0001', 'technical_service_request.mrn'),
@@ -24,6 +25,7 @@ class TechnicalServiceMessageVariableRegistry
             'customer_record_created_phrase' => $this->definition('Müşteri kayıt cümlesi', 'Teknik alan adı göstermeyen doğal kayıt cümlesi.', 'MRN-REL4C-0001 numaralı montaj randevu kaydınız oluşturulmuştur.', 'customer_reference_builder'),
             'serial_no' => $this->definition('Seri no', 'Ürün seri numarası.', 'PR88-REL4C-SERIAL', 'technical_service_request.serial_number'),
             'product_name' => $this->definition('Ürün', 'Ürün adı.', 'Çelik kapı kilidi', 'technical_service_request.product_name'),
+            'product_sms_label' => $this->definition('SMS ürün adı', 'SMS segment güvenliği için ASCII normalize ürün adı.', 'Celik kapi kilidi', 'context_builder'),
             'brand' => $this->definition('Marka', 'Ürün markası.', 'EMAKS', 'technical_service_request.brand'),
             'model' => $this->definition('Model', 'Ürün modeli.', 'Model X', 'technical_service_request.product_model'),
             'appointment_date' => $this->definition('Randevu tarihi', 'Randevu günü.', '03.07.2026', 'technical_service_request.scheduled_date'),
@@ -45,6 +47,7 @@ class TechnicalServiceMessageVariableRegistry
             'city' => $this->definition('İl', 'Müşteri ili.', 'İstanbul', 'technical_service_request.customer_city'),
             'district' => $this->definition('İlçe', 'Müşteri ilçesi.', 'Kadıköy', 'technical_service_request.customer_district'),
             'address' => $this->definition('Adres', 'Servis adresi.', 'Test Mah. Örnek Sok. No:1', 'technical_service_request.service_address'),
+            'sms_service_address' => $this->definition('SMS servis adresi', 'SMS segment güvenliği için ASCII normalize tam servis adresi.', 'Test Mah. Ornek Sok. No:1', 'context_builder'),
             'maps_url' => $this->definition('Harita linki', 'Adres/koordinat harita linki.', 'https://www.google.com/maps/search/?api=1&query=40.987654,29.123456', 'technical_service_request.location'),
             'maps_url_line' => $this->definition('Harita satırı', 'Harita linki varsa gösterilecek satır.', 'Harita: https://www.google.com/maps/search/?api=1&query=40.987654,29.123456', 'context_builder'),
             'company_name' => $this->definition('Firma adı', 'Gönderen firma adı.', 'EMAKS', 'config'),

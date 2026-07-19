@@ -44,6 +44,8 @@ class TechnicalServiceMessagingSettingsService
         'shared_test_phone',
         'manual_e2e_allowlisted_phones',
         'manual_e2e_ttl_seconds',
+        'manual_e2e_partner_portal_origin_enabled',
+        'manual_e2e_partner_portal_origin',
         'ops_whatsapp_enabled',
         'ops_whatsapp_phone',
         'provider_key',
@@ -402,6 +404,8 @@ class TechnicalServiceMessagingSettingsService
                 'manual_e2e_last_stopped_at' => $manualE2e['last_stopped_at'],
                 'manual_e2e_ttl_seconds' => (int) ($settings['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
                 'manual_e2e_allowlisted_phones' => $settings['manual_e2e_allowlisted_phones'] ?? [],
+                'manual_e2e_partner_portal_origin_enabled' => (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false),
+                'manual_e2e_partner_portal_origin' => $settings['manual_e2e_partner_portal_origin'] ?? null,
                 'manual_e2e_allowlisted_phone_masks' => array_map(
                     fn (string $phone): string => $this->maskPhone($phone),
                     $settings['manual_e2e_allowlisted_phones'] ?? [],
@@ -428,6 +432,7 @@ class TechnicalServiceMessagingSettingsService
                 'allow_test_fixture_send' => (bool) $settings['allow_test_fixture_send'],
             ],
             'readiness' => $readiness,
+            'portal_origins' => $this->portalOriginReadiness($settings),
             'manual_e2e' => $manualE2e,
             'provider' => [
                 'active_provider' => $settings['active_provider'],
@@ -547,6 +552,7 @@ class TechnicalServiceMessagingSettingsService
             'allow_browser_smoke_send',
             'allow_test_fixture_send',
             'ops_whatsapp_enabled',
+            'manual_e2e_partner_portal_origin_enabled',
         ] as $key) {
             if (array_key_exists($key, $values)) {
                 $next[$key] = (bool) $values[$key];
@@ -580,6 +586,13 @@ class TechnicalServiceMessagingSettingsService
 
         if (array_key_exists('ops_whatsapp_phone', $values)) {
             $next['ops_whatsapp_phone'] = $this->normalizePhone((string) $values['ops_whatsapp_phone']);
+        }
+
+        if (array_key_exists('manual_e2e_partner_portal_origin', $values)) {
+            $origin = trim((string) $values['manual_e2e_partner_portal_origin']);
+            $next['manual_e2e_partner_portal_origin'] = $origin === ''
+                ? null
+                : (PartnerPortalPublicUrl::normalizeOrigin($origin) ?? $origin);
         }
 
         if (array_key_exists('manual_e2e_allowlisted_phones', $values)) {
@@ -1169,6 +1182,8 @@ class TechnicalServiceMessagingSettingsService
             'manual_e2e_last_stopped_at' => null,
             'manual_e2e_ttl_seconds' => TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
             'manual_e2e_allowlisted_phones' => [],
+            'manual_e2e_partner_portal_origin_enabled' => false,
+            'manual_e2e_partner_portal_origin' => null,
             'ops_whatsapp_enabled' => false,
             'ops_whatsapp_phone' => null,
             'message_types' => $this->defaultMessageTypeSettings(),
@@ -1499,6 +1514,14 @@ class TechnicalServiceMessagingSettingsService
             $blockers[] = ['code' => 'manual_e2e_ops_not_frozen', 'message' => 'OPS WhatsApp açık. Yeni run öncesinde gönderimler dondurulmalı.'];
         }
 
+        $portalOrigins = $this->portalOriginReadiness($settings);
+        if (! (bool) $portalOrigins['manual_e2e']['ready'] && ! (bool) $portalOrigins['live_public']['ready']) {
+            $blockers[] = [
+                'code' => 'manual_e2e_partner_portal_origin_missing',
+                'message' => 'Manual E2E için telefon erişimine uygun LAN portal origin veya public HTTPS portal zorunlu.',
+            ];
+        }
+
         $publicWarnings = [];
         if (! $rawWorkerLockAvailable && (bool) ($workerLease['stale_recoverable'] ?? false)) {
             $publicWarnings[] = [
@@ -1506,11 +1529,14 @@ class TechnicalServiceMessagingSettingsService
                 'message' => 'Önceki Manual E2E worker lease süresi dolmuş; güvenli açma işlemi owner/run doğrulamasıyla stale lock temizleyecek.',
             ];
         }
-        $publicUrl = PartnerPortalPublicUrl::normalizeBaseUrl((string) (config('services.partner_portal.public_url') ?: config('services.public_urls.app_url') ?: config('app.url')));
+        $publicUrl = $portalOrigins['live_public']['origin'];
         if ($publicUrl === null) {
             $publicWarnings[] = ['code' => 'public_url_missing', 'message' => 'Partner/müşteri public URL tanımlı değil; telefon linkleri canlı akışta açılamaz.'];
-        } elseif (PartnerPortalPublicUrl::isLocalUrl($publicUrl)) {
-            $publicWarnings[] = ['code' => 'public_url_private', 'message' => 'Partner/müşteri URL yerel veya özel ağ adresi; telefon erişimi ayrıca doğrulanmalı.'];
+        } elseif (! (bool) $portalOrigins['live_public']['ready']) {
+            $publicWarnings[] = ['code' => 'public_url_private', 'message' => 'Canlı partner portalı public HTTPS değil; LAN override yalnız kontrollü Manual E2E teknisyen mesajlarında kullanılabilir.'];
+        }
+        if ((bool) $portalOrigins['manual_e2e']['loopback']) {
+            $publicWarnings[] = ['code' => 'manual_e2e_portal_loopback', 'message' => 'Loopback portal yalnız geliştirici önizlemesidir; telefon erişimine hazır sayılmaz.'];
         }
 
         $channelPolicies = collect((array) ($settings['message_types'] ?? []))
@@ -1528,6 +1554,7 @@ class TechnicalServiceMessagingSettingsService
             'eligible' => $blockers === [],
             'blockers' => $blockers,
             'warnings' => $publicWarnings,
+            'portal_origins' => $portalOrigins,
             'evo_ready' => $evoReady,
             'nac_ready' => $nacReady,
             'allowlisted_phones' => $allowlist,
@@ -1557,6 +1584,59 @@ class TechnicalServiceMessagingSettingsService
 
     /**
      * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function portalOriginReadiness(array $settings): array
+    {
+        $manualEnabled = (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false);
+        $manualRaw = trim((string) ($settings['manual_e2e_partner_portal_origin'] ?? ''));
+        $manualOrigin = PartnerPortalPublicUrl::normalizeOrigin($manualRaw);
+        $manualPrivateLan = $manualOrigin !== null && PartnerPortalPublicUrl::isPrivateLanOrigin($manualOrigin);
+        $manualLoopback = $manualOrigin !== null && PartnerPortalPublicUrl::isLoopbackOrigin($manualOrigin);
+        $manualValid = $manualOrigin !== null && ($manualPrivateLan || $manualLoopback);
+        $manualPhoneReady = $manualValid && $manualPrivateLan && ! $manualLoopback;
+        $manualReady = app()->environment('local', 'testing') && $manualEnabled && $manualPhoneReady;
+
+        $configuredPublic = trim((string) config('services.partner_portal.public_url', ''));
+        $fallbackPublic = trim((string) config('app.url', ''));
+        $liveRaw = $configuredPublic !== '' ? $configuredPublic : $fallbackPublic;
+        $liveOrigin = PartnerPortalPublicUrl::normalizeBaseUrl($liveRaw);
+        $liveReady = PartnerPortalPublicUrl::isPublicHttpsUrl($liveOrigin);
+
+        return [
+            'manual_e2e' => [
+                'enabled' => $manualEnabled,
+                'origin' => $manualOrigin ?? ($manualRaw !== '' ? $manualRaw : null),
+                'valid' => $manualValid,
+                'private_lan' => $manualPrivateLan,
+                'loopback' => $manualLoopback,
+                'phone_ready' => $manualPhoneReady,
+                'ready' => $manualReady,
+                'status' => ! $manualEnabled || $manualRaw === ''
+                    ? 'missing'
+                    : ($manualValid ? ($manualReady ? 'ready' : 'missing') : 'invalid'),
+                'status_label' => ! $manualEnabled || $manualRaw === ''
+                    ? 'Missing'
+                    : ($manualValid ? ($manualReady ? 'Ready' : 'Missing') : 'Invalid'),
+                'source' => 'admin_manual_e2e_partner_portal_origin',
+                'warning' => $manualLoopback
+                    ? 'Loopback adres telefondan erişilebilir değildir.'
+                    : null,
+            ],
+            'live_public' => [
+                'origin' => $liveOrigin,
+                'ready' => $liveReady,
+                'status' => $liveReady ? 'ready' : 'missing',
+                'status_label' => $liveReady ? 'Ready' : 'Missing',
+                'source' => $configuredPublic !== ''
+                    ? 'services.partner_portal.public_url'
+                    : 'app.url',
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
      */
     private function validateSettings(array $settings): void
     {
@@ -1572,6 +1652,23 @@ class TechnicalServiceMessagingSettingsService
             && ! $this->validPhone((string) $settings['test_phone'])) {
             throw ValidationException::withMessages([
                 'test_phone' => 'Test modu aktifken geçerli test telefon numarası zorunlu.',
+            ]);
+        }
+
+        $manualPortalOrigin = trim((string) ($settings['manual_e2e_partner_portal_origin'] ?? ''));
+        $normalizedManualPortalOrigin = PartnerPortalPublicUrl::normalizeOrigin($manualPortalOrigin);
+        if ($manualPortalOrigin !== ''
+            && ($normalizedManualPortalOrigin === null
+                || (! PartnerPortalPublicUrl::isPrivateLanOrigin($normalizedManualPortalOrigin)
+                    && ! PartnerPortalPublicUrl::isLoopbackOrigin($normalizedManualPortalOrigin)))
+        ) {
+            throw ValidationException::withMessages([
+                'manual_e2e_partner_portal_origin' => 'Manual E2E portal adresi path/query/credential içermeyen RFC1918 LAN veya loopback origin olmalı.',
+            ]);
+        }
+        if ((bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false) && $manualPortalOrigin === '') {
+            throw ValidationException::withMessages([
+                'manual_e2e_partner_portal_origin' => 'Yerel portal adresi etkinleştirildiğinde origin zorunlu.',
             ]);
         }
 
@@ -1653,6 +1750,7 @@ class TechnicalServiceMessagingSettingsService
      */
     private function readiness(array $settings): array
     {
+        $portalOrigins = $this->portalOriginReadiness($settings);
         $webhookConfigured = trim((string) config('services.evolution.n8n_webhook_url', '')) !== '';
         $evoDirect = $this->evoWhatsappReadiness($settings);
         $providerSecretConfigured = $evoDirect['credentials_ready'];
@@ -1753,6 +1851,8 @@ class TechnicalServiceMessagingSettingsService
             'manual_e2e_active' => $manualE2eContext->isActive(),
             'manual_e2e_worker_command_ready' => $manualE2eContext->workerCommand() !== null,
             'manual_e2e_blocker_code' => $manualE2eContext->contextBlockingReason()['code'] ?? null,
+            'manual_e2e_partner_portal_ready' => (bool) $portalOrigins['manual_e2e']['ready'],
+            'live_public_partner_portal_ready' => (bool) $portalOrigins['live_public']['ready'],
             'can_send_test' => $canSendTest,
             'can_send_real' => $canSendReal,
             'effective_mode' => $this->effectiveMode($settings, $testPhoneConfigured),
