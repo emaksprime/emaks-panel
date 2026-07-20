@@ -236,7 +236,7 @@ class AdminUserManagementTest extends TestCase
         $this->assertStringContainsString('className="h-10 rounded-lg border border-slate-200', $component);
         $this->assertStringContainsString('Temel Bilgiler', $component);
         $this->assertStringContainsString('Rol ve Durum', $component);
-        $this->assertStringContainsString('Partner / Usta Bağlantısı', $component);
+        $this->assertStringContainsString('Partner Atamaları', $component);
         $this->assertStringContainsString('Güvenlik', $component);
         $this->assertStringContainsString('İzinler', $component);
         $this->assertStringNotContainsString('<textarea', $component);

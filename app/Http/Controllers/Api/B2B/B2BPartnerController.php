@@ -311,6 +311,12 @@ class B2BPartnerController extends Controller
                 (bool) ($data['is_primary'] ?? false),
                 'manual',
                 'manual_link',
+                [
+                    'service_city' => $data['service_city'] ?? null,
+                    'service_district' => $data['service_district'] ?? null,
+                    'service_region_note' => $data['service_region_note'] ?? null,
+                    'priority' => $data['priority'] ?? 1,
+                ],
             );
             $partner->refresh();
             $this->writeAuditLog($partner, $request, 'b2b.partner.technician_linked', null, [
@@ -343,6 +349,10 @@ class B2BPartnerController extends Controller
             'relationship_type' => ['nullable', 'string', Rule::in(['owner', 'field_technician', 'contracted_technician', 'branch_technician', 'contact'])],
             'is_primary' => ['nullable', 'boolean'],
             'active' => ['nullable', 'boolean'],
+            'service_city' => ['nullable', 'string', 'max:128'],
+            'service_district' => ['nullable', 'string', 'max:128'],
+            'service_region_note' => ['nullable', 'string', 'max:255'],
+            'priority' => ['nullable', 'integer', 'min:0', 'max:9999'],
         ]);
 
         DB::transaction(function () use ($partner, $link, $data, $request, $user): void {
@@ -366,6 +376,10 @@ class B2BPartnerController extends Controller
                 'relationship_type' => $data['relationship_type'] ?? $link->relationship_type,
                 'is_primary' => array_key_exists('is_primary', $data) ? (bool) $data['is_primary'] : $link->is_primary,
                 'active' => array_key_exists('active', $data) ? (bool) $data['active'] : $link->active,
+                'service_city' => array_key_exists('service_city', $data) ? $this->nullableString($data['service_city']) : $link->service_city,
+                'service_district' => array_key_exists('service_district', $data) ? $this->nullableString($data['service_district']) : $link->service_district,
+                'service_region_note' => array_key_exists('service_region_note', $data) ? $this->nullableString($data['service_region_note']) : $link->service_region_note,
+                'priority' => array_key_exists('priority', $data) ? (int) $data['priority'] : $link->priority,
             ]);
             $link->save();
             $this->ensurePartnerHasPrimaryTechnician($partner);
@@ -2719,6 +2733,10 @@ class B2BPartnerController extends Controller
             ],
             'relationship_type' => ['nullable', 'string', Rule::in(['owner', 'field_technician', 'contracted_technician', 'branch_technician', 'contact'])],
             'is_primary' => ['nullable', 'boolean'],
+            'service_city' => ['nullable', 'string', 'max:128'],
+            'service_district' => ['nullable', 'string', 'max:128'],
+            'service_region_note' => ['nullable', 'string', 'max:255'],
+            'priority' => ['nullable', 'integer', 'min:0', 'max:9999'],
         ]);
     }
 

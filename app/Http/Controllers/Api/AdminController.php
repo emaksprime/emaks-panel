@@ -18,6 +18,7 @@ use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\AuditLogger;
 use App\Services\B2B\B2BPartnerAccessService;
+use App\Services\B2B\B2BPartnerUserMembershipService;
 use App\Services\PanelAccessService;
 use App\Services\PanelDataSourceManager;
 use Carbon\CarbonImmutable;
@@ -38,6 +39,7 @@ class AdminController extends Controller
         private readonly PanelDataSourceManager $dataSourceManager,
         private readonly PanelAccessService $access,
         private readonly B2BPartnerAccessService $partnerAccess,
+        private readonly B2BPartnerUserMembershipService $partnerMemberships,
     ) {}
 
     public function overview(): JsonResponse
@@ -88,13 +90,7 @@ class AdminController extends Controller
             abort_unless($visiblePartnerIds->contains((int) $filters['partner_id']), 403);
         }
 
-        $usersQuery = User::query()
-            ->with([
-                'role',
-                'b2bPartnerProfiles' => fn ($query) => $query
-                    ->whereIn('partner_id', $visiblePartnerIds)
-                    ->with('partner.activeCapabilities'),
-            ]);
+        $usersQuery = User::query()->with('role');
 
         $this->applyAdminUserFilters($usersQuery, $filters, $visiblePartnerIds->all());
 
@@ -110,6 +106,12 @@ class AdminController extends Controller
             ->whereIn('user_id', $users->pluck('id'))
             ->get(['user_id', 'resource_code', 'can_view'])
             ->groupBy('user_id');
+        $membershipsByUser = $this->partnerMemberships->membershipsForUsers(
+            $users,
+            $visiblePartnerIds->all(),
+        );
+        $manageableMembershipPartnerIds = $this->partnerAccess->manageablePartnerUserIds($actor, $visiblePartners);
+        $manageableTechnicianPartnerIds = $this->partnerAccess->manageablePartnerIds($actor, $visiblePartners);
 
         return response()->json([
             'users' => $users
@@ -131,22 +133,7 @@ class AdminController extends Controller
                         ->pluck('resource_code')
                         ->unique()
                         ->values(),
-                    'partner_memberships' => $user->b2bPartnerProfiles
-                        ->filter(fn ($profile) => $profile->partner !== null)
-                        ->map(fn ($profile) => [
-                            'id' => $profile->id,
-                            'partner_id' => $profile->partner_id,
-                            'partner_code' => $profile->partner->partner_code,
-                            'partner_name' => $profile->partner->display_name,
-                            'active' => (bool) $profile->active,
-                            'partner_active' => (bool) $profile->partner->active,
-                            'capabilities' => $profile->partner->activeCapabilities
-                                ->pluck('capability')
-                                ->unique()
-                                ->sort()
-                                ->values(),
-                        ])
-                        ->values(),
+                    'partner_memberships' => $membershipsByUser->get($user->id, collect())->values(),
                 ]),
             'meta' => [
                 'page' => $page,
@@ -160,6 +147,8 @@ class AdminController extends Controller
                 'partner_code' => $partner->partner_code,
                 'display_name' => $partner->display_name,
                 'active' => (bool) $partner->active,
+                'can_manage_memberships' => $manageableMembershipPartnerIds->contains((int) $partner->id),
+                'can_manage_technicians' => $manageableTechnicianPartnerIds->contains((int) $partner->id),
                 'capabilities' => $partner->activeCapabilities
                     ->pluck('capability')
                     ->unique()

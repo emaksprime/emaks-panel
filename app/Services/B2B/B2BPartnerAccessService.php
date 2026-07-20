@@ -7,6 +7,7 @@ use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\User;
 use App\Services\PanelAccessService;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 
 class B2BPartnerAccessService
 {
@@ -149,6 +150,80 @@ class B2BPartnerAccessService
         return $this->visiblePartnerQuery($user, B2BPartner::TYPE_LOCKSMITH);
     }
 
+    /**
+     * @param  Collection<int, B2BPartner>  $partners
+     * @return Collection<int, int>
+     */
+    public function manageablePartnerUserIds(User $user, Collection $partners): Collection
+    {
+        $partnerIds = $partners->pluck('id')->map(fn ($id): int => (int) $id)->values();
+        if ($partnerIds->isEmpty()) {
+            return collect();
+        }
+
+        if ($this->isSuperAdmin($user)) {
+            return $partnerIds;
+        }
+
+        $hasPanelAccess = $this->panelAccess->userCanAccess($user, 'b2b.view')
+            || $this->panelAccess->userCanAccess($user, 'b2b.manage')
+            || $this->panelAccess->userCanAccess($user, 'b2b.partner_users.manage');
+
+        if (! $hasPanelAccess) {
+            return collect();
+        }
+
+        return B2BPartnerUserAccess::query()
+            ->where('user_id', $user->id)
+            ->whereIn('partner_id', $partnerIds)
+            ->whereIn('access_scope', ['users', 'manage'])
+            ->where('can_update', true)
+            ->pluck('partner_id')
+            ->map(fn ($id): int => (int) $id)
+            ->unique()
+            ->values();
+    }
+
+    /**
+     * @param  Collection<int, B2BPartner>  $partners
+     * @return Collection<int, int>
+     */
+    public function manageablePartnerIds(User $user, Collection $partners): Collection
+    {
+        $partnerIds = $partners->pluck('id')->map(fn ($id): int => (int) $id)->values();
+        if ($partnerIds->isEmpty()) {
+            return collect();
+        }
+
+        if ($this->isSuperAdmin($user)) {
+            return $partnerIds;
+        }
+
+        $manageableCapabilities = collect(B2BPartner::SUPPORTED_CAPABILITIES)
+            ->filter(fn (string $capability): bool => $this->canManagePartnerType($user, $capability))
+            ->values();
+        if ($manageableCapabilities->isEmpty()) {
+            return collect();
+        }
+
+        $scopedPartnerIds = B2BPartnerUserAccess::query()
+            ->where('user_id', $user->id)
+            ->whereIn('partner_id', $partnerIds)
+            ->where('access_scope', 'manage')
+            ->where('can_update', true)
+            ->pluck('partner_id')
+            ->map(fn ($id): int => (int) $id);
+
+        return $partners
+            ->filter(fn (B2BPartner $partner): bool => $scopedPartnerIds->contains((int) $partner->id)
+                && collect($partner->capabilityCodes())->every(
+                    fn (string $capability): bool => $manageableCapabilities->contains($capability),
+                ))
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->values();
+    }
+
     public function canAccessScope(User $user, B2BPartner $partner, string $scope, string $ability = 'view'): bool
     {
         if ($this->isSuperAdmin($user)) {
@@ -169,7 +244,7 @@ class B2BPartnerAccessService
             ->exists();
     }
 
-    private function isSuperAdmin(User $user): bool
+    public function isSuperAdmin(User $user): bool
     {
         $user->loadMissing('role');
 

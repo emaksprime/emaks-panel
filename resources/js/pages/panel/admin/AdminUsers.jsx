@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, Copy, KeyRound, Pencil, Plus, Save, Search, ShieldCheck, UserRound, X } from 'lucide-react';
+import { AlertTriangle, Building2, ChevronLeft, ChevronRight, Copy, KeyRound, Link2, Pencil, Plus, Save, Search, ShieldCheck, UserRound, Wrench, X } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
 import { AdminFrame } from './AdminFrame.jsx';
 
@@ -73,14 +73,6 @@ const salesScopeResourceCodes = new Set([
     'sales_rep_bulent_saglam',
 ]);
 
-const b2bRoleCodes = new Set([
-    'b2b_manager',
-    'b2b_dealer',
-    'b2b_locksmith',
-    'b2b_manufacturer',
-    'b2b_seller',
-]);
-
 const capabilityLabels = {
     dealer: 'Bayi',
     locksmith: 'Çilingir',
@@ -100,6 +92,110 @@ const capabilityMatchLabels = {
     all: 'Tümü',
     exclude: 'Hariç',
 };
+
+const membershipScopeRows = [
+    ['view', 'Genel görünüm'],
+    ['manage', 'Yönetim'],
+    ['orders', 'Siparişler'],
+    ['stock', 'Stok'],
+    ['finance', 'Finans'],
+    ['technical_service', 'Teknik servis'],
+    ['users', 'Kullanıcılar'],
+];
+
+const membershipAbilities = [
+    ['can_view', 'Görüntüle'],
+    ['can_create', 'Oluştur'],
+    ['can_update', 'Güncelle'],
+    ['can_approve', 'Onayla'],
+];
+
+const emptyMembershipScopes = () => Object.fromEntries(
+    membershipScopeRows.map(([scope]) => [scope, {
+        can_view: false,
+        can_create: false,
+        can_update: false,
+        can_approve: false,
+    }]),
+);
+
+const membershipPresets = {
+    view: () => ({
+        ...emptyMembershipScopes(),
+        view: { can_view: true, can_create: false, can_update: false, can_approve: false },
+    }),
+    operations: () => ({
+        ...emptyMembershipScopes(),
+        view: { can_view: true, can_create: false, can_update: false, can_approve: false },
+        orders: { can_view: true, can_create: true, can_update: true, can_approve: false },
+        technical_service: { can_view: true, can_create: true, can_update: true, can_approve: false },
+    }),
+    manager: () => Object.fromEntries(
+        membershipScopeRows.map(([scope]) => [scope, {
+            can_view: true,
+            can_create: scope !== 'finance',
+            can_update: true,
+            can_approve: ['manage', 'orders', 'finance', 'technical_service', 'users'].includes(scope),
+        }]),
+    ),
+};
+
+const blankMembership = () => ({
+    partner_id: '',
+    title: '',
+    phone: '',
+    active: true,
+    technical_service_technician_id: '',
+    preset: 'view',
+    scopes: membershipPresets.view(),
+});
+
+const blankTechnicianLink = () => ({
+    technical_service_technician_id: '',
+    relationship_type: 'contracted_technician',
+    is_primary: false,
+    priority: 1,
+    service_city: '',
+    service_district: '',
+    service_region_note: '',
+});
+
+function membershipToForm(membership) {
+    const scopes = emptyMembershipScopes();
+
+    Object.entries(membership.scopes ?? {}).forEach(([scope, abilities]) => {
+        if (scopes[scope]) {
+            scopes[scope] = { ...scopes[scope], ...abilities };
+        }
+    });
+
+    return {
+        partner_id: String(membership.partner_id),
+        title: membership.title ?? '',
+        phone: membership.phone ?? '',
+        active: Boolean(membership.active),
+        technical_service_technician_id: membership.technical_service_technician_id
+            ? String(membership.technical_service_technician_id)
+            : '',
+        preset: 'custom',
+        scopes,
+    };
+}
+
+function membershipScopesPayload(scopes) {
+    return membershipScopeRows.map(([access_scope]) => ({
+        access_scope,
+        ...scopes[access_scope],
+    }));
+}
+
+function activeScopeSummary(scopes) {
+    const labels = membershipScopeRows
+        .filter(([scope]) => Object.values(scopes?.[scope] ?? {}).some(Boolean))
+        .map(([, label]) => label);
+
+    return labels.length > 0 ? labels.join(', ') : 'Yetki verilmemiş';
+}
 
 const defaultFilters = {
     search: '',
@@ -187,6 +283,20 @@ export default function AdminUsers() {
     const [cloneSource, setCloneSource] = useState(null);
     const [cloneForm, setCloneForm] = useState(cloneBlank);
     const [isCloning, setIsCloning] = useState(false);
+    const [membershipDialog, setMembershipDialog] = useState(null);
+    const [membershipForm, setMembershipForm] = useState(blankMembership);
+    const [membershipSaving, setMembershipSaving] = useState(false);
+    const [membershipAdvanced, setMembershipAdvanced] = useState(false);
+    const [membershipPartnerQuery, setMembershipPartnerQuery] = useState('');
+    const [includeInactivePartners, setIncludeInactivePartners] = useState(false);
+    const [membershipTechnicianLinks, setMembershipTechnicianLinks] = useState([]);
+    const [membershipTechniciansLoading, setMembershipTechniciansLoading] = useState(false);
+    const [technicianDialogPartner, setTechnicianDialogPartner] = useState(null);
+    const [technicianLinks, setTechnicianLinks] = useState([]);
+    const [technicianOptions, setTechnicianOptions] = useState([]);
+    const [technicianQuery, setTechnicianQuery] = useState('');
+    const [technicianLinkForm, setTechnicianLinkForm] = useState(blankTechnicianLink);
+    const [technicianSaving, setTechnicianSaving] = useState(false);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -255,7 +365,8 @@ export default function AdminUsers() {
     );
     const selectedRole = data.roles.find((role) => role.code === form.role_code);
     const selectedRoleIsSuperAdmin = Boolean(selectedRole?.is_super_admin ?? selectedRole?.isSuperAdmin);
-    const selectedRoleIsB2B = b2bRoleCodes.has(form.role_code);
+    const selectedUser = data.users.find((user) => user.id === form.id) ?? null;
+    const selectedMemberships = selectedUser?.partner_memberships ?? [];
     const activeResourceCodes = data.resources.map((resource) => resource.code);
     const roleAllowedResources = new Set(data.rolePermissions?.[form.role_code] ?? []);
     const isDirty = comparableForm(form) !== comparableForm(formBaseline);
@@ -436,6 +547,15 @@ export default function AdminUsers() {
 
         return roleAllowedResources.has(code);
     };
+    const effectiveB2BAccess = [
+        'b2b.view',
+        'b2b.manage',
+        'b2b.partner_users.manage',
+        'b2b.dealers.view',
+        'b2b.locksmiths.view',
+        'b2b.manufacturers.view',
+        'b2b.sellers.view',
+    ].some((code) => activeResourceCodes.includes(code) && effectiveAccess(code));
 
     const moduleAccessState = (resources) => {
         const enabledCount = resources.filter((resource) => effectiveAccess(resource.code)).length;
@@ -505,6 +625,250 @@ export default function AdminUsers() {
             type: 'success',
             message: 'Sadece seçilen kaynaklar izinli, diğer aktif kaynaklar engelli olarak işaretlendi.',
         });
+    };
+
+    const partnerById = (partnerId) => data.partners.find((partner) => partner.id === Number(partnerId)) ?? null;
+    const membershipPartnerOptions = data.partners.filter((partner) => {
+        if (!partner.can_manage_memberships || (!partner.active && !includeInactivePartners)) {
+            return false;
+        }
+
+        const query = membershipPartnerQuery.trim().toLocaleLowerCase('tr-TR');
+        return query === '' || [partner.display_name, partner.partner_code, ...(partner.capabilities ?? [])]
+            .join(' ')
+            .toLocaleLowerCase('tr-TR')
+            .includes(query);
+    });
+
+    const loadMembershipTechnicians = async (partnerId) => {
+        if (!partnerId) {
+            setMembershipTechnicianLinks([]);
+            return;
+        }
+
+        setMembershipTechniciansLoading(true);
+        try {
+            const response = await apiRequest(`/api/b2b/partners/${partnerId}/technicians`);
+            setMembershipTechnicianLinks((response.items ?? []).filter((link) => link.active && link.technician?.active));
+        } catch (error) {
+            setMembershipTechnicianLinks([]);
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setMembershipTechniciansLoading(false);
+        }
+    };
+
+    const openMembership = (membership = null) => {
+        if (!form.id) {
+            setStatus({ type: 'error', message: 'Partner ataması için önce kullanıcı kaydını oluşturun.' });
+            return;
+        }
+
+        const nextForm = membership ? membershipToForm(membership) : blankMembership();
+        setMembershipDialog({ mode: membership ? 'edit' : 'create', membership });
+        setMembershipForm(nextForm);
+        setMembershipAdvanced(false);
+        setMembershipPartnerQuery('');
+        setIncludeInactivePartners(false);
+        setMembershipTechnicianLinks([]);
+        void loadMembershipTechnicians(nextForm.partner_id);
+    };
+
+    const selectMembershipPartner = (partnerId) => {
+        setMembershipForm((current) => ({
+            ...current,
+            partner_id: partnerId,
+            technical_service_technician_id: '',
+        }));
+        void loadMembershipTechnicians(partnerId);
+    };
+
+    const applyMembershipPreset = (preset) => {
+        setMembershipForm((current) => ({
+            ...current,
+            preset,
+            scopes: membershipPresets[preset]?.() ?? current.scopes,
+        }));
+    };
+
+    const setMembershipAbility = (scope, ability, value) => {
+        setMembershipForm((current) => ({
+            ...current,
+            preset: 'custom',
+            scopes: {
+                ...current.scopes,
+                [scope]: { ...current.scopes[scope], [ability]: value },
+            },
+        }));
+    };
+
+    const saveMembership = async (event) => {
+        event.preventDefault();
+        if (!form.id || !membershipForm.partner_id) {
+            setStatus({ type: 'error', message: 'Kullanıcı ve partner seçimi zorunludur.' });
+            return;
+        }
+
+        const partnerId = Number(membershipForm.partner_id);
+        const editing = membershipDialog?.mode === 'edit';
+        const path = editing
+            ? `/api/b2b/partners/${partnerId}/users/${form.id}`
+            : `/api/b2b/partners/${partnerId}/users`;
+        setMembershipSaving(true);
+
+        try {
+            await apiRequest(path, {
+                method: editing ? 'PATCH' : 'POST',
+                body: JSON.stringify({
+                    user_id: form.id,
+                    title: membershipForm.title,
+                    phone: membershipForm.phone,
+                    active: membershipForm.active,
+                    technical_service_technician_id: membershipForm.technical_service_technician_id === ''
+                        ? null
+                        : Number(membershipForm.technical_service_technician_id),
+                    scopes: membershipScopesPayload(membershipForm.scopes),
+                }),
+            });
+            setMembershipDialog(null);
+            setReloadKey((current) => current + 1);
+            setStatus({ type: 'success', message: editing ? 'Partner üyeliği güncellendi.' : 'Partner üyeliği eklendi.' });
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setMembershipSaving(false);
+        }
+    };
+
+    const deactivateMembership = async (membership) => {
+        if (!form.id || !window.confirm(`${membership.partner_name} üyeliği pasife alınsın mı?`)) {
+            return;
+        }
+
+        setMembershipSaving(true);
+        try {
+            await apiRequest(`/api/b2b/partners/${membership.partner_id}/users/${form.id}`, { method: 'DELETE' });
+            setMembershipDialog(null);
+            setReloadKey((current) => current + 1);
+            setStatus({ type: 'success', message: 'Partner üyeliği audit korunarak pasife alındı.' });
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setMembershipSaving(false);
+        }
+    };
+
+    const loadTechnicianManager = async (partner, search = technicianQuery) => {
+        if (!partner) {
+            return;
+        }
+
+        setTechnicianSaving(true);
+        try {
+            const params = new URLSearchParams({ partner_id: String(partner.id) });
+            if (search.trim() !== '') {
+                params.set('search', search.trim());
+            }
+            const [linksResponse, optionsResponse] = await Promise.all([
+                apiRequest(`/api/b2b/partners/${partner.id}/technicians`),
+                apiRequest(`/api/b2b/locksmith-technicians?${params.toString()}`),
+            ]);
+            setTechnicianLinks(linksResponse.items ?? []);
+            setTechnicianOptions(optionsResponse.items ?? []);
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setTechnicianSaving(false);
+        }
+    };
+
+    const openTechnicianManager = (partner) => {
+        if (!partner?.can_manage_technicians) {
+            setStatus({ type: 'error', message: 'Bu partnerin usta bağlantılarını yönetme yetkiniz yok.' });
+            return;
+        }
+
+        setTechnicianDialogPartner(partner);
+        setTechnicianLinks([]);
+        setTechnicianOptions([]);
+        setTechnicianQuery('');
+        setTechnicianLinkForm(blankTechnicianLink());
+        void loadTechnicianManager(partner, '');
+    };
+
+    const createTechnicianLink = async (event) => {
+        event.preventDefault();
+        if (!technicianDialogPartner || !technicianLinkForm.technical_service_technician_id) {
+            setStatus({ type: 'error', message: 'Bağlanacak usta seçilmelidir.' });
+            return;
+        }
+
+        setTechnicianSaving(true);
+        try {
+            await apiRequest(`/api/b2b/partners/${technicianDialogPartner.id}/technicians`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    ...technicianLinkForm,
+                    technical_service_technician_id: Number(technicianLinkForm.technical_service_technician_id),
+                    priority: Number(technicianLinkForm.priority || 0),
+                }),
+            });
+            setTechnicianLinkForm(blankTechnicianLink());
+            await loadTechnicianManager(technicianDialogPartner, technicianQuery);
+            setStatus({ type: 'success', message: 'Usta partnera bağlandı.' });
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setTechnicianSaving(false);
+        }
+    };
+
+    const patchTechnicianLink = async (link, override = {}) => {
+        if (!technicianDialogPartner) {
+            return;
+        }
+
+        setTechnicianSaving(true);
+        try {
+            await apiRequest(`/api/b2b/partners/${technicianDialogPartner.id}/technicians/${link.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({
+                    relationship_type: link.relationship_type,
+                    is_primary: link.is_primary,
+                    active: link.active,
+                    service_city: link.service_city ?? '',
+                    service_district: link.service_district ?? '',
+                    service_region_note: link.service_region_note ?? '',
+                    priority: Number(link.priority || 0),
+                    ...override,
+                }),
+            });
+            await loadTechnicianManager(technicianDialogPartner, technicianQuery);
+            setReloadKey((current) => current + 1);
+            setStatus({ type: 'success', message: 'Usta bağlantısı güncellendi.' });
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setTechnicianSaving(false);
+        }
+    };
+
+    const deactivateTechnicianLink = async (link) => {
+        if (!technicianDialogPartner || !window.confirm(`${link.technician?.name ?? 'Usta'} bağlantısı pasife alınsın mı?`)) {
+            return;
+        }
+
+        setTechnicianSaving(true);
+        try {
+            await apiRequest(`/api/b2b/partners/${technicianDialogPartner.id}/technicians/${link.id}`, { method: 'DELETE' });
+            await loadTechnicianManager(technicianDialogPartner, technicianQuery);
+            setReloadKey((current) => current + 1);
+            setStatus({ type: 'success', message: 'Usta bağlantısı pasife alındı.' });
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+        } finally {
+            setTechnicianSaving(false);
+        }
     };
 
     return (
@@ -859,7 +1223,7 @@ export default function AdminUsers() {
 
                             <div
                                 data-testid="admin-user-editor-scroll"
-                                className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4"
+                                className="min-h-0 min-w-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto overscroll-contain px-4 py-4"
                             >
                                 {status.message && (
                                     <div
@@ -955,18 +1319,110 @@ export default function AdminUsers() {
                                     </fieldset>
                                 </section>
 
-                                <section aria-labelledby="partner-link-heading" className="space-y-2 border-b border-slate-200 pb-5">
-                                    <h3 id="partner-link-heading" className="text-sm font-semibold text-slate-900">Partner / Usta Bağlantısı</h3>
-                                    <p className="text-xs leading-5 text-slate-500">
-                                        {selectedRoleIsB2B
-                                            ? 'Bu rol partner portalına giriş verir; bayi veya usta kapsamı Partner Kullanıcıları ekranında yönetilir.'
-                                            : 'Bu kullanıcı rolünde partner veya usta bağlantısı bulunmuyor.'}
-                                    </p>
-                                    {selectedRoleIsB2B && (
-                                        <a href="/panel/b2b/users" className="inline-flex text-xs font-semibold text-blue-700 hover:text-blue-900">
-                                            Partner Kullanıcılarını aç
-                                        </a>
+                                <section aria-labelledby="partner-link-heading" className="min-w-0 space-y-3 border-b border-slate-200 pb-5">
+                                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                        <div>
+                                            <h3 id="partner-link-heading" className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                                <Building2 aria-hidden="true" className="size-4 text-slate-500" />
+                                                Partner Atamaları
+                                            </h3>
+                                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                                                Temel rol menü ve varsayılan izinleri belirler. Partner atamaları kullanıcının erişebileceği şirket kayıtlarını belirler.
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => openMembership()}
+                                            disabled={!form.id || !data.partners.some((partner) => partner.can_manage_memberships)}
+                                            className="inline-flex h-9 shrink-0 self-start items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45"
+                                        >
+                                            <Plus aria-hidden="true" className="size-3.5" />
+                                            Partner ata
+                                        </button>
+                                    </div>
+
+                                    {selectedMemberships.length > 0 && !effectiveB2BAccess && (
+                                        <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                                            <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                                            <span>Aktif partner üyeliği var ancak seçili rol partner ekranı açmıyor. Uygun temel rolü veya açık bir kullanıcı iznini ayrıca seçin; sistem otomatik yetki vermedi.</span>
+                                        </div>
                                     )}
+
+                                    {form.id && selectedMemberships.length === 0 && (
+                                        <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
+                                            Bu kullanıcıya partner atanmamış.
+                                        </div>
+                                    )}
+
+                                    {!form.id && (
+                                        <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
+                                            Partner ataması için önce kullanıcıyı kaydedin.
+                                        </div>
+                                    )}
+
+                                    <div className="grid min-w-0 gap-2">
+                                        {selectedMemberships.map((membership) => {
+                                            const partner = partnerById(membership.partner_id);
+                                            const canManageMembership = Boolean(partner?.can_manage_memberships);
+                                            const canManageTechnicians = Boolean(partner?.can_manage_technicians);
+                                            const isDealer = membership.capabilities?.includes('dealer');
+
+                                            return (
+                                                <article key={membership.id} className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                                    <div className="flex min-w-0 items-start justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <p className="truncate text-sm font-semibold text-slate-900">{membership.partner_name}</p>
+                                                            <p className="truncate text-xs text-slate-500">{membership.partner_code}</p>
+                                                        </div>
+                                                        <span className={`shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold ${membership.active ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                                                            Üyelik: {membership.active ? 'Aktif' : 'Pasif'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="mt-2 flex flex-wrap gap-1">
+                                                        {(membership.capabilities ?? []).map((capability) => (
+                                                            <span key={capability} className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                                                                {capabilityLabels[capability] ?? capability}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    <dl className="mt-2 grid gap-1 text-xs text-slate-600">
+                                                        <div><dt className="inline font-semibold text-slate-700">Profil: </dt><dd className="inline">{[membership.title, membership.phone].filter(Boolean).join(' · ') || '-'}</dd></div>
+                                                        <div><dt className="inline font-semibold text-slate-700">Kapsam: </dt><dd className="inline">{activeScopeSummary(membership.scopes)}</dd></div>
+                                                        <div>
+                                                            <dt className="inline font-semibold text-slate-700">Usta profili: </dt>
+                                                            <dd className={`inline ${membership.technical_service_technician_id && !membership.technician_mapping_valid ? 'font-semibold text-rose-700' : ''}`}>
+                                                                {membership.linked_technician?.name ?? (membership.technical_service_technician_id ? 'Geçersiz veya pasif bağlantı' : 'Bağlı değil')}
+                                                            </dd>
+                                                        </div>
+                                                    </dl>
+                                                    <div className="mt-3 flex flex-wrap gap-2">
+                                                        {canManageMembership && (
+                                                            <button type="button" onClick={() => openMembership(membership)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                                                                <Pencil aria-hidden="true" className="size-3.5" />
+                                                                Düzenle
+                                                            </button>
+                                                        )}
+                                                        {canManageMembership && membership.active && (
+                                                            <button type="button" onClick={() => void deactivateMembership(membership)} className="h-8 rounded-lg border border-rose-200 bg-white px-2.5 text-xs font-semibold text-rose-700 hover:bg-rose-50">
+                                                                Pasife al
+                                                            </button>
+                                                        )}
+                                                        {canManageMembership && !membership.active && (
+                                                            <button type="button" onClick={() => openMembership({ ...membership, active: true })} className="h-8 rounded-lg border border-emerald-200 bg-white px-2.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">
+                                                                Yeniden etkinleştir
+                                                            </button>
+                                                        )}
+                                                        {isDealer && canManageTechnicians && (
+                                                            <button type="button" onClick={() => openTechnicianManager(partner)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50">
+                                                                <Wrench aria-hidden="true" className="size-3.5" />
+                                                                Bağlı ustaları yönet
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </article>
+                                            );
+                                        })}
+                                    </div>
                                 </section>
 
                                 <section aria-labelledby="security-heading" className="space-y-3 border-b border-slate-200 pb-5">
@@ -1161,6 +1617,242 @@ export default function AdminUsers() {
                     </aside>
                 )}
             </section>
+
+            {membershipDialog && (
+                <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/55 p-2 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="membership-dialog-title">
+                    <form onSubmit={saveMembership} className="flex max-h-[calc(100vh-1rem)] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100vh-2rem)]">
+                        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-4 py-3 sm:px-5">
+                            <div className="min-w-0">
+                                <p className="text-xs font-semibold uppercase text-slate-500">Partner üyeliği</p>
+                                <h2 id="membership-dialog-title" className="mt-1 truncate text-lg font-semibold text-slate-950">
+                                    {membershipDialog.mode === 'edit' ? 'Partner atamasını düzenle' : 'Kullanıcıya partner ata'}
+                                </h2>
+                                <p className="mt-1 text-xs text-slate-500">{form.full_name} · Üyelik ve kullanıcı kaydı ayrı audit edilir.</p>
+                            </div>
+                            <button type="button" aria-label="Partner atama penceresini kapat" onClick={() => setMembershipDialog(null)} className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                                <X aria-hidden="true" className="size-4" />
+                            </button>
+                        </header>
+
+                        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-5">
+                            <section className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+                                {membershipDialog.mode === 'create' ? (
+                                    <>
+                                        <label className="grid gap-1.5 text-sm font-semibold text-slate-700 sm:col-span-2">
+                                            Partner ara
+                                            <input className="h-10 rounded-lg border border-slate-200 bg-white px-3 font-normal" value={membershipPartnerQuery} onChange={(event) => setMembershipPartnerQuery(event.target.value)} placeholder="Partner adı, kodu veya tipi" />
+                                        </label>
+                                        <label className="grid gap-1.5 text-sm font-semibold text-slate-700 sm:col-span-2">
+                                            Partner
+                                            <select required className="h-10 rounded-lg border border-slate-200 bg-white px-3 font-normal" value={membershipForm.partner_id} onChange={(event) => selectMembershipPartner(event.target.value)}>
+                                                <option value="">Partner seçin</option>
+                                                {membershipPartnerOptions
+                                                    .filter((partner) => !selectedMemberships.some((membership) => membership.partner_id === partner.id))
+                                                    .map((partner) => (
+                                                        <option key={partner.id} value={partner.id}>{partner.display_name} · {partner.partner_code} · {(partner.capabilities ?? []).map((capability) => capabilityLabels[capability] ?? capability).join(' + ')}</option>
+                                                    ))}
+                                            </select>
+                                        </label>
+                                        <label className="flex items-center gap-2 text-xs font-medium text-slate-600 sm:col-span-2">
+                                            <input type="checkbox" checked={includeInactivePartners} onChange={(event) => setIncludeInactivePartners(event.target.checked)} />
+                                            Pasif partnerları da göster
+                                        </label>
+                                    </>
+                                ) : (
+                                    <div className="sm:col-span-2">
+                                        <p className="text-xs font-semibold uppercase text-slate-500">Partner</p>
+                                        <p className="mt-1 text-sm font-semibold text-slate-900">{partnerById(membershipForm.partner_id)?.display_name ?? membershipDialog.membership?.partner_name}</p>
+                                        <div className="mt-2 flex flex-wrap gap-1">
+                                            {(partnerById(membershipForm.partner_id)?.capabilities ?? membershipDialog.membership?.capabilities ?? []).map((capability) => (
+                                                <span key={capability} className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200">{capabilityLabels[capability] ?? capability}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                                    Ünvan
+                                    <input className="h-10 rounded-lg border border-slate-200 bg-white px-3 font-normal" value={membershipForm.title} onChange={(event) => setMembershipForm((current) => ({ ...current, title: event.target.value }))} placeholder="Örn. Servis sorumlusu" />
+                                </label>
+                                <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                                    Üyelik telefonu
+                                    <input className="h-10 rounded-lg border border-slate-200 bg-white px-3 font-normal" value={membershipForm.phone} onChange={(event) => setMembershipForm((current) => ({ ...current, phone: event.target.value }))} placeholder="Opsiyonel" />
+                                </label>
+                                <fieldset className="sm:col-span-2">
+                                    <legend className="text-sm font-semibold text-slate-700">Üyelik durumu</legend>
+                                    <div className="mt-1.5 grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1">
+                                        <button type="button" aria-pressed={membershipForm.active} onClick={() => setMembershipForm((current) => ({ ...current, active: true }))} className={`h-9 rounded-md text-sm font-semibold ${membershipForm.active ? 'bg-emerald-600 text-white' : 'text-slate-500'}`}>Aktif</button>
+                                        <button type="button" aria-pressed={!membershipForm.active} onClick={() => setMembershipForm((current) => ({ ...current, active: false }))} className={`h-9 rounded-md text-sm font-semibold ${!membershipForm.active ? 'bg-rose-600 text-white' : 'text-slate-500'}`}>Pasif</button>
+                                    </div>
+                                </fieldset>
+                            </section>
+
+                            <section className="space-y-3">
+                                <div>
+                                    <h3 className="text-sm font-semibold text-slate-900">Partner kapsamı</h3>
+                                    <p className="mt-1 text-xs text-slate-500">Hazır kapsamı açıkça seçin veya gelişmiş matrisi düzenleyin. Temel rol otomatik değişmez.</p>
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-3">
+                                    {[['view', 'Sadece görüntüleme'], ['operations', 'Operasyon'], ['manager', 'Partner yöneticisi']].map(([value, label]) => (
+                                        <button key={value} type="button" aria-pressed={membershipForm.preset === value} onClick={() => applyMembershipPreset(value)} className={`h-10 rounded-lg border px-3 text-sm font-semibold ${membershipForm.preset === value ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <button type="button" onClick={() => setMembershipAdvanced((current) => !current)} className="text-xs font-semibold text-blue-700 hover:text-blue-900">
+                                    {membershipAdvanced ? 'Gelişmiş kapsamı gizle' : 'Gelişmiş kapsamı göster'}
+                                </button>
+                                {membershipAdvanced && (
+                                    <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                        <table className="w-full min-w-[620px] text-left text-xs">
+                                            <thead className="bg-slate-50 text-slate-500">
+                                                <tr>
+                                                    <th className="px-3 py-2 font-semibold">Kapsam</th>
+                                                    {membershipAbilities.map(([, label]) => <th key={label} className="px-2 py-2 text-center font-semibold">{label}</th>)}
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {membershipScopeRows.map(([scope, label]) => (
+                                                    <tr key={scope}>
+                                                        <td className="px-3 py-2 font-semibold text-slate-700">{label}</td>
+                                                        {membershipAbilities.map(([ability]) => (
+                                                            <td key={ability} className="px-2 py-2 text-center">
+                                                                <input type="checkbox" aria-label={`${label} ${ability}`} checked={Boolean(membershipForm.scopes[scope]?.[ability])} onChange={(event) => setMembershipAbility(scope, ability, event.target.checked)} />
+                                                            </td>
+                                                        ))}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </section>
+
+                            <section className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
+                                <div>
+                                    <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-950"><Link2 aria-hidden="true" className="size-4" />Kullanıcıyı usta profiline bağla</h3>
+                                    <p className="mt-1 text-xs leading-5 text-emerald-800">Yalnız bu partnere aktif bağlı ustalar seçilebilir. Birincil veya tek usta otomatik atanmaz.</p>
+                                </div>
+                                <select className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm" value={membershipForm.technical_service_technician_id} onChange={(event) => setMembershipForm((current) => ({ ...current, technical_service_technician_id: event.target.value }))} disabled={membershipTechniciansLoading || !membershipForm.partner_id}>
+                                    <option value="">Usta profili bağlama</option>
+                                    {membershipTechnicianLinks.map((link) => (
+                                        <option key={link.id} value={link.technical_service_technician_id}>{link.technician?.name} · {link.relationship_type}{link.is_primary ? ' · Birincil' : ''}</option>
+                                    ))}
+                                </select>
+                                {membershipForm.partner_id && membershipTechnicianLinks.length === 0 && !membershipTechniciansLoading && (
+                                    <p className="text-xs font-medium text-amber-700">Bu partnere bağlı aktif usta yok. Önce ayrı usta bağlantısı işlemini tamamlayın.</p>
+                                )}
+                                {partnerById(membershipForm.partner_id)?.capabilities?.includes('dealer') && partnerById(membershipForm.partner_id)?.can_manage_technicians && (
+                                    <button type="button" onClick={() => { const partner = partnerById(membershipForm.partner_id); setMembershipDialog(null); openTechnicianManager(partner); }} className="inline-flex h-9 items-center gap-2 self-start rounded-lg border border-emerald-200 bg-white px-3 text-xs font-semibold text-emerald-800 hover:bg-emerald-100">
+                                        <Wrench aria-hidden="true" className="size-3.5" />
+                                        Bayinin ustalarını bağla
+                                    </button>
+                                )}
+                            </section>
+                        </div>
+
+                        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3 sm:px-5">
+                            <span className="hidden text-xs text-slate-500 sm:block">Kullanıcı temel kaydı bu işlemden etkilenmez.</span>
+                            <div className="ml-auto flex gap-2">
+                                <button type="button" onClick={() => setMembershipDialog(null)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">Vazgeç</button>
+                                <button type="submit" disabled={membershipSaving || !membershipForm.partner_id} className="h-10 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white disabled:opacity-50">{membershipSaving ? 'Kaydediliyor...' : 'Üyeliği kaydet'}</button>
+                            </div>
+                        </footer>
+                    </form>
+                </div>
+            )}
+
+            {technicianDialogPartner && (
+                <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/55 p-2 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="technician-dialog-title">
+                    <div className="flex max-h-[calc(100vh-1rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100vh-2rem)]">
+                        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-4 py-3 sm:px-5">
+                            <div className="min-w-0">
+                                <p className="text-xs font-semibold uppercase text-slate-500">Bayinin ustalarını bağla</p>
+                                <h2 id="technician-dialog-title" className="mt-1 truncate text-lg font-semibold text-slate-950">{technicianDialogPartner.display_name}</h2>
+                                <p className="mt-1 text-xs text-slate-500">Partner ↔ Usta bağlantısıdır; kullanıcı üyeliği ayrıca bir usta profiline bağlanır.</p>
+                            </div>
+                            <button type="button" aria-label="Usta yönetimini kapat" onClick={() => setTechnicianDialogPartner(null)} className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><X aria-hidden="true" className="size-4" /></button>
+                        </header>
+
+                        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-5">
+                            <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,.75fr)]">
+                                <section className="min-w-0 space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <h3 className="text-sm font-semibold text-slate-900">Bağlı Ustalar / Çilingirler</h3>
+                                            <p className="mt-1 text-xs text-slate-500">Bir partnerda yalnız bir aktif birincil usta olabilir.</p>
+                                        </div>
+                                        <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{technicianLinks.length} bağlantı</span>
+                                    </div>
+                                    {technicianLinks.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-500">Henüz bağlı usta yok.</div>}
+                                    {technicianLinks.map((link, index) => (
+                                        <article key={link.id} className={`rounded-lg border p-3 ${link.active ? 'border-slate-200 bg-white' : 'border-rose-200 bg-rose-50/50'}`}>
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <p className="truncate text-sm font-semibold text-slate-900">{link.technician?.name ?? `Usta #${link.technical_service_technician_id}`}</p>
+                                                    <p className="mt-1 text-xs text-slate-500">{[link.technician?.phone, link.technician?.city, link.technician?.district].filter(Boolean).join(' · ') || '-'}</p>
+                                                </div>
+                                                <div className="flex shrink-0 gap-1">
+                                                    {link.is_primary && <span className="rounded-md bg-blue-100 px-2 py-1 text-[11px] font-semibold text-blue-700">Birincil</span>}
+                                                    <span className={`rounded-md px-2 py-1 text-[11px] font-semibold ${link.active ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{link.active ? 'Aktif' : 'Pasif'}</span>
+                                                </div>
+                                            </div>
+                                            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                                <select className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs" value={link.relationship_type} onChange={(event) => setTechnicianLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, relationship_type: event.target.value } : item))}>
+                                                    <option value="owner">Sahip</option><option value="field_technician">Saha ustası</option><option value="contracted_technician">Anlaşmalı usta</option><option value="branch_technician">Şube ustası</option><option value="contact">İletişim</option>
+                                                </select>
+                                                <input type="number" min="0" max="9999" aria-label="Usta önceliği" className="h-9 rounded-lg border border-slate-200 px-2 text-xs" value={link.priority ?? 0} onChange={(event) => setTechnicianLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, priority: event.target.value } : item))} />
+                                                <input aria-label="Servis şehri" className="h-9 rounded-lg border border-slate-200 px-2 text-xs" value={link.service_city ?? ''} onChange={(event) => setTechnicianLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, service_city: event.target.value } : item))} placeholder="Servis şehri" />
+                                                <input aria-label="Servis ilçesi" className="h-9 rounded-lg border border-slate-200 px-2 text-xs" value={link.service_district ?? ''} onChange={(event) => setTechnicianLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, service_district: event.target.value } : item))} placeholder="Servis ilçesi" />
+                                                <input aria-label="Servis bölge notu" className="h-9 rounded-lg border border-slate-200 px-2 text-xs sm:col-span-2" value={link.service_region_note ?? ''} onChange={(event) => setTechnicianLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, service_region_note: event.target.value } : item))} placeholder="Servis bölgesi notu" />
+                                            </div>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                <button type="button" onClick={() => void patchTechnicianLink(link)} disabled={technicianSaving} className="h-8 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">Kaydet</button>
+                                                {!link.is_primary && link.active && <button type="button" onClick={() => void patchTechnicianLink(link, { is_primary: true, active: true })} disabled={technicianSaving} className="h-8 rounded-lg border border-blue-200 px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50">Birincil yap</button>}
+                                                {!link.active && <button type="button" onClick={() => void patchTechnicianLink(link, { active: true })} disabled={technicianSaving} className="h-8 rounded-lg border border-emerald-200 px-2.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">Etkinleştir</button>}
+                                                {link.active && <button type="button" onClick={() => void deactivateTechnicianLink(link)} disabled={technicianSaving} className="h-8 rounded-lg border border-rose-200 px-2.5 text-xs font-semibold text-rose-700 hover:bg-rose-50">Pasife al</button>}
+                                            </div>
+                                        </article>
+                                    ))}
+                                </section>
+
+                                <section className="min-w-0 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3 lg:sticky lg:top-0 lg:self-start">
+                                    <div>
+                                        <h3 className="text-sm font-semibold text-slate-900">Yeni usta bağlantısı</h3>
+                                        <p className="mt-1 text-xs text-slate-500">Mevcut Teknik Servis ustalarından seçin.</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <input className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm" value={technicianQuery} onChange={(event) => setTechnicianQuery(event.target.value)} placeholder="Ad, telefon veya şehir" />
+                                        <button type="button" onClick={() => void loadTechnicianManager(technicianDialogPartner, technicianQuery)} disabled={technicianSaving} className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700">Ara</button>
+                                    </div>
+                                    <form onSubmit={createTechnicianLink} className="grid min-w-0 gap-3">
+                                        <label className="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-700">Usta
+                                            <select required className="h-10 w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal" value={technicianLinkForm.technical_service_technician_id} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, technical_service_technician_id: event.target.value }))}>
+                                                <option value="">Usta seçin</option>
+                                                {technicianOptions.filter((technician) => !technician.linked_to_current_partner && technician.can_link !== false).map((technician) => (
+                                                    <option key={technician.id} value={technician.id}>{technician.name} · {[technician.phone, technician.city, technician.district].filter(Boolean).join(' / ')}</option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                                            <label className="grid gap-1.5 text-xs font-semibold text-slate-700">İlişki
+                                                <select className="h-10 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal" value={technicianLinkForm.relationship_type} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, relationship_type: event.target.value }))}><option value="contracted_technician">Anlaşmalı usta</option><option value="field_technician">Saha ustası</option><option value="owner">Sahip</option><option value="branch_technician">Şube ustası</option><option value="contact">İletişim</option></select>
+                                            </label>
+                                            <label className="grid gap-1.5 text-xs font-semibold text-slate-700">Öncelik<input type="number" min="0" max="9999" className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal" value={technicianLinkForm.priority} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, priority: event.target.value }))} /></label>
+                                            <label className="grid gap-1.5 text-xs font-semibold text-slate-700">Şehir<input className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal" value={technicianLinkForm.service_city} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, service_city: event.target.value }))} /></label>
+                                            <label className="grid gap-1.5 text-xs font-semibold text-slate-700">İlçe<input className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal" value={technicianLinkForm.service_district} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, service_district: event.target.value }))} /></label>
+                                        </div>
+                                        <label className="grid gap-1.5 text-xs font-semibold text-slate-700">Bölge notu<input className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal" value={technicianLinkForm.service_region_note} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, service_region_note: event.target.value }))} /></label>
+                                        <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">Birincil usta yap<input type="checkbox" checked={technicianLinkForm.is_primary} onChange={(event) => setTechnicianLinkForm((current) => ({ ...current, is_primary: event.target.checked }))} /></label>
+                                        <button type="submit" disabled={technicianSaving || !technicianLinkForm.technical_service_technician_id} className="h-10 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white disabled:opacity-50"><Plus aria-hidden="true" className="mr-1 inline size-4" />Ustayı bağla</button>
+                                    </form>
+                                </section>
+                            </div>
+                        </div>
+                        <footer className="flex shrink-0 justify-end border-t border-slate-200 bg-white px-4 py-3 sm:px-5"><button type="button" onClick={() => setTechnicianDialogPartner(null)} className="h-10 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-slate-700">Kapat</button></footer>
+                    </div>
+                </div>
+            )}
 
             {cloneSource && (
                 <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 px-4 py-6">
