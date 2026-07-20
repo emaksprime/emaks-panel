@@ -202,67 +202,53 @@ class AdminController extends Controller
             'strict_access' => ['boolean'],
         ]);
 
-        $payload = [
-            'username' => $data['username'],
-            'full_name' => $data['full_name'],
-            'role_code' => $data['role_code'],
-            'temsilci_kodu' => $data['temsilci_kodu'] ?? null,
-            'aktif' => (bool) ($data['aktif'] ?? true),
-            'force_password_change' => (bool) ($data['force_password_change'] ?? false),
-        ];
+        DB::transaction(function () use ($data, $request): void {
+            [$actor, $user, $role] = $this->authorizeSuperAdminUserMutation(
+                $request,
+                isset($data['id']) ? (int) $data['id'] : null,
+                (string) $data['role_code'],
+            );
 
-        if (! empty($data['password'])) {
-            $payload['password_hash'] = Hash::make($data['password']);
-        }
+            $payload = [
+                'username' => $data['username'],
+                'full_name' => $data['full_name'],
+                'role_code' => $data['role_code'],
+                'temsilci_kodu' => $data['temsilci_kodu'] ?? null,
+                'aktif' => (bool) ($data['aktif'] ?? true),
+                'force_password_change' => (bool) ($data['force_password_change'] ?? false),
+            ];
 
-        $user = isset($data['id'])
-            ? tap(User::query()->findOrFail($data['id']))->update($payload)
-            : User::query()->create($payload);
+            if (! empty($data['password'])) {
+                $payload['password_hash'] = Hash::make($data['password']);
+            }
 
-        $role = Role::query()->where('code', $data['role_code'])->first();
-        $denied = collect($data['denied_access'] ?? [])->filter()->unique()->values();
-        $allowed = collect($data['access'] ?? [])->filter()->unique()->values();
+            if ($user instanceof User) {
+                $user->update($payload);
+            } else {
+                $user = User::query()->create($payload);
+            }
 
-        if ((bool) ($data['strict_access'] ?? false) && ! (bool) ($role?->is_super_admin ?? false)) {
-            $allowed = $allowed
-                ->push('dashboard')
-                ->filter()
-                ->unique()
-                ->values();
+            $denied = collect($data['denied_access'] ?? [])->filter()->unique()->values();
+            $allowed = collect($data['access'] ?? [])->filter()->unique()->values();
 
-            $denied = Resource::query()
-                ->where('active', true)
-                ->pluck('code')
-                ->diff($allowed)
-                ->values();
-        }
+            if ((bool) ($data['strict_access'] ?? false) && ! (bool) ($role?->is_super_admin ?? false)) {
+                $allowed = $allowed
+                    ->push('dashboard')
+                    ->filter()
+                    ->unique()
+                    ->values();
 
-        $allowed = $allowed->diff($denied)->values();
+                $denied = Resource::query()
+                    ->where('active', true)
+                    ->pluck('code')
+                    ->diff($allowed)
+                    ->values();
+            }
 
-        UserAccess::query()->where('user_id', $user->id)->delete();
-        foreach ($allowed as $resourceCode) {
-            UserAccess::query()->updateOrCreate([
-                'user_id' => $user->id,
-                'resource_code' => $resourceCode,
-            ], [
-                'user_id' => $user->id,
-                'resource_code' => $resourceCode,
-                'can_view' => true,
-            ]);
-        }
+            $this->syncUserAccess($user, $allowed, $denied);
 
-        foreach ($denied as $resourceCode) {
-            UserAccess::query()->updateOrCreate([
-                'user_id' => $user->id,
-                'resource_code' => $resourceCode,
-            ], [
-                'user_id' => $user->id,
-                'resource_code' => $resourceCode,
-                'can_view' => false,
-            ]);
-        }
-
-        $this->auditLogger->log($request->user(), 'admin.user.save', ['target_user_id' => $user->id], $request);
+            $this->auditLogger->log($actor, 'admin.user.save', ['target_user_id' => $user->id], $request);
+        });
 
         return $this->users($request);
     }
@@ -280,11 +266,17 @@ class AdminController extends Controller
         ]);
 
         DB::transaction(function () use ($data, $request, $user): void {
+            [$actor, $source] = $this->authorizeSuperAdminUserMutation(
+                $request,
+                (int) $user->getKey(),
+            );
+            abort_unless($source instanceof User, 404);
+
             $clonedUser = User::query()->create([
                 'username' => $data['username'],
                 'full_name' => $data['full_name'],
                 'password_hash' => Hash::make($data['password']),
-                'role_code' => $user->role_code,
+                'role_code' => $source->role_code,
                 'temsilci_kodu' => $data['temsilci_kodu'] ?? null,
                 'aktif' => (bool) ($data['aktif'] ?? true),
                 'force_password_change' => (bool) ($data['force_password_change'] ?? true),
@@ -292,19 +284,86 @@ class AdminController extends Controller
 
             $strictAccess = (bool) ($data['strict_access'] ?? true);
             [$allowed, $denied] = $strictAccess
-                ? $this->strictAccessSnapshotForClone($user)
-                : $this->explicitAccessSnapshotForClone($user);
+                ? $this->strictAccessSnapshotForClone($source)
+                : $this->explicitAccessSnapshotForClone($source);
 
             $this->syncUserAccess($clonedUser, $allowed, $denied);
 
-            $this->auditLogger->log($request->user(), 'admin.user.clone', [
-                'source_user_id' => $user->id,
+            $this->auditLogger->log($actor, 'admin.user.clone', [
+                'source_user_id' => $source->id,
                 'new_user_id' => $clonedUser->id,
                 'strict_access' => $strictAccess,
             ], $request);
         });
 
         return $this->users($request);
+    }
+
+    /**
+     * @return array{0: User, 1: User|null, 2: Role|null}
+     */
+    private function authorizeSuperAdminUserMutation(
+        Request $request,
+        ?int $targetUserId,
+        ?string $nextRoleCode = null,
+    ): array {
+        $actorId = (int) ($request->user()?->getKey() ?? 0);
+        abort_unless($actorId > 0, 403);
+
+        $userIds = collect([$actorId, $targetUserId])
+            ->filter(fn ($id): bool => is_int($id) && $id > 0)
+            ->unique()
+            ->sort()
+            ->values();
+        $users = User::query()
+            ->whereIn('id', $userIds->all())
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get()
+            ->keyBy('id');
+
+        $actor = $users->get($actorId);
+        abort_unless($actor instanceof User, 403);
+
+        $target = $targetUserId === null ? null : $users->get($targetUserId);
+        if ($targetUserId !== null) {
+            abort_unless($target instanceof User, 404);
+        }
+
+        $roleCodes = collect([$actor->role_code, $target?->role_code, $nextRoleCode])
+            ->filter(fn ($code): bool => is_string($code) && $code !== '')
+            ->unique()
+            ->sort()
+            ->values();
+        $roles = Role::query()
+            ->whereIn('code', $roleCodes->all())
+            ->orderBy('code')
+            ->lockForUpdate()
+            ->get()
+            ->keyBy('code');
+
+        $actorRole = is_string($actor->role_code) ? $roles->get($actor->role_code) : null;
+        $targetRole = $target instanceof User && is_string($target->role_code)
+            ? $roles->get($target->role_code)
+            : null;
+        $nextRole = is_string($nextRoleCode) ? $roles->get($nextRoleCode) : null;
+
+        if ($nextRoleCode !== null) {
+            abort_unless($nextRole instanceof Role, 403);
+        }
+
+        $actor->setRelation('role', $actorRole);
+        if ($target instanceof User) {
+            $target->setRelation('role', $targetRole);
+        }
+
+        $actorIsSuperAdmin = (bool) ($actorRole?->is_super_admin ?? false);
+        $targetIsSuperAdmin = (bool) ($targetRole?->is_super_admin ?? false);
+        $nextRoleIsSuperAdmin = (bool) ($nextRole?->is_super_admin ?? false);
+
+        abort_if(! $actorIsSuperAdmin && ($targetIsSuperAdmin || $nextRoleIsSuperAdmin), 403);
+
+        return [$actor, $target, $nextRole];
     }
 
     /**

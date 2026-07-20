@@ -8,6 +8,7 @@ use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\Resource;
+use App\Models\Role;
 use App\Models\RoleResourcePermission;
 use App\Models\User;
 use App\Models\UserAccess;
@@ -179,6 +180,306 @@ class AdminUserManagementTest extends TestCase
                 'password' => 'new-password-123',
             ])
             ->assertForbidden();
+    }
+
+    public function test_delegated_admin_cannot_create_user_with_flagged_super_role(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin();
+        $before = $this->adminUserMutationFootprint();
+
+        $response = $this->actingAs($actor)->postJson('/api/admin/users', [
+            'username' => 'blocked.super.create',
+            'full_name' => 'Blocked Super Create',
+            'password' => 'new-password-123',
+            'role_code' => $superRole->code,
+            'temsilci_kodu' => 'S001',
+            'aktif' => true,
+            'force_password_change' => true,
+            'access' => ['admin_panel', 'user_admin'],
+            'denied_access' => [],
+            'strict_access' => false,
+        ]);
+
+        $response->assertForbidden();
+        $this->assertStringNotContainsString($superRole->code, $response->getContent());
+        $this->assertDatabaseMissing('panel.users', ['username' => 'blocked.super.create']);
+        $this->assertSame($before, $this->adminUserMutationFootprint());
+    }
+
+    public function test_delegated_admin_cannot_promote_normal_user_to_flagged_super_role(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin();
+        $target = User::factory()->create([
+            'role_code' => 'sales',
+            'password_hash' => Hash::make('original-password'),
+            'temsilci_kodu' => 'N001',
+            'aktif' => true,
+            'force_password_change' => false,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $target->id,
+            'resource_code' => 'sales_main',
+            'can_view' => true,
+        ]);
+
+        $this->assertDeniedUserSaveLeavesNoMutation($actor, $target, [
+            'role_code' => $superRole->code,
+            'full_name' => 'Mutated Promotion Name',
+            'password' => 'mutated-password-123',
+            'temsilci_kodu' => 'M999',
+            'aktif' => false,
+            'force_password_change' => true,
+            'access' => ['admin_panel'],
+            'denied_access' => ['sales_main'],
+        ], $superRole->code);
+    }
+
+    public function test_delegated_admin_cannot_promote_itself_to_flagged_super_role(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin();
+
+        $this->assertDeniedUserSaveLeavesNoMutation($actor, $actor, [
+            'role_code' => $superRole->code,
+            'full_name' => 'Mutated Self Promotion',
+            'password' => 'mutated-password-123',
+            'aktif' => false,
+            'access' => [],
+            'denied_access' => ['admin_panel', 'user_admin'],
+        ], $superRole->code);
+    }
+
+    public function test_delegated_admin_cannot_edit_existing_flagged_superadmin(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin();
+        $target = User::factory()->create([
+            'role_code' => $superRole->code,
+            'password_hash' => Hash::make('original-password'),
+            'aktif' => true,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $target->id,
+            'resource_code' => 'sales_main',
+            'can_view' => true,
+        ]);
+
+        $this->assertDeniedUserSaveLeavesNoMutation($actor, $target, [
+            'role_code' => $superRole->code,
+            'full_name' => 'Mutated Existing Super',
+            'password' => 'mutated-password-123',
+            'aktif' => false,
+            'force_password_change' => true,
+            'access' => ['user_admin'],
+            'denied_access' => ['sales_main'],
+        ], $superRole->code);
+    }
+
+    public function test_delegated_admin_cannot_demote_existing_flagged_superadmin(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin();
+        $target = User::factory()->create([
+            'role_code' => $superRole->code,
+            'password_hash' => Hash::make('original-password'),
+            'temsilci_kodu' => 'S002',
+            'aktif' => true,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $target->id,
+            'resource_code' => 'stock',
+            'can_view' => false,
+        ]);
+
+        $this->assertDeniedUserSaveLeavesNoMutation($actor, $target, [
+            'role_code' => 'viewer',
+            'full_name' => 'Mutated Super Demotion',
+            'password' => 'mutated-password-123',
+            'temsilci_kodu' => 'D999',
+            'aktif' => false,
+            'access' => ['sales_main'],
+            'denied_access' => [],
+        ], $superRole->code);
+    }
+
+    public function test_delegated_admin_cannot_clone_flagged_superadmin(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin();
+        $source = User::factory()->create(['role_code' => $superRole->code]);
+        UserAccess::query()->create([
+            'user_id' => $source->id,
+            'resource_code' => 'sales_main',
+            'can_view' => true,
+        ]);
+        $sourceBefore = $this->adminManagedUserSnapshot($source);
+        $footprintBefore = $this->adminUserMutationFootprint();
+
+        $response = $this->actingAs($actor)
+            ->postJson("/api/admin/users/{$source->id}/clone", [
+                'username' => 'blocked.super.clone',
+                'full_name' => 'Blocked Super Clone',
+                'password' => 'new-password-123',
+                'aktif' => true,
+                'force_password_change' => true,
+                'strict_access' => true,
+            ]);
+
+        $response->assertForbidden();
+        $this->assertStringNotContainsString($superRole->code, $response->getContent());
+        $this->assertDatabaseMissing('panel.users', ['username' => 'blocked.super.clone']);
+        $this->assertSame($sourceBefore, $this->adminManagedUserSnapshot($source));
+        $this->assertSame($footprintBefore, $this->adminUserMutationFootprint());
+    }
+
+    public function test_delegated_admin_can_create_update_and_clone_normal_users(): void
+    {
+        $actor = $this->delegatedUserAdmin();
+
+        $this->actingAs($actor)->postJson('/api/admin/users', [
+            'username' => 'delegated.normal',
+            'full_name' => 'Delegated Normal User',
+            'password' => 'new-password-123',
+            'role_code' => 'sales',
+            'aktif' => true,
+            'force_password_change' => false,
+            'access' => ['sales_main'],
+            'denied_access' => ['stock'],
+            'strict_access' => false,
+        ])->assertOk();
+
+        $target = User::query()->where('username', 'delegated.normal')->firstOrFail();
+
+        $this->actingAs($actor)->postJson('/api/admin/users', [
+            ...$this->validUserSavePayload($target),
+            'full_name' => 'Delegated Normal Updated',
+            'password' => 'updated-password-123',
+            'role_code' => 'viewer',
+            'aktif' => false,
+            'force_password_change' => true,
+            'access' => ['dashboard'],
+            'denied_access' => ['stock'],
+        ])->assertOk();
+
+        $target->refresh();
+        $this->assertSame('viewer', $target->role_code);
+        $this->assertSame('Delegated Normal Updated', $target->full_name);
+        $this->assertTrue(Hash::check('updated-password-123', $target->password_hash));
+
+        $this->actingAs($actor)
+            ->postJson("/api/admin/users/{$target->id}/clone", [
+                'username' => 'delegated.normal.clone',
+                'full_name' => 'Delegated Normal Clone',
+                'password' => 'clone-password-123',
+                'aktif' => true,
+                'force_password_change' => true,
+                'strict_access' => false,
+            ])
+            ->assertOk();
+
+        $clone = User::query()->where('username', 'delegated.normal.clone')->firstOrFail();
+        $this->assertSame('viewer', $clone->role_code);
+        $this->assertDatabaseHas('panel.logs', [
+            'user_id' => $actor->id,
+            'action' => 'admin.user.clone',
+        ]);
+    }
+
+    public function test_flagged_superadmin_can_create_update_and_clone_flagged_superadmins(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = User::factory()->create([
+            'role_code' => $superRole->code,
+            'aktif' => true,
+        ]);
+
+        $this->actingAs($actor)->postJson('/api/admin/users', [
+            'username' => 'allowed.super.target',
+            'full_name' => 'Allowed Super Target',
+            'password' => 'new-password-123',
+            'role_code' => $superRole->code,
+            'aktif' => true,
+            'force_password_change' => false,
+            'access' => [],
+            'denied_access' => [],
+            'strict_access' => false,
+        ])->assertOk();
+
+        $target = User::query()->where('username', 'allowed.super.target')->firstOrFail();
+
+        $this->actingAs($actor)->postJson('/api/admin/users', [
+            ...$this->validUserSavePayload($target),
+            'full_name' => 'Allowed Super Updated',
+            'password' => 'updated-password-123',
+            'role_code' => $superRole->code,
+        ])->assertOk();
+
+        $this->actingAs($actor)
+            ->postJson("/api/admin/users/{$target->id}/clone", [
+                'username' => 'allowed.super.clone',
+                'full_name' => 'Allowed Super Clone',
+                'password' => 'clone-password-123',
+                'aktif' => true,
+                'force_password_change' => true,
+                'strict_access' => true,
+            ])
+            ->assertOk();
+
+        $this->assertSame('Allowed Super Updated', $target->fresh()->full_name);
+        $this->assertSame(
+            $superRole->code,
+            User::query()->where('username', 'allowed.super.clone')->value('role_code'),
+        );
+    }
+
+    public function test_superadmin_boundary_uses_fresh_actor_role_state(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = User::factory()->create([
+            'role_code' => $superRole->code,
+            'aktif' => true,
+        ])->load('role');
+        $this->actingAs($actor);
+
+        User::query()->whereKey($actor->id)->update(['role_code' => 'viewer']);
+        $before = $this->adminUserMutationFootprint();
+
+        $response = $this->postJson('/api/admin/users', [
+            'username' => 'stale.actor.blocked',
+            'full_name' => 'Stale Actor Blocked',
+            'password' => 'new-password-123',
+            'role_code' => $superRole->code,
+            'aktif' => true,
+            'access' => [],
+            'denied_access' => [],
+        ]);
+
+        $response->assertForbidden();
+        $this->assertDatabaseMissing('panel.users', ['username' => 'stale.actor.blocked']);
+        $this->assertSame($before, $this->adminUserMutationFootprint());
+    }
+
+    public function test_missing_actor_role_is_treated_as_non_superadmin(): void
+    {
+        $superRole = $this->flaggedSuperRole();
+        $actor = $this->delegatedUserAdmin(null);
+        $before = $this->adminUserMutationFootprint();
+
+        $response = $this->actingAs($actor)->postJson('/api/admin/users', [
+            'username' => 'missing.role.blocked',
+            'full_name' => 'Missing Role Blocked',
+            'password' => 'new-password-123',
+            'role_code' => $superRole->code,
+            'aktif' => true,
+            'access' => [],
+            'denied_access' => [],
+        ]);
+
+        $response->assertForbidden();
+        $this->assertDatabaseMissing('panel.users', ['username' => 'missing.role.blocked']);
+        $this->assertSame($before, $this->adminUserMutationFootprint());
     }
 
     public function test_admin_users_endpoint_forbids_authenticated_user_without_admin_permissions(): void
@@ -812,6 +1113,121 @@ class AdminUserManagementTest extends TestCase
 
         $this->assertNotEmpty($matches['body'] ?? null);
         $this->assertStringNotContainsString("replace(/\\./g, '')", $matches['body']);
+    }
+
+    private function flaggedSuperRole(string $code = 'opaque_boundary_role'): Role
+    {
+        return Role::query()->create([
+            'code' => $code,
+            'name' => 'Opaque Boundary Role',
+            'description' => 'Flag-based authorization fixture',
+            'is_super_admin' => true,
+        ]);
+    }
+
+    private function delegatedUserAdmin(?string $roleCode = 'viewer'): User
+    {
+        $actor = User::factory()->create([
+            'role_code' => $roleCode,
+            'aktif' => true,
+        ]);
+
+        foreach (['admin_panel', 'user_admin'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $actor->id,
+                'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        return $actor;
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function validUserSavePayload(User $user, array $overrides = []): array
+    {
+        return [
+            'id' => $user->id,
+            'username' => $user->username,
+            'full_name' => $user->full_name,
+            'role_code' => $user->role_code,
+            'temsilci_kodu' => $user->temsilci_kodu,
+            'aktif' => (bool) $user->aktif,
+            'force_password_change' => (bool) $user->force_password_change,
+            'access' => [],
+            'denied_access' => [],
+            'strict_access' => false,
+            ...$overrides,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function adminManagedUserSnapshot(User $user): array
+    {
+        $fresh = User::query()->findOrFail($user->id);
+
+        return [
+            'user' => $fresh->only([
+                'username',
+                'full_name',
+                'password_hash',
+                'role_code',
+                'temsilci_kodu',
+                'aktif',
+                'force_password_change',
+            ]),
+            'access' => UserAccess::query()
+                ->where('user_id', $fresh->id)
+                ->orderBy('resource_code')
+                ->get(['resource_code', 'can_view'])
+                ->map(fn (UserAccess $access): array => [
+                    'resource_code' => $access->resource_code,
+                    'can_view' => (bool) $access->can_view,
+                ])
+                ->all(),
+        ];
+    }
+
+    /**
+     * @return array{users: int, user_access: int, success_audits: int}
+     */
+    private function adminUserMutationFootprint(): array
+    {
+        return [
+            'users' => User::query()->count(),
+            'user_access' => UserAccess::query()->count(),
+            'success_audits' => AuditLog::query()
+                ->whereIn('action', ['admin.user.save', 'admin.user.clone'])
+                ->count(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function assertDeniedUserSaveLeavesNoMutation(
+        User $actor,
+        User $target,
+        array $overrides,
+        string $protectedRoleCode,
+    ): void {
+        $targetBefore = $this->adminManagedUserSnapshot($target);
+        $footprintBefore = $this->adminUserMutationFootprint();
+
+        $response = $this->actingAs($actor)->postJson(
+            '/api/admin/users',
+            $this->validUserSavePayload($target, $overrides),
+        );
+
+        $response->assertForbidden();
+        $this->assertStringNotContainsString($protectedRoleCode, $response->getContent());
+        $this->assertSame($targetBefore, $this->adminManagedUserSnapshot($target));
+        $this->assertSame($footprintBefore, $this->adminUserMutationFootprint());
     }
 
     /**
