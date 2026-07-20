@@ -11,6 +11,7 @@ use App\Models\Resource;
 use App\Models\RoleResourcePermission;
 use App\Models\User;
 use App\Models\UserAccess;
+use App\Services\PanelAccessService;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Collection;
@@ -177,6 +178,23 @@ class AdminUserManagementTest extends TestCase
                 'full_name' => 'Blocked Clone',
                 'password' => 'new-password-123',
             ])
+            ->assertForbidden();
+    }
+
+    public function test_admin_users_endpoint_forbids_authenticated_user_without_admin_permissions(): void
+    {
+        $blocked = User::factory()->create([
+            'role_code' => 'viewer',
+            'aktif' => true,
+        ]);
+        $access = app(PanelAccessService::class);
+
+        $this->assertFalse($access->isPrivileged($blocked));
+        $this->assertFalse($access->userCanAccess($blocked, 'admin_panel'));
+        $this->assertFalse($access->userCanAccess($blocked, 'user_admin'));
+
+        $this->actingAs($blocked)
+            ->getJson('/api/admin/users')
             ->assertForbidden();
     }
 
@@ -510,6 +528,76 @@ class AdminUserManagementTest extends TestCase
             collect($payload['users'])->pluck('id')->all(),
         );
         $this->assertSame(2, $payload['meta']['filtered_total']);
+    }
+
+    public function test_capability_filters_ignore_inactive_capability_rows_for_include_all_and_exclude_modes(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $inactiveCapabilityPartner = $this->partner(
+            'CAP-ROW-INACTIVE',
+            'Capability Row Matrix Inactive Partner',
+            ['dealer'],
+        );
+        $activeCapabilityPartner = $this->partner(
+            'CAP-ROW-ACTIVE',
+            'Capability Row Matrix Active Partner',
+            ['dealer', 'locksmith'],
+        );
+        $inactiveCapability = B2BPartnerCapability::query()->create([
+            'partner_id' => $inactiveCapabilityPartner->id,
+            'capability' => 'locksmith',
+            'active' => false,
+        ]);
+        $inactiveCapabilityUser = User::factory()->create([
+            'full_name' => 'Capability Row Matrix Inactive User',
+            'aktif' => true,
+        ]);
+        $activeCapabilityUser = User::factory()->create([
+            'full_name' => 'Capability Row Matrix Active User',
+            'aktif' => true,
+        ]);
+        $inactiveCapabilityProfile = $this->profile($inactiveCapabilityUser, $inactiveCapabilityPartner, true);
+        $activeCapabilityProfile = $this->profile($activeCapabilityUser, $activeCapabilityPartner, true);
+
+        $this->assertFalse((bool) $inactiveCapability->fresh()->active);
+        $this->assertTrue((bool) $inactiveCapabilityPartner->fresh()->active);
+        $this->assertTrue((bool) $activeCapabilityPartner->fresh()->active);
+        $this->assertTrue((bool) $inactiveCapabilityProfile->fresh()->active);
+        $this->assertTrue((bool) $activeCapabilityProfile->fresh()->active);
+        $this->assertTrue((bool) $inactiveCapabilityUser->fresh()->aktif);
+        $this->assertTrue((bool) $activeCapabilityUser->fresh()->aktif);
+
+        $includedPayload = $this->filteredUserPayload($admin, [
+            'search' => 'Capability Row Matrix',
+            'capabilities' => ['locksmith'],
+            'capability_match' => 'any',
+        ]);
+        $allPayload = $this->filteredUserPayload($admin, [
+            'search' => 'Capability Row Matrix',
+            'capabilities' => ['dealer', 'locksmith'],
+            'capability_match' => 'all',
+        ]);
+        $excludedPayload = $this->filteredUserPayload($admin, [
+            'search' => 'Capability Row Matrix',
+            'capabilities' => ['locksmith'],
+            'capability_match' => 'exclude',
+        ]);
+
+        $includedIds = collect($includedPayload['users'])->pluck('id');
+        $allIds = collect($allPayload['users'])->pluck('id');
+        $excludedIds = collect($excludedPayload['users'])->pluck('id');
+
+        $this->assertFalse($includedIds->contains($inactiveCapabilityUser->id));
+        $this->assertTrue($includedIds->contains($activeCapabilityUser->id));
+        $this->assertSame(1, $includedPayload['meta']['filtered_total']);
+
+        $this->assertFalse($allIds->contains($inactiveCapabilityUser->id));
+        $this->assertTrue($allIds->contains($activeCapabilityUser->id));
+        $this->assertSame(1, $allPayload['meta']['filtered_total']);
+
+        $this->assertTrue($excludedIds->contains($inactiveCapabilityUser->id));
+        $this->assertFalse($excludedIds->contains($activeCapabilityUser->id));
+        $this->assertSame(1, $excludedPayload['meta']['filtered_total']);
     }
 
     public function test_capability_filter_ignores_memberships_to_inactive_partners(): void
