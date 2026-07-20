@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Copy, KeyRound, Pencil, Plus, Save, Search, ShieldCheck, UserRound, X } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
 import { AdminFrame } from './AdminFrame.jsx';
 
@@ -98,10 +99,32 @@ function groupResourcesByType(resources) {
     }, {});
 }
 
+function userToForm(user) {
+    return {
+        ...blank,
+        ...user,
+        password: '',
+        access: user.access ?? [],
+        denied_access: user.denied_access ?? [],
+        strict_access: false,
+    };
+}
+
+function comparableForm(value) {
+    return JSON.stringify({
+        ...value,
+        access: [...(value.access ?? [])].sort(),
+        denied_access: [...(value.denied_access ?? [])].sort(),
+    });
+}
+
 export default function AdminUsers() {
     const [data, setData] = useState({ users: [], roles: [], resources: [], rolePermissions: {} });
     const [form, setForm] = useState(blank);
+    const [formBaseline, setFormBaseline] = useState(blank);
+    const [isEditorOpen, setIsEditorOpen] = useState(false);
     const [query, setQuery] = useState('');
+    const [permissionQuery, setPermissionQuery] = useState('');
     const [status, setStatus] = useState({ type: 'idle', message: '' });
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
@@ -147,6 +170,51 @@ export default function AdminUsers() {
     const selectedRoleIsB2B = b2bRoleCodes.has(form.role_code);
     const activeResourceCodes = data.resources.map((resource) => resource.code);
     const roleAllowedResources = new Set(data.rolePermissions?.[form.role_code] ?? []);
+    const isDirty = comparableForm(form) !== comparableForm(formBaseline);
+    const normalizedPermissionQuery = permissionQuery.trim().toLocaleLowerCase('tr-TR');
+    const filteredGroupedResourceEntries = groupedResourceEntries
+        .map(([groupName, resources]) => [
+            groupName,
+            resources.filter((resource) => {
+                if (normalizedPermissionQuery === '') {
+                    return true;
+                }
+
+                return [groupName, resource.name, resource.code, resource.type]
+                    .join(' ')
+                    .toLocaleLowerCase('tr-TR')
+                    .includes(normalizedPermissionQuery);
+            }),
+            resources,
+        ])
+        .filter(([, visibleResources]) => visibleResources.length > 0);
+
+    const canDiscardEditor = () =>
+        !isDirty || window.confirm('Kaydedilmemiş değişiklikler silinsin mi?');
+
+    const closeEditor = () => {
+        if (!canDiscardEditor()) {
+            return;
+        }
+
+        setIsEditorOpen(false);
+        setForm(blank);
+        setFormBaseline(blank);
+        setPermissionQuery('');
+        setStatus({ type: 'idle', message: '' });
+    };
+
+    const openNewUser = () => {
+        if (!canDiscardEditor()) {
+            return;
+        }
+
+        setForm(blank);
+        setFormBaseline(blank);
+        setPermissionQuery('');
+        setStatus({ type: 'idle', message: '' });
+        setIsEditorOpen(true);
+    };
 
     const applyRoleDefaults = (roleCode) => {
         const activeCodes = new Set(activeResourceCodes);
@@ -172,7 +240,10 @@ export default function AdminUsers() {
                 body: JSON.stringify(form),
             });
             setData(next);
-            setForm(blank);
+            const savedUser = next.users.find((user) => user.username === form.username);
+            const savedForm = savedUser ? userToForm(savedUser) : blank;
+            setForm(savedForm);
+            setFormBaseline(savedForm);
             setStatus({
                 type: 'success',
                 message: 'Kullanıcı kaydedildi ve yetkileri güncellendi.',
@@ -224,15 +295,16 @@ export default function AdminUsers() {
     };
 
     const editUser = (user) => {
-        setForm({
-            ...blank,
-            ...user,
-            password: '',
-            access: user.access ?? [],
-            denied_access: user.denied_access ?? [],
-            strict_access: false,
-        });
+        if (!canDiscardEditor()) {
+            return;
+        }
+
+        const nextForm = userToForm(user);
+        setForm(nextForm);
+        setFormBaseline(nextForm);
+        setPermissionQuery('');
         setStatus({ type: 'idle', message: '' });
+        setIsEditorOpen(true);
     };
 
     const setAccessState = (code, state) => {
@@ -347,44 +419,60 @@ export default function AdminUsers() {
 
     return (
         <AdminFrame title="Kullanıcı Yönetimi">
-            <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_460px]">
-                <div className="space-y-4">
-                    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <section
+                data-testid="admin-users-workspace"
+                className="relative grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(420px,min(460px,38vw))]"
+            >
+                <div
+                    data-testid="admin-users-list-panel"
+                    className="min-w-0 space-y-3 xl:max-h-[calc(100vh-18rem)] xl:overflow-y-auto xl:pr-1"
+                >
+                    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                             <div>
-                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                    Panel kullanıcıları
-                                </p>
-                                <h2 className="mt-1 text-xl font-semibold text-slate-950">
-                                    {data.users.length} kayıt
-                                </h2>
+                                <p className="text-xs font-semibold uppercase text-slate-500">Panel kullanıcıları</p>
+                                <h2 className="mt-1 text-lg font-semibold text-slate-950">{data.users.length} kayıt</h2>
                             </div>
-                            <input
-                                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-slate-400 md:w-72"
-                                placeholder="Kullanıcı, rol veya temsilci ara"
-                                value={query}
-                                onChange={(event) => setQuery(event.target.value)}
-                            />
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <label className="relative block min-w-0 sm:w-72">
+                                    <span className="sr-only">Kullanıcı ara</span>
+                                    <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                                    <input
+                                        className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                                        placeholder="Kullanıcı, rol veya temsilci ara"
+                                        value={query}
+                                        onChange={(event) => setQuery(event.target.value)}
+                                    />
+                                </label>
+                                <button
+                                    type="button"
+                                    onClick={openNewUser}
+                                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                                >
+                                    <Plus aria-hidden="true" className="size-4" />
+                                    Yeni kullanıcı
+                                </button>
+                            </div>
                         </div>
                     </div>
 
-                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
                         <div className="overflow-x-auto">
-                            <table className="w-full min-w-[780px] text-sm">
-                                <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                            <table className="w-full min-w-[560px] table-fixed text-sm 2xl:min-w-[650px]">
+                                <thead className="bg-slate-50 text-left text-xs font-semibold uppercase text-slate-500">
                                     <tr>
-                                        <th className="px-5 py-4">Kullanıcı</th>
-                                        <th className="px-5 py-4">Rol</th>
-                                        <th className="px-5 py-4">Temsilci</th>
-                                        <th className="px-5 py-4">Yetki</th>
-                                        <th className="px-5 py-4">Durum</th>
-                                        <th className="px-5 py-4" />
+                                        <th className="w-[34%] px-4 py-3">Kullanıcı</th>
+                                        <th className="w-[19%] px-4 py-3">Rol</th>
+                                        <th className="hidden w-[14%] px-4 py-3 2xl:table-cell">Temsilci</th>
+                                        <th className="w-[15%] px-4 py-3">Yetki</th>
+                                        <th className="w-[12%] px-4 py-3">Durum</th>
+                                        <th className="w-[20%] px-4 py-3" />
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {isLoading && (
                                         <tr>
-                                            <td className="px-5 py-8 text-center text-slate-500" colSpan={6}>
+                                            <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
                                                 Kullanıcılar yükleniyor...
                                             </td>
                                         </tr>
@@ -392,287 +480,396 @@ export default function AdminUsers() {
 
                                     {!isLoading && filteredUsers.length === 0 && (
                                         <tr>
-                                            <td className="px-5 py-8 text-center text-slate-500" colSpan={6}>
+                                            <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
                                                 Bu filtreyle kullanıcı bulunamadı.
                                             </td>
                                         </tr>
                                     )}
 
-                                    {filteredUsers.map((user) => (
-                                        <tr key={user.id} className="border-t border-slate-100">
-                                            <td className="px-5 py-4">
-                                                <p className="font-semibold text-slate-950">{user.full_name}</p>
-                                                <p className="text-slate-500">{user.username}</p>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-700">
-                                                    {user.role_code}
-                                                </span>
-                                            </td>
-                                            <td className="px-5 py-4 text-slate-600">{user.temsilci_kodu || '-'}</td>
-                                            <td className="px-5 py-4 text-slate-600">
-                                                {(user.access?.length ?? 0)} izin / {(user.denied_access?.length ?? 0)} engel
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${user.aktif ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                                    {user.aktif ? 'Aktif' : 'Pasif'}
-                                                </span>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <div className="flex justify-end gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openClone(user)}
-                                                        className="rounded-xl border border-slate-200 px-4 py-2 font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                                                    >
-                                                        Kopyala
-                                                    </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => editUser(user)}
-                                                    className="rounded-xl border border-slate-200 px-4 py-2 font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
-                                                >
-                                                    Düzenle
-                                                </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
+                                    {filteredUsers.map((user) => {
+                                        const selected = isEditorOpen && form.id === user.id;
+
+                                        return (
+                                            <tr
+                                                key={user.id}
+                                                data-selected={selected ? 'true' : 'false'}
+                                                className={`border-t border-slate-100 transition ${selected ? 'bg-blue-50/70 shadow-[inset_3px_0_0_#2563eb]' : 'hover:bg-slate-50'}`}
+                                            >
+                                                <td className="px-4 py-3">
+                                                    <p className="truncate font-semibold text-slate-950">{user.full_name}</p>
+                                                    <p className="truncate text-xs text-slate-500">{user.username}</p>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className="inline-flex max-w-full rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                                                        <span className="truncate">{user.role_code}</span>
+                                                    </span>
+                                                </td>
+                                                <td className="hidden truncate px-4 py-3 text-slate-600 2xl:table-cell">
+                                                    {user.temsilci_kodu || '-'}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs text-slate-600">
+                                                    {(user.access?.length ?? 0)} izin
+                                                    <span className="block text-slate-400">{(user.denied_access?.length ?? 0)} engel</span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`rounded-md px-2 py-1 text-xs font-semibold ${user.aktif ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                                                        {user.aktif ? 'Aktif' : 'Pasif'}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div className="flex justify-end gap-1.5">
+                                                        <button
+                                                            type="button"
+                                                            title="Kullanıcıyı kopyala"
+                                                            aria-label="Kopyala"
+                                                            onClick={() => openClone(user)}
+                                                            className="inline-flex size-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 2xl:w-auto 2xl:px-2.5"
+                                                        >
+                                                            <Copy aria-hidden="true" className="size-3.5" />
+                                                            <span className="hidden 2xl:inline">Kopyala</span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            title="Kullanıcıyı düzenle"
+                                                            aria-label="Düzenle"
+                                                            onClick={() => editUser(user)}
+                                                            className="inline-flex size-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-white 2xl:w-auto 2xl:px-2.5"
+                                                        >
+                                                            <Pencil aria-hidden="true" className="size-3.5" />
+                                                            <span className="hidden 2xl:inline">Düzenle</span>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
                                 </tbody>
                             </table>
                         </div>
                     </div>
                 </div>
 
-                <form onSubmit={save} className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="flex items-start justify-between gap-3">
-                        <div>
-                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                {form.id ? 'Kullanıcı düzenle' : 'Yeni kullanıcı'}
-                            </p>
-                            <h2 className="mt-1 text-xl font-semibold text-slate-950">
-                                {form.full_name || 'Kullanıcı bilgileri'}
-                            </h2>
-                        </div>
-                        {form.id && (
-                            <button
-                                type="button"
-                                onClick={() => setForm(blank)}
-                                className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600"
-                            >
-                                Yeni
-                            </button>
-                        )}
-                    </div>
-
-                    {status.message && (
-                        <div className={`rounded-xl px-4 py-3 text-sm font-medium ${status.type === 'error' ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                            {status.message}
-                        </div>
-                    )}
-
-                    <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                        Kullanıcı adı
-                        <input
-                            required
-                            className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
-                            placeholder="ornek.kullanici"
-                            value={form.username}
-                            onChange={(event) => setForm({ ...form, username: event.target.value })}
+                {isEditorOpen ? (
+                    <div className="fixed inset-0 z-50 bg-slate-950/35 xl:sticky xl:top-4 xl:z-auto xl:h-[calc(100vh-18rem)] xl:min-h-[480px] xl:bg-transparent">
+                        <button
+                            type="button"
+                            aria-label="Kullanıcı editörünü kapat"
+                            onClick={closeEditor}
+                            className="absolute inset-0 xl:hidden"
                         />
-                    </label>
-
-                    <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                        Ad soyad
-                        <input
-                            required
-                            className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
-                            placeholder="Ad Soyad"
-                            value={form.full_name}
-                            onChange={(event) => setForm({ ...form, full_name: event.target.value })}
-                        />
-                    </label>
-
-                    <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                        Şifre
-                        <input
-                            className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
-                            type="password"
-                            placeholder={form.id ? 'Değiştirmek için yeni şifre girin' : 'İlk şifre'}
-                            value={form.password}
-                            onChange={(event) => setForm({ ...form, password: event.target.value })}
-                            required={!form.id}
-                        />
-                    </label>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                            Rol
-                            <select
-                                className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
-                                value={form.role_code}
-                                onChange={(event) => applyRoleDefaults(event.target.value)}
-                            >
-                                {data.roles.map((role) => (
-                                    <option key={role.code} value={role.code}>
-                                        {role.name}
-                                    </option>
-                                ))}
-                            </select>
-                            {selectedRoleIsB2B && (
-                                <span className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">
-                                    Bu rol sadece partner portalına giriş verir. Hangi bayi/çilingir kayıtlarını göreceği B2B Partner Kullanıcıları ekranından atanır.
-                                </span>
-                            )}
-                            <span className="text-xs font-medium text-slate-500">
-                                Rol seçilince varsayılan izinler otomatik işaretlenir. B2B rolleri şirket içi satış/stok/sipariş ekranlarını açmaz; partner bazlı entity yetkileri Partner Kullanıcıları ekranından yönetilir.
-                            </span>
-                        </label>
-
-                        <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                            Temsilci kodu
-                            <input
-                                className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
-                                placeholder="0003"
-                                value={form.temsilci_kodu ?? ''}
-                                onChange={(event) => setForm({ ...form, temsilci_kodu: event.target.value })}
-                            />
-                        </label>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                            <span>
-                                Aktif kullanıcı
-                                <small className="block font-normal text-slate-500">
-                                    Pasif kullanıcılar panele giriş yapamaz.
-                                </small>
-                            </span>
-                            <input
-                                type="checkbox"
-                                checked={form.aktif}
-                                onChange={(event) => setForm({ ...form, aktif: event.target.checked })}
-                            />
-                        </label>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                            <span>
-                                İlk girişte şifre değiştirsin
-                                <small className="block font-normal text-slate-500">
-                                    Kullanıcı sonraki girişte yeni şifre belirlemeye yönlendirilebilir.
-                                </small>
-                            </span>
-                            <input
-                                type="checkbox"
-                                checked={form.force_password_change}
-                                onChange={(event) => setForm({ ...form, force_password_change: event.target.checked })}
-                            />
-                        </label>
-                    </div>
-
-                    <div className="grid gap-3">
-                        <div className="flex items-center justify-between gap-2">
-                            <div>
-                                <p className="text-sm font-semibold text-slate-800">Kaynak yetkileri</p>
-                                <p className="text-xs text-slate-500">
-                                    {selectedRole?.name ?? form.role_code} rolü temel alınır; kullanıcı bazlı izin veya engel bu listeye uygulanır.
-                                </p>
-                            </div>
-                            <div className="flex gap-2">
-                                <button type="button" onClick={selectAll} className="text-xs font-semibold text-slate-700">
-                                    Tümüne izin ver
-                                </button>
+                        <form
+                            data-testid="admin-user-editor"
+                            aria-labelledby="admin-user-editor-title"
+                            aria-describedby="admin-user-editor-description"
+                            onSubmit={save}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Escape') {
+                                    event.stopPropagation();
+                                    closeEditor();
+                                }
+                            }}
+                            className="absolute inset-y-0 right-0 flex w-full min-w-0 flex-col overflow-hidden bg-white shadow-2xl sm:w-[460px] xl:relative xl:h-full xl:w-full xl:rounded-lg xl:border xl:border-slate-200 xl:shadow-sm"
+                        >
+                            <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                                <div className="min-w-0">
+                                    <p id="admin-user-editor-description" className="text-xs font-semibold uppercase text-slate-500">
+                                        {form.id ? 'Kullanıcı düzenle' : 'Yeni kullanıcı'}
+                                    </p>
+                                    <h2 id="admin-user-editor-title" className="mt-1 truncate text-lg font-semibold text-slate-950">
+                                        {form.full_name || 'Kullanıcı bilgileri'}
+                                    </h2>
+                                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                                        <span className="max-w-full truncate rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-600">
+                                            {form.username || 'Kullanıcı adı bekleniyor'}
+                                        </span>
+                                        <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-700">
+                                            {form.role_code}
+                                        </span>
+                                        <span className={`rounded-md px-2 py-1 font-semibold ${form.aktif ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                                            {form.aktif ? 'Aktif' : 'Pasif'}
+                                        </span>
+                                    </div>
+                                </div>
                                 <button
                                     type="button"
-                                    onClick={applyStrictAccess}
-                                    disabled={selectedRoleIsSuperAdmin}
-                                    className="text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:text-slate-300"
+                                    title="Editörü kapat"
+                                    aria-label="Editörü kapat"
+                                    onClick={closeEditor}
+                                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
                                 >
-                                    Sadece seçilenlere izin ver
+                                    <X aria-hidden="true" className="size-4" />
                                 </button>
-                                <button type="button" onClick={clearAccess} className="text-xs font-semibold text-slate-500">
-                                    Role bırak
-                                </button>
-                            </div>
-                        </div>
-                        <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
-                            Sadece seçilenlere izin ver aksiyonu, seçili kaynakları izin listesine alır ve diğer tüm aktif kaynakları kullanıcı bazlı engel listesine yazar.
-                        </p>
+                            </header>
 
-                        <div className="max-h-[34rem] overflow-auto rounded-xl border border-slate-200">
-                            {groupedResourceEntries.map(([groupName, resources]) => {
-                                const access = moduleAccessState(resources);
-                                const resourcesByType = groupResourcesByType(resources);
+                            <div
+                                data-testid="admin-user-editor-scroll"
+                                className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4"
+                            >
+                                {status.message && (
+                                    <div
+                                        role="status"
+                                        className={`rounded-lg px-3 py-2 text-sm font-medium ${status.type === 'error' ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}
+                                    >
+                                        {status.message}
+                                    </div>
+                                )}
 
-                                return (
-                                    <div key={groupName} className="border-b border-slate-100 last:border-b-0">
-                                        <div className="flex items-start justify-between gap-3 bg-slate-50 px-4 py-3">
-                                            <div>
-                                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                                    {groupName}
-                                                </p>
-                                                <p className="mt-1 text-[11px] font-medium text-slate-500">
-                                                    Durum: {access === 'all' ? 'Tüm modül açık' : access === 'partial' ? 'Kısmi erişim' : 'Modül kapalı'}
-                                                </p>
-                                            </div>
-                                            <label className="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-700">
-                                                Bu modüle erişim
-                                                <input
-                                                    type="checkbox"
-                                                    checked={access !== 'none'}
-                                                    onChange={(event) => setModuleAccess(groupName, resources, event.target.checked)}
-                                                />
-                                            </label>
-                                        </div>
+                                <section aria-labelledby="basic-info-heading" className="space-y-3 border-b border-slate-200 pb-5">
+                                    <h3 id="basic-info-heading" className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                        <UserRound aria-hidden="true" className="size-4 text-slate-500" />
+                                        Temel Bilgiler
+                                    </h3>
+                                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                                        <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                                            Kullanıcı adı
+                                            <input
+                                                required
+                                                className="h-10 rounded-lg border border-slate-200 px-3 font-normal outline-none transition focus:border-slate-400"
+                                                placeholder="ornek.kullanici"
+                                                value={form.username}
+                                                onChange={(event) => setForm({ ...form, username: event.target.value })}
+                                            />
+                                        </label>
+                                        <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                                            Ad soyad
+                                            <input
+                                                required
+                                                className="h-10 rounded-lg border border-slate-200 px-3 font-normal outline-none transition focus:border-slate-400"
+                                                placeholder="Ad Soyad"
+                                                value={form.full_name}
+                                                onChange={(event) => setForm({ ...form, full_name: event.target.value })}
+                                            />
+                                        </label>
+                                    </div>
+                                </section>
 
-                                        <div className="grid gap-3 p-3">
-                                            {typeOrder
-                                                .filter((type) => resourcesByType[type]?.length)
-                                                .map((type) => (
-                                                    <div key={`${groupName}-${type}`} className="rounded-xl border border-slate-100">
-                                                        <div className="border-b border-slate-100 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                                            {resourceTypeLabel(type)}
+                                <section aria-labelledby="role-status-heading" className="space-y-3 border-b border-slate-200 pb-5">
+                                    <h3 id="role-status-heading" className="text-sm font-semibold text-slate-900">Rol ve Durum</h3>
+                                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                                        <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                                            Rol
+                                            <select
+                                                className="h-10 rounded-lg border border-slate-200 bg-white px-3 font-normal outline-none transition focus:border-slate-400"
+                                                value={form.role_code}
+                                                onChange={(event) => applyRoleDefaults(event.target.value)}
+                                            >
+                                                {data.roles.map((role) => (
+                                                    <option key={role.code} value={role.code}>{role.name}</option>
+                                                ))}
+                                            </select>
+                                            <span className="text-xs font-normal leading-5 text-slate-500">
+                                                Rol seçilince varsayılan izinler otomatik işaretlenir. B2B rolleri şirket içi satış/stok/sipariş ekranlarını açmaz; partner bazlı entity yetkileri Partner Kullanıcıları ekranından yönetilir.
+                                            </span>
+                                        </label>
+                                        <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                                            Temsilci kodu
+                                            <input
+                                                className="h-10 rounded-lg border border-slate-200 px-3 font-normal outline-none transition focus:border-slate-400"
+                                                placeholder="0003"
+                                                value={form.temsilci_kodu ?? ''}
+                                                onChange={(event) => setForm({ ...form, temsilci_kodu: event.target.value })}
+                                            />
+                                        </label>
+                                    </div>
+                                    <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
+                                        <span>
+                                            Aktif kullanıcı
+                                            <small className="block font-normal text-slate-500">Pasif kullanıcılar panele giriş yapamaz.</small>
+                                        </span>
+                                        <input
+                                            type="checkbox"
+                                            className="size-4 accent-slate-950"
+                                            checked={form.aktif}
+                                            onChange={(event) => setForm({ ...form, aktif: event.target.checked })}
+                                        />
+                                    </label>
+                                </section>
+
+                                <section aria-labelledby="partner-link-heading" className="space-y-2 border-b border-slate-200 pb-5">
+                                    <h3 id="partner-link-heading" className="text-sm font-semibold text-slate-900">Partner / Usta Bağlantısı</h3>
+                                    <p className="text-xs leading-5 text-slate-500">
+                                        {selectedRoleIsB2B
+                                            ? 'Bu rol partner portalına giriş verir; bayi veya usta kapsamı Partner Kullanıcıları ekranında yönetilir.'
+                                            : 'Bu kullanıcı rolünde partner veya usta bağlantısı bulunmuyor.'}
+                                    </p>
+                                    {selectedRoleIsB2B && (
+                                        <a href="/panel/b2b/users" className="inline-flex text-xs font-semibold text-blue-700 hover:text-blue-900">
+                                            Partner Kullanıcılarını aç
+                                        </a>
+                                    )}
+                                </section>
+
+                                <section aria-labelledby="security-heading" className="space-y-3 border-b border-slate-200 pb-5">
+                                    <h3 id="security-heading" className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                        <KeyRound aria-hidden="true" className="size-4 text-slate-500" />
+                                        Güvenlik
+                                    </h3>
+                                    <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                                        Şifre
+                                        <input
+                                            className="h-10 rounded-lg border border-slate-200 px-3 font-normal outline-none transition focus:border-slate-400"
+                                            type="password"
+                                            placeholder={form.id ? 'Değiştirmek için yeni şifre girin' : 'İlk şifre'}
+                                            value={form.password}
+                                            onChange={(event) => setForm({ ...form, password: event.target.value })}
+                                            required={!form.id}
+                                        />
+                                    </label>
+                                    <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
+                                        <span>
+                                            İlk girişte şifre değiştirsin
+                                            <small className="block font-normal text-slate-500">Sonraki girişte yeni şifre belirleme ekranı açılır.</small>
+                                        </span>
+                                        <input
+                                            type="checkbox"
+                                            className="size-4 accent-slate-950"
+                                            checked={form.force_password_change}
+                                            onChange={(event) => setForm({ ...form, force_password_change: event.target.checked })}
+                                        />
+                                    </label>
+                                </section>
+
+                                <section aria-labelledby="permissions-heading" className="space-y-3 pb-1">
+                                    <div>
+                                        <h3 id="permissions-heading" className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                            <ShieldCheck aria-hidden="true" className="size-4 text-slate-500" />
+                                            İzinler
+                                        </h3>
+                                        <p className="mt-1 text-xs text-slate-500">
+                                            {selectedRole?.name ?? form.role_code} rolü temel alınır; kullanıcı kararları role uygulanır.
+                                        </p>
+                                    </div>
+                                    <label className="relative block">
+                                        <span className="sr-only">İzinlerde ara</span>
+                                        <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                                        <input
+                                            className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                                            placeholder="İzin adı veya kodu ara"
+                                            value={permissionQuery}
+                                            onChange={(event) => setPermissionQuery(event.target.value)}
+                                        />
+                                    </label>
+                                    <div className="flex flex-wrap gap-x-3 gap-y-2 text-xs font-semibold">
+                                        <button type="button" onClick={selectAll} className="text-slate-700 hover:text-slate-950">Tümüne izin ver</button>
+                                        <button
+                                            type="button"
+                                            onClick={applyStrictAccess}
+                                            disabled={selectedRoleIsSuperAdmin}
+                                            className="text-emerald-700 disabled:cursor-not-allowed disabled:text-slate-300"
+                                        >
+                                            Sadece seçilenlere izin ver
+                                        </button>
+                                        <button type="button" onClick={clearAccess} className="text-slate-500 hover:text-slate-800">Role bırak</button>
+                                    </div>
+                                    <div className="overflow-hidden rounded-lg border border-slate-200">
+                                        {filteredGroupedResourceEntries.length === 0 && (
+                                            <p className="px-3 py-6 text-center text-sm text-slate-500">Bu aramayla izin bulunamadı.</p>
+                                        )}
+                                        {filteredGroupedResourceEntries.map(([groupName, visibleResources, allResources]) => {
+                                            const access = moduleAccessState(allResources);
+                                            const resourcesByType = groupResourcesByType(visibleResources);
+
+                                            return (
+                                                <div key={groupName} className="border-b border-slate-200 last:border-b-0">
+                                                    <div className="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2.5">
+                                                        <div className="min-w-0">
+                                                            <p className="truncate text-xs font-semibold text-slate-700">{groupName}</p>
+                                                            <p className="text-xs text-slate-500">
+                                                                {access === 'all' ? 'Tümü açık' : access === 'partial' ? 'Kısmi erişim' : 'Kapalı'}
+                                                            </p>
                                                         </div>
-                                                        <div className="grid gap-1 p-2">
-                                                            {resourcesByType[type].map((resource) => (
-                                                                <div key={resource.code} className="grid gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_140px] sm:items-center">
-                                                                    <span className="min-w-0">
-                                                                        <span className="font-medium text-slate-800">{resource.name}</span>
-                                                                        <span className="ml-2 text-xs text-slate-400">{resource.code}</span>
-                                                                        <span className="mt-1 block text-xs text-slate-500">
-                                                                            Rol kararı: {roleAllowedResources.has(resource.code) ? 'izinli' : 'kapalı'} · Etkin durum: {effectiveAccess(resource.code) ? 'açık' : 'kapalı'}
-                                                                        </span>
-                                                                    </span>
-                                                                    <select
-                                                                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
-                                                                        value={accessState(resource.code)}
-                                                                        onChange={(event) => setAccessState(resource.code, event.target.value)}
-                                                                    >
-                                                                        <option value="inherit">Rol kararını kullan</option>
-                                                                        <option value="allow">İzin ver</option>
-                                                                        <option value="deny">Engelle</option>
-                                                                    </select>
+                                                        <label className="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-700">
+                                                            Bu modüle erişim
+                                                            <input
+                                                                type="checkbox"
+                                                                className="size-4 accent-slate-950"
+                                                                checked={access !== 'none'}
+                                                                onChange={(event) => setModuleAccess(groupName, allResources, event.target.checked)}
+                                                            />
+                                                        </label>
+                                                    </div>
+
+                                                    <div className="divide-y divide-slate-100">
+                                                        {typeOrder
+                                                            .filter((type) => resourcesByType[type]?.length)
+                                                            .map((type) => (
+                                                                <div key={`${groupName}-${type}`}>
+                                                                    <p className="bg-white px-3 pb-1 pt-2 text-xs font-semibold text-slate-400">
+                                                                        {resourceTypeLabel(type)}
+                                                                    </p>
+                                                                    {resourcesByType[type].map((resource) => (
+                                                                        <div key={resource.code} className="grid gap-2 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_132px] sm:items-center xl:grid-cols-1">
+                                                                            <span className="min-w-0">
+                                                                                <span className="block truncate font-medium text-slate-800">{resource.name}</span>
+                                                                                <span className="block truncate text-xs text-slate-400">{resource.code}</span>
+                                                                            </span>
+                                                                            <select
+                                                                                aria-label={`${resource.name} erişimi`}
+                                                                                className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
+                                                                                value={accessState(resource.code)}
+                                                                                onChange={(event) => setAccessState(resource.code, event.target.value)}
+                                                                            >
+                                                                                <option value="inherit">Rol kararını kullan</option>
+                                                                                <option value="allow">İzin ver</option>
+                                                                                <option value="deny">Engelle</option>
+                                                                            </select>
+                                                                        </div>
+                                                                    ))}
                                                                 </div>
                                                             ))}
-                                                        </div>
                                                     </div>
-                                                ))}
-                                        </div>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
-                                );
-                            })}
-                        </div>
-                    </div>
+                                </section>
+                            </div>
 
-                    <button
-                        className="rounded-xl bg-slate-950 px-4 py-3 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                        disabled={isSaving}
+                            <footer
+                                data-testid="admin-user-editor-actions"
+                                className="sticky bottom-0 z-10 flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3"
+                            >
+                                <span className={`text-xs font-medium ${isDirty ? 'text-amber-700' : 'text-slate-400'}`}>
+                                    {isDirty ? 'Kaydedilmemiş değişiklik var' : 'Değişiklik yok'}
+                                </span>
+                                <div className="flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={closeEditor}
+                                        className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                                    >
+                                        Vazgeç
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                        disabled={isSaving}
+                                    >
+                                        <Save aria-hidden="true" className="size-4" />
+                                        {isSaving ? 'Kaydediliyor...' : 'Kaydet'}
+                                    </button>
+                                </div>
+                            </footer>
+                        </form>
+                    </div>
+                ) : (
+                    <aside
+                        data-testid="admin-user-editor-empty"
+                        className="hidden rounded-lg border border-dashed border-slate-300 bg-white px-6 py-10 text-center xl:sticky xl:top-4 xl:block"
                     >
-                        {isSaving ? 'Kaydediliyor...' : 'Kullanıcıyı kaydet'}
-                    </button>
-                </form>
+                        <UserRound aria-hidden="true" className="mx-auto size-8 text-slate-300" />
+                        <p className="mt-3 text-sm font-semibold text-slate-800">Kullanıcı seçilmedi</p>
+                        <p className="mt-1 text-sm text-slate-500">Bir kullanıcıyı düzenleyin veya yeni kayıt açın.</p>
+                        <button
+                            type="button"
+                            onClick={openNewUser}
+                            className="mt-4 inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                        >
+                            <Plus aria-hidden="true" className="size-4" />
+                            Yeni kullanıcı
+                        </button>
+                    </aside>
+                )}
             </section>
 
             {cloneSource && (

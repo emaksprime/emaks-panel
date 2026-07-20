@@ -223,6 +223,48 @@ class AdminUserManagementTest extends TestCase
         $this->assertStringContainsString('rol fallback fazladan alan açamaz', $component);
     }
 
+    public function test_user_editor_uses_compact_inputs_and_only_multiline_fields_render_textarea(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
+
+        $this->assertStringContainsString('data-testid="admin-user-editor"', $component);
+        $this->assertStringContainsString('className="h-10 rounded-lg border border-slate-200', $component);
+        $this->assertStringContainsString('Temel Bilgiler', $component);
+        $this->assertStringContainsString('Rol ve Durum', $component);
+        $this->assertStringContainsString('Partner / Usta Bağlantısı', $component);
+        $this->assertStringContainsString('Güvenlik', $component);
+        $this->assertStringContainsString('İzinler', $component);
+        $this->assertStringNotContainsString('<textarea', $component);
+    }
+
+    public function test_user_editor_has_internal_scroll_sticky_actions_and_responsive_sheet(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
+
+        $this->assertStringContainsString('data-testid="admin-users-workspace"', $component);
+        $this->assertStringContainsString('data-testid="admin-users-list-panel"', $component);
+        $this->assertStringContainsString('data-testid="admin-user-editor-scroll"', $component);
+        $this->assertStringContainsString('flex-1 space-y-5 overflow-y-auto', $component);
+        $this->assertStringContainsString('data-testid="admin-user-editor-actions"', $component);
+        $this->assertStringContainsString('sticky bottom-0', $component);
+        $this->assertStringContainsString('fixed inset-0 z-50', $component);
+        $this->assertStringContainsString('sm:w-[460px]', $component);
+        $this->assertStringContainsString('overflow-x-auto', $component);
+    }
+
+    public function test_user_editor_save_payload_permissions_and_unsaved_warning_contract_remain_intact(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
+
+        $this->assertStringContainsString("apiRequest('/api/admin/users'", $component);
+        $this->assertStringContainsString('body: JSON.stringify(form)', $component);
+        $this->assertStringContainsString("window.confirm('Kaydedilmemiş değişiklikler silinsin mi?')", $component);
+        $this->assertStringContainsString('value={accessState(resource.code)}', $component);
+        $this->assertStringContainsString('onChange={(event) => setAccessState(resource.code, event.target.value)}', $component);
+        $this->assertStringContainsString('setFormBaseline(savedForm)', $component);
+        $this->assertStringContainsString('Kullanıcı kaydedildi ve yetkileri güncellendi.', $component);
+    }
+
     public function test_accounting_finance_resource_is_grouped_in_admin_users_response(): void
     {
         $admin = User::factory()->create(['role_code' => 'admin']);
