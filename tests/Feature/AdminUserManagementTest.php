@@ -14,6 +14,7 @@ use App\Models\UserAccess;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
@@ -343,18 +344,24 @@ class AdminUserManagementTest extends TestCase
         $admin = User::factory()->create(['role_code' => 'admin']);
         $dealer = $this->partner('DEALER-A', 'Filtre Bayi A', ['dealer']);
         $locksmith = $this->partner('LOCK-B', 'Filtre Çilingir B', ['locksmith']);
+        $multiCapabilityPartner = $this->partner('MULTI-C', 'Filtre Çoklu Partner C', ['dealer', 'locksmith']);
         $dealerOnly = User::factory()->create(['full_name' => 'Yalnız Bayi Kullanıcısı']);
         $multi = User::factory()->create(['full_name' => 'Bayi ve Çilingir Kullanıcısı']);
+        $activeLocksmith = User::factory()->create(['full_name' => 'Aktif Çilingir Kullanıcısı']);
+        $multiCapability = User::factory()->create(['full_name' => 'Çoklu Kabiliyet Kullanıcısı']);
         $unassigned = User::factory()->create(['full_name' => 'Atamasız Kullanıcı']);
 
         $this->profile($dealerOnly, $dealer, true);
         $this->profile($multi, $dealer, true);
         $this->profile($multi, $locksmith, false);
+        $this->profile($activeLocksmith, $locksmith, true);
+        $this->profile($multiCapability, $multiCapabilityPartner, true);
 
         $dealerIds = $this->filteredUserIds($admin, 'capabilities%5B%5D=dealer');
         $locksmithIds = $this->filteredUserIds($admin, 'capabilities%5B%5D=locksmith');
         $allIds = $this->filteredUserIds($admin, 'capabilities%5B%5D=dealer&capabilities%5B%5D=locksmith&capability_match=all');
-        $excludedIds = $this->filteredUserIds($admin, 'capabilities%5B%5D=locksmith&capability_match=exclude');
+        $excludedLocksmithIds = $this->filteredUserIds($admin, 'capabilities%5B%5D=locksmith&capability_match=exclude');
+        $excludedDealerIds = $this->filteredUserIds($admin, 'capabilities%5B%5D=dealer&capability_match=exclude');
         $multipleIds = $this->filteredUserIds($admin, 'partner_assignment=multiple');
         $inactiveIds = $this->filteredUserIds($admin, 'partner_assignment=inactive');
         $unassignedIds = $this->filteredUserIds($admin, 'partner_assignment=unassigned');
@@ -364,10 +371,14 @@ class AdminUserManagementTest extends TestCase
         $this->assertTrue($dealerIds->contains($dealerOnly->id), 'Dealer capability must include dealer-only user.');
         $this->assertTrue($dealerIds->contains($multi->id), 'Dealer capability must include multi-partner user.');
         $this->assertFalse($locksmithIds->contains($dealerOnly->id), 'Locksmith capability must exclude dealer-only user.');
-        $this->assertTrue($locksmithIds->contains($multi->id), 'Locksmith capability must include multi-partner user.');
-        $this->assertSame([$multi->id], $allIds->intersect([$dealerOnly->id, $multi->id, $unassigned->id])->values()->all(), 'All mode must match capabilities across memberships.');
-        $this->assertTrue($excludedIds->contains($dealerOnly->id), 'Exclude mode must retain dealer-only user.');
-        $this->assertFalse($excludedIds->contains($multi->id), 'Exclude mode must remove user with locksmith membership.');
+        $this->assertFalse($locksmithIds->contains($multi->id), 'Inactive locksmith membership must not satisfy the capability filter.');
+        $this->assertTrue($locksmithIds->contains($activeLocksmith->id), 'Active locksmith membership must satisfy the capability filter.');
+        $this->assertFalse($allIds->contains($multi->id), 'All mode must ignore inactive memberships.');
+        $this->assertTrue($allIds->contains($multiCapability->id), 'All mode must accept an active multi-capability partner.');
+        $this->assertTrue($excludedLocksmithIds->contains($dealerOnly->id), 'Exclude mode must retain dealer-only user.');
+        $this->assertTrue($excludedLocksmithIds->contains($multi->id), 'Inactive locksmith membership must not exclude the user.');
+        $this->assertFalse($excludedLocksmithIds->contains($activeLocksmith->id), 'Active locksmith membership must exclude the user.');
+        $this->assertFalse($excludedDealerIds->contains($dealerOnly->id), 'Active dealer membership must exclude the user.');
         $this->assertTrue($multipleIds->contains($multi->id), 'Multiple assignment filter must include multi-partner user.');
         $this->assertTrue($inactiveIds->contains($multi->id), 'Inactive membership filter must include matching user.');
         $this->assertTrue($unassignedIds->contains($unassigned->id), 'Unassigned filter must include unassigned user.');
@@ -375,6 +386,196 @@ class AdminUserManagementTest extends TestCase
         $this->assertTrue($specificIds->contains($dealerOnly->id), 'Specific partner filter must include dealer-only user.');
         $this->assertTrue($specificIds->contains($multi->id), 'Specific partner filter must include multi-partner user.');
         $this->assertTrue($searchIds->contains($multi->id), 'Partner name search must include linked user.');
+    }
+
+    public function test_capability_filter_any_uses_only_active_memberships(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $dealer = $this->partner('CAP-ANY-D', 'Capability Any Dealer', ['dealer']);
+        $locksmith = $this->partner('CAP-ANY-L', 'Capability Any Locksmith', ['locksmith']);
+        $user = User::factory()->create(['full_name' => 'Capability Any Active Dealer Inactive Locksmith']);
+
+        $this->profile($user, $dealer, true);
+        $this->profile($user, $locksmith, false);
+
+        $dealerPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['dealer'],
+            'capability_match' => 'any',
+        ]);
+        $locksmithPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['locksmith'],
+            'capability_match' => 'any',
+        ]);
+
+        $this->assertSame([$user->id], collect($dealerPayload['users'])->pluck('id')->all());
+        $this->assertSame(1, $dealerPayload['meta']['filtered_total']);
+        $this->assertSame([], collect($locksmithPayload['users'])->pluck('id')->all());
+        $this->assertSame(0, $locksmithPayload['meta']['filtered_total']);
+    }
+
+    public function test_capability_filter_all_ignores_inactive_memberships(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $dealer = $this->partner('CAP-ALL-D', 'Capability All Dealer', ['dealer']);
+        $locksmith = $this->partner('CAP-ALL-L', 'Capability All Locksmith', ['locksmith']);
+        $user = User::factory()->create(['full_name' => 'Capability All Inactive Locksmith']);
+
+        $this->profile($user, $dealer, true);
+        $this->profile($user, $locksmith, false);
+
+        $payload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['dealer', 'locksmith'],
+            'capability_match' => 'all',
+        ]);
+
+        $this->assertSame([], collect($payload['users'])->pluck('id')->all());
+        $this->assertSame(0, $payload['meta']['filtered_total']);
+    }
+
+    public function test_capability_filter_exclude_ignores_inactive_memberships(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $dealer = $this->partner('CAP-EX-D', 'Capability Exclude Dealer', ['dealer']);
+        $locksmith = $this->partner('CAP-EX-L', 'Capability Exclude Locksmith', ['locksmith']);
+        $user = User::factory()->create(['full_name' => 'Capability Exclude Inactive Locksmith']);
+
+        $this->profile($user, $dealer, true);
+        $this->profile($user, $locksmith, false);
+
+        $locksmithPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['locksmith'],
+            'capability_match' => 'exclude',
+        ]);
+        $dealerPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['dealer'],
+            'capability_match' => 'exclude',
+        ]);
+
+        $this->assertSame([$user->id], collect($locksmithPayload['users'])->pluck('id')->all());
+        $this->assertSame(1, $locksmithPayload['meta']['filtered_total']);
+        $this->assertSame([], collect($dealerPayload['users'])->pluck('id')->all());
+        $this->assertSame(0, $dealerPayload['meta']['filtered_total']);
+    }
+
+    public function test_inactive_membership_filter_remains_independent_from_capability_filter(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $locksmith = $this->partner('INACTIVE-MEMBER-L', 'Inactive Membership Locksmith', ['locksmith']);
+        $user = User::factory()->create(['full_name' => 'Inactive Membership Filter User']);
+
+        $this->profile($user, $locksmith, false);
+
+        $inactivePayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'partner_assignment' => 'inactive',
+        ]);
+        $combinedPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'partner_assignment' => 'inactive',
+            'capabilities' => ['locksmith'],
+        ]);
+
+        $this->assertSame([$user->id], collect($inactivePayload['users'])->pluck('id')->all());
+        $this->assertSame(1, $inactivePayload['meta']['filtered_total']);
+        $this->assertSame([], collect($combinedPayload['users'])->pluck('id')->all());
+        $this->assertSame(0, $combinedPayload['meta']['filtered_total']);
+    }
+
+    public function test_capability_filter_all_accepts_one_or_multiple_active_memberships(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $dealer = $this->partner('CAP-VALID-D', 'Capability Valid Dealer', ['dealer']);
+        $locksmith = $this->partner('CAP-VALID-L', 'Capability Valid Locksmith', ['locksmith']);
+        $multiCapability = $this->partner('CAP-VALID-M', 'Capability Valid Multi', ['dealer', 'locksmith']);
+        $acrossPartners = User::factory()->create(['full_name' => 'Capability Valid Across Partners']);
+        $singlePartner = User::factory()->create(['full_name' => 'Capability Valid Single Partner']);
+
+        $this->profile($acrossPartners, $dealer, true);
+        $this->profile($acrossPartners, $locksmith, true);
+        $this->profile($singlePartner, $multiCapability, true);
+
+        $payload = $this->filteredUserPayload($admin, [
+            'search' => 'Capability Valid',
+            'capabilities' => ['dealer', 'locksmith'],
+            'capability_match' => 'all',
+        ]);
+
+        $this->assertEqualsCanonicalizing(
+            [$acrossPartners->id, $singlePartner->id],
+            collect($payload['users'])->pluck('id')->all(),
+        );
+        $this->assertSame(2, $payload['meta']['filtered_total']);
+    }
+
+    public function test_capability_filter_ignores_memberships_to_inactive_partners(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $locksmith = $this->partner('CAP-INACTIVE-P', 'Capability Inactive Partner', ['locksmith']);
+        $locksmith->update(['active' => false]);
+        $user = User::factory()->create(['full_name' => 'Capability Inactive Partner User']);
+
+        $this->profile($user, $locksmith, true);
+
+        $includedPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['locksmith'],
+        ]);
+        $excludedPayload = $this->filteredUserPayload($admin, [
+            'search' => $user->full_name,
+            'capabilities' => ['locksmith'],
+            'capability_match' => 'exclude',
+        ]);
+
+        $this->assertSame([], collect($includedPayload['users'])->pluck('id')->all());
+        $this->assertSame(0, $includedPayload['meta']['filtered_total']);
+        $this->assertSame([$user->id], collect($excludedPayload['users'])->pluck('id')->all());
+        $this->assertSame(1, $excludedPayload['meta']['filtered_total']);
+    }
+
+    public function test_capability_filter_query_count_is_bounded_as_results_grow(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $dealer = $this->partner('CAP-PERF-D', 'Capability Performance Dealer', ['dealer']);
+        $locksmith = $this->partner('CAP-PERF-L', 'Capability Performance Locksmith', ['locksmith']);
+
+        foreach (range(1, 5) as $index) {
+            $user = User::factory()->create(['full_name' => sprintf('Capability Performance User %02d', $index)]);
+            $this->profile($user, $dealer, true);
+            $this->profile($user, $locksmith, $index % 2 === 0);
+        }
+
+        $query = [
+            'search' => 'Capability Performance User',
+            'capabilities' => ['dealer'],
+            'per_page' => 100,
+        ];
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $fivePayload = $this->filteredUserPayload($admin, $query);
+        $fiveQueryCount = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        foreach (range(6, 20) as $index) {
+            $user = User::factory()->create(['full_name' => sprintf('Capability Performance User %02d', $index)]);
+            $this->profile($user, $dealer, true);
+            $this->profile($user, $locksmith, $index % 2 === 0);
+        }
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $twentyPayload = $this->filteredUserPayload($admin, $query);
+        $twentyQueryCount = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        $this->assertSame(5, $fivePayload['meta']['filtered_total']);
+        $this->assertSame(20, $twentyPayload['meta']['filtered_total']);
+        $this->assertLessThanOrEqual($fiveQueryCount + 1, $twentyQueryCount);
     }
 
     public function test_admin_user_filter_does_not_expose_hidden_partner_memberships(): void
@@ -412,6 +613,16 @@ class AdminUserManagementTest extends TestCase
         $this->assertSame([$visible->id], collect($payload['partners'])->pluck('id')->all());
         $this->assertSame([$visible->id], collect($targetPayload['partner_memberships'])->pluck('partner_id')->all());
         $this->assertStringNotContainsString('Gizli Partner', json_encode($payload, JSON_UNESCAPED_UNICODE));
+
+        $filteredPayload = $this->filteredUserPayload($scopedAdmin, [
+            'search' => $target->full_name,
+            'capabilities' => ['locksmith'],
+        ]);
+
+        $this->assertSame([], collect($filteredPayload['users'])->pluck('id')->all());
+        $this->assertSame(0, $filteredPayload['meta']['filtered_total']);
+        $this->assertStringNotContainsString('Gizli Partner', json_encode($filteredPayload, JSON_UNESCAPED_UNICODE));
+        $this->assertStringNotContainsString('HIDDEN', json_encode($filteredPayload, JSON_UNESCAPED_UNICODE));
 
         $this->actingAs($scopedAdmin)
             ->getJson('/api/admin/users?partner_id='.$hidden->id)
@@ -554,5 +765,17 @@ class AdminUserManagementTest extends TestCase
             ->assertOk()
             ->json('users'))
             ->pluck('id');
+    }
+
+    /**
+     * @param  array<string, mixed>  $query
+     * @return array<string, mixed>
+     */
+    private function filteredUserPayload(User $admin, array $query): array
+    {
+        return $this->actingAs($admin)
+            ->getJson('/api/admin/users?'.http_build_query($query))
+            ->assertOk()
+            ->json();
     }
 }

@@ -389,9 +389,12 @@ class AdminController extends Controller
 
         $profileHasCapabilities = function (Builder $profiles, array $required) use ($visiblePartnerIds): void {
             $profiles
+                ->where('active', true)
                 ->whereIn('partner_id', $visiblePartnerIds)
-                ->whereHas('partner.activeCapabilities', fn (Builder $capabilities) => $capabilities
-                    ->whereIn('capability', $required));
+                ->whereHas('partner', fn (Builder $partner) => $partner
+                    ->where('active', true)
+                    ->whereHas('activeCapabilities', fn (Builder $capabilities) => $capabilities
+                        ->whereIn('capability', $required)));
         };
 
         if ($capabilityMatch === 'exclude') {
