@@ -377,6 +377,34 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
     }
 
+    public function test_ops_message_is_blocked_when_ops_whatsapp_false_and_ops_sms_is_never_planned(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'appointment_proposed_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+        ]);
+        $this->activateManualE2EFixture(['ops_whatsapp_enabled' => false]);
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-OPS-DISABLED-UNIT']);
+
+        $summary = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+            $request,
+            'appointment_proposed_ops',
+            'ops',
+            ['next_action_text' => 'OPS randevu önerisini incelemeli.'],
+            $actor,
+        );
+
+        $this->assertSame(0, $summary['queued']);
+        $this->assertSame(1, $summary['suppressed']);
+        $this->assertSame('channel_policy_disabled', $summary['blockers'][0]['code']);
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'recipient_role' => 'ops',
+        ]);
+        Http::assertNothingSent();
+    }
+
     public function test_assignment_offer_current_modal_path_creates_technician_whatsapp_sms_dispatches_with_manual_e2e_metadata(): void
     {
         Http::fake();
@@ -391,6 +419,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
         config()->set('services.partner_portal.public_url', 'http://10.0.28.64:8000');
         $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
+        $this->assertFalse(app(TechnicalServiceMessagingSettingsService::class)->payload()['global']['ops_whatsapp_enabled']);
         $technician = $this->technician([
             'name' => 'Test Usta',
             'phone' => '0546 764 74 28',

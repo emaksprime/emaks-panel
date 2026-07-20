@@ -1239,6 +1239,25 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_nac_manual_e2e_rejects_non_allowlisted_target_before_provider_call(): void
+    {
+        Http::fake();
+        $dispatch = $this->enqueueDispatch([
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'technician',
+            'target_phone' => '05321112233',
+        ]);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)
+            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905467647428']);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $result['status']);
+        $this->assertSame('allowlist_blocked', $dispatch->fresh()->last_error_code);
+        $this->assertFalse((bool) $dispatch->fresh()->provider_send_attempted);
+        Http::assertNothingSent();
+    }
+
     public function test_provider_router_blocks_manual_e2e_when_real_send_disabled(): void
     {
         Http::fake();
@@ -1484,6 +1503,36 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'recipient_role' => 'customer',
             'target_phone' => '05551112233',
             'payload' => ['body' => 'PR88 manual E2E allowlist dışı hedef mesajı.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'manual_e2e_run_id' => $global['manual_e2e_active_run_id'],
+            ],
+        ]);
+
+        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
+            $dispatch,
+            noExternal: false,
+            allowlistedPhones: ['905372081633', '905467647428'],
+            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
+        );
+
+        $this->assertSame('manual_e2e_target_not_allowlisted', $result['provider_status']);
+        Http::assertNothingSent();
+    }
+
+    public function test_evo_manual_e2e_rejects_non_allowlisted_target_at_provider_router(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueDispatch([
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_phone' => '05551112233',
+            'payload' => ['body' => 'PR88 Manual E2E teknisyen WhatsApp mesajı.'],
             'metadata' => [
                 'test_smoke' => true,
                 'manual_e2e' => true,

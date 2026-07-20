@@ -132,7 +132,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
 
         $codes = collect($response->json('manual_e2e_readiness.blockers'))->pluck('code');
         $this->assertContains('manual_e2e_allowlist_invalid', $codes);
-        $this->assertContains('manual_e2e_ops_target_invalid', $codes);
+        $this->assertNotContains('manual_e2e_ops_target_invalid', $codes);
         $this->assertContains('messaging_disabled', $codes);
         $this->assertContains('evo_not_ready', $codes);
         $this->assertContains('nac_not_ready', $codes);
@@ -172,7 +172,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ->assertJsonPath('messaging_settings.global.real_send_enabled', true)
             ->assertJsonPath('messaging_settings.global.queue_paused', false)
             ->assertJsonPath('messaging_settings.global.test_mode_enabled', false)
-            ->assertJsonPath('messaging_settings.global.ops_whatsapp_enabled', true)
+            ->assertJsonPath('messaging_settings.global.ops_whatsapp_enabled', false)
             ->assertJsonPath('messaging_settings.readiness.queue_ready', true)
             ->assertJsonPath('messaging_settings.readiness.can_send_real', true)
             ->json('messaging_settings');
@@ -194,6 +194,53 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ->assertJsonPath('manual_e2e_readiness.eligible', false)
             ->assertJsonPath('manual_e2e_readiness.active_run_id', $runId);
         $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
+        Http::assertNothingSent();
+    }
+
+    public function test_technician_only_manual_e2e_starts_with_ops_whatsapp_false(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+        $settings->update([
+            'ops_whatsapp_enabled' => false,
+            'ops_whatsapp_phone' => null,
+        ]);
+
+        $readiness = $settings->manualE2EReadiness();
+        $this->assertTrue($readiness['eligible']);
+        $this->assertNotContains('manual_e2e_ops_target_invalid', collect($readiness['blockers'])->pluck('code')->all());
+
+        $payload = $settings->enableManualE2E();
+
+        $this->assertTrue($payload['global']['manual_e2e_enabled']);
+        $this->assertTrue($payload['global']['real_send_enabled']);
+        $this->assertFalse($payload['global']['queue_paused']);
+        $this->assertFalse($payload['global']['ops_whatsapp_enabled']);
+        $this->assertNotNull($payload['manual_e2e']['worker_command']);
+        Http::assertNothingSent();
+    }
+
+    public function test_ops_enabled_manual_e2e_preserves_ops_setting_and_requires_allowlisted_target(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+        $settings->update(['ops_whatsapp_enabled' => true]);
+
+        $this->assertTrue($settings->manualE2EReadiness()['eligible']);
+        $payload = $settings->enableManualE2E();
+        $this->assertTrue($payload['global']['ops_whatsapp_enabled']);
+
+        $settings->freezeManualE2E();
+        $settings->update([
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '905551112233',
+        ]);
+
+        $readiness = $settings->manualE2EReadiness();
+        $this->assertFalse($readiness['eligible']);
+        $this->assertContains('manual_e2e_ops_target_invalid', collect($readiness['blockers'])->pluck('code')->all());
         Http::assertNothingSent();
     }
 

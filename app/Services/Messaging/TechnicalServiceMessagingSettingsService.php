@@ -695,7 +695,6 @@ class TechnicalServiceMessagingSettingsService
                     'real_send_enabled' => true,
                     'test_mode_enabled' => false,
                     'queue_paused' => false,
-                    'ops_whatsapp_enabled' => true,
                     'manual_e2e_active_run_id' => $runId,
                     'manual_e2e_started_at' => $startedAt->toIso8601String(),
                     'manual_e2e_created_after' => $startedAt->toIso8601String(),
@@ -1447,7 +1446,8 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $opsPhone = $this->normalizePhone((string) ($settings['ops_whatsapp_phone'] ?? ''));
-        if (! $this->validPhone($opsPhone) || ! in_array($opsPhone, $allowlist, true)) {
+        if ((bool) ($settings['ops_whatsapp_enabled'] ?? false)
+            && (! $this->validPhone($opsPhone) || ! in_array($opsPhone, $allowlist, true))) {
             $blockers[] = ['code' => 'manual_e2e_ops_target_invalid', 'message' => 'Manual E2E için geçerli OPS telefonu allowlist içinde olmalı.'];
         }
 
@@ -1510,10 +1510,6 @@ class TechnicalServiceMessagingSettingsService
         if (! (bool) ($settings['queue_paused'] ?? true)) {
             $blockers[] = ['code' => 'manual_e2e_queue_not_frozen', 'message' => 'Kuyruk duraklatılmamış. Yeni run öncesinde gönderimler dondurulmalı.'];
         }
-        if ((bool) ($settings['ops_whatsapp_enabled'] ?? false)) {
-            $blockers[] = ['code' => 'manual_e2e_ops_not_frozen', 'message' => 'OPS WhatsApp açık. Yeni run öncesinde gönderimler dondurulmalı.'];
-        }
-
         $portalOrigins = $this->portalOriginReadiness($settings);
         if (! (bool) $portalOrigins['manual_e2e']['ready'] && ! (bool) $portalOrigins['live_public']['ready']) {
             $blockers[] = [
