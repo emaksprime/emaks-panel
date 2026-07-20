@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy, KeyRound, Pencil, Plus, Save, Search, ShieldCheck, UserRound, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Copy, KeyRound, Pencil, Plus, Save, Search, ShieldCheck, UserRound, X } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
 import { AdminFrame } from './AdminFrame.jsx';
 
@@ -81,6 +81,53 @@ const b2bRoleCodes = new Set([
     'b2b_seller',
 ]);
 
+const capabilityLabels = {
+    dealer: 'Bayi',
+    locksmith: 'Çilingir',
+    manufacturer: 'Üretici',
+    seller: 'Satıcı',
+};
+
+const partnerAssignmentLabels = {
+    assigned: 'Partner atanmış',
+    unassigned: 'Partner atanmamış',
+    multiple: 'Birden fazla partner',
+    inactive: 'Pasif üyeliği bulunan',
+};
+
+const capabilityMatchLabels = {
+    any: 'Dahil',
+    all: 'Tümü',
+    exclude: 'Hariç',
+};
+
+const defaultFilters = {
+    search: '',
+    active: '',
+    role_code: '',
+    partner_assignment: '',
+    capabilities: [],
+    capability_match: 'any',
+    partner_id: '',
+    page: 1,
+};
+
+function adminUsersUrl(filters) {
+    const params = new URLSearchParams();
+
+    Object.entries(filters).forEach(([key, value]) => {
+        if (key === 'capabilities') {
+            value.forEach((capability) => params.append('capabilities[]', capability));
+        } else if (value !== '' && value !== null && value !== undefined) {
+            params.set(key, String(value));
+        }
+    });
+
+    params.set('per_page', '100');
+
+    return `/api/admin/users?${params.toString()}`;
+}
+
 function resourceTypeLabel(type) {
     return typeLabels[type] ?? 'Diğer izinler';
 }
@@ -119,11 +166,20 @@ function comparableForm(value) {
 }
 
 export default function AdminUsers() {
-    const [data, setData] = useState({ users: [], roles: [], resources: [], rolePermissions: {} });
+    const [data, setData] = useState({
+        users: [],
+        roles: [],
+        resources: [],
+        rolePermissions: {},
+        partners: [],
+        meta: { page: 1, last_page: 1, filtered_total: 0, total: 0 },
+    });
     const [form, setForm] = useState(blank);
     const [formBaseline, setFormBaseline] = useState(blank);
     const [isEditorOpen, setIsEditorOpen] = useState(false);
-    const [query, setQuery] = useState('');
+    const [filters, setFilters] = useState(defaultFilters);
+    const [partnerQuery, setPartnerQuery] = useState('');
+    const [reloadKey, setReloadKey] = useState(0);
     const [permissionQuery, setPermissionQuery] = useState('');
     const [status, setStatus] = useState({ type: 'idle', message: '' });
     const [isLoading, setIsLoading] = useState(true);
@@ -132,32 +188,64 @@ export default function AdminUsers() {
     const [cloneForm, setCloneForm] = useState(cloneBlank);
     const [isCloning, setIsCloning] = useState(false);
 
-    const load = async () => {
-        setIsLoading(true);
-        try {
-            const next = await apiRequest('/api/admin/users');
-            setData(next);
-        } catch (error) {
-            setStatus({ type: 'error', message: error.message });
-        } finally {
-            setIsLoading(false);
-        }
+    useEffect(() => {
+        const controller = new AbortController();
+        const delay = filters.search.trim() === '' ? 0 : 250;
+        const timeout = window.setTimeout(async () => {
+            setIsLoading(true);
+
+            try {
+                const next = await apiRequest(adminUsersUrl(filters), { signal: controller.signal });
+                setData(next);
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    setStatus({ type: 'error', message: error.message });
+                }
+            } finally {
+                if (!controller.signal.aborted) {
+                    setIsLoading(false);
+                }
+            }
+        }, delay);
+
+        return () => {
+            window.clearTimeout(timeout);
+            controller.abort();
+        };
+    }, [filters, reloadKey]);
+
+    const filteredUsers = data.users;
+    const filteredPartnerOptions = data.partners.filter((partner) => [partner.display_name, partner.partner_code]
+        .join(' ')
+        .toLocaleLowerCase('tr-TR')
+        .includes(partnerQuery.trim().toLocaleLowerCase('tr-TR')));
+    const hasActiveFilters = Boolean(
+        filters.search ||
+        filters.active ||
+        filters.role_code ||
+        filters.partner_assignment ||
+        filters.capabilities.length ||
+        filters.partner_id,
+    );
+
+    const updateFilter = (key, value) => {
+        setFilters((current) => ({ ...current, [key]: value, page: 1 }));
     };
 
-    useEffect(() => {
-        load();
-    }, []);
+    const toggleCapability = (capability) => {
+        setFilters((current) => ({
+            ...current,
+            capabilities: current.capabilities.includes(capability)
+                ? current.capabilities.filter((item) => item !== capability)
+                : [...current.capabilities, capability],
+            page: 1,
+        }));
+    };
 
-    const filteredUsers = data.users.filter((user) => {
-        const haystack = [
-            user.full_name,
-            user.username,
-            user.role_code,
-            user.temsilci_kodu,
-        ].join(' ').toLowerCase();
-
-        return haystack.includes(query.toLowerCase());
-    });
+    const clearFilters = () => {
+        setFilters(defaultFilters);
+        setPartnerQuery('');
+    };
 
     const groupedResources = groupResources(data.resources);
     const groupedResourceEntries = Object.entries(groupedResources).sort(
@@ -244,6 +332,7 @@ export default function AdminUsers() {
             const savedForm = savedUser ? userToForm(savedUser) : blank;
             setForm(savedForm);
             setFormBaseline(savedForm);
+            setReloadKey((current) => current + 1);
             setStatus({
                 type: 'success',
                 message: 'Kullanıcı kaydedildi ve yetkileri güncellendi.',
@@ -283,6 +372,7 @@ export default function AdminUsers() {
                 body: JSON.stringify(cloneForm),
             });
             setData(next);
+            setReloadKey((current) => current + 1);
             closeClone();
             setStatus({
                 type: 'success',
@@ -428,32 +518,150 @@ export default function AdminUsers() {
                     className="min-w-0 space-y-3 xl:max-h-[calc(100vh-18rem)] xl:overflow-y-auto xl:pr-1"
                 >
                     <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                                 <p className="text-xs font-semibold uppercase text-slate-500">Panel kullanıcıları</p>
-                                <h2 className="mt-1 text-lg font-semibold text-slate-950">{data.users.length} kayıt</h2>
+                                <h2 className="mt-1 text-lg font-semibold text-slate-950">
+                                    {data.meta.filtered_total} / {data.meta.total} kayıt
+                                </h2>
                             </div>
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                <label className="relative block min-w-0 sm:w-72">
-                                    <span className="sr-only">Kullanıcı ara</span>
-                                    <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                                    <input
-                                        className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
-                                        placeholder="Kullanıcı, rol veya temsilci ara"
-                                        value={query}
-                                        onChange={(event) => setQuery(event.target.value)}
-                                    />
-                                </label>
-                                <button
-                                    type="button"
-                                    onClick={openNewUser}
-                                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                            <button
+                                type="button"
+                                onClick={openNewUser}
+                                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                            >
+                                <Plus aria-hidden="true" className="size-4" />
+                                Yeni kullanıcı
+                            </button>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2 2xl:grid-cols-4">
+                            <label className="relative block min-w-0 sm:col-span-2">
+                                <span className="sr-only">Kullanıcı veya partner ara</span>
+                                <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                                <input
+                                    className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                                    placeholder="Ad, kullanıcı, temsilci veya partner ara"
+                                    value={filters.search}
+                                    onChange={(event) => updateFilter('search', event.target.value)}
+                                />
+                            </label>
+                            <label className="grid gap-1 text-xs font-semibold text-slate-500">
+                                Hesap durumu
+                                <select
+                                    className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+                                    value={filters.active}
+                                    onChange={(event) => updateFilter('active', event.target.value)}
                                 >
-                                    <Plus aria-hidden="true" className="size-4" />
-                                    Yeni kullanıcı
-                                </button>
+                                    <option value="">Tümü</option>
+                                    <option value="active">Aktif</option>
+                                    <option value="inactive">Pasif</option>
+                                </select>
+                            </label>
+                            <label className="grid gap-1 text-xs font-semibold text-slate-500">
+                                Temel rol
+                                <select
+                                    className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+                                    value={filters.role_code}
+                                    onChange={(event) => updateFilter('role_code', event.target.value)}
+                                >
+                                    <option value="">Tüm roller</option>
+                                    {data.roles.map((role) => (
+                                        <option key={role.code} value={role.code}>{role.name}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="grid gap-1 text-xs font-semibold text-slate-500">
+                                Partner ataması
+                                <select
+                                    className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+                                    value={filters.partner_assignment}
+                                    onChange={(event) => updateFilter('partner_assignment', event.target.value)}
+                                >
+                                    <option value="">Tümü</option>
+                                    {Object.entries(partnerAssignmentLabels).map(([value, label]) => (
+                                        <option key={value} value={value}>{label}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="grid gap-1 text-xs font-semibold text-slate-500">
+                                Partner ara
+                                <input
+                                    className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700"
+                                    placeholder="Ad veya kod"
+                                    value={partnerQuery}
+                                    onChange={(event) => setPartnerQuery(event.target.value)}
+                                />
+                            </label>
+                            <label className="grid gap-1 text-xs font-semibold text-slate-500 sm:col-span-2">
+                                Belirli partner
+                                <select
+                                    className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+                                    value={filters.partner_id}
+                                    onChange={(event) => updateFilter('partner_id', event.target.value)}
+                                >
+                                    <option value="">Tüm görünür partnerler</option>
+                                    {filteredPartnerOptions.map((partner) => (
+                                        <option key={partner.id} value={partner.id}>
+                                            {partner.partner_code} — {partner.display_name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                        </div>
+
+                        <div className="mt-3 flex flex-col gap-2 border-t border-slate-100 pt-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
+                            <div className="flex flex-wrap items-center gap-1.5" aria-label="Partner kabiliyeti filtresi">
+                                {Object.entries(capabilityLabels).map(([capability, label]) => {
+                                    const active = filters.capabilities.includes(capability);
+
+                                    return (
+                                        <button
+                                            key={capability}
+                                            type="button"
+                                            aria-pressed={active}
+                                            onClick={() => toggleCapability(capability)}
+                                            className={`h-8 rounded-lg border px-2.5 text-xs font-semibold transition ${active ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400'}`}
+                                        >
+                                            {label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-semibold text-slate-500">Eşleşme</span>
+                                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                                    {Object.entries(capabilityMatchLabels).map(([value, label]) => (
+                                        <button
+                                            key={value}
+                                            type="button"
+                                            onClick={() => updateFilter('capability_match', value)}
+                                            className={`h-7 rounded-md px-2 text-xs font-semibold transition ${filters.capability_match === value ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500'}`}
+                                        >
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
                         </div>
+
+                        {hasActiveFilters && (
+                            <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-3">
+                                {filters.search && <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-600">Arama: {filters.search}</span>}
+                                {filters.active && <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-600">Durum: {filters.active === 'active' ? 'Aktif' : 'Pasif'}</span>}
+                                {filters.role_code && <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-600">Rol: {filters.role_code}</span>}
+                                {filters.partner_assignment && <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-600">{partnerAssignmentLabels[filters.partner_assignment]}</span>}
+                                {filters.capabilities.map((capability) => (
+                                    <span key={capability} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
+                                        {capabilityLabels[capability]}
+                                    </span>
+                                ))}
+                                <button type="button" onClick={clearFilters} className="ml-auto inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">
+                                    <X aria-hidden="true" className="size-3.5" />
+                                    Filtreleri temizle
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -498,6 +706,27 @@ export default function AdminUsers() {
                                                 <td className="px-4 py-3">
                                                     <p className="truncate font-semibold text-slate-950">{user.full_name}</p>
                                                     <p className="truncate text-xs text-slate-500">{user.username}</p>
+                                                    {(user.partner_memberships?.length ?? 0) > 0 && (
+                                                        <div className="mt-1.5 flex min-w-0 flex-wrap gap-1" aria-label="Partner Atamaları">
+                                                            {user.partner_memberships.slice(0, 2).map((membership) => (
+                                                                <span
+                                                                    key={membership.id}
+                                                                    title={`${membership.partner_code} — ${membership.partner_name}`}
+                                                                    className={`inline-flex max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${membership.active ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-500'}`}
+                                                                >
+                                                                    <span className="max-w-28 truncate">{membership.partner_name}</span>
+                                                                    <span className="shrink-0 text-[10px] opacity-70">
+                                                                        {membership.capabilities.map((capability) => capabilityLabels[capability] ?? capability).join('/')}
+                                                                    </span>
+                                                                </span>
+                                                            ))}
+                                                            {user.partner_memberships.length > 2 && (
+                                                                <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
+                                                                    +{user.partner_memberships.length - 2} daha
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    )}
                                                 </td>
                                                 <td className="px-4 py-3">
                                                     <span className="inline-flex max-w-full rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
@@ -546,6 +775,33 @@ export default function AdminUsers() {
                                 </tbody>
                             </table>
                         </div>
+                        {data.meta.last_page > 1 && (
+                            <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs text-slate-500">
+                                <span>Sayfa {data.meta.page} / {data.meta.last_page}</span>
+                                <div className="flex gap-1.5">
+                                    <button
+                                        type="button"
+                                        title="Önceki sayfa"
+                                        aria-label="Önceki sayfa"
+                                        disabled={data.meta.page <= 1}
+                                        onClick={() => setFilters((current) => ({ ...current, page: current.page - 1 }))}
+                                        className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40"
+                                    >
+                                        <ChevronLeft aria-hidden="true" className="size-4" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        title="Sonraki sayfa"
+                                        aria-label="Sonraki sayfa"
+                                        disabled={data.meta.page >= data.meta.last_page}
+                                        onClick={() => setFilters((current) => ({ ...current, page: current.page + 1 }))}
+                                        className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40"
+                                    >
+                                        <ChevronRight aria-hidden="true" className="size-4" />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -585,8 +841,8 @@ export default function AdminUsers() {
                                         <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-700">
                                             {form.role_code}
                                         </span>
-                                        <span className={`rounded-md px-2 py-1 font-semibold ${form.aktif ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                            {form.aktif ? 'Aktif' : 'Pasif'}
+                                        <span className={`rounded-md border px-2 py-1 font-semibold ${form.aktif ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                                            Hesap: {form.aktif ? 'Aktif' : 'Pasif'}
                                         </span>
                                     </div>
                                 </div>
@@ -671,18 +927,32 @@ export default function AdminUsers() {
                                             />
                                         </label>
                                     </div>
-                                    <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
-                                        <span>
-                                            Aktif kullanıcı
-                                            <small className="block font-normal text-slate-500">Pasif kullanıcılar panele giriş yapamaz.</small>
-                                        </span>
-                                        <input
-                                            type="checkbox"
-                                            className="size-4 accent-slate-950"
-                                            checked={form.aktif}
-                                            onChange={(event) => setForm({ ...form, aktif: event.target.checked })}
-                                        />
-                                    </label>
+                                    <fieldset className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                        <legend className="px-1 text-sm font-semibold text-slate-700">Hesap durumu</legend>
+                                        <div className="grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1" role="group" aria-label="Hesap durumu">
+                                            <button
+                                                type="button"
+                                                aria-pressed={form.aktif}
+                                                onClick={() => setForm({ ...form, aktif: true })}
+                                                className={`h-9 rounded-md text-sm font-semibold transition ${form.aktif ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
+                                            >
+                                                Aktif
+                                            </button>
+                                            <button
+                                                type="button"
+                                                aria-pressed={!form.aktif}
+                                                onClick={() => setForm({ ...form, aktif: false })}
+                                                className={`h-9 rounded-md text-sm font-semibold transition ${!form.aktif ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
+                                            >
+                                                Pasif
+                                            </button>
+                                        </div>
+                                        <p className="mt-2 text-xs leading-5 text-slate-500">
+                                            {form.aktif
+                                                ? 'Aktif: Kullanıcı panele giriş yapabilir.'
+                                                : 'Pasif: Kullanıcının tüm girişleri engellenir; partner üyelikleri audit için korunur.'}
+                                        </p>
+                                    </fieldset>
                                 </section>
 
                                 <section aria-labelledby="partner-link-heading" className="space-y-2 border-b border-slate-200 pb-5">
@@ -736,7 +1006,7 @@ export default function AdminUsers() {
                                             İzinler
                                         </h3>
                                         <p className="mt-1 text-xs text-slate-500">
-                                            {selectedRole?.name ?? form.role_code} rolü temel alınır; kullanıcı kararları role uygulanır.
+                                            Temel rol varsayılan erişimi belirler. Bu satırdaki kullanıcı kararı rolü açabilir veya engelleyebilir.
                                         </p>
                                     </div>
                                     <label className="relative block">
@@ -797,24 +1067,44 @@ export default function AdminUsers() {
                                                                     <p className="bg-white px-3 pb-1 pt-2 text-xs font-semibold text-slate-400">
                                                                         {resourceTypeLabel(type)}
                                                                     </p>
-                                                                    {resourcesByType[type].map((resource) => (
-                                                                        <div key={resource.code} className="grid gap-2 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_132px] sm:items-center xl:grid-cols-1">
-                                                                            <span className="min-w-0">
-                                                                                <span className="block truncate font-medium text-slate-800">{resource.name}</span>
-                                                                                <span className="block truncate text-xs text-slate-400">{resource.code}</span>
-                                                                            </span>
-                                                                            <select
-                                                                                aria-label={`${resource.name} erişimi`}
-                                                                                className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
-                                                                                value={accessState(resource.code)}
-                                                                                onChange={(event) => setAccessState(resource.code, event.target.value)}
-                                                                            >
-                                                                                <option value="inherit">Rol kararını kullan</option>
-                                                                                <option value="allow">İzin ver</option>
-                                                                                <option value="deny">Engelle</option>
-                                                                            </select>
-                                                                        </div>
-                                                                    ))}
+                                                                    {resourcesByType[type].map((resource) => {
+                                                                        const state = accessState(resource.code);
+                                                                        const effective = effectiveAccess(resource.code);
+                                                                        const source = state === 'inherit'
+                                                                            ? 'Rol'
+                                                                            : state === 'allow'
+                                                                                ? 'Kullanıcı izni'
+                                                                                : 'Kullanıcı engeli';
+
+                                                                        return (
+                                                                            <div key={resource.code} className="grid gap-2 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_172px] sm:items-center xl:grid-cols-1">
+                                                                                <span className="min-w-0">
+                                                                                    <span className="block truncate font-medium text-slate-800">{resource.name}</span>
+                                                                                    <span className="block truncate text-xs text-slate-400">{resource.code}</span>
+                                                                                    <span className="mt-1 flex flex-wrap gap-1">
+                                                                                        <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${effective ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                                                            Efektif: {effective ? 'Açık' : 'Kapalı'}
+                                                                                        </span>
+                                                                                        <span className="rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
+                                                                                            Kaynak: {source}
+                                                                                        </span>
+                                                                                    </span>
+                                                                                </span>
+                                                                                <select
+                                                                                    aria-label={`${resource.name} erişimi`}
+                                                                                    className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
+                                                                                    value={state}
+                                                                                    onChange={(event) => setAccessState(resource.code, event.target.value)}
+                                                                                >
+                                                                                    <option value="inherit">
+                                                                                        Rol kararını kullan — {roleAllowedResources.has(resource.code) ? 'Açık' : 'Kapalı'}
+                                                                                    </option>
+                                                                                    <option value="allow">İzin ver</option>
+                                                                                    <option value="deny">Engelle</option>
+                                                                                </select>
+                                                                            </div>
+                                                                        );
+                                                                    })}
                                                                 </div>
                                                             ))}
                                                     </div>

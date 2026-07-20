@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
+use App\Models\B2B\B2BPartner;
 use App\Models\Button;
 use App\Models\DataSource;
 use App\Models\MenuGroup;
@@ -12,15 +14,17 @@ use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
-use App\Models\AuditLog;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\AuditLogger;
+use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\PanelAccessService;
 use App\Services\PanelDataSourceManager;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
@@ -33,8 +37,8 @@ class AdminController extends Controller
         private readonly AuditLogger $auditLogger,
         private readonly PanelDataSourceManager $dataSourceManager,
         private readonly PanelAccessService $access,
-    ) {
-    }
+        private readonly B2BPartnerAccessService $partnerAccess,
+    ) {}
 
     public function overview(): JsonResponse
     {
@@ -55,13 +59,60 @@ class AdminController extends Controller
         ]);
     }
 
-    public function users(): JsonResponse
+    public function users(Request $request): JsonResponse
     {
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:120'],
+            'active' => ['nullable', Rule::in(['active', 'inactive'])],
+            'role_code' => ['nullable', Rule::exists(Role::class, 'code')],
+            'partner_assignment' => ['nullable', Rule::in(['assigned', 'unassigned', 'multiple', 'inactive'])],
+            'capabilities' => ['nullable', 'array', 'max:4'],
+            'capabilities.*' => ['string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
+            'capability_match' => ['nullable', Rule::in(['any', 'all', 'exclude'])],
+            'partner_id' => ['nullable', 'integer', Rule::exists(B2BPartner::class, 'id')],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $actor = $request->user();
+        abort_unless($actor instanceof User, 401);
+
+        $visiblePartners = $this->partnerAccess
+            ->visiblePartnerQuery($actor)
+            ->with('activeCapabilities')
+            ->orderBy('display_name')
+            ->get();
+        $visiblePartnerIds = $visiblePartners->pluck('id')->map(fn ($id): int => (int) $id)->values();
+
+        if (isset($filters['partner_id'])) {
+            abort_unless($visiblePartnerIds->contains((int) $filters['partner_id']), 403);
+        }
+
+        $usersQuery = User::query()
+            ->with([
+                'role',
+                'b2bPartnerProfiles' => fn ($query) => $query
+                    ->whereIn('partner_id', $visiblePartnerIds)
+                    ->with('partner.activeCapabilities'),
+            ]);
+
+        $this->applyAdminUserFilters($usersQuery, $filters, $visiblePartnerIds->all());
+
+        $perPage = (int) ($filters['per_page'] ?? 100);
+        $filteredTotal = (clone $usersQuery)->count();
+        $lastPage = max(1, (int) ceil($filteredTotal / $perPage));
+        $page = min((int) ($filters['page'] ?? 1), $lastPage);
+        $users = $usersQuery
+            ->orderBy('full_name')
+            ->forPage($page, $perPage)
+            ->get();
+        $accessByUser = UserAccess::query()
+            ->whereIn('user_id', $users->pluck('id'))
+            ->get(['user_id', 'resource_code', 'can_view'])
+            ->groupBy('user_id');
+
         return response()->json([
-            'users' => User::query()
-                ->with('role')
-                ->orderBy('full_name')
-                ->get()
+            'users' => $users
                 ->map(fn (User $user) => [
                     'id' => $user->id,
                     'username' => $user->username,
@@ -70,9 +121,51 @@ class AdminController extends Controller
                     'temsilci_kodu' => $user->temsilci_kodu,
                     'aktif' => $user->aktif,
                     'force_password_change' => (bool) ($user->force_password_change ?? false),
-                    'access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', true)->pluck('resource_code')->unique()->values(),
-                    'denied_access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', false)->pluck('resource_code')->unique()->values(),
+                    'access' => $accessByUser->get($user->id, collect())
+                        ->where('can_view', true)
+                        ->pluck('resource_code')
+                        ->unique()
+                        ->values(),
+                    'denied_access' => $accessByUser->get($user->id, collect())
+                        ->where('can_view', false)
+                        ->pluck('resource_code')
+                        ->unique()
+                        ->values(),
+                    'partner_memberships' => $user->b2bPartnerProfiles
+                        ->filter(fn ($profile) => $profile->partner !== null)
+                        ->map(fn ($profile) => [
+                            'id' => $profile->id,
+                            'partner_id' => $profile->partner_id,
+                            'partner_code' => $profile->partner->partner_code,
+                            'partner_name' => $profile->partner->display_name,
+                            'active' => (bool) $profile->active,
+                            'partner_active' => (bool) $profile->partner->active,
+                            'capabilities' => $profile->partner->activeCapabilities
+                                ->pluck('capability')
+                                ->unique()
+                                ->sort()
+                                ->values(),
+                        ])
+                        ->values(),
                 ]),
+            'meta' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'last_page' => $lastPage,
+                'filtered_total' => $filteredTotal,
+                'total' => User::query()->count(),
+            ],
+            'partners' => $visiblePartners->map(fn (B2BPartner $partner) => [
+                'id' => $partner->id,
+                'partner_code' => $partner->partner_code,
+                'display_name' => $partner->display_name,
+                'active' => (bool) $partner->active,
+                'capabilities' => $partner->activeCapabilities
+                    ->pluck('capability')
+                    ->unique()
+                    ->sort()
+                    ->values(),
+            ])->values(),
             'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description', 'is_super_admin']),
             'resources' => Resource::query()
                 ->where('active', true)
@@ -182,7 +275,7 @@ class AdminController extends Controller
 
         $this->auditLogger->log($request->user(), 'admin.user.save', ['target_user_id' => $user->id], $request);
 
-        return $this->users();
+        return $this->users($request);
     }
 
     public function cloneUser(Request $request, User $user): JsonResponse
@@ -222,11 +315,124 @@ class AdminController extends Controller
             ], $request);
         });
 
-        return $this->users();
+        return $this->users($request);
     }
 
     /**
-     * @return array{0: \Illuminate\Support\Collection<int, string>, 1: \Illuminate\Support\Collection<int, string>}
+     * @param  array<string, mixed>  $filters
+     * @param  array<int, int>  $visiblePartnerIds
+     */
+    private function applyAdminUserFilters(Builder $query, array $filters, array $visiblePartnerIds): void
+    {
+        $search = trim((string) ($filters['search'] ?? ''));
+
+        if ($search !== '') {
+            $needle = '%'.mb_strtolower($search).'%';
+            $casePreservingNeedle = '%'.$search.'%';
+
+            $query->where(function (Builder $query) use ($casePreservingNeedle, $needle, $visiblePartnerIds): void {
+                $query
+                    ->whereRaw('LOWER(full_name) LIKE ?', [$needle])
+                    ->orWhereRaw('LOWER(username) LIKE ?', [$needle])
+                    ->orWhereRaw('LOWER(role_code) LIKE ?', [$needle])
+                    ->orWhereRaw('LOWER(COALESCE(temsilci_kodu, \'\')) LIKE ?', [$needle])
+                    ->orWhere('full_name', 'like', $casePreservingNeedle)
+                    ->orWhere('username', 'like', $casePreservingNeedle);
+
+                if ($visiblePartnerIds !== []) {
+                    $query->orWhereHas('b2bPartnerProfiles', function (Builder $profiles) use ($casePreservingNeedle, $needle, $visiblePartnerIds): void {
+                        $profiles
+                            ->whereIn('partner_id', $visiblePartnerIds)
+                            ->whereHas('partner', function (Builder $partner) use ($casePreservingNeedle, $needle): void {
+                                $partner
+                                    ->whereRaw('LOWER(display_name) LIKE ?', [$needle])
+                                    ->orWhereRaw('LOWER(partner_code) LIKE ?', [$needle])
+                                    ->orWhere('display_name', 'like', $casePreservingNeedle)
+                                    ->orWhere('partner_code', 'like', $casePreservingNeedle);
+                            });
+                    });
+                }
+            });
+        }
+
+        if (($filters['active'] ?? null) === 'active') {
+            $query->where('aktif', true);
+        } elseif (($filters['active'] ?? null) === 'inactive') {
+            $query->where('aktif', false);
+        }
+
+        if (! empty($filters['role_code'])) {
+            $query->where('role_code', $filters['role_code']);
+        }
+
+        if (isset($filters['partner_id'])) {
+            $partnerId = (int) $filters['partner_id'];
+            $query->whereHas('b2bPartnerProfiles', fn (Builder $profiles) => $profiles->where('partner_id', $partnerId));
+        }
+
+        $partnerAssignment = $filters['partner_assignment'] ?? null;
+        if ($partnerAssignment === 'assigned') {
+            $query->whereHas('b2bPartnerProfiles', fn (Builder $profiles) => $profiles->whereIn('partner_id', $visiblePartnerIds));
+        } elseif ($partnerAssignment === 'unassigned') {
+            $query->whereDoesntHave('b2bPartnerProfiles', fn (Builder $profiles) => $profiles->whereIn('partner_id', $visiblePartnerIds));
+        } elseif ($partnerAssignment === 'multiple') {
+            $query->whereHas(
+                'b2bPartnerProfiles',
+                fn (Builder $profiles) => $profiles->whereIn('partner_id', $visiblePartnerIds),
+                '>=',
+                2,
+            );
+        } elseif ($partnerAssignment === 'inactive') {
+            $query->whereHas('b2bPartnerProfiles', fn (Builder $profiles) => $profiles
+                ->whereIn('partner_id', $visiblePartnerIds)
+                ->where('active', false));
+        }
+
+        $capabilities = collect($filters['capabilities'] ?? [])
+            ->filter(fn ($capability) => in_array($capability, B2BPartner::SUPPORTED_CAPABILITIES, true))
+            ->unique()
+            ->values();
+        $capabilityMatch = $filters['capability_match'] ?? 'any';
+
+        if ($capabilities->isEmpty()) {
+            return;
+        }
+
+        $profileHasCapabilities = function (Builder $profiles, array $required) use ($visiblePartnerIds): void {
+            $profiles
+                ->whereIn('partner_id', $visiblePartnerIds)
+                ->whereHas('partner.activeCapabilities', fn (Builder $capabilities) => $capabilities
+                    ->whereIn('capability', $required));
+        };
+
+        if ($capabilityMatch === 'exclude') {
+            $query->whereDoesntHave(
+                'b2bPartnerProfiles',
+                fn (Builder $profiles) => $profileHasCapabilities($profiles, $capabilities->all()),
+            );
+
+            return;
+        }
+
+        if ($capabilityMatch === 'all') {
+            foreach ($capabilities as $capability) {
+                $query->whereHas(
+                    'b2bPartnerProfiles',
+                    fn (Builder $profiles) => $profileHasCapabilities($profiles, [$capability]),
+                );
+            }
+
+            return;
+        }
+
+        $query->whereHas(
+            'b2bPartnerProfiles',
+            fn (Builder $profiles) => $profileHasCapabilities($profiles, $capabilities->all()),
+        );
+    }
+
+    /**
+     * @return array{0: Collection<int, string>, 1: Collection<int, string>}
      */
     private function strictAccessSnapshotForClone(User $source): array
     {
@@ -255,7 +461,7 @@ class AdminController extends Controller
     }
 
     /**
-     * @return array{0: \Illuminate\Support\Collection<int, string>, 1: \Illuminate\Support\Collection<int, string>}
+     * @return array{0: Collection<int, string>, 1: Collection<int, string>}
      */
     private function explicitAccessSnapshotForClone(User $source): array
     {
@@ -281,8 +487,8 @@ class AdminController extends Controller
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, string>  $allowed
-     * @param  \Illuminate\Support\Collection<int, string>  $denied
+     * @param  Collection<int, string>  $allowed
+     * @param  Collection<int, string>  $denied
      */
     private function syncUserAccess(User $user, $allowed, $denied): void
     {
