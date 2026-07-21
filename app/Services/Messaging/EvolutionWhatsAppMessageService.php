@@ -47,6 +47,8 @@ class EvolutionWhatsAppMessageService
         ?TechnicalServiceAssignmentOffer $assignmentOffer = null,
         ?TechnicalServiceEarning $earning = null,
     ): TechnicalServiceMessageDispatch {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+
         return $this->messagingSettings->withManualE2EFrozenOutbound(fn (): TechnicalServiceMessageDispatch => $this->sendWhileManualE2EFrozen(
             event: $event,
             targetType: $targetType,
@@ -133,6 +135,7 @@ class EvolutionWhatsAppMessageService
         );
         $payload['payload_hash'] = $payloadHash;
         $payload['idempotency_key'] = $idempotencyKey;
+        $executionSnapshot = $this->messagingSettings->executionModeSnapshot();
 
         $dispatch = TechnicalServiceMessageDispatch::query()->create([
             'event' => $event,
@@ -149,6 +152,7 @@ class EvolutionWhatsAppMessageService
             'test_mode' => $testMode,
             'status' => TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED,
             'request_payload' => $payload,
+            'metadata' => $executionSnapshot,
             'sent_by' => $user?->id,
         ]);
 
@@ -186,6 +190,20 @@ class EvolutionWhatsAppMessageService
                 TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_RATE_LIMITED,
                 $rateLimit['message'],
                 $rateLimit['context'],
+            );
+        }
+
+        $directBlock = $this->messagingSettings->directProviderExecutionBlock('evo_whatsapp');
+        if (! $directBlock['allowed']) {
+            return $this->markSuppressed(
+                $dispatch,
+                TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+                $directBlock['message'],
+                [
+                    'execution_mode_block_code' => $directBlock['code'],
+                    'provider_send_attempted' => false,
+                    'external_provider_call' => false,
+                ],
             );
         }
 

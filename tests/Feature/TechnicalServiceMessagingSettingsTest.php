@@ -651,8 +651,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Mesajlaşma Sağlayıcı Ayarları', $source);
         $this->assertStringContainsString('Voibot sözleşme bekliyor', $source);
         $this->assertStringContainsString('Provider readiness', $source);
-        $this->assertStringContainsString('Evo Test WhatsApp', $source);
-        $this->assertStringContainsString('NAC Test SMS', $source);
+        $this->assertStringContainsString('Evo No-send Test Kaydı', $source);
+        $this->assertStringContainsString('NAC No-send Test Kaydı', $source);
         $this->assertStringContainsString('Mikro Bağlantı Testi', $source);
         $this->assertStringContainsString('Null Local Dry-run', $source);
         $this->assertStringContainsString('Öncelikli sağlayıcı', $source);
@@ -674,9 +674,10 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringNotContainsString('REL-4D', $source);
         $this->assertStringContainsString('Mesaj tipi', $source);
         $this->assertStringContainsString('Test telefonu doğrula', $source);
-        $this->assertStringContainsString('Test mesajı gönder', $source);
-        $this->assertStringContainsString('NAC altyapı test SMS’i gönder', $source);
-        $this->assertStringContainsString('Generic altyapı testi içindir.', $source);
+        $this->assertStringContainsString('No-send test kaydı', $source);
+        $this->assertStringContainsString('NAC No-send Test Kaydı', $source);
+        $this->assertStringNotContainsString('tek gerçek SMS gönderilecek', $source);
+        $this->assertStringContainsString('Generic payload ve readiness audit kaydı üretir', $source);
         $this->assertStringNotContainsString('/sms/create', $source);
         $this->assertStringContainsString('Portal / Manuel E2E', $source);
         $this->assertStringContainsString('Manuel E2E Yerel Usta Portalı', $source);

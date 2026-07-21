@@ -27,6 +27,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         {--manual-e2e-only : Process only dispatches tagged metadata.manual_e2e=true}
         {--created-after= : ISO timestamp; dispatch must be created at or after this time}
         {--worker-loop : Run a bounded worker loop}
+        {--live-worker-loop : Run the guarded production outbound worker loop}
         {--sleep-seconds=10 : Worker loop sleep seconds}
         {--stop-after-idle-cycles=0 : Stop worker after this many idle cycles; 0 disables idle stop}
         {--require-real-send-enabled : Stop unless real_send_enabled=true}
@@ -48,8 +49,21 @@ class ProcessTechnicalServiceMessageDispatches extends Command
             return self::SUCCESS;
         }
 
+        if ((bool) $this->option('worker-loop') && (bool) $this->option('live-worker-loop')) {
+            $this->line(json_encode([
+                'blocked' => true,
+                'stop_reason' => 'worker_modes_conflict',
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return self::FAILURE;
+        }
+
         if ((bool) $this->option('worker-loop')) {
             return $this->runWorkerLoop($processor, $settings, $options);
+        }
+
+        if ((bool) $this->option('live-worker-loop')) {
+            return $this->runLiveWorkerLoop($processor, $settings, $options);
         }
 
         $runtimeBlock = $this->runtimeBlockReason($settings, $options, (bool) $this->option('dry-run'));
@@ -222,6 +236,96 @@ class ProcessTechnicalServiceMessageDispatches extends Command
             'processed' => $processed,
             'allowlist' => $this->maskPhones((array) ($options['allowlisted_phones'] ?? [])),
             'filters' => $this->filterSummary($options),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    private function runLiveWorkerLoop(
+        TechnicalServiceMessageDispatchProcessor $processor,
+        TechnicalServiceMessagingSettingsService $settings,
+        array $options,
+    ): int {
+        $maxSeconds = max(30, min(86400, (int) ($this->option('max-seconds') ?: 3600)));
+        $sleepSeconds = max(1, min(60, (int) $this->option('sleep-seconds')));
+        $startedAt = CarbonImmutable::now();
+        $expiresAt = $startedAt->addSeconds($maxSeconds);
+        $lock = Cache::lock(TechnicalServiceMessagingSettingsService::OUTBOUND_WORKER_LOCK_KEY, $maxSeconds + 60);
+        if (! $lock->get()) {
+            $this->line(json_encode([
+                'outbound_worker_started' => false,
+                'stop_reason' => 'outbound_worker_already_running',
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return self::SUCCESS;
+        }
+
+        $owner = $lock->owner();
+        try {
+            $lease = $settings->registerOutboundWorkerLease($owner, $startedAt, $expiresAt);
+        } catch (\Throwable $exception) {
+            $lock->release();
+            $this->line(json_encode([
+                'outbound_worker_started' => false,
+                'stop_reason' => 'outbound_worker_lease_rejected',
+                'error' => $exception->getMessage(),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return self::FAILURE;
+        }
+
+        $this->line(json_encode([
+            'outbound_worker_started' => true,
+            'release_sha' => $lease['release_sha'] ?? null,
+            'started_at' => $lease['started_at'] ?? null,
+            'expires_at' => $lease['expires_at'] ?? null,
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        $cycles = 0;
+        $processed = 0;
+        $stopReason = 'ttl_expired';
+        $workerOptions = [
+            ...$options,
+            'provider' => null,
+            'provider_keys' => ['evo_whatsapp', 'nac_sms'],
+            'channel' => null,
+            'dispatch_id' => null,
+            'only_test' => false,
+            'no_external' => false,
+            'allowlisted_phones' => [],
+            'manual_e2e_only' => false,
+            'guarded_batch' => false,
+            'outbound_worker_owner' => $owner,
+        ];
+
+        try {
+            while (CarbonImmutable::now()->lt($expiresAt)) {
+                if (! $settings->heartbeatOutboundWorkerLease($owner)) {
+                    $stopReason = 'outbound_worker_lease_invalid';
+                    break;
+                }
+
+                if ($settings->normalOutboundWorkerMayProcess($owner)) {
+                    $result = $processor->process($workerOptions);
+                    $processed += (int) ($result['count'] ?? 0);
+                    $cycles++;
+                }
+
+                sleep($sleepSeconds);
+            }
+        } finally {
+            $settings->clearOutboundWorkerLease($owner);
+            $lock->release();
+        }
+
+        $this->line(json_encode([
+            'outbound_worker_stopped' => true,
+            'stop_reason' => $stopReason,
+            'cycles' => $cycles,
+            'processed' => $processed,
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         return self::SUCCESS;

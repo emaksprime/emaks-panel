@@ -448,6 +448,45 @@ type ManualE2EReadiness = {
     }>;
 };
 
+type MessagingExecutionMode = {
+    mode: 'local' | 'live';
+    revision: number;
+    runtime_environment: 'local' | 'staging' | 'production' | string;
+    runtime_environment_label: string;
+    classification: string;
+    real_send_enabled: boolean;
+    queue_paused: boolean;
+    manual_e2e_enabled: boolean;
+    manual_e2e_phase: 'frozen' | 'prepared' | 'window_open' | string;
+    changed_at: string | null;
+    changed_by: { id: number; name: string } | null;
+    reason: string | null;
+    release_sha: string | null;
+    readiness: {
+        eligible: boolean;
+        target_mode: 'live';
+        runtime_environment: string;
+        classification: string;
+        blockers: Array<{ code: string; message: string }>;
+        evo_ready: boolean;
+        nac_ready: boolean;
+        queue_worker_ready: boolean;
+        queue_worker_state: string;
+        queue_worker_heartbeat_at: string | null;
+        scheduler_topology_accepted: boolean;
+        public_https_ready: boolean;
+        manual_e2e_origin_ready: boolean;
+        pending_external_count: number;
+        unsafe_external_count: number;
+        manual_e2e_frozen: boolean;
+        normal_outbound_claim_clear: boolean;
+        normal_queue_closed: boolean;
+        provider_kill_switch_consistent: boolean;
+        allowlist_count: number;
+        release_sha: string | null;
+    };
+};
+
 type MessagingSettings = {
     global: {
         messaging_enabled: boolean;
@@ -481,6 +520,7 @@ type MessagingSettings = {
         allow_browser_smoke_send: boolean;
         allow_test_fixture_send: boolean;
     };
+    execution_mode: MessagingExecutionMode;
     readiness: {
         messaging_enabled: boolean;
         real_send_enabled: boolean;
@@ -1137,6 +1177,10 @@ function formatManualE2ERunDate(value: string | null): string {
 }
 
 function messagingRuntimeHeadline(settings: MessagingSettings): string {
+    if (settings.execution_mode.mode === 'local') {
+        return 'Lokal mod; dış provider çağrıları kapalı.';
+    }
+
     if (
         settings.global.manual_e2e_enabled &&
         settings.global.real_send_enabled &&
@@ -1179,6 +1223,20 @@ function messagingQueueStatus(settings: MessagingSettings): {
     label: string;
     ready: boolean;
 } {
+    if (
+        settings.execution_mode.mode === 'live' &&
+        settings.execution_mode.runtime_environment === 'production'
+    ) {
+        return settings.execution_mode.readiness.queue_worker_ready
+            ? { label: 'Production worker hazır', ready: true }
+            : {
+                  label:
+                      settings.execution_mode.readiness.queue_worker_state ||
+                      'Worker hazır değil',
+                  ready: false,
+              };
+    }
+
     if (settings.global.queue_paused) {
         return { label: 'Duraklatıldı', ready: false };
     }
@@ -1192,6 +1250,16 @@ function messagingQueueStatus(settings: MessagingSettings): {
     }
 
     return { label: 'Aktif run context eksik', ready: false };
+}
+
+function executionModeIsSafelyLocal(settings: MessagingSettings): boolean {
+    return (
+        settings.execution_mode.mode === 'local' &&
+        !settings.execution_mode.real_send_enabled &&
+        settings.execution_mode.queue_paused &&
+        !settings.execution_mode.manual_e2e_enabled &&
+        settings.execution_mode.manual_e2e_phase === 'frozen'
+    );
 }
 
 function csrfToken(): string {
@@ -1243,7 +1311,8 @@ export default function TechnicalServiceAdmin({
         qrPublicFlowSettings.pre_form_payment_for_mount_excluded_enabled,
     );
     const [messaging, setMessaging] = useState(messagingSettings);
-    const manualE2EContextLocked =
+    const messagingSettingsLocked =
+        messaging.execution_mode.mode === 'live' ||
         messaging.global.manual_e2e_enabled ||
         messaging.manual_e2e.active_run_id !== null;
     const messagingQueueState = messagingQueueStatus(messaging);
@@ -1311,6 +1380,17 @@ export default function TechnicalServiceAdmin({
         useState<ManualE2EReadiness | null>(null);
     const [manualE2EEnableConfirmationOpen, setManualE2EEnableConfirmationOpen] =
         useState(false);
+    const [executionModeDialogOpen, setExecutionModeDialogOpen] =
+        useState(false);
+    const [executionModeTarget, setExecutionModeTarget] = useState<
+        'local' | 'live'
+    >('local');
+    const [executionModeReason, setExecutionModeReason] = useState('');
+    const [executionModeConfirmation, setExecutionModeConfirmation] =
+        useState('');
+    const [executionModeChecking, setExecutionModeChecking] = useState(false);
+    const [executionModeSaving, setExecutionModeSaving] = useState(false);
+    const executionModeBusyRef = useRef(false);
     const [templateSaving, setTemplateSaving] = useState(false);
     const [templatePreviewing, setTemplatePreviewing] = useState(false);
     const [templateTestSending, setTemplateTestSending] = useState(false);
@@ -1890,6 +1970,61 @@ export default function TechnicalServiceAdmin({
         }));
     };
 
+    const applyExecutionMode = (
+        nextMode: MessagingExecutionMode,
+        lifecycleReset = false,
+    ) => {
+        setMessaging((current) => ({
+            ...current,
+            execution_mode: nextMode,
+            global: {
+                ...current.global,
+                real_send_enabled: nextMode.real_send_enabled,
+                queue_paused: nextMode.queue_paused,
+                manual_e2e_enabled: nextMode.manual_e2e_enabled,
+                manual_e2e_phase: nextMode.manual_e2e_phase as MessagingSettings['global']['manual_e2e_phase'],
+                manual_e2e_active_run_id: lifecycleReset
+                    ? null
+                    : current.global.manual_e2e_active_run_id,
+                manual_e2e_started_at: lifecycleReset
+                    ? null
+                    : current.global.manual_e2e_started_at,
+                manual_e2e_created_after: lifecycleReset
+                    ? null
+                    : current.global.manual_e2e_created_after,
+                manual_e2e_expires_at: lifecycleReset
+                    ? null
+                    : current.global.manual_e2e_expires_at,
+            },
+            manual_e2e: lifecycleReset
+                ? {
+                      ...current.manual_e2e,
+                      enabled: nextMode.manual_e2e_enabled,
+                      active: false,
+                      phase: nextMode.manual_e2e_phase as MessagingSettings['manual_e2e']['phase'],
+                      status: 'inactive',
+                      active_run_id: null,
+                      started_at: null,
+                      created_after: null,
+                      expires_at: null,
+                      remaining_ttl_seconds: 0,
+                      worker_command_ready: false,
+                      worker_command: null,
+                      open_window: null,
+                      active_claim: null,
+                  }
+                : current.manual_e2e,
+        }));
+
+        if (lifecycleReset) {
+            setMessagingInputs((current) => ({
+                ...current,
+                test_mode_enabled: false,
+            }));
+            setManualE2EReadiness(null);
+        }
+    };
+
     const applyMessageTemplatePayload = (
         payload:
             | { templates?: MessageTemplateRecord[] }
@@ -2094,8 +2229,8 @@ export default function TechnicalServiceAdmin({
             typeof window !== 'undefined' &&
             !window.confirm(
                 templateInputs.channel === 'sms'
-                    ? 'Seçili SMS şablonunun önizlemesi NAC üzerinden ortak test telefonuna gönderilecek. Generic altyapı testi değildir. Onaylıyor musun?'
-                    : 'Seçili WhatsApp şablonunun önizlemesi ortak test telefonuna gönderilsin mi?',
+                    ? 'Seçili SMS şablonu no-send audit kaydı olarak oluşturulacak; NAC provider çağrısı yapılmayacak. Onaylıyor musun?'
+                    : 'Seçili WhatsApp şablonu no-send audit kaydı olarak oluşturulsun mu? Provider çağrısı yapılmayacak.',
             )
         ) {
             return;
@@ -2128,7 +2263,7 @@ export default function TechnicalServiceAdmin({
                 setTemplateMessage(
                     await errorMessageFromResponse(
                         response,
-                        'Template test mesajı gönderilemedi.',
+                        'No-send template test kaydı oluşturulamadı.',
                     ),
                 );
 
@@ -2143,7 +2278,7 @@ export default function TechnicalServiceAdmin({
                 result.message ?? 'Template test işlemi tamamlandı.',
             );
         } catch {
-            setTemplateMessage('Template test mesajı gönderilemedi.');
+            setTemplateMessage('No-send template test kaydı oluşturulamadı.');
         } finally {
             setTemplateTestSending(false);
         }
@@ -2153,7 +2288,7 @@ export default function TechnicalServiceAdmin({
         if (
             typeof window !== 'undefined' &&
             !window.confirm(
-                'NAC altyapı testi için ortak test telefonuna tek gerçek SMS gönderilecek. Şablon içeriği kullanılmaz. Onaylıyor musun?',
+                'NAC altyapı testi no-send audit kaydı olarak oluşturulacak; gerçek SMS gönderilmeyecek. Onaylıyor musun?',
             )
         ) {
             return;
@@ -2184,7 +2319,7 @@ export default function TechnicalServiceAdmin({
                 setMessagingMessage(
                     await errorMessageFromResponse(
                         response,
-                        'NAC altyapı test SMS’i gönderilemedi.',
+                        'NAC no-send test kaydı oluşturulamadı.',
                     ),
                 );
 
@@ -2199,7 +2334,7 @@ export default function TechnicalServiceAdmin({
                 result.message ?? 'NAC altyapı test işlemi tamamlandı.',
             );
         } catch {
-            setMessagingMessage('NAC altyapı test SMS’i gönderilemedi.');
+            setMessagingMessage('NAC no-send test kaydı oluşturulamadı.');
         } finally {
             setProviderTestSending(false);
         }
@@ -2330,6 +2465,122 @@ export default function TechnicalServiceAdmin({
             );
         } finally {
             setMessagingSaving(false);
+        }
+    };
+
+    const refreshExecutionModeReadiness = async (): Promise<MessagingExecutionMode | null> => {
+        setExecutionModeChecking(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/execution-mode/readiness',
+                {
+                    method: 'GET',
+                    headers: { Accept: 'application/json' },
+                    credentials: 'same-origin',
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Çalışma modu readiness bilgisi alınamadı.',
+                    ),
+                );
+
+                return null;
+            }
+
+            const payload = await response.json();
+            const nextMode = payload.execution_mode as MessagingExecutionMode;
+            applyExecutionMode(nextMode);
+
+            return nextMode;
+        } catch {
+            setMessagingMessage(
+                'Çalışma modu readiness bilgisi alınamadı; otomatik tekrar yapılmadı.',
+            );
+
+            return null;
+        } finally {
+            setExecutionModeChecking(false);
+        }
+    };
+
+    const openExecutionModeDialog = async (target: 'local' | 'live') => {
+        if (executionModeBusyRef.current) {
+            return;
+        }
+
+        setExecutionModeTarget(target);
+        setExecutionModeReason('');
+        setExecutionModeConfirmation('');
+        setExecutionModeDialogOpen(true);
+        await refreshExecutionModeReadiness();
+    };
+
+    const transitionExecutionMode = async () => {
+        if (executionModeBusyRef.current) {
+            return;
+        }
+
+        executionModeBusyRef.current = true;
+        setExecutionModeSaving(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/execution-mode',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        mode: executionModeTarget,
+                        reason: executionModeReason.trim(),
+                        confirmation:
+                            executionModeTarget === 'live'
+                                ? executionModeConfirmation
+                                : undefined,
+                    }),
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Mesajlaşma çalışma modu değiştirilemedi.',
+                    ),
+                );
+
+                return;
+            }
+
+            const payload = await response.json();
+            applyExecutionMode(
+                payload.execution_mode as MessagingExecutionMode,
+                true,
+            );
+            setExecutionModeDialogOpen(false);
+            setExecutionModeReason('');
+            setExecutionModeConfirmation('');
+            setMessagingMessage(
+                payload.message ?? 'Mesajlaşma çalışma modu güncellendi.',
+            );
+        } catch {
+            setMessagingMessage(
+                'Mesajlaşma çalışma modu değiştirilemedi; otomatik tekrar yapılmadı.',
+            );
+        } finally {
+            executionModeBusyRef.current = false;
+            setExecutionModeSaving(false);
         }
     };
 
@@ -3763,8 +4014,9 @@ export default function TechnicalServiceAdmin({
                                     {messageTemplates.helper_text} WhatsApp, SMS
                                     ve gelecekteki Voibot voice script aynı
                                     değişken doğrulama hattından geçer. Manuel
-                                    test gönderimi sadece ortak test telefonuna
-                                    gider; müşteri/usta iş akışı tetiklenmez.
+                                    no-send test kaydı shared test phone
+                                    kapsamını doğrular; provider çağrısı ve
+                                    müşteri/usta iş akışı tetiklenmez.
                                     Müşteri mesajları teknik alan isimleriyle
                                     değil, doğal randevu cümleleriyle
                                     oluşturulur. MRN/SRV müşteri mesajında iş
@@ -3825,15 +4077,15 @@ export default function TechnicalServiceAdmin({
                                     className="rounded-lg border border-emerald-700 bg-emerald-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     {templateTestSending
-                                        ? 'Test gönderiliyor'
-                                        : 'Test mesajı gönder'}
+                                        ? 'Kayıt oluşturuluyor'
+                                        : 'No-send test kaydı'}
                                 </button>
                             </div>
                             <p className="text-xs font-semibold text-slate-500 xl:text-right">
                                 {templateInputs.channel === 'sms'
-                                    ? 'SMS şablonu NAC SMS ile ortak test telefonuna gönderilir; provider altyapı testi değildir.'
+                                    ? 'SMS şablonu NAC payload doğrulamasıyla no-send audit kaydı olarak tutulur; provider çağrısı yapılmaz.'
                                     : templateInputs.channel === 'whatsapp'
-                                      ? 'Seçili şablonun önizlemesi ortak test telefonuna gönderilir.'
+                                      ? 'Seçili şablon no-send audit kaydı olarak tutulur; provider çağrısı yapılmaz.'
                                       : 'Voibot sözleşme bekleniyor; bu kanalda test gönderimi kapalı.'}
                             </p>
                         </div>
@@ -5266,7 +5518,7 @@ export default function TechnicalServiceAdmin({
                                     type="button"
                                     disabled={
                                         messagingSaving ||
-                                        manualE2EContextLocked
+                                        messagingSettingsLocked
                                     }
                                     onClick={() => {
                                         void saveMessagingSettings();
@@ -5281,7 +5533,7 @@ export default function TechnicalServiceAdmin({
                                     type="button"
                                     disabled={
                                         messagingSaving ||
-                                        manualE2EContextLocked
+                                        messagingSettingsLocked
                                     }
                                     onClick={() => {
                                         void resetMessagingSettings();
@@ -5292,6 +5544,174 @@ export default function TechnicalServiceAdmin({
                                 </button>
                             </div>
                         </div>
+
+                        {activeAdminSection === 'messaging' ? (
+                            <div
+                                data-testid="messaging-execution-mode-card"
+                                className="mt-5 border-y border-slate-200 py-4"
+                            >
+                                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                                    <div className="min-w-0">
+                                        <p className="text-xs font-semibold tracking-[0.14em] text-slate-500 uppercase">
+                                            Mesajlaşma Çalışma Modu
+                                        </p>
+                                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                                            <h3 className="text-base font-bold text-slate-950">
+                                                {messaging.execution_mode.mode ===
+                                                'live'
+                                                    ? 'Canlı'
+                                                    : 'Lokal'}
+                                            </h3>
+                                            <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold text-slate-700">
+                                                {
+                                                    messaging.execution_mode
+                                                        .runtime_environment_label
+                                                }
+                                            </span>
+                                            <span className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600">
+                                                Revision #{
+                                                    messaging.execution_mode
+                                                        .revision
+                                                }
+                                            </span>
+                                        </div>
+                                        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                                            {
+                                                messaging.execution_mode
+                                                    .classification
+                                            }
+                                            {messaging.execution_mode.mode ===
+                                            'local'
+                                                ? ' Dış Evo/NAC çağrıları kapalıdır; dispatch ve audit kayıtları korunur.'
+                                                : messaging.execution_mode
+                                                        .runtime_environment ===
+                                                    'production'
+                                                  ? ' Normal outbound yalnız readiness ve exact release worker kapıları açıkken çalışır.'
+                                                  : ' Normal operasyon outbound kapalıdır; yalnız allowlist içindeki exact Manual E2E penceresi provider kullanabilir.'}
+                                        </p>
+                                    </div>
+
+                                    <div
+                                        data-testid="messaging-execution-mode-controls"
+                                        className="grid w-full shrink-0 grid-cols-2 gap-2 sm:w-auto"
+                                    >
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                executionModeChecking ||
+                                                executionModeSaving ||
+                                                executionModeIsSafelyLocal(
+                                                    messaging,
+                                                )
+                                            }
+                                            onClick={() => {
+                                                void openExecutionModeDialog(
+                                                    'local',
+                                                );
+                                            }}
+                                            className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            Lokalde Çalıştır
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                executionModeChecking ||
+                                                executionModeSaving ||
+                                                messaging.execution_mode
+                                                    .mode === 'live'
+                                            }
+                                            onClick={() => {
+                                                void openExecutionModeDialog(
+                                                    'live',
+                                                );
+                                            }}
+                                            className="min-h-10 rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            Canlıda Çalıştır
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+                                    {[
+                                        [
+                                            'Evo readiness',
+                                            messaging.execution_mode.readiness
+                                                .evo_ready
+                                                ? 'Hazır'
+                                                : 'Eksik',
+                                        ],
+                                        [
+                                            'NAC readiness',
+                                            messaging.execution_mode.readiness
+                                                .nac_ready
+                                                ? 'Hazır'
+                                                : 'Eksik',
+                                        ],
+                                        [
+                                            'Queue / worker',
+                                            messaging.execution_mode.readiness
+                                                .queue_worker_ready
+                                                ? 'Hazır'
+                                                : messaging.execution_mode
+                                                        .readiness
+                                                        .queue_worker_state,
+                                        ],
+                                        [
+                                            'Public URL',
+                                            messaging.execution_mode.readiness
+                                                .public_https_ready
+                                                ? 'Hazır'
+                                                : messaging.execution_mode
+                                                        .readiness
+                                                        .manual_e2e_origin_ready
+                                                  ? 'Manual E2E origin hazır'
+                                                  : 'Eksik',
+                                        ],
+                                        [
+                                            'Pending / unsafe',
+                                            `${messaging.execution_mode.readiness.pending_external_count} / ${messaging.execution_mode.readiness.unsafe_external_count}`,
+                                        ],
+                                        [
+                                            'Son değişiklik',
+                                            messaging.execution_mode.changed_at
+                                                ? formatManualE2ERunDate(
+                                                      messaging.execution_mode
+                                                          .changed_at,
+                                                  )
+                                                : 'Henüz değiştirilmedi',
+                                        ],
+                                    ].map(([label, value]) => (
+                                        <div key={label} className="min-w-0">
+                                            <dt className="font-semibold tracking-[0.08em] text-slate-500 uppercase">
+                                                {label}
+                                            </dt>
+                                            <dd className="mt-1 font-bold break-words text-slate-900">
+                                                {value}
+                                            </dd>
+                                        </div>
+                                    ))}
+                                </dl>
+
+                                <div className="mt-3 flex flex-col gap-1 text-xs leading-5 text-slate-600 sm:flex-row sm:flex-wrap sm:gap-x-5">
+                                    <span>
+                                        Son değiştiren:{' '}
+                                        <strong className="text-slate-800">
+                                            {messaging.execution_mode.changed_by
+                                                ?.name ?? 'Sistem varsayılanı'}
+                                        </strong>
+                                    </span>
+                                    <span className="min-w-0 break-words">
+                                        Gerekçe:{' '}
+                                        <strong className="text-slate-800">
+                                            {messaging.execution_mode.reason ??
+                                                'Güvenli varsayılan'}
+                                        </strong>
+                                    </span>
+                                </div>
+                            </div>
+                        ) : null}
 
                         {activeAdminSection === 'messaging' ? (
                             <div className="mt-5 flex flex-wrap gap-2">
@@ -5578,17 +5998,17 @@ export default function TechnicalServiceAdmin({
                                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                                     {[
                                         {
-                                            title: 'Evo Test WhatsApp',
-                                            detail: 'Şablonlar bölümündeki Test mesajı gönder butonu shared test phone kullanır.',
-                                            action: 'Şablonlar test gönder',
+                                            title: 'Evo No-send Test Kaydı',
+                                            detail: 'Şablonlar bölümündeki no-send kontrolü shared test phone kapsamını doğrular; provider çağrısı yapmaz.',
+                                            action: 'Şablon test kaydı',
                                             enabled: true,
                                         },
                                         {
-                                            title: 'NAC Test SMS',
-                                            detail: 'Generic altyapı testi içindir. Şablon testinde seçili SMS önizlemesi gönderilir; bu buton template body kullanmaz.',
+                                            title: 'NAC No-send Test Kaydı',
+                                            detail: 'Generic payload ve readiness audit kaydı üretir; gerçek SMS göndermez ve template body kullanmaz.',
                                             action: providerTestSending
-                                                ? 'Gönderiliyor'
-                                                : 'NAC altyapı test SMS’i gönder',
+                                                ? 'Kayıt oluşturuluyor'
+                                                : 'No-send kayıt oluştur',
                                             enabled:
                                                 messaging.nac_sms.test_ready &&
                                                 !providerTestSending,
@@ -5628,7 +6048,7 @@ export default function TechnicalServiceAdmin({
                                                 onClick={() => {
                                                     if (
                                                         item.title ===
-                                                        'NAC Test SMS'
+                                                        'NAC No-send Test Kaydı'
                                                     ) {
                                                         void sendNacProviderTestMessage();
 
@@ -5640,7 +6060,7 @@ export default function TechnicalServiceAdmin({
                                                     );
                                                     const channel =
                                                         item.title ===
-                                                        'NAC Test SMS'
+                                                        'NAC No-send Test Kaydı'
                                                             ? 'sms'
                                                             : 'whatsapp';
                                                     setActiveTemplateSection(
@@ -6319,7 +6739,7 @@ export default function TechnicalServiceAdmin({
                                         <input
                                             data-testid="manual-e2e-portal-origin-enabled"
                                             type="checkbox"
-                                            disabled={manualE2EContextLocked}
+                                            disabled={messagingSettingsLocked}
                                             checked={
                                                 messagingInputs.manual_e2e_partner_portal_origin_enabled
                                             }
@@ -6339,7 +6759,7 @@ export default function TechnicalServiceAdmin({
                                         <input
                                             data-testid="manual-e2e-portal-origin-input"
                                             type="url"
-                                            disabled={manualE2EContextLocked}
+                                            disabled={messagingSettingsLocked}
                                             value={
                                                 messagingInputs.manual_e2e_partner_portal_origin
                                             }
@@ -6604,6 +7024,15 @@ export default function TechnicalServiceAdmin({
                                                 için ayrı ve tek kullanımlık
                                                 pencereyle açılır.
                                             </p>
+                                            {messaging.execution_mode.mode !==
+                                            'live' ? (
+                                                <p className="mt-2 text-sm font-semibold text-amber-800">
+                                                    Manual E2E hazırlığı için
+                                                    önce Canlı çalışma modu
+                                                    readiness kapısından
+                                                    geçmelidir.
+                                                </p>
+                                            ) : null}
                                         </div>
                                         <div className="flex flex-wrap gap-2">
                                             <button
@@ -6629,6 +7058,8 @@ export default function TechnicalServiceAdmin({
                                                     manualE2ELifecycleBusy ||
                                                     messaging.manual_e2e
                                                         .active ||
+                                                    messaging.execution_mode
+                                                        .mode !== 'live' ||
                                                     !manualE2EReadiness?.eligible
                                                 }
                                                 onClick={() =>
@@ -6861,7 +7292,7 @@ export default function TechnicalServiceAdmin({
                                                 <input
                                                     type="checkbox"
                                                     disabled={
-                                                        manualE2EContextLocked
+                                                        messagingSettingsLocked
                                                     }
                                                     checked={Boolean(
                                                         messagingInputs[
@@ -6889,7 +7320,7 @@ export default function TechnicalServiceAdmin({
                                                 <input
                                                     type="text"
                                                     disabled={
-                                                        manualE2EContextLocked
+                                                        messagingSettingsLocked
                                                     }
                                                     value={
                                                         messagingInputs.test_phone
@@ -6908,7 +7339,7 @@ export default function TechnicalServiceAdmin({
                                                 <button
                                                     type="button"
                                                     disabled={
-                                                        manualE2EContextLocked ||
+                                                        messagingSettingsLocked ||
                                                         messagingPhoneChecking ||
                                                         messagingInputs.test_phone.trim() ===
                                                             ''
@@ -6955,7 +7386,7 @@ export default function TechnicalServiceAdmin({
                                                 <input
                                                     type="number"
                                                     disabled={
-                                                        manualE2EContextLocked
+                                                        messagingSettingsLocked
                                                     }
                                                     min={Number(min)}
                                                     value={String(
@@ -9327,6 +9758,217 @@ export default function TechnicalServiceAdmin({
                         </p>
                     </section>
                 ) : null}
+
+                <Dialog
+                    open={executionModeDialogOpen}
+                    onOpenChange={(open) => {
+                        if (!executionModeSaving) {
+                            setExecutionModeDialogOpen(open);
+                        }
+                    }}
+                >
+                    <DialogContent
+                        data-testid="messaging-execution-mode-dialog"
+                        className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
+                    >
+                        <DialogHeader>
+                            <DialogTitle>
+                                {executionModeTarget === 'live'
+                                    ? 'Canlı çalışma modu readiness onayı'
+                                    : 'Lokal çalışma moduna dön'}
+                            </DialogTitle>
+                            <DialogDescription>
+                                {executionModeTarget === 'live'
+                                    ? 'Server readiness kapıları tekrar doğrulanır. Bu işlem tek başına dispatch oluşturmaz, worker başlatmaz veya provider çağırmaz.'
+                                    : 'Bu işlem dış provider kapılarını kapatır, queue’yu duraklatır ve açık Manual E2E yaşam döngüsünü güvenli biçimde dondurur.'}
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="grid gap-4">
+                            <div
+                                className={[
+                                    'border-l-4 px-4 py-3 text-sm leading-6 font-semibold',
+                                    executionModeTarget === 'live' &&
+                                    messaging.execution_mode
+                                        .runtime_environment !== 'production'
+                                        ? 'border-amber-600 bg-amber-50 text-amber-950'
+                                        : executionModeTarget === 'live'
+                                          ? 'border-red-700 bg-red-50 text-red-950'
+                                          : 'border-emerald-700 bg-emerald-50 text-emerald-950',
+                                ].join(' ')}
+                            >
+                                {executionModeTarget === 'live' &&
+                                messaging.execution_mode
+                                    .runtime_environment !== 'production'
+                                    ? 'Gerçek Evo/NAC endpointleri kullanılabilir; yalnız allowlist Manual E2E gönderimleri serbesttir. Normal operasyon kuyruğu kapalı kalır.'
+                                    : executionModeTarget === 'live'
+                                      ? 'Production outbound ancak bütün readiness kapıları birlikte geçerse açılır. Geçmiş veya eski-revision dispatchler serbest bırakılmaz.'
+                                      : 'Lokal mode dış HTTP’yi keser. Mevcut dispatch, attempt ve audit gerçeği silinmez.'}
+                            </div>
+
+                            {executionModeTarget === 'live' ? (
+                                <div>
+                                    <div className="flex items-center justify-between gap-3">
+                                        <p className="text-sm font-bold text-slate-950">
+                                            Readiness kapıları
+                                        </p>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                executionModeChecking ||
+                                                executionModeSaving
+                                            }
+                                            onClick={() => {
+                                                void refreshExecutionModeReadiness();
+                                            }}
+                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            {executionModeChecking
+                                                ? 'Kontrol ediliyor'
+                                                : 'Yeniden kontrol et'}
+                                        </button>
+                                    </div>
+
+                                    {messaging.execution_mode.readiness
+                                        .blockers.length > 0 ? (
+                                        <ul
+                                            data-testid="messaging-execution-mode-blockers"
+                                            className="mt-3 grid max-h-48 gap-2 overflow-y-auto border-y border-slate-200 py-3 text-sm text-red-900"
+                                        >
+                                            {messaging.execution_mode.readiness.blockers.map(
+                                                (blocker) => (
+                                                    <li
+                                                        key={blocker.code}
+                                                        className="leading-5"
+                                                    >
+                                                        <span className="font-bold">
+                                                            {blocker.code}
+                                                        </span>
+                                                        : {blocker.message}
+                                                    </li>
+                                                ),
+                                            )}
+                                        </ul>
+                                    ) : (
+                                        <p className="mt-3 border-y border-emerald-200 bg-emerald-50 py-3 text-sm font-semibold text-emerald-900">
+                                            Tüm server-side readiness kapıları
+                                            hazır.
+                                        </p>
+                                    )}
+
+                                    {messaging.execution_mode
+                                        .runtime_environment !==
+                                    'production' ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setExecutionModeDialogOpen(
+                                                    false,
+                                                );
+                                                setActiveMessagingSection(
+                                                    'general',
+                                                );
+                                                window.requestAnimationFrame(
+                                                    () => {
+                                                        document
+                                                            .querySelector(
+                                                                '[data-testid="manual-e2e-lifecycle-panel"]',
+                                                            )
+                                                            ?.scrollIntoView({
+                                                                behavior:
+                                                                    'smooth',
+                                                                block: 'start',
+                                                            });
+                                                    },
+                                                );
+                                            }}
+                                            className="mt-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100"
+                                        >
+                                            Manual E2E paneline git
+                                        </button>
+                                    ) : null}
+                                </div>
+                            ) : null}
+
+                            <label className="grid gap-1.5 text-sm font-semibold text-slate-800">
+                                Değişiklik gerekçesi
+                                <textarea
+                                    value={executionModeReason}
+                                    onChange={(event) =>
+                                        setExecutionModeReason(
+                                            event.target.value,
+                                        )
+                                    }
+                                    rows={3}
+                                    maxLength={500}
+                                    disabled={executionModeSaving}
+                                    placeholder="En az 10 karakterlik operasyon gerekçesi"
+                                    className="min-h-24 resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:opacity-60"
+                                />
+                            </label>
+
+                            {executionModeTarget === 'live' ? (
+                                <label className="grid gap-1.5 text-sm font-semibold text-slate-800">
+                                    Onay metni
+                                    <input
+                                        type="text"
+                                        value={executionModeConfirmation}
+                                        onChange={(event) =>
+                                            setExecutionModeConfirmation(
+                                                event.target.value,
+                                            )
+                                        }
+                                        disabled={executionModeSaving}
+                                        autoComplete="off"
+                                        placeholder="CANLI MODU AÇ"
+                                        className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:opacity-60"
+                                    />
+                                </label>
+                            ) : null}
+                        </div>
+
+                        <DialogFooter>
+                            <button
+                                type="button"
+                                disabled={executionModeSaving}
+                                onClick={() =>
+                                    setExecutionModeDialogOpen(false)
+                                }
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                Vazgeç
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="messaging-execution-mode-confirm"
+                                disabled={
+                                    executionModeSaving ||
+                                    executionModeReason.trim().length < 10 ||
+                                    (executionModeTarget === 'live' &&
+                                        (!messaging.execution_mode.readiness
+                                            .eligible ||
+                                            executionModeConfirmation !==
+                                                'CANLI MODU AÇ'))
+                                }
+                                onClick={() => {
+                                    void transitionExecutionMode();
+                                }}
+                                className={[
+                                    'rounded-lg border px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50',
+                                    executionModeTarget === 'live'
+                                        ? 'border-red-700 bg-red-700 hover:bg-red-800'
+                                        : 'border-slate-900 bg-slate-950 hover:bg-slate-800',
+                                ].join(' ')}
+                            >
+                                {executionModeSaving
+                                    ? 'Uygulanıyor'
+                                    : executionModeTarget === 'live'
+                                      ? 'Canlı modu aç'
+                                      : 'Lokal moda dön ve dondur'}
+                            </button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
 
                 <Dialog
                     open={manualE2EEnableConfirmationOpen}

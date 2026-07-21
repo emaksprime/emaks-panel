@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
+use App\Services\Messaging\TechnicalServiceMessageDispatchQueue;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
@@ -323,8 +324,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
     {
         Http::fake();
         $admin = $this->admin();
-        $settings = $this->readyManualE2ESettings($admin);
-        $settings->update([
+        $settings = $this->readyManualE2ESettings($admin, [
             'ops_whatsapp_enabled' => false,
             'ops_whatsapp_phone' => null,
         ]);
@@ -366,7 +366,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             'status' => 'Yeni',
         ]);
         $token = (string) $request->mrn;
-        $dispatch = TechnicalServiceMessageDispatch::query()->create([
+        $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->enqueue([
             'event' => 'appointment_updated_customer',
             'technical_service_request_id' => $request->id,
             'request_id' => $request->id,
@@ -378,12 +378,10 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             'target_type' => 'customer',
             'target_phone' => '905372081633',
             'original_phone' => '905372081633',
-            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
-            'attempt_count' => 0,
             'max_attempts' => 1,
             'idempotency_key' => hash('sha256', 'controller-window-'.$runId),
             'queued_at' => now(),
-            'request_payload' => ['body' => "EMAKS Prime {$token} controller window mesajı."],
+            'payload' => ['body' => "EMAKS Prime {$token} controller window mesajı."],
             'metadata' => $settings->manualE2EContext()->dispatchMetadata(
                 $token,
                 '905372081633',
@@ -391,13 +389,14 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ),
         ]);
 
-        $this->actingAs($admin)
+        $openResponse = $this->actingAs($admin)
             ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', [
                 'operation' => 'open_send_window',
                 'active_run_id' => $runId,
                 'dispatch_id' => $dispatch->id,
-            ])
-            ->assertOk()
+            ]);
+        $this->assertSame(200, $openResponse->status(), $openResponse->getContent());
+        $openResponse
             ->assertJsonPath('messaging_settings.global.manual_e2e_phase', 'window_open')
             ->assertJsonPath('messaging_settings.global.real_send_enabled', true)
             ->assertJsonPath('messaging_settings.global.queue_paused', false)
@@ -424,14 +423,18 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
     {
         Http::fake();
         $admin = $this->admin();
-        $settings = $this->readyManualE2ESettings($admin);
-        $settings->update(['ops_whatsapp_enabled' => true]);
+        $settings = $this->readyManualE2ESettings($admin, ['ops_whatsapp_enabled' => true]);
 
         $this->assertTrue($settings->manualE2EReadiness()['eligible']);
         $payload = $settings->enableManualE2E();
         $this->assertTrue($payload['global']['ops_whatsapp_enabled']);
 
         $settings->freezeManualE2E();
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
+            'OPS hedefi gecersiz senaryo ayari icin guvenli lokal gecis.',
+            $admin,
+        );
         $settings->update([
             'ops_whatsapp_enabled' => true,
             'ops_whatsapp_phone' => '905551112233',
@@ -489,6 +492,11 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertSame($first, $settings->payload()['manual_e2e']['active_run_id']);
 
         $settings->freezeManualE2E();
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
+            'Lifecycle lock regresyonu icin guvenli lokal gecis.',
+            $admin,
+        );
         $lifecycleLock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 30);
         $this->assertTrue($lifecycleLock->get());
 
@@ -507,6 +515,13 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             $lifecycleLock->release();
         }
 
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            'Worker lock regresyonu icin Manual E2E live test profili.',
+            $admin,
+            'CANLI MODU AÇ',
+        );
+
         $workerLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 30);
         $this->assertTrue($workerLock->get());
 
@@ -523,7 +538,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_protected_settings_are_locked_while_active_and_allowed_after_freeze(): void
+    public function test_protected_settings_are_locked_while_live_or_active_and_allowed_after_local_freeze(): void
     {
         Http::fake();
         $admin = $this->admin();
@@ -541,7 +556,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
                 ],
             ])
             ->assertConflict()
-            ->assertJsonPath('message', 'Aktif Manual E2E oturumu varken gönderim güvenliği ayarları değiştirilemez. Önce gönderimleri dondurun.');
+            ->assertJsonPath('message', 'Canlı çalışma modunda provider ve mesaj ayarları değiştirilemez. Önce çalışma modunu Lokal olarak dondurun.');
 
         $this->actingAs($admin)
             ->postJson('/api/technical-service/messaging-settings/evo-whatsapp/credentials', [
@@ -550,6 +565,11 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ->assertConflict();
 
         $settings->freezeManualE2E();
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
+            'Ayar duzenleme regresyonu icin guvenli lokal gecis.',
+            $admin,
+        );
         $this->actingAs($admin)
             ->patchJson('/api/technical-service/messaging-settings', [
                 'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
@@ -736,6 +756,18 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             now()->toImmutable(),
             now()->addHour()->toImmutable(),
         );
+        $lease = Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+        $this->assertIsArray($lease);
+        $this->assertSame($settings->executionModePayload()['revision'], $lease['outbound_mode_revision']);
+        $lifecycleLock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 30);
+        $this->assertTrue($lifecycleLock->get());
+        try {
+            $this->assertFalse($settings->heartbeatManualE2EWorkerLease($runId, $workerLock->owner()));
+            $this->assertFalse($settings->clearManualE2EWorkerLease($runId, $workerLock->owner()));
+            $this->assertSame($lease, Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY));
+        } finally {
+            $lifecycleLock->release();
+        }
         $settings->freezeManualE2E();
 
         $this->assertNull(Cache::get(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY));
@@ -746,12 +778,14 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         Http::assertNothingSent();
     }
 
-    private function readyManualE2ESettings(User $admin): TechnicalServiceMessagingSettingsService
-    {
+    private function readyManualE2ESettings(
+        User $admin,
+        array $overrides = [],
+    ): TechnicalServiceMessagingSettingsService {
         $this->actingAs($admin);
         $settings = app(TechnicalServiceMessagingSettingsService::class);
         $settings->freezeManualE2E();
-        $settings->update([
+        $settings->update(array_replace_recursive([
             'messaging_enabled' => true,
             'test_mode_enabled' => false,
             'shared_test_phone' => '905467647428',
@@ -770,6 +804,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             'nac_sms' => [
                 'enabled' => true,
                 'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
             ],
             'message_types' => [
                 'assignment_offer_technician' => [
@@ -778,7 +813,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
                     'channel_policy' => 'whatsapp_and_sms',
                 ],
             ],
-        ]);
+        ], $overrides));
 
         $page = PageConfig::query()
             ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
@@ -808,6 +843,13 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
         $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            'Manual E2E entrypoint izolasyon testi hazirligi.',
+            $admin,
+            'CANLI MODU AÇ',
+            'TEST-MANUAL-E2E-MODE-ENTRYPOINT',
+        );
 
         return $settings;
     }

@@ -70,6 +70,8 @@ class TechnicalServiceNacSmsTestClient
         string $messageSource,
         array $preview,
     ): TechnicalServiceMessageDispatch {
+        $this->settings->assertProviderHttpOutsideTransaction();
+
         return $this->settings->withManualE2EFrozenOutbound(fn (): TechnicalServiceMessageDispatch => $this->sendDirectWhileFrozen(
             event: $event,
             phone: $phone,
@@ -131,6 +133,7 @@ class TechnicalServiceNacSmsTestClient
             'target_phone' => $phone,
             'test_mode' => true,
             'status' => TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED,
+            'metadata' => $this->settings->executionModeSnapshot(),
             'request_payload' => [
                 'provider' => 'nac_sms',
                 'channel' => 'sms',
@@ -156,23 +159,47 @@ class TechnicalServiceNacSmsTestClient
         $encoding = $this->encodingForContent($nac, $message);
         $requestPayload = $this->requestPayload($nac, $phone, $message, $customId, $title, $encoding);
         $payloadHash = $this->payloadHash($requestPayload);
+        $storedPayload = [
+            ...($dispatch->request_payload ?? []),
+            'test_code' => $packageCode,
+            'package_code' => $packageCode,
+            'title' => $title,
+            'text' => $message,
+            'content_preview' => mb_substr($message, 0, 240),
+            'template_body_hash' => $messageSource === 'rendered_template_preview'
+                ? hash('sha256', $message)
+                : null,
+            'custom_id' => $customId,
+            'encoding' => $encoding,
+            'payload_hash' => $payloadHash,
+            'nac_payload_shape' => $this->redactPayload($requestPayload),
+        ];
+        $directBlock = $this->settings->directProviderExecutionBlock('nac_sms');
+        if (! $directBlock['allowed']) {
+            $dispatch->forceFill([
+                'request_payload' => $storedPayload,
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+                'attempt_count' => 0,
+                'response_payload' => [
+                    'status' => 'suppressed',
+                    'message' => $directBlock['message'],
+                    'execution_mode_block_code' => $directBlock['code'],
+                    'provider_send_attempted' => false,
+                    'external_provider_call' => false,
+                ],
+                'error_message' => $directBlock['message'],
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'provider_send_attempted' => false,
+                    'external_provider_call' => false,
+                ],
+            ])->save();
+
+            return $dispatch;
+        }
 
         $dispatch->forceFill([
-            'request_payload' => [
-                ...($dispatch->request_payload ?? []),
-                'test_code' => $packageCode,
-                'package_code' => $packageCode,
-                'title' => $title,
-                'text' => $message,
-                'content_preview' => mb_substr($message, 0, 240),
-                'template_body_hash' => $messageSource === 'rendered_template_preview'
-                    ? hash('sha256', $message)
-                    : null,
-                'custom_id' => $customId,
-                'encoding' => $encoding,
-                'payload_hash' => $payloadHash,
-                'nac_payload_shape' => $this->redactPayload($requestPayload),
-            ],
+            'request_payload' => $storedPayload,
             'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
             'sending_started_at' => now(),
             'attempt_count' => 1,

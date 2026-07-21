@@ -58,6 +58,29 @@ class TechnicalServiceMessageProviderRouter
             ];
         }
 
+        $executionAuthorization = $this->settings->dispatchExecutionAuthorization($dispatch, $manualE2e);
+        if (! $executionAuthorization['allowed']) {
+            if (($executionAuthorization['code'] ?? null) === 'outbound_execution_mode_local') {
+                return [
+                    'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+                    'provider_status' => 'local_no_send',
+                    'provider_message_id' => null,
+                    'response' => [
+                        'provider' => $provider,
+                        'external_call' => false,
+                        'execution_mode' => 'local',
+                    ],
+                    'error' => null,
+                    'transport_started' => false,
+                ];
+            }
+
+            return $this->blocked(
+                (string) ($executionAuthorization['code'] ?? 'outbound_execution_mode_blocked'),
+                (string) ($executionAuthorization['message'] ?? 'Dispatch çalışma modu provider çağrısını engelledi.'),
+            );
+        }
+
         if (str_starts_with($provider, 'voibot')) {
             return $this->blocked('contract_pending', 'Voibot sağlayıcı sözleşmesi/API netleşmeden gönderim kapalı.');
         }
@@ -71,7 +94,7 @@ class TechnicalServiceMessageProviderRouter
                 return $this->sendNacSms($dispatch, (string) $manualE2EClaimNonce, null);
             }
 
-            if (! $noExternal && $this->canRunControlledSmoke($dispatch, $allowlistedPhones, $expectedSmokeRunId)) {
+            if (! $noExternal) {
                 return $this->sendNacSms($dispatch, null, $normalOutboundClaimNonce);
             }
 
@@ -83,7 +106,7 @@ class TechnicalServiceMessageProviderRouter
                 return $this->sendEvoWhatsApp($dispatch, (string) $manualE2EClaimNonce, null);
             }
 
-            if (! $noExternal && $this->canRunControlledSmoke($dispatch, $allowlistedPhones, $expectedSmokeRunId)) {
+            if (! $noExternal) {
                 return $this->sendEvoWhatsApp($dispatch, null, $normalOutboundClaimNonce);
             }
 
@@ -153,44 +176,9 @@ class TechnicalServiceMessageProviderRouter
         ];
     }
 
-    /**
-     * @param  array<int, string>  $allowlistedPhones
-     */
-    private function canRunControlledSmoke(
-        TechnicalServiceMessageDispatch $dispatch,
-        array $allowlistedPhones,
-        ?string $expectedSmokeRunId = null,
-    ): bool {
-        $dispatchRunId = TechnicalServiceManualE2ERunContext::dispatchRunId((array) $dispatch->metadata);
-        $expectedSmokeRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($expectedSmokeRunId);
-
-        return $allowlistedPhones !== []
-            && $this->targetIsAllowlisted($dispatch, $allowlistedPhones)
-            && filter_var(data_get($dispatch->metadata, 'test_smoke', false), FILTER_VALIDATE_BOOL)
-            && ($expectedSmokeRunId !== null ? $dispatchRunId === $expectedSmokeRunId : $dispatchRunId !== null);
-    }
-
     private function isManualE2eDispatch(TechnicalServiceMessageDispatch $dispatch): bool
     {
         return filter_var(data_get($dispatch->metadata, 'manual_e2e', false), FILTER_VALIDATE_BOOL);
-    }
-
-    /**
-     * @param  array<int, string>  $allowlistedPhones
-     */
-    private function targetIsAllowlisted(TechnicalServiceMessageDispatch $dispatch, array $allowlistedPhones): bool
-    {
-        $target = $this->normalizePhone($dispatch->target_phone);
-        if ($target === '') {
-            return false;
-        }
-
-        $allowed = array_filter(array_map(
-            fn (string $phone): string => $this->normalizePhone($phone),
-            $allowlistedPhones,
-        ));
-
-        return in_array($target, $allowed, true);
     }
 
     /**
@@ -277,10 +265,8 @@ class TechnicalServiceMessageProviderRouter
         }
 
         try {
-            $request = Http::timeout(15);
-            if ($manualE2EClaimNonce !== null) {
-                $request = $request->withOptions(['allow_redirects' => false]);
-            }
+            $request = Http::timeout(15)
+                ->withOptions(['allow_redirects' => false]);
             $response = $request
                 ->acceptJson()
                 ->asJson()
@@ -477,10 +463,8 @@ class TechnicalServiceMessageProviderRouter
         }
 
         try {
-            $request = Http::timeout(15);
-            if ($manualE2EClaimNonce !== null) {
-                $request = $request->withOptions(['allow_redirects' => false]);
-            }
+            $request = Http::timeout(15)
+                ->withOptions(['allow_redirects' => false]);
             $response = $request
                 ->withBasicAuth((string) $credential?->username_encrypted, (string) $credential?->password_encrypted)
                 ->acceptJson()

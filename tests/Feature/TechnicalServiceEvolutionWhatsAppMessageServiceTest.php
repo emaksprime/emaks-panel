@@ -115,7 +115,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_manual_ui_send_can_send_when_real_send_enabled(): void
+    public function test_manual_ui_send_cannot_bypass_local_execution_mode_when_legacy_real_send_is_enabled(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
         Http::fake([
@@ -132,14 +132,15 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         );
 
         $payload = $dispatch->refresh()->request_payload;
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
         $this->assertSame('905467647428', $payload['target_phone']);
         $this->assertSame('905321112233', $payload['original_phone']);
         $this->assertArrayHasKey('idempotency_key', $payload);
-        Http::assertSentCount(1);
+        $this->assertSame('outbound_execution_mode_local', $dispatch->response_payload['execution_mode_block_code'] ?? null);
+        Http::assertNothingSent();
     }
 
-    public function test_ci_environment_allows_explicit_unit_test_http_fake(): void
+    public function test_ci_fake_flag_cannot_bypass_local_execution_mode(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
         Http::fake([
@@ -156,12 +157,12 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
                 $this->requestWithMrn('MRN-WP-CI-FAKE-SEND'),
             );
 
-            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->refresh()->status);
-            Http::assertSentCount(1);
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->refresh()->status);
+            Http::assertNothingSent();
         });
     }
 
-    public function test_duplicate_message_is_suppressed(): void
+    public function test_repeated_direct_messages_remain_suppressed_without_http(): void
     {
         $this->configureEvolution([
             'services.evolution.real_send_enabled' => true,
@@ -176,12 +177,12 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $first = $this->service()->send('customer_approval_request', 'customer', '05321112233', 'Onay linki hazir.', $context, $request);
         $second = $this->service()->send('customer_approval_request', 'customer', '05321112233', 'Onay linki hazir.', $context, $request);
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $first->refresh()->status);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE, $second->refresh()->status);
-        Http::assertSentCount(1);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $first->refresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $second->refresh()->status);
+        Http::assertNothingSent();
     }
 
-    public function test_force_resend_allows_manual_duplicate_but_not_fixture(): void
+    public function test_force_resend_cannot_bypass_execution_mode_and_fixture_guard_remains(): void
     {
         $this->configureEvolution([
             'services.evolution.real_send_enabled' => true,
@@ -203,13 +204,13 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             'force_resend' => true,
         ], $this->requestWithMrn('SMOKE-WP-FORCE-RESEND'));
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $first->refresh()->status);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $forced->refresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $first->refresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $forced->refresh()->status);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE, $fixture->refresh()->status);
-        Http::assertSentCount(2);
+        Http::assertNothingSent();
     }
 
-    public function test_fifty_simulated_dispatches_do_not_create_fifty_http_calls(): void
+    public function test_fifty_direct_dispatches_remain_audited_without_http_calls(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
         Http::fake([
@@ -227,12 +228,12 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             );
         }
 
-        $this->assertSame(1, TechnicalServiceMessageDispatch::query()->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)->count());
-        $this->assertSame(49, TechnicalServiceMessageDispatch::query()->where('status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_RATE_LIMITED)->count());
-        Http::assertSentCount(1);
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)->count());
+        $this->assertSame(50, TechnicalServiceMessageDispatch::query()->where('status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED)->count());
+        Http::assertNothingSent();
     }
 
-    public function test_rate_limit_suppresses_burst_to_test_phone(): void
+    public function test_rate_limit_flags_do_not_override_local_execution_mode(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
         Http::fake([
@@ -256,10 +257,9 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             $this->requestWithMrn('MRN-WP-RATE-2'),
         );
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $first->refresh()->status);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_RATE_LIMITED, $second->refresh()->status);
-        $this->assertSame('min_seconds', $second->response_payload['rate_limit'] ?? null);
-        Http::assertSentCount(1);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $first->refresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $second->refresh()->status);
+        Http::assertNothingSent();
     }
 
     public function test_suppressed_dispatch_records_reason(): void
@@ -284,7 +284,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_evo_test_payload_preserves_newlines_and_sends_to_shared_phone_when_real_send_disabled(): void
+    public function test_evo_test_payload_preserves_newlines_while_direct_http_remains_blocked(): void
     {
         $this->configureEvolution([
             'services.evolution.real_send_enabled' => false,
@@ -309,20 +309,16 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         );
 
         $payload = $dispatch->refresh()->request_payload;
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
         $this->assertSame('shared_test_phone', $payload['target_type']);
         $this->assertSame('905467647428', $payload['target_phone']);
         $this->assertStringContainsString("\n\nSayın", $payload['text']);
         $this->assertStringContainsString("\nRandevu Bilgileri\n", $payload['text']);
 
-        Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
-            && $httpRequest['event'] === 'template_test_whatsapp'
-            && $httpRequest['target_type'] === 'shared_test_phone'
-            && $httpRequest['target_phone'] === '905467647428'
-            && str_contains($httpRequest['text'], "\n\nSayın"));
+        Http::assertNothingSent();
     }
 
-    public function test_evo_test_failed_response_not_marked_sent(): void
+    public function test_evo_test_fake_failure_endpoint_is_not_called_without_canonical_claim(): void
     {
         $this->configureEvolution([
             'services.evolution.real_send_enabled' => false,
@@ -347,13 +343,14 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         );
 
         $dispatch->refresh();
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_FAILED, $dispatch->status);
-        $this->assertSame(530, $dispatch->response_payload['status'] ?? null);
-        $this->assertStringContainsString('error code: 1033', (string) $dispatch->error_message);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
+        $this->assertSame('suppressed', $dispatch->response_payload['status'] ?? null);
+        $this->assertSame('outbound_execution_mode_local', $dispatch->response_payload['execution_mode_block_code'] ?? null);
         $this->assertStringContainsString("\nRandevu Bilgileri\n", $dispatch->request_payload['text']);
+        Http::assertNothingSent();
     }
 
-    public function test_customer_approval_manual_send_still_returns_clear_status(): void
+    public function test_customer_approval_direct_path_returns_clear_local_suppression(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
         Http::fake([
@@ -373,16 +370,14 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         );
 
         $payload = $dispatch->refresh()->request_payload;
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
         $this->assertSame('customer_approval_request', $payload['message_type']);
         $this->assertSame('https://panel.test/service-job-confirmation/token', $payload['confirmation_url']);
-        $this->assertSame(200, $dispatch->response_payload['status'] ?? null);
-        Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
-            && $httpRequest['event'] === 'customer_approval_request'
-            && $httpRequest['target_phone'] === '905467647428');
+        $this->assertSame('suppressed', $dispatch->response_payload['status'] ?? null);
+        Http::assertNothingSent();
     }
 
-    public function test_evolution_payload_matches_n8n_workflow_contract_in_test_mode_with_fake_only(): void
+    public function test_evolution_payload_contract_is_preserved_while_direct_http_is_blocked(): void
     {
         $this->configureEvolution([
             'services.evolution.real_send_enabled' => true,
@@ -450,7 +445,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         );
 
         $payload = $dispatch->refresh()->request_payload;
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
         $this->assertSame('905467647428', $payload['target_phone']);
         $this->assertSame('905559998877', $payload['original_phone']);
         $this->assertSame('assignment_offer_technician', $payload['event']);
@@ -470,7 +465,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->assertStringContainsString('partner_id='.$partner->id, $payload['job_link']);
         $this->assertStringContainsString('job_id='.$request->id, $payload['job_link']);
         $this->assertStringContainsString((string) $payload['job_link'], $payload['text']);
-        Http::assertSentCount(1);
+        Http::assertNothingSent();
     }
 
     /**

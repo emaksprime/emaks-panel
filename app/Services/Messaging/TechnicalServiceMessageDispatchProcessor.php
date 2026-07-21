@@ -22,7 +22,7 @@ class TechnicalServiceMessageDispatchProcessor
     ) {}
 
     /**
-     * @param  array{limit?:int,provider?:string|null,provider_keys?:array<int, string>,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null,manual_e2e_only?:bool,created_after?:string|null,guarded_batch?:bool}  $options
+     * @param  array{limit?:int,provider?:string|null,provider_keys?:array<int, string>,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null,manual_e2e_only?:bool,created_after?:string|null,guarded_batch?:bool,outbound_worker_owner?:string|null}  $options
      * @return array<string, mixed>
      */
     public function dryRun(array $options = []): array
@@ -44,7 +44,7 @@ class TechnicalServiceMessageDispatchProcessor
     }
 
     /**
-     * @param  array{limit?:int,provider?:string|null,provider_keys?:array<int, string>,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null,manual_e2e_only?:bool,created_after?:string|null,guarded_batch?:bool}  $options
+     * @param  array{limit?:int,provider?:string|null,provider_keys?:array<int, string>,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null,manual_e2e_only?:bool,created_after?:string|null,guarded_batch?:bool,outbound_worker_owner?:string|null}  $options
      * @return array<string, mixed>
      */
     public function process(array $options = []): array
@@ -163,6 +163,20 @@ class TechnicalServiceMessageDispatchProcessor
 
                     if (! in_array($dispatch->status, [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED], true)) {
                         return ['id' => $dispatch->id, 'status' => $dispatch->status, 'skipped' => true];
+                    }
+
+                    $outboundWorkerOwner = is_string($options['outbound_worker_owner'] ?? null)
+                        ? trim($options['outbound_worker_owner'])
+                        : null;
+                    $executionAuthorization = $noExternal && $dispatch->provider_key === 'null_local'
+                        ? ['allowed' => true, 'code' => null, 'message' => null]
+                        : $this->settings->dispatchExecutionAuthorization(
+                            $dispatch,
+                            false,
+                            $outboundWorkerOwner,
+                        );
+                    if (! $executionAuthorization['allowed']) {
+                        return $this->blockForExecutionMode($dispatch, $executionAuthorization);
                     }
 
                     if ((int) $dispatch->attempt_count !== 0) {
@@ -297,6 +311,7 @@ class TechnicalServiceMessageDispatchProcessor
                             ...((array) $dispatch->metadata),
                             'normal_processor_claim_hash' => hash('sha256', $claimNonce),
                             'normal_processor_claimed_at' => now()->toIso8601String(),
+                            'normal_outbound_worker_lease_hash' => hash('sha256', (string) $outboundWorkerOwner),
                             'normal_outbound_replay_blocked' => true,
                             'provider_send_attempted' => false,
                         ],
@@ -441,6 +456,12 @@ class TechnicalServiceMessageDispatchProcessor
     private function processManualE2E(TechnicalServiceMessageDispatch $candidate, array $options): array
     {
         $runId = TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null);
+        $executionAuthorization = $this->settings->dispatchExecutionAuthorization($candidate, true);
+        if (! $executionAuthorization['allowed']) {
+            $this->closeRejectedManualE2EWindow($runId, $candidate->id);
+
+            return $this->blockForExecutionMode($candidate->fresh(), $executionAuthorization);
+        }
         $rateLimit = $this->rateLimiter->evaluateBeforeProcessing($candidate);
         if (! $rateLimit['allowed']) {
             $this->closeRejectedManualE2EWindow($runId, $candidate->id);
@@ -541,6 +562,48 @@ class TechnicalServiceMessageDispatchProcessor
         } catch (Throwable) {
             // The window may already be claimed, closed, replaced, or invalid.
         }
+    }
+
+    /**
+     * @param  array{allowed:bool,code:string|null,message:string|null}  $authorization
+     * @return array<string, mixed>
+     */
+    private function blockForExecutionMode(
+        TechnicalServiceMessageDispatch $dispatch,
+        array $authorization,
+    ): array {
+        $code = (string) ($authorization['code'] ?? 'outbound_execution_mode_blocked');
+        $message = (string) ($authorization['message'] ?? 'Dispatch çalışma modu tarafından engellendi.');
+        $local = $code === 'outbound_execution_mode_local';
+        $dispatch->forceFill([
+            'status' => $local
+                ? TechnicalServiceMessageDispatch::STATUS_SUPPRESSED
+                : TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'provider_status' => $local ? 'local_no_send' : 'execution_mode_blocked',
+            'failed_at' => $local ? null : now(),
+            'last_error_code' => $code,
+            'last_error_message_redacted' => $message,
+            'metadata' => [
+                ...((array) $dispatch->metadata),
+                'provider_send_attempted' => false,
+                'external_provider_call' => false,
+                'execution_mode_blocked_at' => now()->toIso8601String(),
+            ],
+        ])->save();
+        $this->queue->recordEvent(
+            $dispatch,
+            $local ? 'message_local_recorded' : 'message_execution_mode_blocked',
+            $local ? 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.' : 'Mesaj çalışma modu/revision guard ile engellendi.',
+        );
+
+        return [
+            'id' => $dispatch->id,
+            'status' => $dispatch->status,
+            'blocked' => ! $local,
+            'suppressed' => $local,
+            'provider_status' => $dispatch->provider_status,
+            'reason' => $message,
+        ];
     }
 
     /**

@@ -56,9 +56,11 @@ class TechnicalServiceTemplateTestSendService
         if ($channel === 'sms') {
             $dispatch = $this->nacSms->send($preview, $phone, $input, $actor);
 
-            return $this->response($preview, $dispatch, $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENT
-                ? 'NAC SMS şablon testi shared test telefonuna gönderildi.'
-                : 'NAC SMS provider yanıtı başarısız: '.($dispatch->error_message ?: 'Güvenli hata detayı yok.'));
+            return $this->response($preview, $dispatch, match ($dispatch->status) {
+                TechnicalServiceMessageDispatch::STATUS_SENT => 'NAC SMS şablon testi shared test telefonuna gönderildi.',
+                TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED => 'NAC SMS şablonu no-send audit kaydı olarak oluşturuldu; provider çağrısı yapılmadı.',
+                default => 'NAC SMS provider yanıtı başarısız: '.($dispatch->error_message ?: 'Güvenli hata detayı yok.'),
+            });
         }
 
         if ($channel !== 'whatsapp') {
@@ -83,9 +85,11 @@ class TechnicalServiceTemplateTestSendService
             user: $actor,
         );
 
-        return $this->response($preview, $dispatch, $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENT
-            ? 'Evo WhatsApp test mesajı shared test telefonuna gönderildi.'
-            : 'Evo WhatsApp provider yanıtı doğrulanamadı; telefon üzerinden teslim kontrolü yapın.');
+        return $this->response($preview, $dispatch, match ($dispatch->status) {
+            TechnicalServiceMessageDispatch::STATUS_SENT => 'Evo WhatsApp test mesajı shared test telefonuna gönderildi.',
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED => 'Evo WhatsApp şablonu no-send audit kaydı olarak oluşturuldu; provider çağrısı yapılmadı.',
+            default => 'Evo WhatsApp provider yanıtı doğrulanamadı; telefon üzerinden teslim kontrolü yapın.',
+        });
     }
 
     /**

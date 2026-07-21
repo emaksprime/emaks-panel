@@ -85,6 +85,12 @@ Route::middleware(['auth', 'panel.session'])
         Route::patch('messaging-settings', [TechnicalServiceMessagingSettingsController::class, 'update'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.update');
+        Route::get('messaging-settings/execution-mode/readiness', [TechnicalServiceMessagingSettingsController::class, 'executionModeReadiness'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.execution-mode.readiness');
+        Route::post('messaging-settings/execution-mode', [TechnicalServiceMessagingSettingsController::class, 'updateExecutionMode'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.execution-mode.update');
         Route::post('messaging-settings/reset', [TechnicalServiceMessagingSettingsController::class, 'reset'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.reset');

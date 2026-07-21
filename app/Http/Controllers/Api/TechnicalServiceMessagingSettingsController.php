@@ -8,6 +8,7 @@ use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -125,6 +126,56 @@ class TechnicalServiceMessagingSettingsController extends Controller
         ]);
     }
 
+    public function executionModeReadiness(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    {
+        return response()->json([
+            'execution_mode' => $settings->executionModePayload(),
+        ]);
+    }
+
+    public function updateExecutionMode(
+        Request $request,
+        TechnicalServiceMessagingSettingsService $settings,
+    ): JsonResponse {
+        $this->assertExecutionModePayloadKeys($request);
+        $data = $request->validate([
+            'mode' => ['required', 'string', Rule::in([
+                TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
+                TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            ])],
+            'reason' => ['required', 'string', 'min:10', 'max:500'],
+            'confirmation' => ['nullable', 'string', 'max:40'],
+        ]);
+        if ($data['mode'] === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE
+            && ($data['confirmation'] ?? null) !== 'CANLI MODU AÇ') {
+            throw ValidationException::withMessages([
+                'confirmation' => 'Canlı mod için CANLI MODU AÇ onayı zorunlu.',
+            ]);
+        }
+
+        $actor = $request->user();
+        if ($actor === null) {
+            abort(403);
+        }
+        $correlationId = trim((string) $request->header('X-Request-ID'));
+        if (preg_match('/^[A-Za-z0-9._:-]{8,120}$/', $correlationId) !== 1) {
+            $correlationId = (string) Str::uuid();
+        }
+
+        return response()->json([
+            'execution_mode' => $settings->transitionExecutionMode(
+                (string) $data['mode'],
+                (string) $data['reason'],
+                $actor,
+                isset($data['confirmation']) ? (string) $data['confirmation'] : null,
+                $correlationId,
+            ),
+            'message' => $data['mode'] === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE
+                ? 'Mesajlaşma çalışma modu readiness doğrulamasıyla Canlı olarak güncellendi.'
+                : 'Mesajlaşma çalışma modu Lokal olarak donduruldu; dış provider kapıları kapalı.',
+        ]);
+    }
+
     public function enableManualE2E(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
         $operation = $request->validate([
@@ -186,6 +237,16 @@ class TechnicalServiceMessagingSettingsController extends Controller
         if ($unexpected !== []) {
             throw ValidationException::withMessages([
                 'operation' => 'Manual E2E lifecycle payload yalnız operation, active run ve exact dispatch alanlarını kabul eder.',
+            ]);
+        }
+    }
+
+    private function assertExecutionModePayloadKeys(Request $request): void
+    {
+        $allowed = ['mode', 'reason', 'confirmation'];
+        if (array_diff(array_keys($request->all()), $allowed) !== []) {
+            throw ValidationException::withMessages([
+                'mode' => 'Çalışma modu payload yalnız mode, reason ve confirmation alanlarını kabul eder.',
             ]);
         }
     }
@@ -254,9 +315,11 @@ class TechnicalServiceMessagingSettingsController extends Controller
 
         return response()->json([
             'provider_test' => [
-                'message' => $dispatch->status === 'sent'
-                    ? 'NAC altyapı test SMS’i shared test telefonuna gönderildi.'
-                    : 'NAC altyapı test SMS’i başarısız: '.($dispatch->error_message ?: 'Güvenli hata detayı yok.'),
+                'message' => match ($dispatch->status) {
+                    'sent' => 'NAC altyapı test SMS’i shared test telefonuna gönderildi.',
+                    'suppressed_real_send_disabled' => 'NAC altyapı testi no-send audit kaydı olarak oluşturuldu; provider çağrısı yapılmadı.',
+                    default => 'NAC altyapı test SMS’i başarısız: '.($dispatch->error_message ?: 'Güvenli hata detayı yok.'),
+                },
                 'dispatch' => [
                     'id' => $dispatch->id,
                     'event' => $dispatch->event,

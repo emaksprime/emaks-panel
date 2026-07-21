@@ -2,10 +2,12 @@
 
 namespace App\Services\Messaging;
 
+use App\Models\AuditLog;
 use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
+use App\Models\User;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
@@ -35,6 +37,16 @@ class TechnicalServiceMessagingSettingsService
 
     public const MANUAL_E2E_WINDOW_TTL_SECONDS = 30;
 
+    public const OUTBOUND_EXECUTION_MODE_LOCAL = 'local';
+
+    public const OUTBOUND_EXECUTION_MODE_LIVE = 'live';
+
+    public const OUTBOUND_WORKER_LOCK_KEY = 'technical_service_message_dispatch_live_worker';
+
+    public const OUTBOUND_WORKER_LEASE_KEY = 'technical_service_message_dispatch_live_worker_lease';
+
+    public const OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS = 30;
+
     private const MANUAL_E2E_ADVISORY_LOCK_CLASS_ID = 1162690891;
 
     private const MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID = 1296384581;
@@ -61,6 +73,11 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_window_history',
         'normal_outbound_active_claim',
         'normal_outbound_history',
+        'outbound_execution_mode',
+        'outbound_mode_revision',
+        'outbound_mode_changed_at',
+        'outbound_mode_changed_by',
+        'outbound_mode_reason',
         'manual_e2e_ttl_seconds',
         'manual_e2e_allowlisted_phones',
         'manual_e2e_partner_portal_origin_enabled',
@@ -102,6 +119,11 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_run_snapshot',
         'normal_outbound_active_claim',
         'normal_outbound_history',
+        'outbound_execution_mode',
+        'outbound_mode_revision',
+        'outbound_mode_changed_at',
+        'outbound_mode_changed_by',
+        'outbound_mode_reason',
         'manual_e2e_run_id',
         'smoke_run_id',
         'manual_e2e',
@@ -461,6 +483,7 @@ class TechnicalServiceMessagingSettingsService
             'keys' => [
                 'root' => self::ROOT_KEY,
             ],
+            'execution_mode' => $this->executionModePayloadForSettings($settings, true),
             'global' => [
                 'messaging_enabled' => (bool) $settings['messaging_enabled'],
                 'real_send_enabled' => (bool) $settings['real_send_enabled'],
@@ -584,6 +607,190 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
+     * Dedicated execution-mode responses omit provider secrets and phone values.
+     *
+     * @return array<string, mixed>
+     */
+    public function executionModePayload(): array
+    {
+        return $this->executionModePayloadForSettings($this->settings(), true);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function transitionExecutionMode(
+        string $mode,
+        string $reason,
+        User $actor,
+        ?string $confirmation = null,
+        ?string $correlationId = null,
+    ): array {
+        $mode = trim(strtolower($mode));
+        $reason = $this->sanitizeExecutionModeReason($reason);
+        if (! in_array($mode, [self::OUTBOUND_EXECUTION_MODE_LOCAL, self::OUTBOUND_EXECUTION_MODE_LIVE], true)) {
+            throw ValidationException::withMessages([
+                'mode' => 'Mesajlaşma çalışma modu yalnız local veya live olabilir.',
+            ]);
+        }
+        if ($reason === '') {
+            throw ValidationException::withMessages([
+                'reason' => 'Çalışma modu değişikliği için açıklama zorunlu.',
+            ]);
+        }
+        if ($mode === self::OUTBOUND_EXECUTION_MODE_LIVE && $confirmation !== 'CANLI MODU AÇ') {
+            throw ValidationException::withMessages([
+                'confirmation' => 'Canlı mod için CANLI MODU AÇ onayı zorunlu.',
+            ]);
+        }
+
+        $correlationId = $this->safeCorrelationId($correlationId);
+        $activeRunId = null;
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($mode, $reason, $actor, $correlationId, &$activeRunId): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $previousMode = $this->executionMode($current);
+                $previousRevision = $this->executionModeRevision($current);
+                $readiness = [
+                    'eligible' => true,
+                    'blockers' => [],
+                ];
+                if ($mode === self::OUTBOUND_EXECUTION_MODE_LIVE) {
+                    $readiness = $this->executionModeReadinessForSettings($current, false);
+                    if (! (bool) $readiness['eligible']) {
+                        throw ValidationException::withMessages([
+                            'mode' => collect($readiness['blockers'])
+                                ->map(fn (array $blocker): string => '['.$blocker['code'].'] '.$blocker['message'])
+                                ->all(),
+                        ]);
+                    }
+                }
+
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                $activeRunId = $context->activeRunId();
+                $next = $current;
+                if ($mode === self::OUTBOUND_EXECUTION_MODE_LOCAL) {
+                    $next = $this->freezeManualE2EForExecutionMode($next, $context);
+                } else {
+                    $next['manual_e2e_phase'] = self::MANUAL_E2E_PHASE_FROZEN;
+                    $next['manual_e2e_enabled'] = false;
+                    $next['manual_e2e_open_window'] = null;
+                    $next['manual_e2e_active_claim'] = null;
+                    $next['manual_e2e_active_run_id'] = null;
+                    $next['manual_e2e_started_at'] = null;
+                    $next['manual_e2e_created_after'] = null;
+                    $next['manual_e2e_expires_at'] = null;
+                    $next['test_mode_enabled'] = false;
+                    $next['real_send_enabled'] = $this->runtimeEnvironment() === 'production';
+                    $next['queue_paused'] = $this->runtimeEnvironment() !== 'production';
+                }
+
+                $changedAt = CarbonImmutable::now()->toIso8601String();
+                $nextRevision = $previousRevision + 1;
+                $next['outbound_execution_mode'] = $mode;
+                $next['outbound_mode_revision'] = $nextRevision;
+                $next['outbound_mode_changed_at'] = $changedAt;
+                $next['outbound_mode_changed_by'] = $actor->getKey();
+                $next['outbound_mode_reason'] = $reason;
+
+                if ($mode === self::OUTBOUND_EXECUTION_MODE_LOCAL) {
+                    $this->assertLocalExecutionModeState($next);
+                } else {
+                    $this->validateSettings($next);
+                }
+                $this->persistAuthoritativeSettings($locked, $next);
+                AuditLog::query()->create([
+                    'user_id' => $actor->getKey(),
+                    'action' => 'technical_service.messaging.execution_mode.changed',
+                    'payload' => [
+                        'runtime_environment' => $this->runtimeEnvironment(),
+                        'previous_mode' => $previousMode,
+                        'previous_revision' => $previousRevision,
+                        'new_mode' => $mode,
+                        'new_revision' => $nextRevision,
+                        'reason' => $reason,
+                        'readiness_eligible' => (bool) $readiness['eligible'],
+                        'readiness_blocker_codes' => array_column((array) $readiness['blockers'], 'code'),
+                        'correlation_id' => $correlationId,
+                        'changed_at' => $changedAt,
+                        'redacted_diff' => [
+                            'outbound_execution_mode' => [$previousMode, $mode],
+                            'outbound_mode_revision' => [$previousRevision, $nextRevision],
+                            'real_send_enabled' => [(bool) $current['real_send_enabled'], (bool) $next['real_send_enabled']],
+                            'queue_paused' => [(bool) $current['queue_paused'], (bool) $next['queue_paused']],
+                        ],
+                    ],
+                    'created_at' => now('UTC'),
+                ]);
+            });
+
+            if ($mode === self::OUTBOUND_EXECUTION_MODE_LOCAL && $activeRunId !== null) {
+                $this->invalidateManualE2EWorkerLease($activeRunId);
+            }
+        } finally {
+            $lock();
+        }
+
+        return $this->executionModePayload();
+    }
+
+    /**
+     * @return array{outbound_execution_mode:string,outbound_mode_revision:int,runtime_environment:string,outbound_mode_snapshot_at:string,messaging_enabled:bool}
+     */
+    public function executionModeSnapshot(): array
+    {
+        $settings = $this->settings();
+
+        return [
+            'outbound_execution_mode' => $this->executionMode($settings),
+            'outbound_mode_revision' => $this->executionModeRevision($settings),
+            'runtime_environment' => $this->runtimeEnvironment(),
+            'outbound_mode_snapshot_at' => CarbonImmutable::now()->toIso8601String(),
+            'messaging_enabled' => (bool) ($settings['messaging_enabled'] ?? false),
+        ];
+    }
+
+    /**
+     * @return array{allowed:bool,code:string|null,message:string|null}
+     */
+    public function dispatchExecutionAuthorization(
+        TechnicalServiceMessageDispatch $dispatch,
+        bool $manualE2E,
+        ?string $outboundWorkerOwner = null,
+    ): array {
+        return $this->dispatchExecutionAuthorizationForSettings(
+            $dispatch,
+            $manualE2E,
+            $this->settings(),
+            $outboundWorkerOwner,
+        );
+    }
+
+    /**
+     * Legacy direct clients never possess the queue claim/permit tuple.
+     *
+     * @return array{allowed:false,code:string,message:string}
+     */
+    public function directProviderExecutionBlock(string $provider): array
+    {
+        $provider = $this->normalizeProviderKey($provider);
+        $mode = $this->executionMode($this->settings());
+
+        return [
+            'allowed' => false,
+            'code' => $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
+                ? 'outbound_execution_mode_local'
+                : 'direct_provider_claim_required',
+            'message' => $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
+                ? 'Mesajlaşma çalışma modu Lokal; dış provider çağrısı kapalı.'
+                : "{$provider} doğrudan çağrılamaz; server-side dispatch claim ve tek kullanımlık permit zorunlu.",
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $values
      * @return array<string, mixed>
      */
@@ -625,6 +832,9 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $current ??= $this->settings();
+        if ($this->executionMode($current) === self::OUTBOUND_EXECUTION_MODE_LIVE) {
+            throw new ConflictHttpException('Canlı çalışma modunda provider ve mesaj ayarları değiştirilemez. Önce çalışma modunu Lokal olarak dondurun.');
+        }
         $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
         if (! $context->enabled()
             && $context->activeRunId() === null
@@ -642,10 +852,11 @@ class TechnicalServiceMessagingSettingsService
     {
         $current = $settings ?? $this->settings();
         $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
-        if ($context->enabled()
+        if ($this->executionMode($current) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            || $context->enabled()
             || $context->activeRunId() !== null
             || is_array($current['normal_outbound_active_claim'] ?? null)) {
-            throw new ConflictHttpException('Aktif Manual E2E oturumu varken gönderim güvenliği ayarları değiştirilemez. Önce gönderimleri dondurun.');
+            throw new ConflictHttpException('Canlı çalışma modu veya aktif provider yaşam döngüsü varken gönderim güvenliği ayarları değiştirilemez. Önce çalışma modunu Lokal olarak dondurun.');
         }
     }
 
@@ -767,6 +978,12 @@ class TechnicalServiceMessagingSettingsService
                 $locked = $this->lockedAuthoritativeSettings();
                 $current = $locked['settings'];
                 $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                if ($this->executionMode($current) !== self::OUTBOUND_EXECUTION_MODE_LIVE
+                    || $this->runtimeEnvironment() === 'production') {
+                    throw ValidationException::withMessages([
+                        'manual_e2e' => 'Manual E2E yalnız non-production Canlı API Testi çalışma modunda hazırlanabilir.',
+                    ]);
+                }
                 if ($context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
                     || $context->enabled()
                     || $context->activeRunId() !== null
@@ -821,6 +1038,9 @@ class TechnicalServiceMessagingSettingsService
                     'manual_e2e_active_claim' => null,
                     'manual_e2e_run_snapshot' => [
                         'allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
+                        'outbound_execution_mode' => $this->executionMode($current),
+                        'outbound_mode_revision' => $this->executionModeRevision($current),
+                        'runtime_environment' => $this->runtimeEnvironment(),
                         'evo_ready' => (bool) $readiness['evo_ready'],
                         'nac_ready' => (bool) $readiness['nac_ready'],
                         'prepared_at' => $startedAt->toIso8601String(),
@@ -886,6 +1106,10 @@ class TechnicalServiceMessagingSettingsService
                 }
 
                 $authoritative = $this->assertManualE2EDispatchEligible($current, $context, $dispatch);
+                $executionAuthorization = $this->dispatchExecutionAuthorizationForSettings($dispatch, true, $current);
+                if (! $executionAuthorization['allowed']) {
+                    throw new ConflictHttpException((string) $executionAuthorization['message']);
+                }
                 $openedAt = CarbonImmutable::now();
                 $window = [
                     'id' => (string) Str::uuid(),
@@ -1050,6 +1274,10 @@ class TechnicalServiceMessagingSettingsService
                     throw new ConflictHttpException('Exact Manual E2E gönderim penceresi doğrulanamadı.');
                 }
                 $authoritative = $this->assertManualE2EDispatchEligible($current, $context, $dispatch);
+                $executionAuthorization = $this->dispatchExecutionAuthorizationForSettings($dispatch, true, $current);
+                if (! $executionAuthorization['allowed']) {
+                    throw new ConflictHttpException((string) $executionAuthorization['message']);
+                }
                 if (! $this->manualE2ESecurityTupleMatches($window, $authoritative)) {
                     throw new ConflictHttpException('Exact Manual E2E gönderim penceresi doğrulanamadı.');
                 }
@@ -1141,6 +1369,10 @@ class TechnicalServiceMessagingSettingsService
                     || $dispatch->sent_at !== null
                 ) {
                     throw new ConflictHttpException('Manual E2E transport izni dispatch ile eşleşmiyor.');
+                }
+                $executionAuthorization = $this->dispatchExecutionAuthorizationForSettings($dispatch, true, $current);
+                if (! $executionAuthorization['allowed']) {
+                    throw new ConflictHttpException((string) $executionAuthorization['message']);
                 }
 
                 $startedAt = now()->toIso8601String();
@@ -1385,7 +1617,8 @@ class TechnicalServiceMessagingSettingsService
 
     public function assertProviderHttpOutsideTransaction(): void
     {
-        if (DB::transactionLevel() !== 0) {
+        $connection = DB::connection();
+        if ($connection->transactionLevel() !== 0 || $connection->getPdo()->inTransaction()) {
             throw ValidationException::withMessages([
                 'manual_e2e' => 'Provider outbound açık veya dış DB transaction içinden başlatılamaz.',
             ]);
@@ -1443,6 +1676,10 @@ class TechnicalServiceMessagingSettingsService
             $target = $this->normalizePhone((string) $dispatch->target_phone);
             if ($target === '') {
                 throw new ConflictHttpException('Normal outbound transport recipient doğrulanamadı.');
+            }
+            $executionAuthorization = $this->dispatchExecutionAuthorizationForSettings($dispatch, false, $current);
+            if (! $executionAuthorization['allowed']) {
+                throw new ConflictHttpException((string) $executionAuthorization['message']);
             }
 
             $startedAt = now()->toIso8601String();
@@ -1922,65 +2159,101 @@ class TechnicalServiceMessagingSettingsService
         CarbonImmutable $startedAt,
         CarbonImmutable $expiresAt,
     ): array {
-        $context = $this->manualE2EContext();
-        if (! $context->isActive() || $context->activeRunId() !== $runId || trim($lockOwner) === '') {
-            throw new ConflictHttpException('Worker lease aktif Manual E2E run ile eşleşmiyor.');
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            $settings = $this->settings();
+            $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+            if (! $context->isActive()
+                || $context->activeRunId() !== $runId
+                || trim($lockOwner) === ''
+                || $this->runtimeEnvironment() === 'production'
+                || $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
+                throw new ConflictHttpException('Worker lease aktif Manual E2E run ile eşleşmiyor.');
+            }
+
+            $now = CarbonImmutable::now();
+            $lease = [
+                'run_id' => $runId,
+                'lock_owner' => $lockOwner,
+                'process_id' => getmypid() ?: null,
+                'outbound_mode_revision' => $this->executionModeRevision($settings),
+                'started_at' => $startedAt->toIso8601String(),
+                'heartbeat_at' => $now->toIso8601String(),
+                'expires_at' => $expiresAt->toIso8601String(),
+                'invalidated_at' => null,
+            ];
+            Cache::put(
+                TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY,
+                $lease,
+                max(60, $context->remainingTtlSeconds() + 60),
+            );
+
+            return $this->workerLeasePublicPayload($lease, $now);
+        } finally {
+            $lock();
         }
-
-        $now = CarbonImmutable::now();
-        $lease = [
-            'run_id' => $runId,
-            'lock_owner' => $lockOwner,
-            'process_id' => getmypid() ?: null,
-            'started_at' => $startedAt->toIso8601String(),
-            'heartbeat_at' => $now->toIso8601String(),
-            'expires_at' => $expiresAt->toIso8601String(),
-            'invalidated_at' => null,
-        ];
-        Cache::put(
-            TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY,
-            $lease,
-            max(60, $context->remainingTtlSeconds() + 60),
-        );
-
-        return $this->workerLeasePublicPayload($lease, $now);
     }
 
     public function heartbeatManualE2EWorkerLease(string $runId, string $lockOwner): bool
     {
-        $lease = $this->manualE2EWorkerLease();
-        $context = $this->manualE2EContext();
-        if ($lease === null
-            || ($lease['run_id'] ?? null) !== $runId
-            || ($lease['lock_owner'] ?? null) !== $lockOwner
-            || filled($lease['invalidated_at'] ?? null)
-            || ! $context->isActive()
-            || $context->activeRunId() !== $runId) {
+        try {
+            $lock = $this->acquireLifecycleLock();
+        } catch (ConflictHttpException) {
             return false;
         }
 
-        $lease['heartbeat_at'] = CarbonImmutable::now()->toIso8601String();
-        Cache::put(
-            TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY,
-            $lease,
-            max(60, $context->remainingTtlSeconds() + 60),
-        );
+        try {
+            $lease = $this->manualE2EWorkerLease();
+            $settings = $this->settings();
+            $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+            if ($lease === null
+                || ($lease['run_id'] ?? null) !== $runId
+                || ($lease['lock_owner'] ?? null) !== $lockOwner
+                || (int) ($lease['outbound_mode_revision'] ?? -1) !== $this->executionModeRevision($settings)
+                || filled($lease['invalidated_at'] ?? null)
+                || $this->runtimeEnvironment() === 'production'
+                || $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE
+                || ! $context->isActive()
+                || $context->activeRunId() !== $runId) {
+                return false;
+            }
 
-        return true;
+            $lease['heartbeat_at'] = CarbonImmutable::now()->toIso8601String();
+            Cache::put(
+                TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY,
+                $lease,
+                max(60, $context->remainingTtlSeconds() + 60),
+            );
+
+            return true;
+        } finally {
+            $lock();
+        }
     }
 
     public function clearManualE2EWorkerLease(string $runId, string $lockOwner): bool
     {
-        $lease = $this->manualE2EWorkerLease();
-        if ($lease === null
-            || ($lease['run_id'] ?? null) !== $runId
-            || ($lease['lock_owner'] ?? null) !== $lockOwner) {
+        try {
+            $lock = $this->acquireLifecycleLock();
+        } catch (ConflictHttpException) {
             return false;
         }
 
-        Cache::forget(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+        try {
+            $lease = $this->manualE2EWorkerLease();
+            if ($lease === null
+                || ($lease['run_id'] ?? null) !== $runId
+                || ($lease['lock_owner'] ?? null) !== $lockOwner) {
+                return false;
+            }
 
-        return true;
+            Cache::forget(TechnicalServiceManualE2ERunContext::WORKER_LEASE_KEY);
+
+            return true;
+        } finally {
+            $lock();
+        }
     }
 
     /**
@@ -2239,6 +2512,7 @@ class TechnicalServiceMessagingSettingsService
         $settings = $this->settings();
 
         return (bool) $settings['messaging_enabled']
+            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
             && (bool) $settings['real_send_enabled']
             && $this->readiness($settings)['can_send_real'];
     }
@@ -2343,6 +2617,13 @@ class TechnicalServiceMessagingSettingsService
         $settings['normal_outbound_history'] = is_array($settings['normal_outbound_history'] ?? null)
             ? array_values($settings['normal_outbound_history'])
             : [];
+        $settings['outbound_execution_mode'] = $this->executionMode($settings);
+        $settings['outbound_mode_revision'] = $this->executionModeRevision($settings);
+        $settings['outbound_mode_changed_at'] = $this->nullableScalar($settings['outbound_mode_changed_at'] ?? null);
+        $settings['outbound_mode_changed_by'] = is_numeric($settings['outbound_mode_changed_by'] ?? null)
+            ? (int) $settings['outbound_mode_changed_by']
+            : null;
+        $settings['outbound_mode_reason'] = $this->nullableScalar($settings['outbound_mode_reason'] ?? null);
 
         return $settings;
     }
@@ -2357,7 +2638,12 @@ class TechnicalServiceMessagingSettingsService
             'real_send_enabled' => false,
             'test_mode_enabled' => true,
             'test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
-            'queue_paused' => false,
+            'queue_paused' => true,
+            'outbound_execution_mode' => self::OUTBOUND_EXECUTION_MODE_LOCAL,
+            'outbound_mode_revision' => 1,
+            'outbound_mode_changed_at' => null,
+            'outbound_mode_changed_by' => null,
+            'outbound_mode_reason' => null,
             'provider_key' => 'null_local',
             'active_provider' => 'null_local',
             'default_provider' => 'null_local',
@@ -2646,6 +2932,12 @@ class TechnicalServiceMessagingSettingsService
     private function manualE2EReadinessForSettings(array $settings, bool $checkLifecycleLock): array
     {
         $blockers = [];
+        if ($this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
+            $blockers[] = ['code' => 'outbound_execution_mode_local', 'message' => 'Manual E2E hazırlığı için çalışma modu önce Canlı API Testi olmalı.'];
+        }
+        if ($this->runtimeEnvironment() === 'production') {
+            $blockers[] = ['code' => 'manual_e2e_production_forbidden', 'message' => 'Manual E2E production ortamında hazırlanamaz.'];
+        }
         $allowlist = array_values(array_unique(array_filter(array_map(
             fn (mixed $phone): string => $this->normalizePhone((string) $phone),
             (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
@@ -2944,9 +3236,10 @@ class TechnicalServiceMessagingSettingsService
             }
         }
 
-        if ((bool) $settings['real_send_enabled'] && ! $this->readiness($settings)['can_send_real']) {
+        if ((bool) $settings['real_send_enabled']
+            && $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
             throw ValidationException::withMessages([
-                'real_send_enabled' => 'Gerçek gönderim için mesaj sistemi, aktif provider, provider sözleşmesi, test telefonu ve en az bir gerçek gönderime açık mesaj tipi hazır olmalı.',
+                'real_send_enabled' => 'Gerçek gönderim yalnız dedicated çalışma modu Canlı olduğunda açılabilir.',
             ]);
         }
 
@@ -2991,6 +3284,9 @@ class TechnicalServiceMessagingSettingsService
         $normalClaim = is_array($settings['normal_outbound_active_claim'] ?? null)
             ? $settings['normal_outbound_active_claim']
             : null;
+        $executionMode = $this->executionMode($settings);
+        $productionLive = $executionMode === self::OUTBOUND_EXECUTION_MODE_LIVE
+            && $this->runtimeEnvironment() === 'production';
 
         // Legacy/non-manual settings predate persisted lifecycle phases. Once a
         // lifecycle operation writes a phase, every transition is strict.
@@ -3008,7 +3304,10 @@ class TechnicalServiceMessagingSettingsService
         $startedAt = $this->safeDate($settings['manual_e2e_started_at'] ?? null);
         $createdAfter = $this->safeDate($settings['manual_e2e_created_after'] ?? null);
         $expiresAt = $this->safeDate($settings['manual_e2e_expires_at'] ?? null);
-        $snapshotFingerprint = trim((string) data_get($settings, 'manual_e2e_run_snapshot.allowlist_fingerprint', ''));
+        $runSnapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+        $snapshotFingerprint = trim((string) ($runSnapshot['allowlist_fingerprint'] ?? ''));
         $runContextInvalid = $runId !== null && (
             $startedAt === null
             || $createdAfter === null
@@ -3017,6 +3316,10 @@ class TechnicalServiceMessagingSettingsService
             || ! $createdAfter->lt($expiresAt)
             || $snapshotFingerprint === ''
             || ! hash_equals($snapshotFingerprint, $this->allowlistFingerprint((array) ($settings['manual_e2e_allowlisted_phones'] ?? [])))
+            || ($runSnapshot['outbound_execution_mode'] ?? null) !== self::OUTBOUND_EXECUTION_MODE_LIVE
+            || (int) ($runSnapshot['outbound_mode_revision'] ?? 0) !== $this->executionModeRevision($settings)
+            || ($runSnapshot['runtime_environment'] ?? null) !== $this->runtimeEnvironment()
+            || $this->runtimeEnvironment() === 'production'
         );
 
         $normalClaimInvalid = $normalClaim !== null && (
@@ -3032,8 +3335,7 @@ class TechnicalServiceMessagingSettingsService
 
         $invalid = $normalClaimInvalid || match ($phase) {
             self::MANUAL_E2E_PHASE_FROZEN => $manualEnabled
-                || $realSend
-                || ! $queuePaused
+                || ($productionLive ? (! $realSend || $queuePaused) : ($realSend || ! $queuePaused))
                 || $runId !== null
                 || $window !== null
                 || $claim !== null,
@@ -3052,6 +3354,7 @@ class TechnicalServiceMessagingSettingsService
                 ))
                 || $normalClaim !== null,
             self::MANUAL_E2E_PHASE_WINDOW_OPEN => ! $manualEnabled
+                || $executionMode !== self::OUTBOUND_EXECUTION_MODE_LIVE
                 || ! $realSend
                 || $queuePaused
                 || $runId === null
@@ -3285,7 +3588,22 @@ class TechnicalServiceMessagingSettingsService
     ): bool {
         $context ??= TechnicalServiceManualE2ERunContext::fromSettings($settings);
 
+        if ($this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            && $this->runtimeEnvironment() === 'production') {
+            $worker = $this->outboundWorkerLeaseStatus();
+            $releaseSha = $this->runtimeReleaseSha();
+
+            return (bool) ($settings['messaging_enabled'] ?? false)
+                && (bool) ($settings['real_send_enabled'] ?? false)
+                && ! (bool) ($settings['queue_paused'] ?? true)
+                && $context->phase() === self::MANUAL_E2E_PHASE_FROZEN
+                && $releaseSha !== null
+                && ($worker['state'] ?? null) === 'active'
+                && hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha);
+        }
+
         return (bool) ($settings['messaging_enabled'] ?? false)
+            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
             && (bool) ($settings['real_send_enabled'] ?? false)
             && ! (bool) ($settings['test_mode_enabled'] ?? false)
             && ! (bool) ($settings['queue_paused'] ?? true)
@@ -3336,7 +3654,7 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if ($provider === 'nac_sms') {
-            return false;
+            return $this->nacProviderReadyForLive($settings, $this->runtimeEnvironment() === 'production');
         }
 
         return false;
@@ -4511,6 +4829,582 @@ SQL,
         } catch (Throwable) {
             return null;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function executionModePayloadForSettings(array $settings, bool $checkLifecycleLock): array
+    {
+        $changedById = is_numeric($settings['outbound_mode_changed_by'] ?? null)
+            ? (int) $settings['outbound_mode_changed_by']
+            : null;
+        $changedBy = $changedById === null
+            ? null
+            : User::query()->find($changedById);
+
+        return [
+            'mode' => $this->executionMode($settings),
+            'revision' => $this->executionModeRevision($settings),
+            'runtime_environment' => $this->runtimeEnvironment(),
+            'runtime_environment_label' => match ($this->runtimeEnvironment()) {
+                'production' => 'Production',
+                'staging' => 'Staging',
+                default => 'Lokal',
+            },
+            'classification' => $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
+                ? 'Lokal no-send modu'
+                : ($this->runtimeEnvironment() === 'production'
+                    ? 'Production operasyon modu'
+                    : 'Canlı API Testi — yalnız Manual E2E'),
+            'real_send_enabled' => (bool) ($settings['real_send_enabled'] ?? false),
+            'queue_paused' => (bool) ($settings['queue_paused'] ?? true),
+            'manual_e2e_enabled' => (bool) ($settings['manual_e2e_enabled'] ?? false),
+            'manual_e2e_phase' => (string) ($settings['manual_e2e_phase'] ?? self::MANUAL_E2E_PHASE_FROZEN),
+            'changed_at' => $settings['outbound_mode_changed_at'] ?? null,
+            'changed_by' => $changedBy === null ? null : [
+                'id' => $changedBy->getKey(),
+                'name' => (string) $changedBy->full_name,
+            ],
+            'reason' => $settings['outbound_mode_reason'] ?? null,
+            'release_sha' => $this->runtimeReleaseSha(),
+            'readiness' => $this->executionModeReadinessForSettings($settings, $checkLifecycleLock),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function executionModeReadinessForSettings(array $settings, bool $checkLifecycleLock): array
+    {
+        $environment = $this->runtimeEnvironment();
+        $production = $environment === 'production';
+        $mode = $this->executionMode($settings);
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $portalOrigins = $this->portalOriginReadiness($settings);
+        $evoReady = $this->evoProviderReadyForLive($settings, $production);
+        $nacReady = $this->nacProviderReadyForLive($settings, $production);
+        $worker = $this->outboundWorkerLeaseStatus();
+        $pending = $this->pendingExternalDispatchCount();
+        $unsafe = $this->unsafeExternalDispatchCount();
+        $releaseSha = $this->runtimeReleaseSha();
+        $blockers = [];
+
+        $addBlocker = static function (array &$target, bool $blocked, string $code, string $message): void {
+            if ($blocked) {
+                $target[] = ['code' => $code, 'message' => $message];
+            }
+        };
+
+        try {
+            $this->validateManualE2ELifecycleState($settings);
+            $lifecycleValid = true;
+        } catch (Throwable) {
+            $lifecycleValid = false;
+        }
+
+        $manualFrozen = $lifecycleValid
+            && ! $context->enabled()
+            && $context->activeRunId() === null
+            && $context->phase() === self::MANUAL_E2E_PHASE_FROZEN
+            && ! is_array($settings['manual_e2e_open_window'] ?? null)
+            && ! is_array($settings['manual_e2e_active_claim'] ?? null);
+        $normalClaimClear = ! is_array($settings['normal_outbound_active_claim'] ?? null);
+        $normalQueueClosed = ! (bool) ($settings['real_send_enabled'] ?? false)
+            && (bool) ($settings['queue_paused'] ?? true);
+        $killSwitchConsistent = $mode === self::OUTBOUND_EXECUTION_MODE_LIVE && $production
+            ? (bool) ($settings['real_send_enabled'] ?? false) && ! (bool) ($settings['queue_paused'] ?? true)
+            : $normalQueueClosed;
+        $workerHealthy = ($worker['state'] ?? 'none') === 'active'
+            && $releaseSha !== null
+            && hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha);
+        $realAllowedMessageTypeCount = collect($settings['message_types'] ?? [])
+            ->filter(fn (array $type): bool => (bool) ($type['enabled'] ?? false) && (bool) ($type['real_send_allowed'] ?? false))
+            ->count();
+
+        $addBlocker($blockers, ! (bool) ($settings['messaging_enabled'] ?? false), 'messaging_disabled', 'Mesaj sistemi açık olmalı.');
+        $addBlocker($blockers, ! $evoReady, 'evo_not_ready', 'Evo Direct API profili ve credential readiness tamamlanmalı.');
+        $addBlocker($blockers, ! $nacReady, 'nac_not_ready', 'NAC SMS profili ve credential readiness tamamlanmalı.');
+        $addBlocker($blockers, $realAllowedMessageTypeCount === 0, 'message_type_not_ready', 'En az bir operasyon mesaj tipi gerçek gönderime açık olmalı.');
+        $addBlocker($blockers, ! $lifecycleValid, 'lifecycle_invalid', 'Manual E2E lifecycle state geçersiz.');
+        $addBlocker($blockers, ! $manualFrozen, 'manual_e2e_not_frozen', 'Manual E2E frozen olmalı; active run/window/claim bulunmamalı.');
+        $addBlocker($blockers, ! $normalClaimClear, 'normal_outbound_claim_active', 'Çözülmemiş normal outbound claim varken mod değiştirilemez.');
+        $addBlocker($blockers, $pending > 0, 'pending_external_dispatch', 'Pending external dispatch sayısı sıfır olmalı.');
+        $addBlocker($blockers, $unsafe > 0, 'unsafe_external_dispatch', 'Unsafe external dispatch sayısı sıfır olmalı.');
+        $addBlocker($blockers, ! $killSwitchConsistent, 'provider_kill_switch_inconsistent', 'Mevcut real-send ve queue kill-switch durumu seçili modla tutarlı değil.');
+        if ($checkLifecycleLock) {
+            $addBlocker($blockers, ! $this->lifecycleLockAvailable(), 'lifecycle_lock_busy', 'Messaging lifecycle transition lock şu anda alınamıyor.');
+        }
+
+        if ($production) {
+            $trustedProxies = trim((string) (getenv('TRUSTED_PROXIES') ?: ''));
+            $sessionDomain = trim((string) config('session.domain', ''));
+            $addBlocker($blockers, $releaseSha === null, 'release_sha_missing', 'Production runtime release SHA doğrulanamıyor.');
+            $addBlocker($blockers, (bool) config('app.debug', false), 'app_debug_enabled', 'Production live modunda APP_DEBUG kapalı olmalı.');
+            $addBlocker($blockers, ! (bool) ($portalOrigins['live_public']['ready'] ?? false), 'public_https_not_ready', 'Canonical public HTTPS partner portal URL hazır olmalı.');
+            $addBlocker($blockers, $trustedProxies === '', 'trusted_proxy_not_ready', 'Trusted proxy yapılandırması doğrulanmalı.');
+            $addBlocker($blockers, ! (bool) config('session.secure', false), 'secure_cookie_not_ready', 'Production session cookie secure olmalı.');
+            $addBlocker($blockers, $sessionDomain === '', 'session_domain_not_ready', 'Production session domain tanımlı olmalı.');
+            $addBlocker($blockers, ! $workerHealthy, 'outbound_worker_not_healthy', 'Exact release ile çalışan normal outbound worker heartbeat bulunmalı.');
+        } else {
+            $allowlist = array_values(array_filter((array) ($settings['manual_e2e_allowlisted_phones'] ?? [])));
+            $manualE2EOriginReady = (bool) ($portalOrigins['manual_e2e']['ready'] ?? false)
+                || (bool) ($portalOrigins['live_public']['ready'] ?? false);
+            $addBlocker($blockers, $allowlist === [], 'manual_e2e_allowlist_missing', 'Non-production live modu için Manual E2E allowlist zorunlu.');
+            $addBlocker($blockers, ! $manualE2EOriginReady, 'manual_e2e_origin_not_ready', 'Telefon erişimine uygun Manual E2E LAN origin veya public HTTPS portal hazır olmalı.');
+            $addBlocker($blockers, ! $normalQueueClosed, 'normal_queue_not_closed', 'Non-production live modunda normal provider kuyruğu kapalı kalmalı.');
+            $addBlocker($blockers, ($worker['state'] ?? 'none') === 'stale', 'outbound_worker_stale', 'Stale normal outbound worker lease temizlenmeli.');
+        }
+
+        return [
+            'eligible' => $blockers === [],
+            'target_mode' => self::OUTBOUND_EXECUTION_MODE_LIVE,
+            'runtime_environment' => $environment,
+            'classification' => $production
+                ? 'Production operasyon modu'
+                : 'Canlı API Testi — yalnız Manual E2E',
+            'blockers' => $blockers,
+            'evo_ready' => $evoReady,
+            'nac_ready' => $nacReady,
+            'queue_worker_ready' => $production ? $workerHealthy : true,
+            'queue_worker_state' => $worker['state'],
+            'queue_worker_heartbeat_at' => $worker['heartbeat_at'],
+            'scheduler_topology_accepted' => $production ? $workerHealthy : false,
+            'public_https_ready' => (bool) ($portalOrigins['live_public']['ready'] ?? false),
+            'manual_e2e_origin_ready' => (bool) ($portalOrigins['manual_e2e']['ready'] ?? false),
+            'pending_external_count' => $pending,
+            'unsafe_external_count' => $unsafe,
+            'manual_e2e_frozen' => $manualFrozen,
+            'normal_outbound_claim_clear' => $normalClaimClear,
+            'normal_queue_closed' => $normalQueueClosed,
+            'provider_kill_switch_consistent' => $killSwitchConsistent,
+            'allowlist_count' => count((array) ($settings['manual_e2e_allowlisted_phones'] ?? [])),
+            'release_sha' => $releaseSha,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array{allowed:bool,code:string|null,message:string|null}
+     */
+    private function dispatchExecutionAuthorizationForSettings(
+        TechnicalServiceMessageDispatch $dispatch,
+        bool $manualE2E,
+        array $settings,
+        ?string $outboundWorkerOwner = null,
+    ): array {
+        $mode = $this->executionMode($settings);
+        $revision = $this->executionModeRevision($settings);
+        $environment = $this->runtimeEnvironment();
+        $metadata = (array) $dispatch->metadata;
+
+        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
+            return $this->executionBlock('outbound_execution_mode_local', 'Mesajlaşma çalışma modu Lokal; dış provider çağrısı kapalı.');
+        }
+        if (($metadata['outbound_execution_mode'] ?? null) !== self::OUTBOUND_EXECUTION_MODE_LIVE
+            || (int) ($metadata['outbound_mode_revision'] ?? 0) !== $revision
+            || ($metadata['runtime_environment'] ?? null) !== $environment) {
+            return $this->executionBlock('outbound_mode_revision_stale', 'Dispatch çalışma modu snapshotı current runtime revision ile eşleşmiyor; manuel inceleme zorunlu.');
+        }
+        if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)
+            || ! in_array((string) $dispatch->channel, ['whatsapp', 'sms'], true)
+            || ($dispatch->provider_key === 'evo_whatsapp' && $dispatch->channel !== 'whatsapp')
+            || ($dispatch->provider_key === 'nac_sms' && $dispatch->channel !== 'sms')) {
+            return $this->executionBlock('outbound_provider_channel_mismatch', 'Dispatch provider/channel tuple çalışma modu için geçersiz.');
+        }
+        if (! $this->evoProviderReadyForLive($settings, $environment === 'production')
+            || ! $this->nacProviderReadyForLive($settings, $environment === 'production')) {
+            return $this->executionBlock('outbound_provider_set_not_ready', 'Evo ve NAC provider readiness birlikte geçerli değil; outbound fail-closed tutuldu.');
+        }
+
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if ($manualE2E) {
+            $runSnapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+                ? $settings['manual_e2e_run_snapshot']
+                : [];
+            if ($environment === 'production'
+                || ($runSnapshot['outbound_execution_mode'] ?? null) !== self::OUTBOUND_EXECUTION_MODE_LIVE
+                || (int) ($runSnapshot['outbound_mode_revision'] ?? 0) !== $revision
+                || ($runSnapshot['runtime_environment'] ?? null) !== $environment) {
+                return $this->executionBlock('manual_e2e_environment_scope_invalid', 'Manual E2E run snapshotı current non-production çalışma modu ile eşleşmiyor.');
+            }
+            if (! $context->isActive() || ! $context->matchesDispatch($dispatch)) {
+                return $this->executionBlock('manual_e2e_execution_scope_invalid', 'Dispatch active Manual E2E run scope ile eşleşmiyor.');
+            }
+
+            return ['allowed' => true, 'code' => null, 'message' => null];
+        }
+
+        if ($environment !== 'production') {
+            return $this->executionBlock('non_production_normal_outbound_blocked', 'Non-production ortamda normal operasyon outbound kapalı; yalnız exact Manual E2E permit kullanılabilir.');
+        }
+        if ($context->enabled()
+            || $context->activeRunId() !== null
+            || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+            || ! (bool) ($settings['real_send_enabled'] ?? false)
+            || (bool) ($settings['queue_paused'] ?? true)) {
+            return $this->executionBlock('production_live_gate_closed', 'Production live provider gate veya queue state hazır değil.');
+        }
+        if (! (bool) data_get($settings, 'message_types.'.$dispatch->message_type.'.real_send_allowed', false)) {
+            return $this->executionBlock('message_type_real_send_disabled', 'Dispatch mesaj tipi gerçek gönderime açık değil.');
+        }
+        $worker = $this->outboundWorkerLeaseStatus();
+        $rawWorker = $this->outboundWorkerLease();
+        $releaseSha = $this->runtimeReleaseSha();
+        if (($worker['state'] ?? null) !== 'active'
+            || $releaseSha === null
+            || ! hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha)) {
+            return $this->executionBlock('outbound_worker_not_healthy', 'Normal outbound worker heartbeat current release ile eşleşmiyor.');
+        }
+        $currentOwner = trim((string) ($rawWorker['lock_owner'] ?? ''));
+        $expectedOwnerHash = $currentOwner === '' ? '' : hash('sha256', $currentOwner);
+        $claimOwnerHash = trim((string) data_get($dispatch->metadata, 'normal_outbound_worker_lease_hash', ''));
+        if ($outboundWorkerOwner !== null) {
+            if ($currentOwner === '' || ! hash_equals($currentOwner, trim($outboundWorkerOwner))) {
+                return $this->executionBlock('outbound_worker_lease_mismatch', 'Normal outbound çağrısı active worker lease sahibiyle eşleşmiyor.');
+            }
+        } elseif ($expectedOwnerHash === '' || ! hash_equals($expectedOwnerHash, $claimOwnerHash)) {
+            return $this->executionBlock('outbound_worker_lease_mismatch', 'Normal outbound claim active worker lease ile bağlı değil.');
+        }
+
+        return ['allowed' => true, 'code' => null, 'message' => null];
+    }
+
+    /**
+     * @return array{allowed:false,code:string,message:string}
+     */
+    private function executionBlock(string $code, string $message): array
+    {
+        return ['allowed' => false, 'code' => $code, 'message' => $message];
+    }
+
+    /**
+     * Emergency local transition validates only the closed outbound invariant.
+     * Existing provider/profile defects must never prevent the safe direction.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private function assertLocalExecutionModeState(array $settings): void
+    {
+        if ($this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LOCAL
+            || (bool) ($settings['manual_e2e_enabled'] ?? false)
+            || (bool) ($settings['real_send_enabled'] ?? false)
+            || ! (bool) ($settings['queue_paused'] ?? true)
+            || (bool) ($settings['ops_whatsapp_enabled'] ?? false)
+            || (string) ($settings['manual_e2e_phase'] ?? '') !== self::MANUAL_E2E_PHASE_FROZEN
+            || TechnicalServiceManualE2ERunContext::normalizeRunId($settings['manual_e2e_active_run_id'] ?? null) !== null
+            || is_array($settings['manual_e2e_open_window'] ?? null)
+            || is_array($settings['manual_e2e_active_claim'] ?? null)) {
+            throw new ConflictHttpException('Lokal çalışma modu outbound kapıları fail-closed duruma getirilemedi.');
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function executionMode(array $settings): string
+    {
+        return ($settings['outbound_execution_mode'] ?? null) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            ? self::OUTBOUND_EXECUTION_MODE_LIVE
+            : self::OUTBOUND_EXECUTION_MODE_LOCAL;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function executionModeRevision(array $settings): int
+    {
+        return max(1, (int) ($settings['outbound_mode_revision'] ?? 1));
+    }
+
+    private function runtimeEnvironment(): string
+    {
+        if (app()->environment('production')) {
+            return 'production';
+        }
+        if (app()->environment('staging')) {
+            return 'staging';
+        }
+
+        return 'local';
+    }
+
+    private function runtimeReleaseSha(): ?string
+    {
+        $candidate = trim((string) (config('app.release_sha')
+            ?: getenv('APP_RELEASE_SHA')
+            ?: getenv('SOURCE_COMMIT')
+            ?: ''));
+
+        return preg_match('/^[a-f0-9]{40}$/i', $candidate) === 1
+            ? strtolower($candidate)
+            : null;
+    }
+
+    private function safeCorrelationId(?string $value): string
+    {
+        $value = trim((string) $value);
+
+        return preg_match('/^[A-Za-z0-9._:-]{8,120}$/', $value) === 1
+            ? $value
+            : (string) Str::uuid();
+    }
+
+    private function sanitizeExecutionModeReason(string $value): string
+    {
+        $value = trim((string) preg_replace('/\s+/u', ' ', $value));
+        $value = (string) preg_replace(
+            '/\bAuthorization\s*:\s*[^\s,;]+(?:\s+[^\s,;]+)?/iu',
+            'Authorization: [redacted]',
+            $value,
+        );
+        $value = (string) preg_replace(
+            '/\b(api[_ -]?key|x-api-key|apikey|access[_ -]?token|refresh[_ -]?token|token|client[_ -]?secret|password|secret)(?:_encrypted)?\s*[:=]\s*[^\s,;]+/iu',
+            '$1=[redacted]',
+            $value,
+        );
+        $value = (string) preg_replace('/\bBearer\s+[^\s,;]+/iu', 'Bearer [redacted]', $value);
+        $value = (string) preg_replace(
+            '~\b([a-z][a-z0-9+.-]*://)[^/@\s]+@~iu',
+            '$1[redacted]@',
+            $value,
+        );
+        $value = (string) preg_replace(
+            '/([?&](?:api[_-]?key|apikey|access_token|refresh_token|token|client_secret|password|secret|signature|sig|key)(?:_encrypted)?=)[^&#\s]+/iu',
+            '$1[redacted]',
+            $value,
+        );
+        $value = (string) preg_replace('/\+?\d[\d\s().-]{8,}\d/u', '[redacted-phone]', $value);
+
+        return Str::limit($value, 500, '');
+    }
+
+    private function nullableScalar(mixed $value): ?string
+    {
+        return is_scalar($value) && trim((string) $value) !== ''
+            ? trim((string) $value)
+            : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function evoProviderReadyForLive(array $settings, bool $production): bool
+    {
+        $readiness = $this->evoWhatsappReadiness($settings);
+        $url = trim((string) data_get($settings, 'evo_whatsapp.direct_api_base_url', ''));
+        $urlReady = filter_var($url, FILTER_VALIDATE_URL) !== false
+            && (! $production || PartnerPortalPublicUrl::isPublicHttpsUrl($url));
+
+        return $readiness['ready']
+            && $urlReady
+            && $this->providerEnabled('evo_whatsapp', $settings)
+            && $this->providerRealSendAllowed('evo_whatsapp', $settings);
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function nacProviderReadyForLive(array $settings, bool $production): bool
+    {
+        $nac = (array) ($settings['nac_sms'] ?? []);
+        $scheme = (string) ($nac['scheme'] ?? '');
+        $profile = (string) ($nac['profile'] ?? '');
+        $host = trim((string) ($nac['host'] ?? ''));
+        $path = trim((string) ($nac['path'] ?? ''));
+        $profileValid = in_array($profile, ['docs_https_9588', 'legacy_working_http_9587', 'custom'], true)
+            && in_array($scheme, ['http', 'https'], true)
+            && $host !== ''
+            && str_starts_with($path, '/');
+        if ($production && $profile === 'custom' && $scheme !== 'https') {
+            $profileValid = false;
+        }
+
+        return $profileValid
+            && (bool) ($nac['enabled'] ?? false)
+            && (bool) ($nac['real_send_allowed'] ?? false)
+            && trim((string) ($nac['sender'] ?? '')) !== ''
+            && ($this->credential('nac_sms')?->basicAuthReady() ?? false);
+    }
+
+    private function pendingExternalDispatchCount(): int
+    {
+        return TechnicalServiceMessageDispatch::query()
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->whereIn('status', [
+                TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
+                TechnicalServiceMessageDispatch::STATUS_SENDING,
+            ])
+            ->count();
+    }
+
+    private function unsafeExternalDispatchCount(): int
+    {
+        return TechnicalServiceMessageDispatch::query()
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->where(function ($query): void {
+                $query
+                    ->where('status', TechnicalServiceMessageDispatch::STATUS_SENDING)
+                    ->orWhere(function ($query): void {
+                        $query->where('attempt_count', '>', 0)
+                            ->whereNull('provider_message_id')
+                            ->whereNull('sent_at')
+                            ->whereNull('failed_at');
+                    });
+            })
+            ->count();
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function freezeManualE2EForExecutionMode(
+        array $settings,
+        TechnicalServiceManualE2ERunContext $context,
+    ): array {
+        $history = (array) ($settings['manual_e2e_window_history'] ?? []);
+        foreach (['manual_e2e_open_window', 'manual_e2e_active_claim'] as $field) {
+            $scope = $settings[$field] ?? null;
+            if (is_array($scope)) {
+                $history = $this->appendWindowHistory($history, [
+                    ...$scope,
+                    'status' => 'execution_mode_local_frozen',
+                    'closed_at' => CarbonImmutable::now()->toIso8601String(),
+                ]);
+            }
+        }
+
+        $settings = $this->deactivateManualE2EContext($settings, $context);
+        $settings['test_mode_enabled'] = false;
+        $settings['manual_e2e_window_history'] = $history;
+
+        return $settings;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function registerOutboundWorkerLease(
+        string $lockOwner,
+        CarbonImmutable $startedAt,
+        CarbonImmutable $expiresAt,
+    ): array {
+        $releaseSha = $this->runtimeReleaseSha();
+        if ($this->runtimeEnvironment() !== 'production' || trim($lockOwner) === '' || $releaseSha === null) {
+            throw new ConflictHttpException('Normal outbound worker yalnız exact release SHA ile production ortamında kaydedilebilir.');
+        }
+
+        $now = CarbonImmutable::now();
+        $lease = [
+            'lock_owner' => $lockOwner,
+            'process_id' => getmypid() ?: null,
+            'release_sha' => $releaseSha,
+            'mode' => 'normal_live_worker',
+            'started_at' => $startedAt->toIso8601String(),
+            'heartbeat_at' => $now->toIso8601String(),
+            'expires_at' => $expiresAt->toIso8601String(),
+        ];
+        Cache::put(self::OUTBOUND_WORKER_LEASE_KEY, $lease, max(60, $now->diffInSeconds($expiresAt) + 60));
+
+        return $this->outboundWorkerLeasePublicPayload($lease, $now);
+    }
+
+    public function heartbeatOutboundWorkerLease(string $lockOwner): bool
+    {
+        $lease = $this->outboundWorkerLease();
+        if ($lease === null
+            || ($lease['lock_owner'] ?? null) !== $lockOwner
+            || ($lease['release_sha'] ?? null) !== $this->runtimeReleaseSha()) {
+            return false;
+        }
+
+        $lease['heartbeat_at'] = CarbonImmutable::now()->toIso8601String();
+        Cache::put(self::OUTBOUND_WORKER_LEASE_KEY, $lease, 120);
+
+        return true;
+    }
+
+    public function clearOutboundWorkerLease(string $lockOwner): bool
+    {
+        $lease = $this->outboundWorkerLease();
+        if ($lease === null || ($lease['lock_owner'] ?? null) !== $lockOwner) {
+            return false;
+        }
+
+        Cache::forget(self::OUTBOUND_WORKER_LEASE_KEY);
+
+        return true;
+    }
+
+    public function normalOutboundWorkerMayProcess(string $lockOwner): bool
+    {
+        $lease = $this->outboundWorkerLease();
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+
+        return $lease !== null
+            && ($lease['lock_owner'] ?? null) === $lockOwner
+            && ($lease['release_sha'] ?? null) === $this->runtimeReleaseSha()
+            && $this->runtimeEnvironment() === 'production'
+            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            && (bool) ($settings['real_send_enabled'] ?? false)
+            && ! (bool) ($settings['queue_paused'] ?? true)
+            && $context->phase() === self::MANUAL_E2E_PHASE_FROZEN
+            && ! $context->enabled()
+            && $context->activeRunId() === null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function outboundWorkerLeaseStatus(): array
+    {
+        return $this->outboundWorkerLeasePublicPayload($this->outboundWorkerLease(), CarbonImmutable::now());
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function outboundWorkerLease(): ?array
+    {
+        $lease = Cache::get(self::OUTBOUND_WORKER_LEASE_KEY);
+
+        return is_array($lease) ? $lease : null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $lease
+     * @return array<string, mixed>
+     */
+    private function outboundWorkerLeasePublicPayload(?array $lease, CarbonImmutable $now): array
+    {
+        if ($lease === null) {
+            return [
+                'state' => 'none',
+                'release_sha' => null,
+                'started_at' => null,
+                'heartbeat_at' => null,
+                'expires_at' => null,
+            ];
+        }
+
+        $heartbeat = $this->parseWorkerLeaseDate($lease['heartbeat_at'] ?? null);
+        $expiresAt = $this->parseWorkerLeaseDate($lease['expires_at'] ?? null);
+        $stale = $heartbeat === null
+            || $heartbeat->addSeconds(self::OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS)->lte($now)
+            || ($expiresAt !== null && $expiresAt->lte($now));
+
+        return [
+            'state' => $stale ? 'stale' : 'active',
+            'release_sha' => is_scalar($lease['release_sha'] ?? null) ? (string) $lease['release_sha'] : null,
+            'started_at' => $this->parseWorkerLeaseDate($lease['started_at'] ?? null)?->toIso8601String(),
+            'heartbeat_at' => $heartbeat?->toIso8601String(),
+            'expires_at' => $expiresAt?->toIso8601String(),
+        ];
     }
 
     private function normalizePhone(?string $phone): string

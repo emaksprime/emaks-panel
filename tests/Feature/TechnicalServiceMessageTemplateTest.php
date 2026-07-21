@@ -333,7 +333,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_template_test_send_allows_evo_test_when_real_send_disabled_and_targets_shared_phone(): void
+    public function test_template_test_evo_direct_path_is_audited_but_cannot_bypass_local_mode(): void
     {
         config([
             'services.evolution.n8n_webhook_url' => 'https://n8n.example.test/webhook/emaks/evo/send-message',
@@ -368,21 +368,11 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'whatsapp',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'sent')
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
             ->assertJsonPath('test_send.dispatch.target_type', 'shared_test_phone')
             ->assertJsonPath('test_send.dispatch.target_phone_masked', '9054***428');
 
-        Http::assertSent(function ($request): bool {
-            $payload = $request->data();
-
-            return $request->url() === 'https://n8n.example.test/webhook/emaks/evo/send-message'
-                && $payload['target_phone'] === '905467647428'
-                && $payload['target_type'] === 'shared_test_phone'
-                && $payload['message_type'] === 'appointment_approved_customer'
-                && str_contains($payload['text'], "\n\nSayın")
-                && str_contains($payload['text'], "\nRandevu Bilgileri\n")
-                && str_contains($payload['text'], 'EMAKS Prime Teknik Servis');
-        });
+        Http::assertNothingSent();
     }
 
     public function test_nac_sms_test_send_requires_explicit_sms_approval(): void
@@ -423,7 +413,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_template_test_sms_uses_rendered_template_content_with_turkish_encoding_no_n8n_basic_auth_safe_and_no_visible_random_code(): void
+    public function test_template_test_sms_preserves_rendered_payload_but_direct_http_is_suppressed(): void
     {
         Http::fake([
             'smslogin.nac.com.tr:9587/*' => Http::response([
@@ -481,10 +471,10 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'sms',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'sent')
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
             ->assertJsonPath('test_send.dispatch.target_type', 'shared_test_phone')
             ->assertJsonPath('test_send.dispatch.target_phone_masked', '9054***428')
-            ->assertJsonPath('test_send.dispatch.provider_reference', 'PKG-REL4C7-TEST')
+            ->assertJsonPath('test_send.dispatch.provider_reference', null)
             ->assertJsonPath('test_send.dispatch.test_type', 'template_test_sms')
             ->assertJsonPath('test_send.dispatch.encoding', 1);
 
@@ -510,42 +500,16 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringNotContainsString('nac-user@example.test', $encodedResponse);
         $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encodedResponse);
 
-        Http::assertSent(function ($request) use ($customId, $testCode, $previewBody): bool {
-            $payload = $request->data();
-
-            return $request->url() === 'http://smslogin.nac.com.tr:9587/sms/create'
-                && $payload['number'] === 905467647428
-                && $payload['sender'] === 'EMAKS PRIME'
-                && $payload['title'] === 'EMAKS TPL '.$testCode
-                && $payload['type'] === 1
-                && $payload['sendingType'] === 0
-                && $payload['encoding'] === 1
-                && $payload['periodicSettings'] === null
-                && $payload['sendingDate'] === null
-                && $payload['validity'] === 60
-                && $payload['pushSettings'] === null
-                && $payload['customID'] === $customId
-                && ! array_key_exists('gateway', $payload)
-                && ! array_key_exists('commercial', $payload)
-                && ! array_key_exists('skipAhsQuery', $payload)
-                && ! array_key_exists('recipientType', $payload)
-                && $payload['content'] === $previewBody
-                && str_contains($payload['content'], 'randevunuz onaylanmıştır')
-                && str_contains($payload['content'], 'ödenecek tutar')
-                && ! str_contains($payload['content'], 'panel NAC SMS testi')
-                && ! str_contains($payload['content'], 'panel NAC SMS ayar testi')
-                && ! str_contains($payload['content'], 'EMAKS Prime test SMS')
-                && ! str_contains($payload['content'], $testCode)
-                && ! str_contains($payload['content'], 'T202')
-                && ! str_contains($payload['title'], 'T202')
-                && ! str_contains($payload['content'], 'MRN:')
-                && ! str_contains($payload['content'], 'SRV:');
-        });
-        Http::assertSentCount(1);
-        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'n8n'));
+        $storedPayload = TechnicalServiceMessageDispatch::query()->where('event', 'template_test_sms')->firstOrFail()->request_payload;
+        $this->assertSame('7428', substr((string) data_get($storedPayload, 'nac_payload_shape.number'), -4));
+        $this->assertSame('EMAKS PRIME', data_get($storedPayload, 'nac_payload_shape.sender'));
+        $this->assertSame('EMAKS TPL '.$testCode, data_get($storedPayload, 'nac_payload_shape.title'));
+        $this->assertSame($customId, data_get($storedPayload, 'nac_payload_shape.customID'));
+        $this->assertSame($previewBody, data_get($storedPayload, 'nac_payload_shape.content'));
+        Http::assertNothingSent();
     }
 
-    public function test_provider_test_sms_uses_provider_test_content_direct_laravel_no_n8n_and_separate_endpoint(): void
+    public function test_provider_test_sms_payload_is_audited_without_direct_http(): void
     {
         Http::fake([
             'smslogin.nac.com.tr:9587/*' => Http::response([
@@ -562,28 +526,20 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'real_sms_confirmed' => true,
             ])
             ->assertOk()
-            ->assertJsonPath('provider_test.dispatch.status', 'sent')
+            ->assertJsonPath('provider_test.dispatch.status', 'suppressed_real_send_disabled')
             ->assertJsonPath('provider_test.dispatch.test_type', 'provider_test_sms')
-            ->assertJsonPath('provider_test.dispatch.provider_reference', 'PKG-PROVIDER-TEST')
+            ->assertJsonPath('provider_test.dispatch.provider_reference', null)
             ->assertJsonPath('provider_test.dispatch.encoding', 1);
 
         $testCode = $response->json('provider_test.dispatch.test_code');
-
-        Http::assertSent(function ($request) use ($testCode): bool {
-            $payload = $request->data();
-
-            return $request->url() === 'http://smslogin.nac.com.tr:9587/sms/create'
-                && $payload['title'] === 'EMAKS TEST '.$testCode
-                && $payload['encoding'] === 1
-                && str_contains($payload['content'], 'EMAKS Prime SMS altyapı testi')
-                && str_contains($payload['content'], 'Gönderim zamanı')
-                && ! str_contains($payload['content'], 'randevunuz onaylanmıştır');
-        });
-        Http::assertSentCount(1);
-        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'n8n'));
+        $payload = TechnicalServiceMessageDispatch::query()->where('event', 'provider_test_sms')->firstOrFail()->request_payload;
+        $this->assertSame('EMAKS TEST '.$testCode, data_get($payload, 'nac_payload_shape.title'));
+        $this->assertStringContainsString('EMAKS Prime SMS altyapı testi', (string) data_get($payload, 'nac_payload_shape.content'));
+        $this->assertStringContainsString('Gönderim zamanı', (string) data_get($payload, 'nac_payload_shape.content'));
+        Http::assertNothingSent();
     }
 
-    public function test_nac_sms_test_send_http_fake_error_is_redacted_and_not_sent_status(): void
+    public function test_nac_sms_fake_error_endpoint_is_not_called_and_response_remains_redacted(): void
     {
         Http::fake([
             'smslogin.nac.com.tr:9587/*' => Http::response([
@@ -629,15 +585,13 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'sms',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'failed')
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
             ->json('test_send');
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
-        $this->assertStringContainsString('HTTP 530', $encoded);
-        $this->assertStringContainsString('NAC code 1033', $encoded);
-        $this->assertStringContainsString('NAC kimlik doğrulama başarısız', (string) $payload['dispatch']['error_message']);
         $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encoded);
         $this->assertStringNotContainsString('SECRET', $encoded);
+        Http::assertNothingSent();
     }
 
     public function test_template_test_sms_keeps_body_same_but_generates_unique_title_custom_id_and_payload_hash_each_click(): void
@@ -661,7 +615,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                     'channel' => 'sms',
                 ])
                 ->assertOk()
-                ->assertJsonPath('test_send.dispatch.status', 'sent');
+                ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled');
         }
 
         $dispatches = TechnicalServiceMessageDispatch::query()
@@ -698,11 +652,10 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertNotSame($first['custom_id'], $second['custom_id']);
         $this->assertNotSame($first['payload_hash'], $second['payload_hash']);
         $this->assertSame($first['payload_hash'], $second['previous_payload_hash']);
-        Http::assertSentCount(2);
-        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'n8n'));
+        Http::assertNothingSent();
     }
 
-    public function test_template_test_duplicate_does_not_mutate_body_and_reports_provider_policy(): void
+    public function test_repeated_template_test_keeps_body_and_payload_lineage_without_direct_http(): void
     {
         Http::fake([
             'smslogin.nac.com.tr:9587/*' => Http::sequence()
@@ -730,7 +683,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'sms',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'sent')
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
             ->json('test_send.dispatch');
 
         $second = $this->actingAs($this->admin())
@@ -741,19 +694,13 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'sms',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'failed')
-            ->assertJsonPath('test_send.dispatch.duplicate', true)
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
             ->assertJsonPath('test_send.dispatch.provider_reference', null)
             ->json('test_send.dispatch');
 
         $this->assertNotSame($first['test_code'], $second['test_code']);
         $this->assertNotSame($first['payload_hash'], $second['payload_hash']);
         $this->assertSame($first['payload_hash'], $second['previous_payload_hash']);
-        $this->assertStringContainsString('ERR_SMS_PKG_DUPLICATION', $second['error_message']);
-        $this->assertStringContainsString('NAC duplicate engeli', $second['error_message']);
-        $this->assertStringContainsString('Şablon metni değiştirilmeden', $second['error_message']);
-        $this->assertStringContainsString($first['payload_hash'], $second['error_message']);
-        $this->assertStringContainsString($second['payload_hash'], $second['error_message']);
 
         $dispatches = TechnicalServiceMessageDispatch::query()
             ->where('event', 'template_test_sms')
@@ -766,7 +713,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringNotContainsString('Authorization', $encoded);
         $this->assertStringNotContainsString('Basic ', $encoded);
         $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encoded);
-        Http::assertSentCount(2);
+        Http::assertNothingSent();
     }
 
     public function test_template_test_send_refuses_blockers_and_voice_channel(): void
@@ -1659,7 +1606,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'sms',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'sent')
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
             ->assertJsonPath('test_send.dispatch.test_type', 'template_test_sms');
 
         $previewBody = $response->json('test_send.preview.rendered_body');
@@ -1676,8 +1623,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringNotContainsString('EMAKS Prime test SMS', $previewBody);
         $this->assertStringNotContainsString($payload['test_code'], $previewBody);
         $this->assertStringNotContainsString($payload['internal_test_code'], $previewBody);
-        Http::assertSentCount(1);
-        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'n8n'));
+        Http::assertNothingSent();
     }
 
     public function test_sms_compliance_footer_keeps_basic_auth_and_credentials_hidden(): void
@@ -1700,7 +1646,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 'channel' => 'sms',
             ])
             ->assertOk()
-            ->assertJsonPath('test_send.dispatch.status', 'sent');
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled');
 
         $dispatch = TechnicalServiceMessageDispatch::query()->where('event', 'template_test_sms')->firstOrFail();
         $encodedResponse = $response->getContent();
@@ -1716,7 +1662,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             $this->assertStringNotContainsString('nac-user@example.test', $encoded);
             $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encoded);
         }
-        Http::assertSentCount(1);
+        Http::assertNothingSent();
     }
 
     public function test_template_audit_all_active_templates_pass_time_language_and_event_policy(): void
@@ -1912,7 +1858,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_admin_ui_contains_template_section_and_shared_test_send_only(): void
+    public function test_admin_ui_contains_template_section_and_no_send_audit_controls(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service-admin.tsx'));
 
@@ -1928,10 +1874,11 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringContainsString('Henüz önizleme alınmadı.', $source);
         $this->assertStringContainsString('Blok yok.', $source);
         $this->assertStringContainsString('whitespace-pre-wrap', $source);
-        $this->assertStringContainsString('Seçili SMS şablonunun önizlemesi NAC üzerinden ortak test telefonuna gönderilecek.', $source);
-        $this->assertStringContainsString('SMS şablonu NAC SMS ile ortak test telefonuna gönderilir; provider altyapı testi değildir.', $source);
-        $this->assertStringContainsString('NAC altyapı test SMS’i gönder', $source);
-        $this->assertStringContainsString('Test mesajı gönder', $source);
+        $this->assertStringContainsString('Seçili SMS şablonu no-send audit kaydı olarak oluşturulacak', $source);
+        $this->assertStringContainsString('SMS şablonu NAC payload doğrulamasıyla no-send audit kaydı olarak tutulur', $source);
+        $this->assertStringContainsString('NAC No-send Test Kaydı', $source);
+        $this->assertStringContainsString('No-send test kaydı', $source);
+        $this->assertStringNotContainsString('tek gerçek SMS gönderilecek', $source);
         $this->assertStringContainsString('shared test phone', $source);
         $this->assertStringContainsString('Müşteri mesajları teknik alan isimleriyle', $source);
         $this->assertStringContainsString('servis/SRV mesajında müşteriye MRN', $source);

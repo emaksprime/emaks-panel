@@ -13,6 +13,7 @@ class TechnicalServiceMessageDispatchQueue
 {
     public function __construct(
         private readonly TechnicalServiceMessageIdempotencyService $idempotency,
+        private readonly TechnicalServiceMessagingSettingsService $settings,
     ) {}
 
     /**
@@ -20,6 +21,7 @@ class TechnicalServiceMessageDispatchQueue
      */
     public function enqueue(array $input, ?User $actor = null): TechnicalServiceMessageDispatch
     {
+        $input = $this->withServerExecutionModeSnapshot($input);
         $targetPhone = $this->idempotency->normalizePhone((string) ($input['target_phone'] ?? $input['effective_target_phone'] ?? ''));
         $recipientHash = $this->idempotency->phoneHash((string) ($input['recipient_phone'] ?? $targetPhone));
         $effectiveHash = $this->idempotency->phoneHash($targetPhone);
@@ -93,6 +95,27 @@ class TechnicalServiceMessageDispatchQueue
                 ],
             ]);
             $this->recordEvent($dispatch, 'message_system_recorded', 'Mesaj sistem kaydı olarak tutuldu.');
+
+            return $dispatch;
+        }
+
+        if (($input['metadata']['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
+            && $this->usesExternalProvider($input)) {
+            $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+                'queued_at' => null,
+                'next_attempt_at' => null,
+                'provider_status' => 'local_no_send',
+                'last_error_code' => 'outbound_execution_mode_local',
+                'last_error_message_redacted' => 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.',
+                'metadata' => [
+                    ...((array) ($input['metadata'] ?? [])),
+                    'local_no_send_recorded' => true,
+                    'provider_send_attempted' => false,
+                    'external_provider_call' => false,
+                ],
+            ]);
+            $this->recordEvent($dispatch, 'message_local_recorded', 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.');
 
             return $dispatch;
         }
@@ -195,6 +218,7 @@ class TechnicalServiceMessageDispatchQueue
      */
     public function blocked(array $input, ?User $actor, string $code, string $message): TechnicalServiceMessageDispatch
     {
+        $input = $this->withServerExecutionModeSnapshot($input);
         $targetPhone = $this->idempotency->normalizePhone((string) ($input['target_phone'] ?? $input['effective_target_phone'] ?? ''));
         $recipientHash = $this->idempotency->phoneHash((string) ($input['recipient_phone'] ?? $targetPhone));
         $effectiveHash = $this->idempotency->phoneHash($targetPhone);
@@ -230,6 +254,14 @@ class TechnicalServiceMessageDispatchQueue
         if (! in_array($dispatch->status, [TechnicalServiceMessageDispatch::STATUS_FAILED, TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR], true)) {
             throw ValidationException::withMessages([
                 'dispatch' => 'Sadece failed/provider_error mesajlar retry edilebilir.',
+            ]);
+        }
+
+        $currentSnapshot = $this->settings->executionModeSnapshot();
+        if (($currentSnapshot['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
+            && $this->usesExternalProvider(['provider_key' => $dispatch->provider_key])) {
+            throw ValidationException::withMessages([
+                'dispatch' => 'Lokal çalışma modunda dış provider dispatch retry edilemez.',
             ]);
         }
 
@@ -360,6 +392,53 @@ class TechnicalServiceMessageDispatchQueue
     }
 
     /**
+     * Client metadata cannot select or refresh an outbound execution revision.
+     * Parent/force-resend/fallback rows inherit their source snapshot so a mode
+     * switch never turns historical work into a newly authorized dispatch.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function withServerExecutionModeSnapshot(array $input): array
+    {
+        $metadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
+        $currentSnapshot = $this->settings->executionModeSnapshot();
+        $parentId = is_numeric($input['parent_dispatch_id'] ?? null)
+            ? (int) $input['parent_dispatch_id']
+            : 0;
+        $snapshot = null;
+        if ($parentId > 0) {
+            $parent = TechnicalServiceMessageDispatch::query()->find($parentId);
+            if ($parent instanceof TechnicalServiceMessageDispatch) {
+                $parentMetadata = (array) $parent->metadata;
+                $snapshot = ($currentSnapshot['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
+                    ? [
+                        ...$currentSnapshot,
+                        'outbound_snapshot_source_dispatch_id' => $parent->id,
+                        'parent_outbound_execution_mode' => $parentMetadata['outbound_execution_mode'] ?? 'local',
+                        'parent_outbound_mode_revision' => (int) ($parentMetadata['outbound_mode_revision'] ?? 0),
+                    ]
+                    : [
+                        'outbound_execution_mode' => $parentMetadata['outbound_execution_mode'] ?? 'local',
+                        'outbound_mode_revision' => (int) ($parentMetadata['outbound_mode_revision'] ?? 0),
+                        'runtime_environment' => $parentMetadata['runtime_environment'] ?? 'unknown',
+                        'outbound_mode_snapshot_at' => $parentMetadata['outbound_mode_snapshot_at'] ?? $parent->created_at?->toIso8601String(),
+                        'messaging_enabled' => filter_var($parentMetadata['messaging_enabled'] ?? false, FILTER_VALIDATE_BOOL),
+                        'outbound_snapshot_source_dispatch_id' => $parent->id,
+                    ];
+            }
+        }
+
+        $snapshot ??= $currentSnapshot;
+        $input['metadata'] = [
+            ...$metadata,
+            ...$snapshot,
+        ];
+
+        return $input;
+    }
+
+    /**
      * @param  array<string, mixed>  $input
      */
     private function isSystemOnlyRecord(array $input): bool
@@ -379,6 +458,12 @@ class TechnicalServiceMessageDispatchQueue
         }
 
         return $providerKey === 'null_local' && $externalProviderCall === false;
+    }
+
+    /** @param  array<string, mixed>  $input */
+    private function usesExternalProvider(array $input): bool
+    {
+        return ! in_array((string) ($input['provider_key'] ?? 'null_local'), ['null_local', 'system'], true);
     }
 
     /**
