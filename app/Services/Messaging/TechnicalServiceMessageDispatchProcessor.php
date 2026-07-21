@@ -102,6 +102,22 @@ class TechnicalServiceMessageDispatchProcessor
      */
     public function processOne(int $dispatchId, bool $noExternal = false, array $allowlistedPhones = [], array $options = []): array
     {
+        $connection = DB::connection();
+        $transactionLevel = $connection->transactionLevel();
+        $pdoInTransaction = $connection->getPdo()->inTransaction();
+        if ($transactionLevel > 0 || $pdoInTransaction) {
+            $unchanged = TechnicalServiceMessageDispatch::query()->find($dispatchId);
+
+            return [
+                'id' => $dispatchId,
+                'status' => $unchanged?->status ?? 'missing',
+                'skipped' => true,
+                'blocked' => true,
+                'provider_status' => 'dispatch_outer_transaction_open',
+                'reason' => 'Provider dispatch açık DB transaction içinde başlatılamaz.',
+            ];
+        }
+
         $candidate = TechnicalServiceMessageDispatch::query()->find($dispatchId);
         if (! $candidate instanceof TechnicalServiceMessageDispatch) {
             return ['id' => $dispatchId, 'status' => 'missing'];

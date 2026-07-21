@@ -33,6 +33,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
@@ -1780,6 +1781,106 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
         $this->assertSame(0, $dispatch->fresh()->attempt_count);
         Http::assertNothingSent();
+    }
+
+    #[DataProvider('manualE2EProviderCases')]
+    public function test_processor_rejects_laravel_outer_transaction_before_dispatch_or_lifecycle_mutation(
+        string $provider,
+        string $channel,
+    ): void {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global, provider: $provider, channel: $channel);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $beforeDispatch = $this->dispatchRawSnapshot($dispatch->id);
+        $beforeLifecycle = $this->lifecycleRawSnapshot();
+
+        $result = DB::transaction(function () use ($dispatch, $global): array {
+            $this->assertGreaterThan(0, DB::transactionLevel());
+            $this->assertTrue(DB::connection()->getPdo()->inTransaction());
+
+            return app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+                $dispatch->id,
+                noExternal: false,
+                options: $this->manualE2EProcessorOptions($global),
+            );
+        });
+
+        $this->assertSame('dispatch_outer_transaction_open', $result['provider_status']);
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertSame($beforeDispatch, $this->dispatchRawSnapshot($dispatch->id));
+        $this->assertSame($beforeLifecycle, $this->lifecycleRawSnapshot());
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        $this->assertNull(data_get($dispatch->fresh()->metadata, 'manual_e2e_claim_hash'));
+        $this->assertFalse((bool) data_get($dispatch->fresh()->metadata, 'manual_e2e_transport_permit_consumed'));
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('manualE2EProviderCases')]
+    public function test_processor_rejects_raw_pdo_transaction_before_dispatch_or_lifecycle_mutation(
+        string $provider,
+        string $channel,
+    ): void {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global, provider: $provider, channel: $channel);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $beforeDispatch = $this->dispatchRawSnapshot($dispatch->id);
+        $beforeLifecycle = $this->lifecycleRawSnapshot();
+        $pdo = DB::connection()->getPdo();
+        $pdo->beginTransaction();
+
+        try {
+            $this->assertSame(0, DB::transactionLevel());
+            $this->assertTrue($pdo->inTransaction());
+            $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+                $dispatch->id,
+                noExternal: false,
+                options: $this->manualE2EProcessorOptions($global),
+            );
+        } finally {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+        }
+
+        $this->assertSame('dispatch_outer_transaction_open', $result['provider_status']);
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertSame($beforeDispatch, $this->dispatchRawSnapshot($dispatch->id));
+        $this->assertSame($beforeLifecycle, $this->lifecycleRawSnapshot());
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        $this->assertNull(data_get($dispatch->fresh()->metadata, 'manual_e2e_claim_hash'));
+        $this->assertFalse((bool) data_get($dispatch->fresh()->metadata, 'manual_e2e_transport_permit_consumed'));
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('manualE2EProviderCases')]
+    public function test_processor_without_outer_transaction_preserves_single_provider_attempt(
+        string $provider,
+        string $channel,
+    ): void {
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global, provider: $provider, channel: $channel);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $this->fakeProviderAcceptance($provider);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            options: $this->manualE2EProcessorOptions($global),
+        );
+
+        $persisted = $dispatch->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $result['status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $persisted->status);
+        $this->assertSame(1, $persisted->attempt_count);
+        $this->assertTrue((bool) data_get($persisted->metadata, 'manual_e2e_transport_permit_consumed'));
+        $this->assertSame('prepared', $settings->manualE2EContext()->phase());
+        $this->assertNull($settings->manualE2EContext()->activeClaim());
+        Http::assertSentCount(1);
     }
 
     public function test_manual_e2e_claim_is_committed_before_single_http_and_ack_is_not_delivery_proof(): void
@@ -4003,6 +4104,56 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'payload' => ['body' => 'REL-4D safe fake message'],
             ...$overrides,
         ], $overrides['actor'] ?? null);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function manualE2EProviderCases(): array
+    {
+        return [
+            'Evolution WhatsApp' => ['evo_whatsapp', 'whatsapp'],
+            'NAC SMS' => ['nac_sms', 'sms'],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $global
+     * @return array<string, mixed>
+     */
+    private function manualE2EProcessorOptions(array $global): array
+    {
+        return [
+            'manual_e2e_only' => true,
+            'smoke_run_id' => $global['manual_e2e_active_run_id'],
+            'created_after' => $global['manual_e2e_created_after'],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function dispatchRawSnapshot(int $dispatchId): array
+    {
+        return TechnicalServiceMessageDispatch::query()->findOrFail($dispatchId)->getRawOriginal();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function lifecycleRawSnapshot(): array
+    {
+        return PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail()
+            ->getRawOriginal();
+    }
+
+    private function fakeProviderAcceptance(string $provider): void
+    {
+        Http::fake(fn () => $provider === 'nac_sms'
+            ? Http::response(['err' => null, 'data' => ['pkgID' => 654321]], 200)
+            : Http::response(['messageId' => 'EVO-OUTER-TRANSACTION-REGRESSION'], 200));
     }
 
     /**
