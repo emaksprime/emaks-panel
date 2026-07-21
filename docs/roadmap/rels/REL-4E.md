@@ -13,14 +13,13 @@ Current PR #88 product chain, environment foundation, partner/technician identit
 ## Included scope
 
 - Preserve accepted copy/upload/job-card/assignment/appointment/payment/earning behavior.
-- Accept the local one-time Manual E2E lifecycle candidate.
-- Prove claim/permit/HTTP/finalize concurrency and crash behavior on disposable PostgreSQL.
-- Push only under a later exact gate, pass PHP 8.3/8.4/8.5 and quality CI, then run one separately authorized assignment-offer WhatsApp + SMS acceptance.
-- Complete current-head browser, migration and staging acceptance before PR #88 readiness is decided.
+- Preserve the independently accepted claim/permit/HTTP/finalize guarantees at the current product head; PostgreSQL evidence is inherited only through exact unchanged lifecycle-critical blobs.
+- Run one separately authorized, allowlisted assignment-offer WhatsApp + SMS pair with exact reconciliation.
+- Complete current-head browser, clean-migration and staging acceptance before PR #88 readiness is decided.
 
 ## Excluded scope
 
-New CRM, root MRN redesign, general RBAC expansion, collaboration, repair, Mikro cutover, production deployment, and any guessed REL suffix for the local candidate.
+New CRM, root MRN redesign, general RBAC expansion, collaboration, repair, Mikro cutover, production deployment, and any new REL implementation beyond PR #88 closure.
 
 ## Source of truth
 
@@ -28,7 +27,7 @@ Laravel Technical Service request/assignment/dispatch/settlement records are aut
 
 ## Entry criteria
 
-Exact clean candidate `18b53d19451efef692f0106c3159f568c2e2b994`, frozen runtime, no active worker/window, no provider delta, and approved disposable PostgreSQL test design.
+Exact remote product head `98fb1937fd2dc302870c992bf864108bc7acba7d` on open Draft PR #88; green exact-SHA quality and PHP 8.3/8.4/8.5 CI; lifecycle-critical blobs unchanged from the PostgreSQL-accepted `18ee8ce8ee92b3052d4156de115ee2c4a8d2db77` core; frozen runtime, no active worker/window, no provider delta, reachable public HTTPS, provider readiness, and separate explicit send authorization.
 
 ## Exit/acceptance criteria
 
@@ -48,7 +47,7 @@ Record actor, run/window/dispatch, request and offer-cycle references, state tra
 
 ## Migration/schema
 
-The current lifecycle candidate uses existing persisted structures. Any schema need discovered by independent review requires a separate scoped REL and PostgreSQL fresh/upgrade proof.
+The accepted lifecycle implementation uses existing persisted structures. Any schema need discovered by independent review requires a separate scoped REL and PostgreSQL fresh/upgrade proof.
 
 ## Backfill/import
 
@@ -96,7 +95,7 @@ Create verified Git/DB checkpoints before staging mutation. Restore rehearsal mu
 
 ## Cutover
 
-Accept candidate -> authorize product push -> pass exact-SHA CI -> authorize one bounded send -> current-head browser/migration/staging acceptance -> separately decide PR Ready/merge. Production remains disabled throughout REL-4E acceptance.
+Verify exact current head, green CI and frozen runtime -> confirm public HTTPS/provider readiness -> obtain separate explicit authorization for one allowlisted WhatsApp + SMS pair -> execute once -> reconcile dispatch/provider/attempt/result and refreeze -> complete current-head browser, clean-migration and staging acceptance -> separately decide PR Ready/merge. Production remains disabled throughout REL-4E acceptance.
 
 ## Rollback/disable
 
@@ -120,7 +119,7 @@ Burhan owns product priority; independent security/release verifier owns exact a
 
 ## Open decisions
 
-- Independent exact-head result for `18b53d1...`.
-- Whether disposable PostgreSQL evidence requires a follow-up correction.
-- New send preflight/authorization after acceptance and CI.
+- Recipient, time window and separate authorization for the controlled assignment-offer WhatsApp + SMS pair.
+- Public HTTPS and provider-readiness result for that acceptance.
+- Current-head browser, clean-migration and staging result.
 - PR #88 Ready/merge decision after all gates.

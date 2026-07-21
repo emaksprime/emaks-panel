@@ -7,14 +7,13 @@ This directory is the canonical execution plan for all non-AI work required befo
 Snapshot verified on 2026-07-21:
 
 - Product branch: `burhan/technical-service-b2b-integration-local`
-- Remote product SHA: `3ab04283114169c29f9c9faa055326b982845149`
-- Local product candidate: `18b53d19451efef692f0106c3159f568c2e2b994`
-- Local candidate tree: `fc371ea71267214186d634ab957ccabbe8f7ae48`
-- Candidate classification: REL-4E.17 lifecycle-hardening local candidate; exact acceptance pending
-- Canonical suffix for the candidate: `UNASSIGNED`
+- Remote product SHA: `98fb1937fd2dc302870c992bf864108bc7acba7d`
+- Remote product tree: `e15a6c2323c9d74bf958241d4c93b026f3136efe`
+- One-time Manual E2E lifecycle: no-send accepted at the current head; exact-SHA quality and PHP 8.3/8.4/8.5 CI are green
+- PostgreSQL lifecycle evidence: accepted through `18ee8ce8ee92b3052d4156de115ee2c4a8d2db77`; the current head changes only the appointment planner and six tests, leaving lifecycle-critical blobs unchanged
 - Product PR: [#88](https://github.com/emaksprime/emaks-panel/pull/88), open and Draft
 
-The roadmap branch is based on `origin/main`. It does not contain or publish the local product candidate. Product SHA, roadmap SHA, merge, and deploy are separate gates.
+The roadmap branch is based on `origin/main` and contains documentation only. It does not contain product commits. Product SHA, roadmap SHA, PR Ready, merge, and deploy are separate gates.
 
 ## Canonical Sources
 
@@ -52,7 +51,7 @@ Numeric REL order does not override this dependency order.
 
 | Order | Track | Required result before advancing |
 | ---: | --- | --- |
-| 0 | [REL-4E.17 / PR #88](rels/REL-4E.md) | Accept `18b53d1...` independently, prove PostgreSQL concurrency/crash behavior, push under a separate gate, pass exact-SHA CI, perform one controlled assignment-offer acceptance, complete current-head browser and staging acceptance, then decide PR readiness/merge separately. |
+| 0 | [REL-4E / PR #88 closure](rels/REL-4E.md) | Preserve the accepted PostgreSQL lifecycle guarantees and green exact-SHA CI at `98fb1937...`; separately authorize and reconcile one controlled assignment-offer WhatsApp + SMS pair, complete current-head browser, clean-migration and staging acceptance, then decide PR Ready/merge separately. |
 | 1 | Environment and runtime foundation | DEV/UAT/PROD isolation, public HTTPS, egress guards, trusted proxy/session policy, queue/storage/mail health, kill switches, observability, backup/restore, deterministic deploy and rollback. |
 | 2 | [REL-4H](rels/REL-4H.md) | Immutable non-resetting root MRN separated from child SRV identity, collision-free migration/backfill, orphan/duplicate zero. |
 | 3 | [REL-5 and REL-5C](rels/REL-5.md) | Full RBAC, PII controls, customer identity, reversible duplicate management, partner/technician isolation, and final locksmith onboarding/import acceptance. |
