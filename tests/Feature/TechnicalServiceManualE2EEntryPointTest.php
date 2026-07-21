@@ -4,11 +4,13 @@ namespace Tests\Feature;
 
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -21,6 +23,14 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
 
     private const PROTECTED_UPDATE_MESSAGE = 'Manual E2E ve gerçek gönderim durumu genel ayarlar üzerinden değiştirilemez. Manual E2E kontrol panelindeki güvenli açma/dondurma aksiyonunu kullanın.';
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->travelTo(Carbon::parse('2026-07-21 12:00:00', 'Europe/Istanbul'));
+        Http::preventStrayRequests();
+    }
+
     public function test_manual_e2e_entry_point_rejects_lifecycle_fields_from_generic_settings(): void
     {
         $admin = $this->admin();
@@ -31,6 +41,9 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             'real_send_enabled' => true,
             'queue_paused' => false,
             'manual_e2e_active_run_id' => 'MANUAL-E2E-FULL-20260710-100000-TEST',
+            'manual_e2e_phase' => 'window_open',
+            'manual_e2e_open_window' => ['dispatch_id' => 1],
+            'manual_e2e_active_claim' => ['dispatch_id' => 1],
             'smoke_run_id' => 'MANUAL-E2E-FULL-20260710-100000-TEST',
         ] as $field => $value) {
             $this->actingAs($admin)
@@ -51,6 +64,79 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertFalse($payload['global']['real_send_enabled']);
         $this->assertSame($baselineQueuePaused, $payload['global']['queue_paused']);
         $this->assertNull($payload['manual_e2e']['active_run_id']);
+    }
+
+    public function test_manual_e2e_lifecycle_requires_strict_operation_and_rejects_client_security_tuple(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+
+        foreach ([
+            [],
+            ['operation' => 'enable'],
+            ['operation' => 'unknown'],
+            ['operation' => 'prepare', 'provider' => 'evo_whatsapp'],
+            ['operation' => 'prepare', 'channel' => 'whatsapp'],
+            ['operation' => 'prepare', 'recipient' => '905000000000'],
+            ['operation' => 'prepare', 'force' => true],
+            [
+                'operation' => 'open_send_window',
+                'active_run_id' => 'RUN',
+                'dispatch_id' => 1,
+                'provider' => 'evo_whatsapp',
+            ],
+            [
+                'operation' => 'open_send_window',
+                'active_run_id' => 'RUN',
+                'dispatch_id' => 1,
+                'recipient' => '905000000000',
+            ],
+            [
+                'operation' => 'close_send_window',
+                'active_run_id' => 'RUN',
+                'dispatch_id' => 1,
+                'force' => true,
+            ],
+        ] as $payload) {
+            $this->actingAs($admin)
+                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', $payload)
+                ->assertUnprocessable();
+        }
+
+        $this->actingAs($admin)
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze', ['operation' => 'prepare'])
+            ->assertUnprocessable();
+        $this->actingAs($admin)
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze', [
+                'operation' => 'freeze',
+                'dispatch_id' => 1,
+            ])
+            ->assertUnprocessable();
+
+        $current = $settings->payload();
+        $this->assertSame('frozen', $current['global']['manual_e2e_phase']);
+        $this->assertFalse($current['global']['manual_e2e_enabled']);
+        $this->assertFalse($current['global']['real_send_enabled']);
+        $this->assertTrue($current['global']['queue_paused']);
+        $this->assertNull($current['manual_e2e']['active_run_id']);
+        Http::assertNothingSent();
+    }
+
+    public function test_unauthorized_actor_cannot_run_any_manual_e2e_lifecycle_operation(): void
+    {
+        foreach ([
+            ['/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare']],
+            ['/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'open_send_window', 'active_run_id' => 'RUN', 'dispatch_id' => 1]],
+            ['/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'close_send_window', 'active_run_id' => 'RUN', 'dispatch_id' => 1]],
+            ['/api/technical-service/messaging-settings/manual-e2e/freeze', ['operation' => 'freeze']],
+        ] as [$url, $payload]) {
+            $this->postJson($url, $payload)->assertUnauthorized();
+            $this->actingAs(User::factory()->create(['role_code' => 'ops']))
+                ->postJson($url, $payload)
+                ->assertForbidden();
+            $this->app['auth']->forgetGuards();
+        }
     }
 
     public function test_messaging_settings_safe_fields_still_update_and_frontend_generic_save_excludes_lifecycle_fields(): void
@@ -81,7 +167,23 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertStringContainsString('manual-e2e/enable', $source);
         $this->assertStringContainsString('manual-e2e/freeze', $source);
         $this->assertStringContainsString('manual-e2e-enable-confirmation', $source);
-        $this->assertStringContainsString('Gerçek gönderim riskini kabul et ve aç', $source);
+        $this->assertStringContainsString("operation: 'prepare'", $source);
+        $this->assertStringContainsString("'open_send_window'", $source);
+        $this->assertStringContainsString("'close_send_window'", $source);
+        $this->assertStringContainsString("operation: 'freeze'", $source);
+        $this->assertStringContainsString('Güvenli run hazırlığını başlat', $source);
+        $this->assertStringContainsString('Worker otomatik başlamaz', $source);
+        $this->assertStringContainsString('otomatik tekrar yapılmadı', $source);
+        $this->assertStringContainsString('manualE2ELifecycleBusyRef.current', $source);
+        $this->assertStringNotContainsString('Gerçek gönderim riskini kabul et ve aç', $source);
+
+        $lifecycleApplyStart = strpos($source, 'const applyManualE2ELifecycle');
+        $lifecycleApplyEnd = strpos($source, 'const applyMessageTemplatePayload', $lifecycleApplyStart);
+        $this->assertNotFalse($lifecycleApplyStart);
+        $this->assertNotFalse($lifecycleApplyEnd);
+        $lifecycleApply = substr($source, $lifecycleApplyStart, $lifecycleApplyEnd - $lifecycleApplyStart);
+        $this->assertStringContainsString('setMessagingInputs((current)', $lifecycleApply);
+        $this->assertStringContainsString('nextSettings.global.test_mode_enabled', $lifecycleApply);
         $this->assertStringContainsString('messagingRuntimeHeadline(messaging)', $source);
         $this->assertStringContainsString('messagingQueueStatus(messaging)', $source);
         $this->assertStringNotContainsString('REL-4D bekliyor', $source);
@@ -112,7 +214,6 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
                     'warnings',
                     'evo_ready',
                     'nac_ready',
-                    'allowlisted_phones',
                     'allowlisted_phone_masks',
                     'ops_sms_enabled',
                     'pending_external_count',
@@ -137,6 +238,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertContains('evo_not_ready', $codes);
         $this->assertContains('nac_not_ready', $codes);
         $this->assertFalse($response->json('manual_e2e_readiness.ops_sms_enabled'));
+        $this->assertArrayNotHasKey('allowlisted_phones', $response->json('manual_e2e_readiness'));
         $this->assertSame($beforePages, PageConfig::query()->count());
         $encoded = json_encode($response->json(), JSON_THROW_ON_ERROR);
         $this->assertStringNotContainsString('api_key', $encoded);
@@ -148,41 +250,53 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
     {
         Http::fake();
 
-        $this->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+        $this->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
             ->assertUnauthorized();
         $this->actingAs(User::factory()->create(['role_code' => 'ops']))
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
             ->assertForbidden();
 
         $admin = $this->admin();
         $settings = $this->readyManualE2ESettings($admin);
-        $readiness = $this->actingAs($admin)
+        $page = PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set($layout, 'unrelated.lifecycle_probe', ['preserved' => true]);
+        $page->forceFill(['layout_json' => $layout])->save();
+        $lifecyclePage = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $lifecycleLayout = (array) $lifecyclePage->layout_json;
+        Arr::set($lifecycleLayout, 'unrelated.authoritative_probe', ['preserved' => true]);
+        $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
+        $this->actingAs($admin)
             ->getJson('/api/technical-service/messaging-settings/manual-e2e/readiness')
             ->assertOk()
-            ->assertJsonPath('manual_e2e_readiness.eligible', true)
-            ->json('manual_e2e_readiness');
+            ->assertJsonPath('manual_e2e_readiness.eligible', true);
 
         $payload = $this->actingAs($admin)
             ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', [
-                'manual_e2e_allowlisted_phones' => $readiness['allowlisted_phones'],
-                'manual_e2e_ttl_seconds' => $readiness['ttl_seconds'],
+                'operation' => 'prepare',
             ])
             ->assertOk()
             ->assertJsonPath('messaging_settings.global.manual_e2e_enabled', true)
-            ->assertJsonPath('messaging_settings.global.real_send_enabled', true)
-            ->assertJsonPath('messaging_settings.global.queue_paused', false)
+            ->assertJsonPath('messaging_settings.global.manual_e2e_phase', 'prepared')
+            ->assertJsonPath('messaging_settings.global.real_send_enabled', false)
+            ->assertJsonPath('messaging_settings.global.queue_paused', true)
             ->assertJsonPath('messaging_settings.global.test_mode_enabled', false)
             ->assertJsonPath('messaging_settings.global.ops_whatsapp_enabled', false)
-            ->assertJsonPath('messaging_settings.readiness.queue_ready', true)
-            ->assertJsonPath('messaging_settings.readiness.can_send_real', true)
+            ->assertJsonPath('messaging_settings.readiness.queue_ready', false)
+            ->assertJsonPath('messaging_settings.readiness.can_send_real', false)
             ->json('messaging_settings');
 
         $runId = (string) $payload['manual_e2e']['active_run_id'];
         $this->assertMatchesRegularExpression('/^MANUAL-E2E-FULL-\d{8}-\d{6}-[A-Z0-9]{4}$/', $runId);
         $this->assertSame($payload['manual_e2e']['started_at'], $payload['manual_e2e']['created_after']);
-        $this->assertStringContainsString('--smoke-run-id='.$runId, (string) $payload['manual_e2e']['worker_command']);
-        $this->assertStringContainsString('--created-after="'.$payload['manual_e2e']['created_after'].'"', (string) $payload['manual_e2e']['worker_command']);
-        $this->assertStringContainsString('--manual-e2e-only', (string) $payload['manual_e2e']['worker_command']);
+        $this->assertSame('prepared', $payload['manual_e2e']['phase']);
+        $this->assertNull($payload['manual_e2e']['open_window']);
+        $this->assertNull($payload['manual_e2e']['active_claim']);
+        $this->assertNull($payload['manual_e2e']['worker_command']);
+        $this->assertSame(2, $payload['manual_e2e']['allowlisted_phone_count']);
+        $this->assertArrayNotHasKey('allowlisted_phones', $payload['manual_e2e']);
 
         $workerLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 5);
         $this->assertTrue($workerLock->get(), 'HTTP enable endpoint worker başlatmamalı veya worker lock tutmamalı.');
@@ -194,6 +308,14 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ->assertJsonPath('manual_e2e_readiness.eligible', false)
             ->assertJsonPath('manual_e2e_readiness.active_run_id', $runId);
         $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
+        $this->assertTrue((bool) data_get(
+            PageConfig::query()->whereKey($page->id)->value('layout_json'),
+            'unrelated.lifecycle_probe.preserved',
+        ));
+        $this->assertTrue((bool) data_get(
+            PageConfig::query()->whereKey($lifecyclePage->id)->value('layout_json'),
+            'unrelated.authoritative_probe.preserved',
+        ));
         Http::assertNothingSent();
     }
 
@@ -214,10 +336,87 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $payload = $settings->enableManualE2E();
 
         $this->assertTrue($payload['global']['manual_e2e_enabled']);
-        $this->assertTrue($payload['global']['real_send_enabled']);
-        $this->assertFalse($payload['global']['queue_paused']);
+        $this->assertFalse($payload['global']['real_send_enabled']);
+        $this->assertTrue($payload['global']['queue_paused']);
         $this->assertFalse($payload['global']['ops_whatsapp_enabled']);
-        $this->assertNotNull($payload['manual_e2e']['worker_command']);
+        $this->assertSame('prepared', $payload['manual_e2e']['phase']);
+        $this->assertNull($payload['manual_e2e']['worker_command']);
+        Http::assertNothingSent();
+    }
+
+    public function test_controller_opens_and_closes_one_exact_dispatch_window_without_provider_call(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $settings = $this->readyManualE2ESettings($admin);
+        $prepared = $this->actingAs($admin)
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
+            ->assertOk()
+            ->json('messaging_settings');
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-CONTROLLER-WINDOW',
+            'customer_name' => 'Controller Window Test',
+            'customer_phone' => '05372081633',
+            'customer_city' => 'İstanbul',
+            'customer_district' => 'Kadıköy',
+            'service_address' => 'Test adresi',
+            'product_name' => 'Test ürün',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+        $token = (string) $request->mrn;
+        $dispatch = TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'appointment_updated_customer',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'message_type' => 'appointment_updated_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_type' => 'customer',
+            'target_phone' => '905372081633',
+            'original_phone' => '905372081633',
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'attempt_count' => 0,
+            'max_attempts' => 1,
+            'idempotency_key' => hash('sha256', 'controller-window-'.$runId),
+            'queued_at' => now(),
+            'request_payload' => ['body' => "EMAKS Prime {$token} controller window mesajı."],
+            'metadata' => $settings->manualE2EContext()->dispatchMetadata(
+                $token,
+                '905372081633',
+                'customer',
+            ),
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', [
+                'operation' => 'open_send_window',
+                'active_run_id' => $runId,
+                'dispatch_id' => $dispatch->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.global.manual_e2e_phase', 'window_open')
+            ->assertJsonPath('messaging_settings.global.real_send_enabled', true)
+            ->assertJsonPath('messaging_settings.global.queue_paused', false)
+            ->assertJsonPath('messaging_settings.manual_e2e.open_window.dispatch_id', $dispatch->id);
+
+        $this->actingAs($admin)
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', [
+                'operation' => 'close_send_window',
+                'active_run_id' => $runId,
+                'dispatch_id' => $dispatch->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.global.manual_e2e_phase', 'prepared')
+            ->assertJsonPath('messaging_settings.global.real_send_enabled', false)
+            ->assertJsonPath('messaging_settings.global.queue_paused', true)
+            ->assertJsonPath('messaging_settings.manual_e2e.active_run_id', $runId);
+
+        $this->assertTrue((bool) data_get($dispatch->fresh()->metadata, 'manual_e2e_window_consumed'));
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
         Http::assertNothingSent();
     }
 
@@ -260,7 +459,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         ]);
 
         $response = $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
             ->assertUnprocessable();
         $errors = collect($response->json('errors.manual_e2e'));
         $this->assertTrue($errors->contains(fn (string $message): bool => str_contains($message, 'external provider kuyruğu boş')));
@@ -280,12 +479,12 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $admin = $this->admin();
         $settings = $this->readyManualE2ESettings($admin);
         $first = $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
             ->assertOk()
             ->json('messaging_settings.manual_e2e.active_run_id');
 
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
             ->assertConflict();
         $this->assertSame($first, $settings->payload()['manual_e2e']['active_run_id']);
 
@@ -295,7 +494,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
 
         try {
             $this->actingAs($admin)
-                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
                 ->assertConflict()
                 ->assertJsonPath('message', 'Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.');
             $this->actingAs($admin)
@@ -313,7 +512,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
 
         try {
             $this->actingAs($admin)
-                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
                 ->assertConflict()
                 ->assertJsonPath('message', 'Başka bir Manual E2E worker çalışıyor veya worker lock sahipliği güvenli biçimde doğrulanamadı.');
         } finally {
@@ -371,14 +570,14 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $runId = (string) $settings->enableManualE2E()['manual_e2e']['active_run_id'];
 
         $this->app['auth']->forgetGuards();
-        $this->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze')
+        $this->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze', ['operation' => 'freeze'])
             ->assertUnauthorized();
         $this->actingAs(User::factory()->create(['role_code' => 'ops']))
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze', ['operation' => 'freeze'])
             ->assertForbidden();
 
         $first = $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze', ['operation' => 'freeze'])
             ->assertOk()
             ->assertJsonPath('messaging_settings.global.manual_e2e_enabled', false)
             ->assertJsonPath('messaging_settings.global.real_send_enabled', false)
@@ -391,7 +590,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $this->assertNotNull($first['manual_e2e']['last_stopped_at']);
 
         $second = $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/freeze', ['operation' => 'freeze'])
             ->assertOk()
             ->json('messaging_settings');
         $this->assertNull($second['manual_e2e']['active_run_id']);
@@ -425,7 +624,9 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $settings = $this->readyManualE2ESettings($this->admin());
         $throwOnActiveSave = true;
         PageConfig::saving(function (PageConfig $page) use (&$throwOnActiveSave): void {
-            if ($throwOnActiveSave && data_get($page->layout_json, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.manual_e2e_enabled') === true) {
+            if ($throwOnActiveSave
+                && $page->page_code === TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE
+                && data_get($page->layout_json, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.manual_e2e_enabled') === true) {
                 $throwOnActiveSave = false;
                 throw new RuntimeException('Simulated lifecycle persistence failure.');
             }
@@ -473,7 +674,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ->assertJsonPath('manual_e2e_readiness.worker_stale_recoverable', true);
 
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+            ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
             ->assertOk()
             ->assertJsonPath('messaging_settings.global.manual_e2e_enabled', true);
 
@@ -505,7 +706,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
 
         try {
             $this->actingAs($admin)
-                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable')
+                ->postJson('/api/technical-service/messaging-settings/manual-e2e/enable', ['operation' => 'prepare'])
                 ->assertConflict()
                 ->assertJsonPath('message', 'Başka bir Manual E2E worker çalışıyor veya worker lock sahipliği güvenli biçimde doğrulanamadı.');
 
@@ -590,6 +791,21 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             'notes' => 'Fake Manual E2E endpoint test provider.',
         ]);
         $page->forceFill(['layout_json' => $layout])->save();
+        $lifecyclePage = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $lifecycleLayout = (array) $lifecyclePage->layout_json;
+        Arr::set(
+            $lifecycleLayout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.providers.evo_whatsapp',
+            [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'test_send_allowed' => true,
+                'notes' => 'Fake Manual E2E endpoint test provider.',
+            ],
+        );
+        $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
         $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
 

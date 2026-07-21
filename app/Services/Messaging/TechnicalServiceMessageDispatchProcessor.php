@@ -5,6 +5,9 @@ namespace App\Services\Messaging;
 use App\Models\TechnicalServiceMessageDispatch;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
 class TechnicalServiceMessageDispatchProcessor
@@ -50,6 +53,16 @@ class TechnicalServiceMessageDispatchProcessor
         $limit = max(1, (int) ($options['limit'] ?? 10));
         $allowlistedPhones = (array) ($options['allowlisted_phones'] ?? []);
 
+        if ((bool) ($options['manual_e2e_only'] ?? false) && empty($options['dispatch_id'])) {
+            return [
+                'dry_run' => false,
+                'count' => 0,
+                'blocked' => true,
+                'reason' => 'Manual E2E worker için exact dispatch-id zorunlu.',
+                'dispatches' => [],
+            ];
+        }
+
         if (! (bool) ($options['no_external'] ?? false)
             && $allowlistedPhones !== []
             && empty($options['dispatch_id'])
@@ -89,143 +102,429 @@ class TechnicalServiceMessageDispatchProcessor
      */
     public function processOne(int $dispatchId, bool $noExternal = false, array $allowlistedPhones = [], array $options = []): array
     {
-        return DB::transaction(function () use ($dispatchId, $noExternal, $allowlistedPhones, $options): array {
-            /** @var TechnicalServiceMessageDispatch|null $dispatch */
-            $dispatch = TechnicalServiceMessageDispatch::query()
-                ->whereKey($dispatchId)
-                ->lockForUpdate()
-                ->first();
-
-            if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
-                return ['id' => $dispatchId, 'status' => 'missing'];
+        $candidate = TechnicalServiceMessageDispatch::query()->find($dispatchId);
+        if (! $candidate instanceof TechnicalServiceMessageDispatch) {
+            return ['id' => $dispatchId, 'status' => 'missing'];
+        }
+        $manualContext = $this->settings->manualE2EContext();
+        $activeManualE2E = $manualContext->enabled()
+            || $manualContext->activeRunId() !== null
+            || $manualContext->phase() !== TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_FROZEN;
+        if ($activeManualE2E && ! $this->isManualE2eDispatch($candidate)) {
+            return [
+                'id' => $candidate->id,
+                'status' => $candidate->status,
+                'skipped' => true,
+                'blocked' => true,
+                'reason' => 'Aktif Manual E2E sırasında unrelated dispatch değiştirilemez.',
+            ];
+        }
+        if ($this->isManualE2eDispatch($candidate)) {
+            if ($noExternal) {
+                return [
+                    'id' => $candidate->id,
+                    'status' => $candidate->status,
+                    'skipped' => true,
+                    'reason' => 'Manual E2E dispatch yalnız exact persisted send window ile işlenebilir.',
+                ];
             }
 
-            if (! in_array($dispatch->status, [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED], true)) {
-                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'skipped' => true];
-            }
+            return $this->processManualE2E($candidate, $options);
+        }
 
-            if (! $noExternal && $allowlistedPhones !== [] && ! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
-                $dispatch->forceFill([
-                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
-                    'failed_at' => now(),
-                    'last_error_code' => 'allowlist_blocked',
-                    'last_error_message_redacted' => 'Kontrollü smoke allowlist dışında hedef telefon engellendi.',
-                ])->save();
-                $this->queue->recordEvent($dispatch, 'message_allowlist_blocked', 'Mesaj allowlist dışı hedef nedeniyle engellendi.');
+        try {
+            return $this->settings->withManualE2EFrozenDispatchProcessing(function () use ($dispatchId, $noExternal, $allowlistedPhones, $options): array {
+                $claim = DB::transaction(function () use ($dispatchId, $noExternal, $allowlistedPhones, $options): array {
+                    /** @var TechnicalServiceMessageDispatch|null $dispatch */
+                    $dispatch = TechnicalServiceMessageDispatch::query()
+                        ->whereKey($dispatchId)
+                        ->lockForUpdate()
+                        ->first();
 
-                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
-            }
+                    if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
+                        return ['id' => $dispatchId, 'status' => 'missing'];
+                    }
 
-            if (! $noExternal && $allowlistedPhones !== []) {
-                $smokeValidation = $this->controlledSmokeValidationErrors($dispatch, $options);
-                if ($smokeValidation !== []) {
-                    $reason = implode(' ', array_column($smokeValidation, 'message'));
+                    if (! in_array($dispatch->status, [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED], true)) {
+                        return ['id' => $dispatch->id, 'status' => $dispatch->status, 'skipped' => true];
+                    }
+
+                    if ((int) $dispatch->attempt_count !== 0) {
+                        $dispatch->forceFill([
+                            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                            'failed_at' => now(),
+                            'last_error_code' => 'normal_outbound_replay_blocked',
+                            'last_error_message_redacted' => 'Daha önce claim edilmiş provider attempt yeniden işlenemez.',
+                            'metadata' => [
+                                ...((array) $dispatch->metadata),
+                                'normal_outbound_replay_blocked' => true,
+                            ],
+                        ])->save();
+
+                        return [
+                            'id' => $dispatch->id,
+                            'status' => $dispatch->status,
+                            'blocked' => true,
+                            'reason' => $dispatch->last_error_message_redacted,
+                        ];
+                    }
+
+                    if (in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)
+                        && $this->settings->terminalOutboundLineageHasAttempt($dispatch)) {
+                        $dispatch->forceFill([
+                            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                            'failed_at' => now(),
+                            'last_error_code' => 'normal_outbound_terminal_replay_blocked',
+                            'last_error_message_redacted' => 'Daha önce attempt edilmiş terminal dispatch yeniden kuyruğa alınamaz.',
+                            'metadata' => [
+                                ...((array) $dispatch->metadata),
+                                'normal_outbound_replay_blocked' => true,
+                            ],
+                        ])->save();
+
+                        return [
+                            'id' => $dispatch->id,
+                            'status' => $dispatch->status,
+                            'blocked' => true,
+                            'reason' => $dispatch->last_error_message_redacted,
+                        ];
+                    }
+
+                    $this->settings->assertManualE2EFrozenOutboundLockHeld($dispatch->id);
+
+                    if (! $noExternal && $allowlistedPhones !== [] && ! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
+                        $dispatch->forceFill([
+                            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                            'failed_at' => now(),
+                            'last_error_code' => 'allowlist_blocked',
+                            'last_error_message_redacted' => 'Kontrollü smoke allowlist dışında hedef telefon engellendi.',
+                        ])->save();
+                        $this->queue->recordEvent($dispatch, 'message_allowlist_blocked', 'Mesaj allowlist dışı hedef nedeniyle engellendi.');
+
+                        return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
+                    }
+
+                    if (! $noExternal && $allowlistedPhones !== []) {
+                        $smokeValidation = $this->controlledSmokeValidationErrors($dispatch, $options);
+                        if ($smokeValidation !== []) {
+                            $reason = implode(' ', array_column($smokeValidation, 'message'));
+                            $dispatch->forceFill([
+                                'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                                'failed_at' => now(),
+                                'last_error_code' => $smokeValidation[0]['code'],
+                                'last_error_message_redacted' => $reason,
+                            ])->save();
+                            $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
+
+                            return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
+                        }
+                    }
+
+                    if (! $noExternal && $allowlistedPhones !== [] && ! $this->isControlledSmokeDispatch($dispatch, $options)) {
+                        $dispatch->forceFill([
+                            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                            'failed_at' => now(),
+                            'last_error_code' => 'test_smoke_required',
+                            'last_error_message_redacted' => 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.',
+                        ])->save();
+                        $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
+
+                        return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
+                    }
+
+                    $bodyValidation = $dispatch->providerBodyValidationErrors();
+                    if ($bodyValidation !== []) {
+                        $reason = implode(' ', $bodyValidation);
+                        $dispatch->forceFill([
+                            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                            'failed_at' => now(),
+                            'last_error_code' => 'invalid_dispatch_body',
+                            'last_error_message_redacted' => $reason,
+                        ])->save();
+                        $this->queue->recordEvent($dispatch, 'message_body_blocked', 'Mesaj içeriği provider gönderimi öncesi engellendi.');
+
+                        return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
+                    }
+
+                    $roleBodyValidation = $dispatch->roleBodyValidationErrors();
+                    if ($roleBodyValidation !== []) {
+                        $reason = implode(' ', $roleBodyValidation);
+                        $dispatch->forceFill([
+                            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                            'failed_at' => now(),
+                            'last_error_code' => 'role_body_mismatch',
+                            'last_error_message_redacted' => $reason,
+                        ])->save();
+                        $this->queue->recordEvent($dispatch, 'message_role_body_blocked', 'Mesaj rol/gövde uyumsuzluğu nedeniyle engellendi.');
+
+                        return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
+                    }
+
+                    $rateLimit = $this->rateLimiter->evaluateBeforeProcessing($dispatch);
+                    if (! $rateLimit['allowed']) {
+                        $dispatch->forceFill([
+                            'status' => $rateLimit['status'],
+                            'next_attempt_at' => $rateLimit['next_attempt_at'],
+                            'last_error_code' => $rateLimit['status'],
+                            'last_error_message_redacted' => $rateLimit['reason'],
+                        ])->save();
+
+                        return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $rateLimit['reason']];
+                    }
+
+                    $claimNonce = Str::random(64);
                     $dispatch->forceFill([
-                        'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
-                        'failed_at' => now(),
-                        'last_error_code' => $smokeValidation[0]['code'],
-                        'last_error_message_redacted' => $reason,
+                        'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+                        'sending_started_at' => now(),
+                        'attempt_count' => 1,
+                        'metadata' => [
+                            ...((array) $dispatch->metadata),
+                            'normal_processor_claim_hash' => hash('sha256', $claimNonce),
+                            'normal_processor_claimed_at' => now()->toIso8601String(),
+                            'normal_outbound_replay_blocked' => true,
+                            'provider_send_attempted' => false,
+                        ],
                     ])->save();
-                    $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
 
-                    return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
+                    return [
+                        'claimed' => true,
+                        'dispatch_id' => $dispatch->id,
+                        'claim_nonce' => $claimNonce,
+                        'attempt_count' => 1,
+                    ];
+                });
+
+                if (! (bool) ($claim['claimed'] ?? false)) {
+                    return $claim;
                 }
-            }
 
-            if (! $noExternal && $allowlistedPhones !== [] && ! $this->isControlledSmokeDispatch($dispatch, $options)) {
-                $dispatch->forceFill([
-                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
-                    'failed_at' => now(),
-                    'last_error_code' => 'test_smoke_required',
-                    'last_error_message_redacted' => 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.',
-                ])->save();
-                $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
+                $dispatch = TechnicalServiceMessageDispatch::query()->findOrFail((int) $claim['dispatch_id']);
 
-                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
-            }
+                try {
+                    $result = $this->router->dispatch(
+                        $dispatch,
+                        $noExternal,
+                        $allowlistedPhones,
+                        TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null),
+                        null,
+                        (string) $claim['claim_nonce'],
+                    );
+                } catch (Throwable $exception) {
+                    $transportStarted = $this->settings->normalOutboundTransportStarted(
+                        (int) $claim['dispatch_id'],
+                        (string) $claim['claim_nonce'],
+                    );
+                    $result = [
+                        'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+                        'provider_status' => $transportStarted ? 'exception' : 'pre_http_exception',
+                        'provider_message_id' => null,
+                        'response' => [
+                            'external_call' => $transportStarted,
+                            'result' => $transportStarted ? 'ambiguous' : 'not_invoked',
+                        ],
+                        'error' => $transportStarted
+                            ? 'Provider sonucu belirsiz; normal outbound replay kapatıldı.'
+                            : 'Provider HTTP başlamadan işlem durdu; claim replay için kapalı tutuldu.',
+                        'transport_started' => $transportStarted,
+                        'ambiguous' => $transportStarted,
+                    ];
+                }
 
-            $bodyValidation = $dispatch->providerBodyValidationErrors();
-            if ($bodyValidation !== []) {
-                $reason = implode(' ', $bodyValidation);
-                $dispatch->forceFill([
-                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
-                    'failed_at' => now(),
-                    'last_error_code' => 'invalid_dispatch_body',
-                    'last_error_message_redacted' => $reason,
-                ])->save();
-                $this->queue->recordEvent($dispatch, 'message_body_blocked', 'Mesaj içeriği provider gönderimi öncesi engellendi.');
+                $transportStarted = (bool) ($result['transport_started'] ?? false)
+                    || $this->settings->normalOutboundTransportStarted(
+                        (int) $claim['dispatch_id'],
+                        (string) $claim['claim_nonce'],
+                    );
+                if ($transportStarted) {
+                    $dispatch = $this->settings->finalizeNormalOutboundSend(
+                        (int) $claim['dispatch_id'],
+                        (string) $claim['claim_nonce'],
+                        $result,
+                    );
+                } else {
+                    $dispatch = DB::transaction(function () use ($claim, $result): TechnicalServiceMessageDispatch {
+                        $locked = TechnicalServiceMessageDispatch::query()
+                            ->whereKey((int) $claim['dispatch_id'])
+                            ->lockForUpdate()
+                            ->firstOrFail();
+                        $claimHash = (string) data_get($locked->metadata, 'normal_processor_claim_hash', '');
+                        if ($locked->status !== TechnicalServiceMessageDispatch::STATUS_SENDING
+                            || (int) $locked->attempt_count !== (int) $claim['attempt_count']
+                            || $claimHash === ''
+                            || ! hash_equals($claimHash, hash('sha256', (string) $claim['claim_nonce']))) {
+                            throw new ConflictHttpException('Normal outbound finalize claim eşleşmedi; mevcut attempt gerçeği korunuyor.');
+                        }
 
-                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
-            }
+                        $status = (string) $result['status'];
+                        $locked->forceFill([
+                            'status' => $status,
+                            'provider_status' => $result['provider_status'] ?? null,
+                            'provider_message_id' => $result['provider_message_id'] ?? null,
+                            'provider_response_redacted' => $result['response'] ?? null,
+                            'response_payload' => $result['response'] ?? null,
+                            'last_error_code' => $result['provider_status'] ?? null,
+                            'last_error_message_redacted' => $result['error'] ?? null,
+                            'error_message' => $result['error'] ?? null,
+                            'sent_at' => in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true) ? now() : null,
+                            'failed_at' => in_array($status, [TechnicalServiceMessageDispatch::STATUS_FAILED, TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR], true) ? now() : null,
+                            'metadata' => [
+                                ...((array) $locked->metadata),
+                                'normal_outbound_outcome' => in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                                    ? 'provider_accepted'
+                                    : 'pre_http_blocked',
+                                'normal_outbound_replay_blocked' => true,
+                            ],
+                        ])->save();
 
-            $roleBodyValidation = $dispatch->roleBodyValidationErrors();
-            if ($roleBodyValidation !== []) {
-                $reason = implode(' ', $roleBodyValidation);
-                $dispatch->forceFill([
-                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
-                    'failed_at' => now(),
-                    'last_error_code' => 'role_body_mismatch',
-                    'last_error_message_redacted' => $reason,
-                ])->save();
-                $this->queue->recordEvent($dispatch, 'message_role_body_blocked', 'Mesaj rol/gövde uyumsuzluğu nedeniyle engellendi.');
+                        return $locked;
+                    });
+                }
 
-                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
-            }
+                $this->queue->recordEvent(
+                    $dispatch,
+                    in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                        ? 'message_sent'
+                        : ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENDING
+                            ? 'message_provider_outcome_ambiguous'
+                            : 'message_failed'),
+                    in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                        ? 'Mesaj provider tarafından kabul edildi.'
+                        : ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENDING
+                            ? 'Provider sonucu belirsiz; attempt replay için kapalı tutuldu.'
+                            : 'Mesaj provider tarafından gönderilemedi.'),
+                );
+                $fallback = $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENDING
+                    ? null
+                    : $this->createFallbackIfNeeded($dispatch);
 
-            $rateLimit = $this->rateLimiter->evaluateBeforeProcessing($dispatch);
-            if (! $rateLimit['allowed']) {
-                $dispatch->forceFill([
-                    'status' => $rateLimit['status'],
-                    'next_attempt_at' => $rateLimit['next_attempt_at'],
-                    'last_error_code' => $rateLimit['status'],
-                    'last_error_message_redacted' => $rateLimit['reason'],
-                ])->save();
-
-                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $rateLimit['reason']];
-            }
-
-            $dispatch->forceFill([
-                'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
-                'sending_started_at' => now(),
-                'attempt_count' => (int) $dispatch->attempt_count + 1,
-            ])->save();
-
-            $result = $this->router->dispatch(
-                $dispatch,
-                $noExternal,
-                $allowlistedPhones,
-                TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null),
-            );
-            $status = (string) $result['status'];
-
-            $dispatch->forceFill([
-                'status' => $status,
-                'provider_status' => $result['provider_status'] ?? null,
-                'provider_message_id' => $result['provider_message_id'] ?? null,
-                'provider_response_redacted' => $result['response'] ?? null,
-                'response_payload' => $result['response'] ?? null,
-                'last_error_code' => $result['provider_status'] ?? null,
-                'last_error_message_redacted' => $result['error'] ?? null,
-                'error_message' => $result['error'] ?? null,
-                'sent_at' => in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true) ? now() : null,
-                'failed_at' => in_array($status, [TechnicalServiceMessageDispatch::STATUS_FAILED, TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR], true) ? now() : null,
-            ])->save();
-
-            $this->queue->recordEvent(
-                $dispatch,
-                in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true) ? 'message_sent' : 'message_failed',
-                in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true) ? 'Mesaj provider tarafından kabul edildi.' : 'Mesaj provider tarafından gönderilemedi.',
-            );
-            $fallback = $this->createFallbackIfNeeded($dispatch);
+                return [
+                    'id' => $dispatch->id,
+                    'status' => $dispatch->status,
+                    'provider_status' => $dispatch->provider_status,
+                    'provider_message_id' => $dispatch->provider_message_id,
+                    'fallback_dispatch_id' => $fallback?->id,
+                ];
+            });
+        } catch (ValidationException|ConflictHttpException $exception) {
+            $unchanged = TechnicalServiceMessageDispatch::query()->find($dispatchId);
 
             return [
-                'id' => $dispatch->id,
-                'status' => $dispatch->status,
-                'provider_status' => $dispatch->provider_status,
-                'provider_message_id' => $dispatch->provider_message_id,
-                'fallback_dispatch_id' => $fallback?->id,
+                'id' => $dispatchId,
+                'status' => $unchanged?->status ?? 'missing',
+                'skipped' => true,
+                'blocked' => true,
+                'reason' => 'Manual E2E lifecycle provider mutasyonunu fail-closed engelledi.',
             ];
-        });
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function processManualE2E(TechnicalServiceMessageDispatch $candidate, array $options): array
+    {
+        $runId = TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null);
+        $rateLimit = $this->rateLimiter->evaluateBeforeProcessing($candidate);
+        if (! $rateLimit['allowed']) {
+            $this->closeRejectedManualE2EWindow($runId, $candidate->id);
+
+            return [
+                'id' => $candidate->id,
+                'status' => $candidate->status,
+                'blocked' => true,
+                'reason' => $rateLimit['reason'],
+            ];
+        }
+
+        try {
+            $claim = $this->settings->claimManualE2ESend(
+                $candidate->id,
+                $runId,
+            );
+        } catch (Throwable $exception) {
+            $this->closeRejectedManualE2EWindow($runId, $candidate->id);
+
+            return [
+                'id' => $candidate->id,
+                'status' => $candidate->fresh()->status,
+                'blocked' => true,
+                'reason' => $exception->getMessage(),
+            ];
+        }
+
+        try {
+            $result = $this->router->dispatch(
+                $candidate->fresh(),
+                false,
+                [],
+                $claim['run_id'],
+                $claim['claim_nonce'],
+            );
+        } catch (Throwable $exception) {
+            $activeClaim = $this->settings->manualE2EContext()->activeClaim();
+            $transportStarted = is_array($activeClaim)
+                && (string) ($activeClaim['status'] ?? '') === 'http_started'
+                && hash_equals(
+                    (string) ($activeClaim['claim_hash'] ?? ''),
+                    hash('sha256', $claim['claim_nonce']),
+                );
+            $result = [
+                'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                'provider_status' => $transportStarted ? 'exception' : 'pre_http_exception',
+                'provider_message_id' => null,
+                'response' => ['external_call' => $transportStarted, 'result' => $transportStarted ? 'ambiguous' : 'not_invoked'],
+                'error' => $transportStarted
+                    ? 'Provider sonucu belirsiz; Manual E2E replay kapatıldı.'
+                    : 'Provider HTTP başlamadan işlem durdu; Manual E2E replay kapatıldı.',
+                'ambiguous' => $transportStarted,
+                'transport_started' => $transportStarted,
+            ];
+        }
+
+        try {
+            $dispatch = $this->settings->finalizeManualE2ESend(
+                $candidate->id,
+                $claim['claim_nonce'],
+                $result,
+            );
+        } catch (Throwable $exception) {
+            return [
+                'id' => $candidate->id,
+                'status' => $candidate->fresh()->status,
+                'provider_status' => 'manual_e2e_finalize_unresolved',
+                'ambiguous' => true,
+                'reason' => 'Provider attempt kalıcı claim ile kayıtlı; finalize tamamlanamadı ve replay yasak.',
+            ];
+        }
+
+        $accepted = in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true);
+        $this->queue->recordEvent(
+            $dispatch,
+            $accepted ? 'message_sent' : 'message_failed',
+            $accepted ? 'Mesaj provider tarafından kabul edildi.' : 'Manual E2E provider attempt tekrar gönderime kapatıldı.',
+        );
+
+        return [
+            'id' => $dispatch->id,
+            'status' => $dispatch->status,
+            'provider_status' => $dispatch->provider_status,
+            'provider_message_id' => $dispatch->provider_message_id,
+            'fallback_dispatch_id' => null,
+        ];
+    }
+
+    private function closeRejectedManualE2EWindow(?string $runId, int $dispatchId): void
+    {
+        if ($runId === null) {
+            return;
+        }
+
+        try {
+            $this->settings->closeManualE2ESendWindow($runId, $dispatchId);
+        } catch (Throwable) {
+            // The window may already be claimed, closed, replaced, or invalid.
+        }
     }
 
     /**
@@ -271,6 +570,11 @@ class TechnicalServiceMessageDispatchProcessor
         }
 
         return $dispatchRunId !== null;
+    }
+
+    private function isManualE2eDispatch(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        return filter_var(data_get($dispatch->metadata, 'manual_e2e', false), FILTER_VALIDATE_BOOL);
     }
 
     /**

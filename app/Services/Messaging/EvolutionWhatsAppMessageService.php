@@ -29,6 +29,7 @@ class EvolutionWhatsAppMessageService
 
     public function __construct(
         private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+        private readonly TechnicalServiceMessagingSettingsService $messagingSettings,
     ) {}
 
     /**
@@ -46,6 +47,36 @@ class EvolutionWhatsAppMessageService
         ?TechnicalServiceAssignmentOffer $assignmentOffer = null,
         ?TechnicalServiceEarning $earning = null,
     ): TechnicalServiceMessageDispatch {
+        return $this->messagingSettings->withManualE2EFrozenOutbound(fn (): TechnicalServiceMessageDispatch => $this->sendWhileManualE2EFrozen(
+            event: $event,
+            targetType: $targetType,
+            targetPhone: $targetPhone,
+            messageText: $messageText,
+            context: $context,
+            request: $request,
+            user: $user,
+            partnerJobAction: $partnerJobAction,
+            assignmentOffer: $assignmentOffer,
+            earning: $earning,
+        ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function sendWhileManualE2EFrozen(
+        string $event,
+        string $targetType,
+        ?string $targetPhone,
+        string $messageText,
+        array $context = [],
+        ?TechnicalServiceRequest $request = null,
+        ?User $user = null,
+        ?TechnicalServicePartnerJobAction $partnerJobAction = null,
+        ?TechnicalServiceAssignmentOffer $assignmentOffer = null,
+        ?TechnicalServiceEarning $earning = null,
+    ): TechnicalServiceMessageDispatch {
+
         $testMode = $this->testMode();
         $originalPhone = $this->normalizePhone($targetPhone);
         $resolvedPhone = $testMode
@@ -109,6 +140,9 @@ class EvolutionWhatsAppMessageService
             'technical_service_partner_job_action_id' => $partnerJobAction?->id,
             'technical_service_assignment_offer_id' => $assignmentOffer?->id,
             'technical_service_earning_id' => $earning?->id,
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => $targetType,
             'target_type' => $targetType,
             'original_phone' => $originalPhone,
             'target_phone' => $resolvedPhone,
@@ -121,6 +155,16 @@ class EvolutionWhatsAppMessageService
         $suppression = $this->suppressionStatus($event, $targetType, $resolvedPhone, $request, $context);
         if ($suppression !== null) {
             return $this->markSuppressed($dispatch, $suppression['status'], $suppression['message']);
+        }
+
+        $ambiguousDuplicate = $this->legacyAmbiguousDuplicate($dispatch, $idempotencyKey, $resolvedPhone);
+        if ($ambiguousDuplicate instanceof TechnicalServiceMessageDispatch) {
+            return $this->markSuppressed(
+                $dispatch,
+                TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE,
+                'Önceki provider sonucu belirsiz; tekrar gönderim kapalı.',
+                ['duplicate_dispatch_id' => $ambiguousDuplicate->id],
+            );
         }
 
         if (! $this->manualForceResend($context)) {
@@ -150,8 +194,23 @@ class EvolutionWhatsAppMessageService
             return $dispatch;
         }
 
+        $dispatch->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+            'sending_started_at' => now(),
+            'attempt_count' => 1,
+            'metadata' => [
+                ...((array) $dispatch->metadata),
+                'normal_outbound_claimed_at' => now()->toIso8601String(),
+                'normal_outbound_replay_blocked' => true,
+                'provider_send_attempted' => true,
+            ],
+        ])->save();
+        $this->messagingSettings->assertManualE2EFrozenOutboundLockHeld($dispatch->id);
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+
         try {
-            $response = Http::timeout(10)->post($url, $payload);
+            $response = Http::timeout(10)
+                ->post($url, $payload);
             $dispatch->forceFill([
                 'status' => $response->successful()
                     ? TechnicalServiceMessageDispatch::STATUS_SENT
@@ -165,9 +224,18 @@ class EvolutionWhatsAppMessageService
             ])->save();
         } catch (Throwable $exception) {
             $dispatch->forceFill([
-                'status' => TechnicalServiceMessageDispatch::STATUS_FAILED,
-                'error_message' => $exception->getMessage(),
-                'sent_at' => now(),
+                'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+                'response_payload' => [
+                    'status' => 'ambiguous_no_retry',
+                    'external_call' => true,
+                ],
+                'error_message' => 'Evolution provider sonucu belirsiz; replay kapalı.',
+                'sent_at' => null,
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'normal_outbound_outcome' => 'ambiguous_no_retry',
+                    'normal_outbound_replay_blocked' => true,
+                ],
             ])->save();
         }
 
@@ -591,11 +659,38 @@ class EvolutionWhatsAppMessageService
         return TechnicalServiceMessageDispatch::query()
             ->where('id', '<>', $current->id)
             ->where('target_phone', $resolvedPhone)
-            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
-            ->where('created_at', '>=', now()->subMinutes($minutes))
             ->latest('id')
             ->get()
-            ->first(fn (TechnicalServiceMessageDispatch $dispatch): bool => (string) data_get($dispatch->request_payload, 'idempotency_key') === $idempotencyKey);
+            ->first(function (TechnicalServiceMessageDispatch $dispatch) use ($idempotencyKey, $minutes): bool {
+                if ((string) data_get($dispatch->request_payload, 'idempotency_key') !== $idempotencyKey) {
+                    return false;
+                }
+
+                return $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENT
+                    && $dispatch->created_at?->gte(now()->subMinutes($minutes));
+            });
+    }
+
+    private function legacyAmbiguousDuplicate(
+        TechnicalServiceMessageDispatch $current,
+        string $idempotencyKey,
+        string $resolvedPhone,
+    ): ?TechnicalServiceMessageDispatch {
+        if ($resolvedPhone === '' || $idempotencyKey === '') {
+            return null;
+        }
+
+        return TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $current->id)
+            ->where('target_phone', $resolvedPhone)
+            ->latest('id')
+            ->get()
+            ->first(fn (TechnicalServiceMessageDispatch $dispatch): bool => (string) data_get($dispatch->request_payload, 'idempotency_key') === $idempotencyKey
+                && $dispatch->status === TechnicalServiceMessageDispatch::STATUS_FAILED
+                && (int) $dispatch->attempt_count === 0
+                && $dispatch->provider_message_id === null
+                && $dispatch->sent_at !== null
+                && trim((string) $dispatch->error_message) !== '');
     }
 
     private function messageTextWithJobLink(string $messageText, string $targetType, mixed $jobLink): string

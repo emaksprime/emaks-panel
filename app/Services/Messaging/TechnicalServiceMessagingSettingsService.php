@@ -5,13 +5,14 @@ namespace App\Services\Messaging;
 use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceRequest;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
-use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
@@ -21,6 +22,68 @@ class TechnicalServiceMessagingSettingsService
     public const PAGE_CODE = 'technical_service_admin';
 
     public const ROOT_KEY = 'technical_service.messaging';
+
+    public const LIFECYCLE_PAGE_CODE = 'technical_service_manual_e2e_lifecycle';
+
+    public const LIFECYCLE_ROOT_KEY = 'technical_service.messaging.lifecycle';
+
+    public const MANUAL_E2E_PHASE_FROZEN = 'frozen';
+
+    public const MANUAL_E2E_PHASE_PREPARED = 'prepared';
+
+    public const MANUAL_E2E_PHASE_WINDOW_OPEN = 'window_open';
+
+    public const MANUAL_E2E_WINDOW_TTL_SECONDS = 30;
+
+    private const MANUAL_E2E_ADVISORY_LOCK_CLASS_ID = 1162690891;
+
+    private const MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID = 1296384581;
+
+    private static bool $lifecycleLockHeldInProcess = false;
+
+    private const AUTHORITATIVE_LIFECYCLE_FIELDS = [
+        'manual_e2e_enabled',
+        'real_send_enabled',
+        'test_mode_enabled',
+        'queue_paused',
+        'ops_whatsapp_enabled',
+        'ops_whatsapp_phone',
+        'manual_e2e_phase',
+        'manual_e2e_active_run_id',
+        'manual_e2e_started_at',
+        'manual_e2e_created_after',
+        'manual_e2e_expires_at',
+        'manual_e2e_last_run_id',
+        'manual_e2e_last_stopped_at',
+        'manual_e2e_open_window',
+        'manual_e2e_active_claim',
+        'manual_e2e_run_snapshot',
+        'manual_e2e_window_history',
+        'normal_outbound_active_claim',
+        'normal_outbound_history',
+        'manual_e2e_ttl_seconds',
+        'manual_e2e_allowlisted_phones',
+        'manual_e2e_partner_portal_origin_enabled',
+        'manual_e2e_partner_portal_origin',
+        'messaging_enabled',
+        'test_phone',
+        'provider_key',
+        'active_provider',
+        'default_provider',
+        'fallback_provider',
+        'provider_priority',
+        'providers',
+        'nac_sms',
+        'evo_whatsapp',
+        'message_types',
+        'send_delay_seconds',
+        'duplicate_cooldown_minutes',
+        'hourly_limit',
+        'daily_limit',
+        'max_auto_retries',
+        'allow_browser_smoke_send',
+        'allow_test_fixture_send',
+    ];
 
     public const GENERIC_LIFECYCLE_FIELDS = [
         'manual_e2e_enabled',
@@ -32,6 +95,13 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_expires_at',
         'manual_e2e_last_run_id',
         'manual_e2e_last_stopped_at',
+        'manual_e2e_phase',
+        'manual_e2e_open_window',
+        'manual_e2e_active_claim',
+        'manual_e2e_window_history',
+        'manual_e2e_run_snapshot',
+        'normal_outbound_active_claim',
+        'normal_outbound_history',
         'manual_e2e_run_id',
         'smoke_run_id',
         'manual_e2e',
@@ -402,6 +472,7 @@ class TechnicalServiceMessagingSettingsService
                 'manual_e2e_expires_at' => $manualE2e['expires_at'],
                 'manual_e2e_last_run_id' => $manualE2e['last_run_id'],
                 'manual_e2e_last_stopped_at' => $manualE2e['last_stopped_at'],
+                'manual_e2e_phase' => $manualE2e['phase'],
                 'manual_e2e_ttl_seconds' => (int) ($settings['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
                 'manual_e2e_allowlisted_phones' => $settings['manual_e2e_allowlisted_phones'] ?? [],
                 'manual_e2e_partner_portal_origin_enabled' => (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false),
@@ -456,7 +527,7 @@ class TechnicalServiceMessagingSettingsService
             'admin_sections' => $this->adminSections($settings, $readiness),
             'message_types' => $this->messageTypePayload($settings['message_types']),
             'warnings' => [
-                'Gerçek gönderim yalnız Manual E2E kontrol panelindeki güvenli açma/dondurma yaşam döngüsüyle yönetilir.',
+                'Manual E2E önce güvenli hazırlık durumuna alınır; gerçek gönderim yalnız exact dispatch için kısa tek kullanımlık pencereyle açılır.',
                 'Randevu mesajları usta seçildiğinde değil OPS randevu onayında gider.',
                 'Test modu açıkken hedef numara test numarasına çevrilir.',
                 'Provider dispatch’leri allowlist, run context, queue, rate limit ve idempotency kontrollerinden geçer.',
@@ -465,13 +536,50 @@ class TechnicalServiceMessagingSettingsService
             ],
             'helper_texts' => [
                 'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
-                'queue' => 'Gerçek provider kuyruğu yalnız aktif Manual E2E run context ve üretilen güvenli worker komutuyla işlenir.',
+                'queue' => 'Gerçek provider kuyruğu yalnız aktif Manual E2E run, exact dispatch penceresi ve kalıcı tek kullanımlık claim ile işlenir.',
                 'test_phone' => 'Test modu açıkken müşteri/usta yerine ortak test telefonuna yönlenir.',
                 'active_provider' => 'Öncelikli sağlayıcı manuel test/readiness için varsayılan bakılan sağlayıcıdır.',
                 'default_provider' => 'Varsayılan test sağlayıcısı otomasyon değil, güvenli preview/test tercihidir.',
                 'fallback_provider' => 'Otomatik provider fallback bu kontrollü akışta kapalıdır; kanal politikası açık provider seçimini kullanır.',
                 'channel_policy' => 'Kanal politikası WhatsApp/SMS seçimini tanımlar; birlikte gönderim güvenli queue ve idempotency kontrolleriyle yürür.',
             ],
+        ];
+    }
+
+    /**
+     * Dedicated lifecycle responses intentionally omit full phone numbers and credentials.
+     *
+     * @return array<string, mixed>
+     */
+    public function manualE2ELifecyclePayload(): array
+    {
+        $payload = $this->payload();
+
+        return [
+            'global' => Arr::only((array) $payload['global'], [
+                'manual_e2e_enabled',
+                'real_send_enabled',
+                'queue_paused',
+                'test_mode_enabled',
+                'ops_whatsapp_enabled',
+                'manual_e2e_phase',
+                'manual_e2e_active_run_id',
+                'manual_e2e_started_at',
+                'manual_e2e_created_after',
+                'manual_e2e_expires_at',
+                'manual_e2e_last_run_id',
+                'manual_e2e_last_stopped_at',
+            ]),
+            'manual_e2e' => $payload['manual_e2e'],
+            'readiness' => Arr::only((array) $payload['readiness'], [
+                'queue_ready',
+                'manual_e2e_active',
+                'manual_e2e_worker_command_ready',
+                'manual_e2e_blocker_code',
+                'can_send_real',
+                'effective_mode',
+                'disabled_reasons',
+            ]),
         ];
     }
 
@@ -485,13 +593,13 @@ class TechnicalServiceMessagingSettingsService
 
         try {
             DB::transaction(function () use ($values): void {
-                $page = $this->lockedPageConfig();
-                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
                 $next = $this->buildGenericSettingsUpdate($current, $values);
-                $this->persistSettingsToPage($page, $next);
+                $this->persistAuthoritativeSettings($locked, $next);
             });
         } finally {
-            $lock->release();
+            $lock();
         }
 
         return $this->payload();
@@ -518,7 +626,9 @@ class TechnicalServiceMessagingSettingsService
 
         $current ??= $this->settings();
         $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
-        if (! $context->enabled() && $context->activeRunId() === null) {
+        if (! $context->enabled()
+            && $context->activeRunId() === null
+            && ! is_array($current['normal_outbound_active_claim'] ?? null)) {
             return;
         }
 
@@ -530,8 +640,11 @@ class TechnicalServiceMessagingSettingsService
 
     private function assertNoActiveRunMutation(?array $settings = null): void
     {
-        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings ?? $this->settings());
-        if ($context->enabled() || $context->activeRunId() !== null) {
+        $current = $settings ?? $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+        if ($context->enabled()
+            || $context->activeRunId() !== null
+            || is_array($current['normal_outbound_active_claim'] ?? null)) {
             throw new ConflictHttpException('Aktif Manual E2E oturumu varken gönderim güvenliği ayarları değiştirilemez. Önce gönderimleri dondurun.');
         }
     }
@@ -640,7 +753,7 @@ class TechnicalServiceMessagingSettingsService
      * @param  array<string, mixed>  $values
      * @return array<string, mixed>
      */
-    public function enableManualE2E(array $values = []): array
+    public function prepareManualE2E(array $values = []): array
     {
         $lock = $this->acquireLifecycleLock();
 
@@ -651,10 +764,14 @@ class TechnicalServiceMessagingSettingsService
             }
 
             DB::transaction(function () use ($values): void {
-                $page = $this->lockedPageConfig();
-                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
                 $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
-                if ($context->enabled() || $context->activeRunId() !== null) {
+                if ($context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+                    || $context->enabled()
+                    || $context->activeRunId() !== null
+                    || is_array($current['manual_e2e_open_window'] ?? null)
+                    || is_array($current['manual_e2e_active_claim'] ?? null)) {
                     throw new ConflictHttpException('Aktif Manual E2E oturumu zaten var. Yeni run için önce gönderimleri dondurun.');
                 }
 
@@ -692,22 +809,462 @@ class TechnicalServiceMessagingSettingsService
                 $next = [
                     ...$candidate,
                     'manual_e2e_enabled' => true,
-                    'real_send_enabled' => true,
+                    'real_send_enabled' => false,
                     'test_mode_enabled' => false,
-                    'queue_paused' => false,
+                    'queue_paused' => true,
+                    'manual_e2e_phase' => self::MANUAL_E2E_PHASE_PREPARED,
                     'manual_e2e_active_run_id' => $runId,
                     'manual_e2e_started_at' => $startedAt->toIso8601String(),
                     'manual_e2e_created_after' => $startedAt->toIso8601String(),
                     'manual_e2e_expires_at' => $startedAt->addSeconds($ttl)->toIso8601String(),
+                    'manual_e2e_open_window' => null,
+                    'manual_e2e_active_claim' => null,
+                    'manual_e2e_run_snapshot' => [
+                        'allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
+                        'evo_ready' => (bool) $readiness['evo_ready'],
+                        'nac_ready' => (bool) $readiness['nac_ready'],
+                        'prepared_at' => $startedAt->toIso8601String(),
+                        'prepared_by' => Auth::id(),
+                    ],
                 ];
                 $this->validateSettings($next);
-                $this->persistSettingsToPage($page, $next);
+                $this->persistAuthoritativeSettings($locked, $next);
             });
         } finally {
-            $lock->release();
+            $lock();
         }
 
         return $this->payload();
+    }
+
+    /**
+     * Backward-compatible service name with prepare-only semantics.
+     *
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public function enableManualE2E(array $values = []): array
+    {
+        return $this->prepareManualE2E($values);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function openManualE2ESendWindow(string $runId, int $dispatchId): array
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($runId, $dispatchId): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                $normalizedRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($runId);
+
+                if ($normalizedRunId === null || $context->activeRunId() !== $normalizedRunId) {
+                    throw new ConflictHttpException('Manual E2E run veya dispatch doğrulanamadı.');
+                }
+                if ($context->phase() !== self::MANUAL_E2E_PHASE_PREPARED || $context->contextBlockingReason() !== null) {
+                    throw new ConflictHttpException('Manual E2E run gönderim penceresi açmaya hazır değil.');
+                }
+                if (is_array($current['manual_e2e_open_window'] ?? null)
+                    || is_array($current['manual_e2e_active_claim'] ?? null)) {
+                    throw new ConflictHttpException('Manual E2E run içinde açık veya sonuçlanmamış bir gönderim penceresi var.');
+                }
+                if (collect((array) ($current['manual_e2e_window_history'] ?? []))->contains(
+                    fn (mixed $entry): bool => is_array($entry)
+                        && (string) ($entry['run_id'] ?? '') === $normalizedRunId
+                        && (int) ($entry['dispatch_id'] ?? 0) === $dispatchId,
+                )) {
+                    throw new ConflictHttpException('Bu dispatch için Manual E2E gönderim penceresi daha önce tüketildi veya kapatıldı.');
+                }
+
+                $dispatch = TechnicalServiceMessageDispatch::query()->whereKey($dispatchId)->lockForUpdate()->first();
+                if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
+                    throw new ConflictHttpException('Manual E2E run veya dispatch doğrulanamadı.');
+                }
+
+                $authoritative = $this->assertManualE2EDispatchEligible($current, $context, $dispatch);
+                $openedAt = CarbonImmutable::now();
+                $window = [
+                    'id' => (string) Str::uuid(),
+                    'status' => 'open',
+                    'run_id' => $normalizedRunId,
+                    'dispatch_id' => $dispatch->id,
+                    'provider' => $authoritative['provider'],
+                    'channel' => $authoritative['channel'],
+                    'recipient_fingerprint' => $authoritative['recipient_fingerprint'],
+                    'role_target' => $authoritative['role_target'],
+                    'request_id' => $authoritative['request_id'],
+                    'offer_cycle_id' => $authoritative['offer_cycle_id'],
+                    'idempotency_fingerprint' => $authoritative['idempotency_fingerprint'],
+                    'body_fingerprint' => $authoritative['body_fingerprint'],
+                    'opened_at' => $openedAt->toIso8601String(),
+                    'expires_at' => $openedAt->addSeconds(self::MANUAL_E2E_WINDOW_TTL_SECONDS)->toIso8601String(),
+                    'maximum_attempts' => 1,
+                    'opened_by' => Auth::id(),
+                ];
+
+                $next = [
+                    ...$current,
+                    'manual_e2e_phase' => self::MANUAL_E2E_PHASE_WINDOW_OPEN,
+                    'manual_e2e_open_window' => $window,
+                    'real_send_enabled' => true,
+                    'queue_paused' => false,
+                ];
+                $this->validateSettings($next);
+                $this->persistAuthoritativeSettings($locked, $next);
+            });
+        } finally {
+            $lock();
+        }
+
+        return $this->payload();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function closeManualE2ESendWindow(string $runId, int $dispatchId): array
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($runId, $dispatchId): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                $normalizedRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($runId);
+                if ($normalizedRunId === null || $context->activeRunId() !== $normalizedRunId) {
+                    throw new ConflictHttpException('Manual E2E run veya dispatch doğrulanamadı.');
+                }
+
+                $window = is_array($current['manual_e2e_open_window'] ?? null)
+                    ? $current['manual_e2e_open_window']
+                    : null;
+                $claim = is_array($current['manual_e2e_active_claim'] ?? null)
+                    ? $current['manual_e2e_active_claim']
+                    : null;
+                if ($window !== null
+                    && ((string) ($window['run_id'] ?? '') !== $normalizedRunId
+                        || (int) ($window['dispatch_id'] ?? 0) !== $dispatchId)) {
+                    throw new ConflictHttpException('Manual E2E run veya dispatch doğrulanamadı.');
+                }
+                if ($claim !== null
+                    && ((string) ($claim['run_id'] ?? '') !== $normalizedRunId
+                        || (int) ($claim['dispatch_id'] ?? 0) !== $dispatchId)) {
+                    throw new ConflictHttpException('Manual E2E run veya dispatch doğrulanamadı.');
+                }
+                $historyContainsDispatch = collect((array) ($current['manual_e2e_window_history'] ?? []))->contains(
+                    fn (mixed $entry): bool => is_array($entry)
+                        && (string) ($entry['run_id'] ?? '') === $normalizedRunId
+                        && (int) ($entry['dispatch_id'] ?? 0) === $dispatchId,
+                );
+                $dispatch = TechnicalServiceMessageDispatch::query()
+                    ->whereKey($dispatchId)
+                    ->lockForUpdate()
+                    ->first();
+                if (! $dispatch instanceof TechnicalServiceMessageDispatch
+                    || TechnicalServiceManualE2ERunContext::dispatchRunId((array) $dispatch->metadata) !== $normalizedRunId) {
+                    throw new ConflictHttpException('Manual E2E run veya dispatch doğrulanamadı.');
+                }
+                $durablyClosed = filter_var(
+                    data_get($dispatch->metadata, 'manual_e2e_window_consumed', false),
+                    FILTER_VALIDATE_BOOL,
+                ) && (string) data_get($dispatch->metadata, 'manual_e2e_consumed_run_id', '') === $normalizedRunId;
+                if ($window === null && $claim === null && ! $historyContainsDispatch && ! $durablyClosed) {
+                    throw new ConflictHttpException('Kapatılacak Manual E2E gönderim penceresi bulunamadı.');
+                }
+
+                if ($window !== null) {
+                    $dispatch->forceFill([
+                        'metadata' => [
+                            ...((array) $dispatch->metadata),
+                            'manual_e2e_window_consumed' => true,
+                            'manual_e2e_consumed_window_id' => (string) ($window['id'] ?? ''),
+                            'manual_e2e_consumed_run_id' => $normalizedRunId,
+                            'manual_e2e_window_closed_at' => now()->toIso8601String(),
+                        ],
+                    ])->save();
+                }
+
+                $next = [
+                    ...$current,
+                    'manual_e2e_phase' => self::MANUAL_E2E_PHASE_PREPARED,
+                    'manual_e2e_open_window' => null,
+                    'real_send_enabled' => false,
+                    'queue_paused' => true,
+                ];
+                if ($window !== null) {
+                    $next['manual_e2e_window_history'] = $this->appendWindowHistory(
+                        (array) ($current['manual_e2e_window_history'] ?? []),
+                        [...$window, 'status' => 'closed', 'closed_at' => now()->toIso8601String(), 'closed_by' => Auth::id()],
+                    );
+                }
+                $this->validateSettings($next);
+                $this->persistAuthoritativeSettings($locked, $next);
+            });
+        } finally {
+            $lock();
+        }
+
+        return $this->payload();
+    }
+
+    /**
+     * Atomically consumes an open window and persists attempt=1 before HTTP.
+     *
+     * @return array{claim_nonce:string,run_id:string,dispatch_id:int,provider:string,channel:string}
+     */
+    public function claimManualE2ESend(int $dispatchId, ?string $expectedRunId): array
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            return DB::transaction(function () use ($dispatchId, $expectedRunId): array {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                $runId = TechnicalServiceManualE2ERunContext::normalizeRunId($expectedRunId);
+                $window = is_array($current['manual_e2e_open_window'] ?? null)
+                    ? $current['manual_e2e_open_window']
+                    : null;
+                if ($context->phase() !== self::MANUAL_E2E_PHASE_WINDOW_OPEN
+                    || $context->contextBlockingReason() !== null
+                    || $runId === null
+                    || $runId !== $context->activeRunId()
+                    || $window === null
+                    || (string) ($window['status'] ?? '') !== 'open'
+                    || (string) ($window['run_id'] ?? '') !== $runId
+                    || (int) ($window['dispatch_id'] ?? 0) !== $dispatchId
+                    || $this->windowExpired($window)
+                    || ! (bool) ($current['real_send_enabled'] ?? false)
+                    || (bool) ($current['queue_paused'] ?? true)
+                ) {
+                    throw new ConflictHttpException('Exact Manual E2E gönderim penceresi doğrulanamadı.');
+                }
+
+                $dispatch = TechnicalServiceMessageDispatch::query()->whereKey($dispatchId)->lockForUpdate()->first();
+                if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
+                    throw new ConflictHttpException('Exact Manual E2E gönderim penceresi doğrulanamadı.');
+                }
+                $authoritative = $this->assertManualE2EDispatchEligible($current, $context, $dispatch);
+                if (! $this->manualE2ESecurityTupleMatches($window, $authoritative)) {
+                    throw new ConflictHttpException('Exact Manual E2E gönderim penceresi doğrulanamadı.');
+                }
+
+                $claimNonce = Str::random(64);
+                $claimHash = hash('sha256', $claimNonce);
+                $claimedAt = now()->toIso8601String();
+                $claim = [
+                    ...$window,
+                    'status' => 'claimed',
+                    'claim_hash' => $claimHash,
+                    'claimed_at' => $claimedAt,
+                ];
+                $dispatch->forceFill([
+                    'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+                    'sending_started_at' => now(),
+                    'attempt_count' => 1,
+                    'metadata' => [
+                        ...((array) $dispatch->metadata),
+                        'manual_e2e_window_id' => $window['id'],
+                        'manual_e2e_claim_hash' => $claimHash,
+                        'manual_e2e_claimed_at' => $claimedAt,
+                        'provider_send_attempted' => false,
+                        'external_provider_call' => false,
+                    ],
+                ])->save();
+
+                $next = [
+                    ...$current,
+                    'manual_e2e_phase' => self::MANUAL_E2E_PHASE_PREPARED,
+                    'manual_e2e_open_window' => null,
+                    'manual_e2e_active_claim' => $claim,
+                    'real_send_enabled' => false,
+                    'queue_paused' => true,
+                ];
+                $this->validateSettings($next);
+                $this->persistAuthoritativeSettings($locked, $next);
+
+                return [
+                    'claim_nonce' => $claimNonce,
+                    'run_id' => $runId,
+                    'dispatch_id' => $dispatch->id,
+                    'provider' => $authoritative['provider'],
+                    'channel' => $authoritative['channel'],
+                ];
+            });
+        } finally {
+            $lock();
+        }
+    }
+
+    public function startManualE2ETransport(int $dispatchId, string $claimNonce): void
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($dispatchId, $claimNonce): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                $claim = is_array($current['manual_e2e_active_claim'] ?? null)
+                    ? $current['manual_e2e_active_claim']
+                    : null;
+                $claimHash = hash('sha256', $claimNonce);
+                if ($context->contextBlockingReason() !== null
+                    || $context->phase() !== self::MANUAL_E2E_PHASE_PREPARED
+                    || $claim === null
+                    || (string) ($claim['status'] ?? '') !== 'claimed'
+                    || (int) ($claim['dispatch_id'] ?? 0) !== $dispatchId
+                    || (string) ($claim['run_id'] ?? '') !== $context->activeRunId()
+                    || ! hash_equals((string) ($claim['claim_hash'] ?? ''), $claimHash)
+                    || $this->windowExpired($claim)
+                ) {
+                    throw new ConflictHttpException('Manual E2E transport izni geçersiz veya daha önce kullanılmış.');
+                }
+
+                $dispatch = TechnicalServiceMessageDispatch::query()->whereKey($dispatchId)->lockForUpdate()->first();
+                $authoritative = $dispatch instanceof TechnicalServiceMessageDispatch
+                    ? $this->manualE2EDispatchSecurityTuple($dispatch)
+                    : null;
+                if (! $dispatch instanceof TechnicalServiceMessageDispatch
+                    || $dispatch->status !== TechnicalServiceMessageDispatch::STATUS_SENDING
+                    || (int) $dispatch->attempt_count !== 1
+                    || ! hash_equals((string) data_get($dispatch->metadata, 'manual_e2e_claim_hash', ''), $claimHash)
+                    || $authoritative === null
+                    || ! $this->manualE2ESecurityTupleMatches($claim, $authoritative)
+                    || TechnicalServiceManualE2ERunContext::dispatchRunId((array) $dispatch->metadata) !== (string) ($claim['run_id'] ?? '')
+                    || filled($dispatch->provider_message_id)
+                    || $dispatch->sent_at !== null
+                ) {
+                    throw new ConflictHttpException('Manual E2E transport izni dispatch ile eşleşmiyor.');
+                }
+
+                $startedAt = now()->toIso8601String();
+                $dispatch->forceFill([
+                    'metadata' => [
+                        ...((array) $dispatch->metadata),
+                        'manual_e2e_transport_permit_consumed' => true,
+                        'manual_e2e_external_call_state' => 'authorized_not_confirmed',
+                        'manual_e2e_http_started_at' => $startedAt,
+                    ],
+                ])->save();
+                $current['manual_e2e_active_claim'] = [
+                    ...$claim,
+                    'status' => 'http_started',
+                    'http_started_at' => $startedAt,
+                ];
+                $this->persistAuthoritativeSettings($locked, $current);
+            });
+        } finally {
+            $lock();
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    public function finalizeManualE2ESend(int $dispatchId, string $claimNonce, array $result): TechnicalServiceMessageDispatch
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            return DB::transaction(function () use ($dispatchId, $claimNonce, $result): TechnicalServiceMessageDispatch {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $claimHash = hash('sha256', $claimNonce);
+                $dispatch = TechnicalServiceMessageDispatch::query()->whereKey($dispatchId)->lockForUpdate()->firstOrFail();
+                if (hash_equals((string) data_get($dispatch->metadata, 'manual_e2e_finalized_claim_hash', ''), $claimHash)) {
+                    return $dispatch;
+                }
+
+                $claim = is_array($current['manual_e2e_active_claim'] ?? null)
+                    ? $current['manual_e2e_active_claim']
+                    : null;
+                if ($claim === null
+                    || ! in_array((string) ($claim['status'] ?? ''), ['claimed', 'http_started'], true)
+                    || (int) ($claim['dispatch_id'] ?? 0) !== $dispatchId
+                    || ! hash_equals((string) ($claim['claim_hash'] ?? ''), $claimHash)
+                    || ! hash_equals((string) data_get($dispatch->metadata, 'manual_e2e_claim_hash', ''), $claimHash)
+                    || (int) $dispatch->attempt_count !== 1
+                ) {
+                    throw new ConflictHttpException('Manual E2E sonucu claim ile eşleşmiyor.');
+                }
+
+                $providerStatus = (string) ($result['provider_status'] ?? 'manual_e2e_provider_result_missing');
+                $transportStarted = (string) ($claim['status'] ?? '') === 'http_started';
+                $accepted = $transportStarted
+                    && in_array((string) ($result['status'] ?? ''), TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                    && filled($result['provider_message_id'] ?? null);
+                $ambiguous = $transportStarted && (
+                    (bool) ($result['ambiguous'] ?? false)
+                    || $providerStatus === 'exception'
+                );
+                $finalizedAt = now()->toIso8601String();
+                $terminalStatus = $accepted
+                    ? TechnicalServiceMessageDispatch::STATUS_SENT
+                    : TechnicalServiceMessageDispatch::STATUS_BLOCKED;
+                $outcome = $accepted ? 'provider_accepted' : ($ambiguous ? 'ambiguous_no_retry' : 'rejected_no_retry');
+                $errorCode = $accepted
+                    ? null
+                    : ($ambiguous ? 'manual_e2e_ambiguous_no_retry' : 'manual_e2e_provider_rejected_no_retry');
+
+                $dispatch->forceFill([
+                    'status' => $terminalStatus,
+                    'provider_status' => $providerStatus,
+                    'provider_message_id' => $accepted ? (string) $result['provider_message_id'] : null,
+                    'provider_response_redacted' => $result['response'] ?? null,
+                    'response_payload' => $result['response'] ?? null,
+                    'last_error_code' => $errorCode,
+                    'last_error_message_redacted' => $accepted ? null : ($result['error'] ?? 'Manual E2E provider sonucu tekrar gönderime kapatıldı.'),
+                    'error_message' => $accepted ? null : ($result['error'] ?? 'Manual E2E provider sonucu tekrar gönderime kapatıldı.'),
+                    'sent_at' => $accepted ? now() : null,
+                    'failed_at' => $accepted ? null : now(),
+                    'metadata' => [
+                        ...((array) $dispatch->metadata),
+                        'provider_send_attempted' => $transportStarted,
+                        'external_provider_call' => $transportStarted,
+                        'manual_e2e_external_call_state' => $transportStarted
+                            ? 'transport_invoked'
+                            : 'not_invoked',
+                        'manual_e2e_finalized_claim_hash' => $claimHash,
+                        'manual_e2e_finalized_at' => $finalizedAt,
+                        'manual_e2e_outcome' => $outcome,
+                        'provider_accepted' => $accepted,
+                        'delivery_proven' => false,
+                        'manual_e2e_replay_blocked' => true,
+                    ],
+                ])->save();
+
+                $history = [
+                    ...$claim,
+                    'status' => 'finalized',
+                    'outcome' => $outcome,
+                    'finalized_at' => $finalizedAt,
+                    'provider_message_id_present' => $accepted,
+                ];
+                $next = [
+                    ...$current,
+                    'manual_e2e_phase' => self::MANUAL_E2E_PHASE_PREPARED,
+                    'manual_e2e_active_claim' => null,
+                    'real_send_enabled' => false,
+                    'queue_paused' => true,
+                    'manual_e2e_window_history' => $this->appendWindowHistory(
+                        (array) ($current['manual_e2e_window_history'] ?? []),
+                        $history,
+                    ),
+                ];
+                $this->validateSettings($next);
+                $this->persistAuthoritativeSettings($locked, $next);
+
+                return $dispatch;
+            });
+        } finally {
+            $lock();
+        }
     }
 
     /**
@@ -720,14 +1277,26 @@ class TechnicalServiceMessagingSettingsService
 
         try {
             DB::transaction(function () use (&$activeRunId): void {
-                $page = $this->lockedPageConfig();
-                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
                 $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
                 $activeRunId = $context->activeRunId();
+                $history = (array) ($current['manual_e2e_window_history'] ?? []);
+                foreach (['manual_e2e_open_window', 'manual_e2e_active_claim'] as $field) {
+                    if (is_array($current[$field] ?? null)) {
+                        $history = $this->appendWindowHistory($history, [
+                            ...$current[$field],
+                            'status' => 'frozen_unresolved',
+                            'frozen_at' => now()->toIso8601String(),
+                            'frozen_by' => Auth::id(),
+                        ]);
+                    }
+                }
                 $next = $this->deactivateManualE2EContext($current, $context);
                 $next['test_mode_enabled'] = false;
+                $next['manual_e2e_window_history'] = $history;
                 $this->validateSettings($next);
-                $this->persistSettingsToPage($page, $next);
+                $this->persistAuthoritativeSettings($locked, $next);
             });
 
             if ($activeRunId !== null) {
@@ -736,7 +1305,7 @@ class TechnicalServiceMessagingSettingsService
                 $this->reconcileStaleManualE2EWorkerLease();
             }
         } finally {
-            $lock->release();
+            $lock();
         }
 
         return $this->payload();
@@ -745,6 +1314,603 @@ class TechnicalServiceMessagingSettingsService
     public function manualE2EContext(): TechnicalServiceManualE2ERunContext
     {
         return TechnicalServiceManualE2ERunContext::fromSettings($this->settings());
+    }
+
+    /**
+     * Run a non-Manual outbound path while lifecycle transitions are excluded.
+     * The persisted state check is short; no database transaction remains open
+     * while the callback may perform provider I/O.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    public function withManualE2EFrozenOutbound(callable $callback): mixed
+    {
+        return $this->withManualE2EFrozenLifecycleLock($callback, true);
+    }
+
+    /**
+     * Let the queue processor classify an already-attempted dispatch before
+     * the unresolved-attempt guard runs. The processor must call
+     * assertManualE2EFrozenOutboundLockHeld() before any new claim.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    public function withManualE2EFrozenDispatchProcessing(callable $callback): mixed
+    {
+        return $this->withManualE2EFrozenLifecycleLock($callback, false);
+    }
+
+    /**
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    private function withManualE2EFrozenLifecycleLock(callable $callback, bool $assertNoUnresolvedAttempt): mixed
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function (): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                $this->validateManualE2ELifecycleState($current);
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                if ($context->enabled()
+                    || $context->activeRunId() !== null
+                    || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN) {
+                    throw ValidationException::withMessages([
+                        'manual_e2e' => 'Aktif Manual E2E sırasında doğrudan provider çağrısı yasaktır; exact persisted claim zorunlu.',
+                    ]);
+                }
+            });
+
+            if ($assertNoUnresolvedAttempt) {
+                // Direct clients create their dispatch inside the callback, so
+                // unresolved attempts must stop them before that mutation.
+                $this->assertManualE2EFrozenOutboundLockHeld(0);
+            }
+
+            return $callback();
+        } finally {
+            $lock();
+        }
+    }
+
+    public function assertProviderHttpOutsideTransaction(): void
+    {
+        if (DB::transactionLevel() !== 0) {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Provider outbound açık veya dış DB transaction içinden başlatılamaz.',
+            ]);
+        }
+    }
+
+    /**
+     * Persist the one-time normal outbound transport permit before provider I/O.
+     * The lifecycle ledger remains authoritative even if a stale dispatch model
+     * later overwrites the dispatch status or metadata.
+     */
+    public function startNormalOutboundTransport(int $dispatchId, string $claimNonce): void
+    {
+        if (! self::$lifecycleLockHeldInProcess || DB::transactionLevel() !== 0) {
+            throw new ConflictHttpException('Normal outbound transport izni güvenli transaction sınırında başlatılamadı.');
+        }
+
+        $claimNonce = trim($claimNonce);
+        if ($claimNonce === '') {
+            throw new ConflictHttpException('Normal outbound transport claim doğrulanamadı.');
+        }
+
+        DB::transaction(function () use ($dispatchId, $claimNonce): void {
+            $locked = $this->lockedAuthoritativeSettings();
+            $current = $locked['settings'];
+            $this->validateManualE2ELifecycleState($current);
+            $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+            if ($context->enabled()
+                || $context->activeRunId() !== null
+                || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+                || is_array($current['normal_outbound_active_claim'] ?? null)) {
+                throw new ConflictHttpException('Normal outbound transport yalnız frozen lifecycle içinde başlatılabilir.');
+            }
+
+            $dispatch = TechnicalServiceMessageDispatch::query()
+                ->whereKey($dispatchId)
+                ->lockForUpdate()
+                ->first();
+            $claimHash = hash('sha256', $claimNonce);
+            if (! $dispatch instanceof TechnicalServiceMessageDispatch
+                || $dispatch->status !== TechnicalServiceMessageDispatch::STATUS_SENDING
+                || (int) $dispatch->attempt_count !== 1
+                || ! hash_equals(
+                    (string) data_get($dispatch->metadata, 'normal_processor_claim_hash', ''),
+                    $claimHash,
+                )
+                || filter_var(data_get($dispatch->metadata, 'provider_send_attempted', false), FILTER_VALIDATE_BOOL)
+                || filled($dispatch->provider_message_id)
+                || $dispatch->sent_at !== null
+                || ! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)
+                || ! in_array((string) $dispatch->channel, ['whatsapp', 'sms'], true)) {
+                throw new ConflictHttpException('Normal outbound transport claim dispatch ile eşleşmiyor.');
+            }
+
+            $target = $this->normalizePhone((string) $dispatch->target_phone);
+            if ($target === '') {
+                throw new ConflictHttpException('Normal outbound transport recipient doğrulanamadı.');
+            }
+
+            $startedAt = now()->toIso8601String();
+            $tupleHash = $this->normalOutboundTupleHash($dispatch);
+            $activeClaim = [
+                'status' => 'http_started',
+                'claim_hash' => $claimHash,
+                'dispatch_id' => $dispatch->id,
+                'provider' => (string) $dispatch->provider_key,
+                'channel' => (string) $dispatch->channel,
+                'recipient_fingerprint' => hash('sha256', $target),
+                'tuple_hash' => $tupleHash,
+                'attempt_count' => 1,
+                'http_started_at' => $startedAt,
+            ];
+
+            $dispatch->forceFill([
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'provider_send_attempted' => true,
+                    'external_provider_call' => true,
+                    'normal_outbound_http_started_at' => $startedAt,
+                    'normal_outbound_authoritative_claim_hash' => $claimHash,
+                    'normal_outbound_tuple_hash' => $tupleHash,
+                ],
+            ])->save();
+
+            $current['normal_outbound_active_claim'] = $activeClaim;
+            $this->persistAuthoritativeSettings($locked, $current);
+        });
+
+        if (DB::transactionLevel() !== 0) {
+            throw new \RuntimeException('Provider HTTP açık DB transaction içinde başlatılamaz.');
+        }
+    }
+
+    public function normalOutboundTransportStarted(int $dispatchId, string $claimNonce): bool
+    {
+        $claim = $this->settings()['normal_outbound_active_claim'] ?? null;
+        $claimHash = hash('sha256', trim($claimNonce));
+
+        return is_array($claim)
+            && (int) ($claim['dispatch_id'] ?? 0) === $dispatchId
+            && in_array((string) ($claim['status'] ?? ''), ['http_started', 'ambiguous_no_retry'], true)
+            && hash_equals((string) ($claim['claim_hash'] ?? ''), $claimHash);
+    }
+
+    public function terminalOutboundLineageHasAttempt(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        $metadata = (array) $dispatch->metadata;
+        $terminalIdempotencyKey = trim((string) ($metadata['terminal_idempotency_key'] ?? ''));
+        if (! filter_var($metadata['terminal_idempotency_requeued'] ?? false, FILTER_VALIDATE_BOOL)
+            || $terminalIdempotencyKey === '') {
+            return false;
+        }
+
+        return TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $dispatch->id)
+            ->where(function ($lineage) use ($terminalIdempotencyKey): void {
+                $lineage
+                    ->where('idempotency_key', $terminalIdempotencyKey)
+                    ->orWhere('metadata->terminal_idempotency_key', $terminalIdempotencyKey);
+            })
+            ->where(function ($attempted): void {
+                $attempted
+                    ->where('attempt_count', '>', 0)
+                    ->orWhereNotNull('provider_message_id')
+                    ->orWhereNotNull('sent_at');
+            })
+            ->exists();
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    public function finalizeNormalOutboundSend(
+        int $dispatchId,
+        string $claimNonce,
+        array $result,
+    ): TechnicalServiceMessageDispatch {
+        if (! self::$lifecycleLockHeldInProcess || DB::transactionLevel() !== 0) {
+            throw new ConflictHttpException('Normal outbound sonucu güvenli transaction sınırında finalize edilemedi.');
+        }
+
+        $claimNonce = trim($claimNonce);
+        if ($claimNonce === '') {
+            throw new ConflictHttpException('Normal outbound finalize claim doğrulanamadı.');
+        }
+
+        return DB::transaction(function () use ($dispatchId, $claimNonce, $result): TechnicalServiceMessageDispatch {
+            $locked = $this->lockedAuthoritativeSettings();
+            $current = $locked['settings'];
+            $claimHash = hash('sha256', $claimNonce);
+            $dispatch = TechnicalServiceMessageDispatch::query()
+                ->whereKey($dispatchId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (hash_equals(
+                (string) data_get($dispatch->metadata, 'normal_outbound_finalized_claim_hash', ''),
+                $claimHash,
+            )) {
+                return $dispatch;
+            }
+
+            $activeClaim = is_array($current['normal_outbound_active_claim'] ?? null)
+                ? $current['normal_outbound_active_claim']
+                : null;
+            $historyContainsClaim = collect((array) ($current['normal_outbound_history'] ?? []))->contains(
+                fn (mixed $entry): bool => is_array($entry)
+                    && (int) ($entry['dispatch_id'] ?? 0) === $dispatchId
+                    && hash_equals((string) ($entry['claim_hash'] ?? ''), $claimHash),
+            );
+            if ($activeClaim === null && $historyContainsClaim) {
+                return $dispatch;
+            }
+
+            $target = $this->normalizePhone((string) $dispatch->target_phone);
+            $tupleHash = $this->normalOutboundTupleHash($dispatch);
+            if ($activeClaim === null
+                || ! in_array((string) ($activeClaim['status'] ?? ''), ['http_started', 'ambiguous_no_retry'], true)
+                || (int) ($activeClaim['dispatch_id'] ?? 0) !== $dispatchId
+                || ! hash_equals((string) ($activeClaim['claim_hash'] ?? ''), $claimHash)
+                || ! hash_equals((string) ($activeClaim['tuple_hash'] ?? ''), $tupleHash)
+                || ! hash_equals((string) ($activeClaim['recipient_fingerprint'] ?? ''), hash('sha256', $target))
+                || (string) ($activeClaim['provider'] ?? '') !== (string) $dispatch->provider_key
+                || (string) ($activeClaim['channel'] ?? '') !== (string) $dispatch->channel
+                || filled($dispatch->provider_message_id)
+                || $dispatch->sent_at !== null) {
+                throw new ConflictHttpException('Normal outbound sonucu authoritative claim ile eşleşmiyor.');
+            }
+
+            $providerStatus = trim((string) ($result['provider_status'] ?? 'normal_outbound_result_missing'));
+            $accepted = in_array((string) ($result['status'] ?? ''), TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                && filled($result['provider_message_id'] ?? null);
+            $ambiguous = ! $accepted && (
+                (bool) ($result['ambiguous'] ?? false)
+                || (string) ($result['status'] ?? '') === TechnicalServiceMessageDispatch::STATUS_SENDING
+                || in_array($providerStatus, ['exception', 'accepted_without_message_id', 'accepted_without_pkgid'], true)
+            );
+            $status = $accepted
+                ? TechnicalServiceMessageDispatch::STATUS_SENT
+                : ($ambiguous
+                    ? TechnicalServiceMessageDispatch::STATUS_SENDING
+                    : (in_array((string) ($result['status'] ?? ''), [
+                        TechnicalServiceMessageDispatch::STATUS_FAILED,
+                        TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                        TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    ], true)
+                        ? (string) $result['status']
+                        : TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR));
+            $outcome = $accepted
+                ? 'provider_accepted'
+                : ($ambiguous ? 'ambiguous_no_retry' : 'provider_rejected_no_retry');
+            $finalizedAt = now()->toIso8601String();
+
+            $dispatch->forceFill([
+                'status' => $status,
+                'attempt_count' => max(1, (int) $dispatch->attempt_count),
+                'sending_started_at' => $dispatch->sending_started_at ?? now(),
+                'provider_status' => $providerStatus,
+                'provider_message_id' => $accepted ? (string) $result['provider_message_id'] : null,
+                'provider_response_redacted' => $result['response'] ?? null,
+                'response_payload' => $result['response'] ?? null,
+                'last_error_code' => $accepted ? null : $providerStatus,
+                'last_error_message_redacted' => $accepted ? null : ($result['error'] ?? 'Provider sonucu tekrar gönderime kapatıldı.'),
+                'error_message' => $accepted ? null : ($result['error'] ?? 'Provider sonucu tekrar gönderime kapatıldı.'),
+                'sent_at' => $accepted ? now() : null,
+                'failed_at' => ! $accepted && ! $ambiguous ? now() : null,
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'normal_processor_claim_hash' => $claimHash,
+                    'normal_outbound_authoritative_claim_hash' => $claimHash,
+                    'normal_outbound_tuple_hash' => $tupleHash,
+                    'normal_outbound_http_started_at' => $activeClaim['http_started_at'] ?? null,
+                    'provider_send_attempted' => true,
+                    'external_provider_call' => true,
+                    'normal_outbound_outcome' => $outcome,
+                    'normal_outbound_replay_blocked' => true,
+                    'normal_outbound_finalized_claim_hash' => $claimHash,
+                    'normal_outbound_finalized_at' => $finalizedAt,
+                    'provider_accepted' => $accepted,
+                    'delivery_proven' => false,
+                ],
+            ])->save();
+
+            $historyEntry = [
+                ...$activeClaim,
+                'status' => $ambiguous ? 'ambiguous_no_retry' : 'finalized',
+                'outcome' => $outcome,
+                'provider_status' => $providerStatus,
+                'provider_message_id_present' => $accepted,
+                'finalized_at' => $finalizedAt,
+            ];
+            $current['normal_outbound_history'] = $this->appendWindowHistory(
+                (array) ($current['normal_outbound_history'] ?? []),
+                $historyEntry,
+            );
+            $current['normal_outbound_active_claim'] = $ambiguous
+                ? $historyEntry
+                : null;
+            $this->persistAuthoritativeSettings($locked, $current);
+
+            return $dispatch;
+        });
+    }
+
+    public function assertManualE2ELifecycleStateValid(): void
+    {
+        $this->validateManualE2ELifecycleState($this->settings());
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array{provider:string,channel:string,recipient_fingerprint:string,role_target:string,request_id:int,offer_cycle_id:int|null,idempotency_fingerprint:string,body_fingerprint:string}
+     */
+    private function assertManualE2EDispatchEligible(
+        array $settings,
+        TechnicalServiceManualE2ERunContext $context,
+        TechnicalServiceMessageDispatch $dispatch,
+    ): array {
+        $metadata = (array) $dispatch->metadata;
+        $authoritative = $this->manualE2EDispatchSecurityTuple($dispatch);
+        $provider = $authoritative['provider'];
+        $channel = $authoritative['channel'];
+        $recipientRole = (string) $dispatch->recipient_role;
+        $target = $this->normalizePhone((string) $dispatch->target_phone);
+        $expectedTarget = $this->normalizePhone((string) ($metadata['role_target_phone'] ?? ''));
+        $runId = TechnicalServiceManualE2ERunContext::dispatchRunId($metadata);
+        $requestId = $authoritative['request_id'];
+
+        if ($dispatch->status !== TechnicalServiceMessageDispatch::STATUS_QUEUED
+            || (int) $dispatch->attempt_count !== 0
+            || filled($dispatch->provider_message_id)
+            || $dispatch->sent_at !== null
+            || filter_var($metadata['provider_send_attempted'] ?? false, FILTER_VALIDATE_BOOL)
+            || filter_var($metadata['manual_e2e_window_consumed'] ?? false, FILTER_VALIDATE_BOOL)
+        ) {
+            throw new ConflictHttpException('Dispatch provider attempt için uygun değil.');
+        }
+        $parentDispatchId = (int) ($dispatch->parent_dispatch_id
+            ?? $metadata['force_resend_from_dispatch_id']
+            ?? 0);
+        if (filter_var($metadata['manual_e2e_replay_blocked'] ?? false, FILTER_VALIDATE_BOOL)
+            || $parentDispatchId > 0) {
+            throw new ConflictHttpException('Dispatch önceki Manual E2E attempt üzerinden replay edilemez.');
+        }
+        if ($this->terminalOutboundLineageHasAttempt($dispatch)) {
+            throw new ConflictHttpException('Dispatch daha önce attempt almış terminal idempotency kaydı üzerinden replay edilemez.');
+        }
+        if (! filter_var($metadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)
+            || ! filter_var($metadata['test_smoke'] ?? false, FILTER_VALIDATE_BOOL)
+            || $runId === null
+            || $runId !== $context->activeRunId()
+        ) {
+            throw new ConflictHttpException('Dispatch aktif Manual E2E run ile eşleşmiyor.');
+        }
+        if ($dispatch->created_at === null
+            || $context->createdAfter() === null
+            || $dispatch->created_at->lt($context->createdAfter()->subSecond())
+            || $context->expiresAt() === null
+            || ! $dispatch->created_at->lt($context->expiresAt())
+        ) {
+            throw new ConflictHttpException('Dispatch aktif Manual E2E zaman sınırı dışında.');
+        }
+        if (! in_array($provider, ['evo_whatsapp', 'nac_sms'], true)
+            || ($provider === 'evo_whatsapp' && $channel !== 'whatsapp')
+            || ($provider === 'nac_sms' && $channel !== 'sms')
+        ) {
+            throw new ConflictHttpException('Dispatch provider ve kanal eşleşmesi geçersiz.');
+        }
+        if ($target === ''
+            || ! in_array($target, $context->allowlistedPhones(), true)
+            || $expectedTarget === ''
+            || $expectedTarget !== $target
+            || (string) ($metadata['recipient_role_expected'] ?? '') !== $recipientRole
+        ) {
+            throw new ConflictHttpException('Dispatch recipient ve rol hedefi doğrulanamadı.');
+        }
+        $snapshotFingerprint = (string) data_get($settings, 'manual_e2e_run_snapshot.allowlist_fingerprint', '');
+        if ($snapshotFingerprint === '' || ! hash_equals($snapshotFingerprint, $this->allowlistFingerprint($context->allowlistedPhones()))) {
+            throw new ConflictHttpException('Manual E2E allowlist snapshot değişti.');
+        }
+        if ($provider === 'evo_whatsapp' && ! (bool) $this->evoWhatsappReadiness($settings)['ready']) {
+            throw new ConflictHttpException('Evo provider readiness geçersiz.');
+        }
+        if ($provider === 'nac_sms' && ! (bool) ($this->nacSmsPayload($settings)['test_ready'] ?? false)) {
+            throw new ConflictHttpException('NAC provider readiness geçersiz.');
+        }
+
+        $idempotencyKey = trim((string) $dispatch->idempotency_key);
+        $alreadyAttempted = TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $dispatch->id)
+            ->where('idempotency_key', $idempotencyKey)
+            ->where(function ($query): void {
+                $query->where('attempt_count', '>', 0)
+                    ->orWhereNotNull('provider_message_id')
+                    ->orWhereNotNull('sent_at');
+            })
+            ->exists();
+        if ($alreadyAttempted) {
+            throw new ConflictHttpException('Dispatch idempotency anahtarı daha önce tüketilmiş.');
+        }
+
+        $offerCycleId = $dispatch->technical_service_assignment_offer_id !== null
+            ? (int) $dispatch->technical_service_assignment_offer_id
+            : null;
+        $unsafePending = TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $dispatch->id)
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->whereIn('status', [
+                TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                TechnicalServiceMessageDispatch::STATUS_SENDING,
+                TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
+            ])
+            ->get()
+            ->contains(function (TechnicalServiceMessageDispatch $other) use ($context, $dispatch, $requestId, $offerCycleId): bool {
+                $otherMetadata = (array) $other->metadata;
+                $otherRequestId = (int) ($other->technical_service_request_id ?? $other->request_id ?? 0);
+                $otherOfferCycleId = $other->technical_service_assignment_offer_id !== null
+                    ? (int) $other->technical_service_assignment_offer_id
+                    : null;
+
+                return $other->status !== TechnicalServiceMessageDispatch::STATUS_QUEUED
+                    || (int) $other->attempt_count !== 0
+                    || ! filter_var($otherMetadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)
+                    || TechnicalServiceManualE2ERunContext::dispatchRunId($otherMetadata) !== $context->activeRunId()
+                    || ! in_array($this->normalizePhone((string) $other->target_phone), $context->allowlistedPhones(), true)
+                    || $otherRequestId !== $requestId
+                    || $otherOfferCycleId !== $offerCycleId
+                    || (string) $other->message_type !== (string) $dispatch->message_type
+                    || (string) $other->recipient_role !== (string) $dispatch->recipient_role;
+            });
+        if ($unsafePending) {
+            throw new ConflictHttpException('Manual E2E run dışında unsafe pending provider dispatch bulundu.');
+        }
+
+        return $authoritative;
+    }
+
+    /**
+     * @return array{provider:string,channel:string,recipient_fingerprint:string,role_target:string,request_id:int,offer_cycle_id:int|null,idempotency_fingerprint:string,body_fingerprint:string}
+     */
+    private function manualE2EDispatchSecurityTuple(TechnicalServiceMessageDispatch $dispatch): array
+    {
+        $metadata = (array) $dispatch->metadata;
+        $recipientRole = (string) $dispatch->recipient_role;
+        $target = $this->normalizePhone((string) $dispatch->target_phone);
+        $requestId = (int) ($dispatch->technical_service_request_id ?? $dispatch->request_id ?? 0);
+        if ($requestId <= 0) {
+            throw new ConflictHttpException('Dispatch request kapsamı doğrulanamadı.');
+        }
+
+        $request = TechnicalServiceRequest::query()->find($requestId);
+        if (! $request instanceof TechnicalServiceRequest) {
+            throw new ConflictHttpException('Dispatch request kapsamı doğrulanamadı.');
+        }
+        $roleTarget = match ($recipientRole) {
+            'technician' => filled($request->technical_service_technician_id)
+                ? 'technician:'.(int) $request->technical_service_technician_id
+                : null,
+            'customer' => 'customer:'.$requestId,
+            'ops' => 'ops:'.$requestId,
+            default => null,
+        };
+        if ($roleTarget === null) {
+            throw new ConflictHttpException('Dispatch recipient rolü authoritative hedefe bağlanamadı.');
+        }
+
+        $expectedBodyToken = trim((string) ($metadata['expected_body_token'] ?? ''));
+        $body = $dispatch->bodyForProvider();
+        $bodyErrors = [...$dispatch->providerBodyValidationErrors(), ...$dispatch->roleBodyValidationErrors()];
+        if ($expectedBodyToken === '' || ! str_contains($body, $expectedBodyToken) || $bodyErrors !== []) {
+            throw new ConflictHttpException('Dispatch mesaj gövdesi authoritative smoke referansını doğrulamıyor.');
+        }
+
+        $idempotencyKey = trim((string) $dispatch->idempotency_key);
+        if ($idempotencyKey === '') {
+            throw new ConflictHttpException('Dispatch idempotency anahtarı eksik.');
+        }
+
+        return [
+            'provider' => (string) $dispatch->provider_key,
+            'channel' => (string) $dispatch->channel,
+            'recipient_fingerprint' => hash('sha256', $target),
+            'role_target' => $roleTarget,
+            'request_id' => $requestId,
+            'offer_cycle_id' => $dispatch->technical_service_assignment_offer_id !== null
+                ? (int) $dispatch->technical_service_assignment_offer_id
+                : null,
+            'idempotency_fingerprint' => hash('sha256', $idempotencyKey),
+            'body_fingerprint' => hash('sha256', $body),
+        ];
+    }
+
+    private function normalOutboundTupleHash(TechnicalServiceMessageDispatch $dispatch): string
+    {
+        return hash('sha256', implode("\0", [
+            (string) $dispatch->provider_key,
+            (string) $dispatch->channel,
+            $this->normalizePhone((string) $dispatch->target_phone),
+            hash('sha256', $dispatch->bodyForProvider()),
+            (string) $dispatch->idempotency_key,
+        ]));
+    }
+
+    /**
+     * @param  array<string, mixed>  $stored
+     * @param  array{provider:string,channel:string,recipient_fingerprint:string,role_target:string,request_id:int,offer_cycle_id:int|null,idempotency_fingerprint:string,body_fingerprint:string}  $authoritative
+     */
+    private function manualE2ESecurityTupleMatches(array $stored, array $authoritative): bool
+    {
+        if (! array_key_exists('offer_cycle_id', $stored)) {
+            return false;
+        }
+
+        $storedOfferCycleId = $stored['offer_cycle_id'] === null
+            ? null
+            : (int) ($stored['offer_cycle_id'] ?? 0);
+
+        return (string) ($stored['provider'] ?? '') === $authoritative['provider']
+            && (string) ($stored['channel'] ?? '') === $authoritative['channel']
+            && (string) ($stored['recipient_fingerprint'] ?? '') === $authoritative['recipient_fingerprint']
+            && (string) ($stored['role_target'] ?? '') === $authoritative['role_target']
+            && (int) ($stored['request_id'] ?? 0) === $authoritative['request_id']
+            && $storedOfferCycleId === $authoritative['offer_cycle_id']
+            && (string) ($stored['idempotency_fingerprint'] ?? '') === $authoritative['idempotency_fingerprint']
+            && (string) ($stored['body_fingerprint'] ?? '') === $authoritative['body_fingerprint'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $window
+     */
+    private function windowExpired(array $window): bool
+    {
+        try {
+            $expiresAt = CarbonImmutable::parse((string) ($window['expires_at'] ?? ''));
+        } catch (Throwable) {
+            return true;
+        }
+
+        return ! CarbonImmutable::now()->lt($expiresAt);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $history
+     * @param  array<string, mixed>  $entry
+     * @return array<int, array<string, mixed>>
+     */
+    private function appendWindowHistory(array $history, array $entry): array
+    {
+        $history[] = $entry;
+
+        return array_values(array_slice($history, -20));
+    }
+
+    /**
+     * @param  array<int, string>  $phones
+     */
+    private function allowlistFingerprint(array $phones): string
+    {
+        $normalized = array_values(array_unique(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            $phones,
+        ))));
+        sort($normalized);
+
+        return hash('sha256', implode('|', $normalized));
     }
 
     /**
@@ -844,8 +2010,8 @@ class TechnicalServiceMessagingSettingsService
 
         try {
             DB::transaction(function (): void {
-                $page = $this->lockedPageConfig();
-                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
                 $this->assertNoActiveRunMutation($current);
                 $defaults = $this->defaultSettings();
                 foreach (self::GENERIC_LIFECYCLE_FIELDS as $field) {
@@ -854,10 +2020,10 @@ class TechnicalServiceMessagingSettingsService
                     }
                 }
 
-                $this->persistSettingsToPage($page, $defaults);
+                $this->persistAuthoritativeSettings($locked, $defaults);
             });
         } finally {
-            $lock->release();
+            $lock();
         }
 
         return $this->payload();
@@ -1087,7 +2253,14 @@ class TechnicalServiceMessagingSettingsService
      */
     private function settings(): array
     {
-        return $this->settingsFromLayout($this->layout());
+        $settings = $this->settingsFromLayout($this->layout());
+        $lifecycleLayout = PageConfig::query()
+            ->where('page_code', self::LIFECYCLE_PAGE_CODE)
+            ->value('layout_json');
+
+        return is_array($lifecycleLayout)
+            ? $this->applyAuthoritativeLifecycleState($settings, $lifecycleLayout)
+            : $settings;
     }
 
     /**
@@ -1145,6 +2318,32 @@ class TechnicalServiceMessagingSettingsService
                 : null;
         }
 
+        $phase = is_scalar($settings['manual_e2e_phase'] ?? null)
+            ? trim((string) $settings['manual_e2e_phase'])
+            : '';
+        $settings['manual_e2e_phase'] = in_array($phase, [
+            self::MANUAL_E2E_PHASE_FROZEN,
+            self::MANUAL_E2E_PHASE_PREPARED,
+            self::MANUAL_E2E_PHASE_WINDOW_OPEN,
+        ], true)
+            ? $phase
+            : (! (bool) ($settings['manual_e2e_enabled'] ?? false)
+                && $settings['manual_e2e_active_run_id'] === null
+                    ? null
+                    : 'invalid');
+        foreach (['manual_e2e_open_window', 'manual_e2e_active_claim', 'manual_e2e_run_snapshot', 'normal_outbound_active_claim'] as $field) {
+            $value = $settings[$field] ?? null;
+            $settings[$field] = is_array($value)
+                ? $value
+                : ($value === null ? null : ['status' => 'invalid']);
+        }
+        $settings['manual_e2e_window_history'] = is_array($settings['manual_e2e_window_history'] ?? null)
+            ? array_values($settings['manual_e2e_window_history'])
+            : [];
+        $settings['normal_outbound_history'] = is_array($settings['normal_outbound_history'] ?? null)
+            ? array_values($settings['normal_outbound_history'])
+            : [];
+
         return $settings;
     }
 
@@ -1173,12 +2372,19 @@ class TechnicalServiceMessagingSettingsService
             'allow_browser_smoke_send' => false,
             'allow_test_fixture_send' => false,
             'manual_e2e_enabled' => false,
+            'manual_e2e_phase' => null,
             'manual_e2e_active_run_id' => null,
             'manual_e2e_started_at' => null,
             'manual_e2e_created_after' => null,
             'manual_e2e_expires_at' => null,
             'manual_e2e_last_run_id' => null,
             'manual_e2e_last_stopped_at' => null,
+            'manual_e2e_open_window' => null,
+            'manual_e2e_active_claim' => null,
+            'manual_e2e_run_snapshot' => null,
+            'manual_e2e_window_history' => [],
+            'normal_outbound_active_claim' => null,
+            'normal_outbound_history' => [],
             'manual_e2e_ttl_seconds' => TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
             'manual_e2e_allowlisted_phones' => [],
             'manual_e2e_partner_portal_origin_enabled' => false,
@@ -1422,6 +2628,9 @@ class TechnicalServiceMessagingSettingsService
         $settings['real_send_enabled'] = false;
         $settings['queue_paused'] = true;
         $settings['ops_whatsapp_enabled'] = false;
+        $settings['manual_e2e_phase'] = self::MANUAL_E2E_PHASE_FROZEN;
+        $settings['manual_e2e_open_window'] = null;
+        $settings['manual_e2e_active_claim'] = null;
         $settings['manual_e2e_active_run_id'] = null;
         $settings['manual_e2e_started_at'] = null;
         $settings['manual_e2e_created_after'] = null;
@@ -1472,20 +2681,45 @@ class TechnicalServiceMessagingSettingsService
         ];
         $providers = ['evo_whatsapp', 'nac_sms'];
         $pending = TechnicalServiceMessageDispatch::query()
-            ->whereIn('status', $pendingStatuses)
             ->whereIn('provider_key', $providers)
+            ->where(function ($query) use ($pendingStatuses): void {
+                $query->whereIn('status', $pendingStatuses)
+                    ->orWhere(function ($query): void {
+                        $query->where('status', TechnicalServiceMessageDispatch::STATUS_CANCELLED)
+                            ->where('attempt_count', '>', 0)
+                            ->whereNull('provider_message_id')
+                            ->whereNull('sent_at')
+                            ->whereNull('failed_at');
+                    });
+            })
             ->count();
         if ($pending > 0) {
             $blockers[] = ['code' => 'pending_provider_dispatch', 'message' => 'Manual E2E açılmadan önce external provider kuyruğu boş olmalı.'];
         }
 
         $unsafe = TechnicalServiceMessageDispatch::query()
-            ->whereIn('status', $pendingStatuses)
             ->whereIn('provider_key', $providers)
+            ->where(function ($query) use ($pendingStatuses): void {
+                $query->whereIn('status', $pendingStatuses)
+                    ->orWhere(function ($query): void {
+                        $query->where('status', TechnicalServiceMessageDispatch::STATUS_CANCELLED)
+                            ->where('attempt_count', '>', 0)
+                            ->whereNull('provider_message_id')
+                            ->whereNull('sent_at')
+                            ->whereNull('failed_at');
+                    });
+            })
             ->whereNotIn('target_phone', $allowlist ?: ['__manual_e2e_allowlist_missing__'])
             ->count();
         if ($unsafe > 0) {
             $blockers[] = ['code' => 'unsafe_provider_dispatch', 'message' => 'Allowlist dışı pending provider dispatch bulundu.'];
+        }
+
+        if (is_array($settings['normal_outbound_active_claim'] ?? null)) {
+            $blockers[] = [
+                'code' => 'normal_outbound_attempt_unresolved',
+                'message' => 'Son external provider attempt sonucu authoritative ledger içinde çözülmeden Manual E2E hazırlanamaz.',
+            ];
         }
 
         $workerLease = $this->manualE2EWorkerLeaseStatus();
@@ -1495,7 +2729,7 @@ class TechnicalServiceMessagingSettingsService
             $blockers[] = ['code' => 'manual_e2e_worker_active', 'message' => 'Başka bir Manual E2E worker çalışıyor.'];
         }
 
-        $lifecycleLockAvailable = ! $checkLifecycleLock || $this->lockAvailable(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY);
+        $lifecycleLockAvailable = ! $checkLifecycleLock || $this->lifecycleLockAvailable();
         if (! $lifecycleLockAvailable) {
             $blockers[] = ['code' => 'manual_e2e_lifecycle_busy', 'message' => 'Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.'];
         }
@@ -1636,6 +2870,8 @@ class TechnicalServiceMessagingSettingsService
      */
     private function validateSettings(array $settings): void
     {
+        $this->validateManualE2ELifecycleState($settings);
+
         if ((int) ($settings['manual_e2e_ttl_seconds'] ?? 0) < 60
             || (int) ($settings['manual_e2e_ttl_seconds'] ?? 0) > TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS) {
             throw ValidationException::withMessages([
@@ -1737,6 +2973,149 @@ class TechnicalServiceMessagingSettingsService
                     'message_types' => "{$messageType} doğrudan canlı kanal moduna alınamaz; kontrollü gerçek gönderim Manual E2E yaşam döngüsü ve queue guard üzerinden yönetilir.",
                 ]);
             }
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function validateManualE2ELifecycleState(array $settings): void
+    {
+        $storedPhase = trim((string) ($settings['manual_e2e_phase'] ?? ''));
+        $manualEnabled = (bool) ($settings['manual_e2e_enabled'] ?? false);
+        $realSend = (bool) ($settings['real_send_enabled'] ?? false);
+        $queuePaused = (bool) ($settings['queue_paused'] ?? true);
+        $runId = TechnicalServiceManualE2ERunContext::normalizeRunId($settings['manual_e2e_active_run_id'] ?? null);
+        $window = is_array($settings['manual_e2e_open_window'] ?? null) ? $settings['manual_e2e_open_window'] : null;
+        $claim = is_array($settings['manual_e2e_active_claim'] ?? null) ? $settings['manual_e2e_active_claim'] : null;
+        $normalClaim = is_array($settings['normal_outbound_active_claim'] ?? null)
+            ? $settings['normal_outbound_active_claim']
+            : null;
+
+        // Legacy/non-manual settings predate persisted lifecycle phases. Once a
+        // lifecycle operation writes a phase, every transition is strict.
+        if ($storedPhase === ''
+            && ! $manualEnabled
+            && ! $realSend
+            && $runId === null
+            && $window === null
+            && $claim === null
+            && $normalClaim === null) {
+            return;
+        }
+
+        $phase = $storedPhase !== '' ? $storedPhase : self::MANUAL_E2E_PHASE_FROZEN;
+        $startedAt = $this->safeDate($settings['manual_e2e_started_at'] ?? null);
+        $createdAfter = $this->safeDate($settings['manual_e2e_created_after'] ?? null);
+        $expiresAt = $this->safeDate($settings['manual_e2e_expires_at'] ?? null);
+        $snapshotFingerprint = trim((string) data_get($settings, 'manual_e2e_run_snapshot.allowlist_fingerprint', ''));
+        $runContextInvalid = $runId !== null && (
+            $startedAt === null
+            || $createdAfter === null
+            || $expiresAt === null
+            || $startedAt->gt($createdAfter)
+            || ! $createdAfter->lt($expiresAt)
+            || $snapshotFingerprint === ''
+            || ! hash_equals($snapshotFingerprint, $this->allowlistFingerprint((array) ($settings['manual_e2e_allowlisted_phones'] ?? [])))
+        );
+
+        $normalClaimInvalid = $normalClaim !== null && (
+            ! in_array((string) ($normalClaim['status'] ?? ''), ['http_started', 'ambiguous_no_retry'], true)
+            || (int) ($normalClaim['dispatch_id'] ?? 0) <= 0
+            || (int) ($normalClaim['attempt_count'] ?? 0) !== 1
+            || ! in_array((string) ($normalClaim['provider'] ?? ''), ['evo_whatsapp', 'nac_sms'], true)
+            || ! in_array((string) ($normalClaim['channel'] ?? ''), ['whatsapp', 'sms'], true)
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($normalClaim['claim_hash'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($normalClaim['recipient_fingerprint'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($normalClaim['tuple_hash'] ?? ''))
+        );
+
+        $invalid = $normalClaimInvalid || match ($phase) {
+            self::MANUAL_E2E_PHASE_FROZEN => $manualEnabled
+                || $realSend
+                || ! $queuePaused
+                || $runId !== null
+                || $window !== null
+                || $claim !== null,
+            self::MANUAL_E2E_PHASE_PREPARED => ! $manualEnabled
+                || $realSend
+                || ! $queuePaused
+                || $runId === null
+                || $runContextInvalid
+                || $window !== null
+                || ($claim !== null && (
+                    ! in_array((string) ($claim['status'] ?? ''), ['claimed', 'http_started'], true)
+                    || (string) ($claim['run_id'] ?? '') !== $runId
+                    || (int) ($claim['dispatch_id'] ?? 0) <= 0
+                    || trim((string) ($claim['claim_hash'] ?? '')) === ''
+                    || $this->manualE2ESecurityTupleIncomplete($claim)
+                ))
+                || $normalClaim !== null,
+            self::MANUAL_E2E_PHASE_WINDOW_OPEN => ! $manualEnabled
+                || ! $realSend
+                || $queuePaused
+                || $runId === null
+                || $runContextInvalid
+                || $window === null
+                || $claim !== null
+                || (string) ($window['status'] ?? '') !== 'open'
+                || (string) ($window['run_id'] ?? '') !== $runId
+                || (int) ($window['dispatch_id'] ?? 0) <= 0
+                || ! in_array((string) ($window['provider'] ?? ''), ['evo_whatsapp', 'nac_sms'], true)
+                || ! in_array((string) ($window['channel'] ?? ''), ['whatsapp', 'sms'], true)
+                || (int) ($window['maximum_attempts'] ?? 0) !== 1
+                || $this->manualE2ESecurityTupleIncomplete($window)
+                || $this->invalidWindowTtl($window)
+                || $normalClaim !== null,
+            default => true,
+        };
+
+        if ($invalid) {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Manual E2E lifecycle durumu geçersiz; provider kapıları fail-closed tutuldu.',
+            ]);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $scope
+     */
+    private function manualE2ESecurityTupleIncomplete(array $scope): bool
+    {
+        return (int) ($scope['request_id'] ?? 0) <= 0
+            || ! array_key_exists('offer_cycle_id', $scope)
+            || trim((string) ($scope['role_target'] ?? '')) === ''
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['recipient_fingerprint'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['idempotency_fingerprint'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['body_fingerprint'] ?? ''));
+    }
+
+    /**
+     * @param  array<string, mixed>  $window
+     */
+    private function invalidWindowTtl(array $window): bool
+    {
+        try {
+            $openedAt = CarbonImmutable::parse((string) ($window['opened_at'] ?? ''));
+            $expiresAt = CarbonImmutable::parse((string) ($window['expires_at'] ?? ''));
+        } catch (Throwable) {
+            return true;
+        }
+
+        return ! $openedAt->lt($expiresAt)
+            || $openedAt->diffInSeconds($expiresAt) > self::MANUAL_E2E_WINDOW_TTL_SECONDS;
+    }
+
+    private function safeDate(mixed $value): ?CarbonImmutable
+    {
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            return null;
+        }
+
+        try {
+            return CarbonImmutable::parse((string) $value);
+        } catch (Throwable) {
+            return null;
         }
     }
 
@@ -2737,6 +4116,66 @@ class TechnicalServiceMessagingSettingsService
         return PageConfig::query()->whereKey($page->getKey())->lockForUpdate()->firstOrFail();
     }
 
+    private function lockedLifecyclePageConfig(): PageConfig
+    {
+        $seedSettings = $this->settingsFromLayout($this->layout());
+        $seedLayout = [];
+        Arr::set($seedLayout, self::LIFECYCLE_ROOT_KEY, $this->lifecycleStateFromSettings($seedSettings));
+        $page = PageConfig::query()->firstOrCreate(
+            ['page_code' => self::LIFECYCLE_PAGE_CODE],
+            ['layout_json' => $seedLayout],
+        );
+
+        return PageConfig::query()->whereKey($page->getKey())->lockForUpdate()->firstOrFail();
+    }
+
+    /**
+     * @return array{lifecycle_page:PageConfig,main_page:PageConfig,settings:array<string,mixed>}
+     */
+    private function lockedAuthoritativeSettings(): array
+    {
+        $lifecyclePage = $this->lockedLifecyclePageConfig();
+        $mainPage = $this->lockedPageConfig();
+        $settings = $this->applyAuthoritativeLifecycleState(
+            $this->settingsFromLayout((array) $mainPage->layout_json),
+            (array) $lifecyclePage->layout_json,
+        );
+
+        return [
+            'lifecycle_page' => $lifecyclePage,
+            'main_page' => $mainPage,
+            'settings' => $settings,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @param  array<string, mixed>  $lifecycleLayout
+     * @return array<string, mixed>
+     */
+    private function applyAuthoritativeLifecycleState(array $settings, array $lifecycleLayout): array
+    {
+        $stored = Arr::get($lifecycleLayout, self::LIFECYCLE_ROOT_KEY);
+        if (! is_array($stored)) {
+            return $settings;
+        }
+
+        $merged = array_replace($settings, Arr::only($stored, self::AUTHORITATIVE_LIFECYCLE_FIELDS));
+        $layout = [];
+        Arr::set($layout, self::ROOT_KEY, $merged);
+
+        return $this->settingsFromLayout($layout);
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function lifecycleStateFromSettings(array $settings): array
+    {
+        return Arr::only($settings, self::AUTHORITATIVE_LIFECYCLE_FIELDS);
+    }
+
     /**
      * @param  array<string, mixed>  $settings
      */
@@ -2747,14 +4186,169 @@ class TechnicalServiceMessagingSettingsService
         $page->forceFill(['layout_json' => $layout])->save();
     }
 
-    private function acquireLifecycleLock(): Lock
+    /**
+     * @param  array{lifecycle_page:PageConfig,main_page:PageConfig,settings:array<string,mixed>}  $locked
+     * @param  array<string, mixed>  $settings
+     */
+    private function persistAuthoritativeSettings(array $locked, array $settings): void
     {
-        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 15);
+        $this->persistSettingsToPage($locked['main_page'], $settings);
+
+        $layout = is_array($locked['lifecycle_page']->layout_json)
+            ? $locked['lifecycle_page']->layout_json
+            : [];
+        Arr::set($layout, self::LIFECYCLE_ROOT_KEY, $this->lifecycleStateFromSettings($settings));
+        $locked['lifecycle_page']->forceFill(['layout_json' => $layout])->save();
+    }
+
+    /** @return \Closure(): void */
+    private function acquireLifecycleLock(int $seconds = 15): \Closure
+    {
+        if (self::$lifecycleLockHeldInProcess) {
+            throw new ConflictHttpException('Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.');
+        }
+
+        $connection = DB::connection();
+        if ($connection->getDriverName() === 'pgsql') {
+            $result = (array) $connection->selectOne(
+                'select pg_try_advisory_lock(?, ?) as acquired',
+                [self::MANUAL_E2E_ADVISORY_LOCK_CLASS_ID, self::MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID],
+            );
+            if (! $this->databaseBoolean($result['acquired'] ?? false)) {
+                throw new ConflictHttpException('Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.');
+            }
+
+            self::$lifecycleLockHeldInProcess = true;
+            $released = false;
+
+            return function () use ($connection, &$released): void {
+                if ($released) {
+                    return;
+                }
+
+                try {
+                    $result = (array) $connection->selectOne(
+                        'select pg_advisory_unlock(?, ?) as released',
+                        [self::MANUAL_E2E_ADVISORY_LOCK_CLASS_ID, self::MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID],
+                    );
+                    if (! $this->databaseBoolean($result['released'] ?? false)) {
+                        throw new \RuntimeException('Manual E2E PostgreSQL advisory lock sahipliği kayboldu.');
+                    }
+                } finally {
+                    $released = true;
+                    self::$lifecycleLockHeldInProcess = false;
+                }
+            };
+        }
+
+        if ($connection->getDriverName() !== 'sqlite') {
+            throw new ConflictHttpException('Manual E2E lifecycle lock bu veritabanı sürücüsünde fail-closed kapalıdır.');
+        }
+
+        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, $seconds);
         if (! $lock->get()) {
             throw new ConflictHttpException('Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.');
         }
 
-        return $lock;
+        self::$lifecycleLockHeldInProcess = true;
+        $released = false;
+
+        return static function () use ($lock, &$released): void {
+            if ($released) {
+                return;
+            }
+
+            try {
+                $lock->release();
+            } finally {
+                $released = true;
+                self::$lifecycleLockHeldInProcess = false;
+            }
+        };
+    }
+
+    public function assertManualE2EFrozenOutboundLockHeld(int $dispatchId): void
+    {
+        if (! self::$lifecycleLockHeldInProcess) {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Normal outbound için authoritative lifecycle lock zorunlu.',
+            ]);
+        }
+
+        $connection = DB::connection();
+        if ($connection->getDriverName() === 'pgsql') {
+            $result = (array) $connection->selectOne(
+                <<<'SQL'
+select exists (
+    select 1
+    from pg_locks
+    where locktype = 'advisory'
+      and pid = pg_backend_pid()
+      and classid = ?
+      and objid = ?
+      and objsubid = 2
+      and mode = 'ExclusiveLock'
+      and granted = true
+) as held
+SQL,
+                [self::MANUAL_E2E_ADVISORY_LOCK_CLASS_ID, self::MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID],
+            );
+            if (! $this->databaseBoolean($result['held'] ?? false)) {
+                throw ValidationException::withMessages([
+                    'manual_e2e' => 'Normal outbound PostgreSQL lifecycle lock sahipliği doğrulanamadı.',
+                ]);
+            }
+        } elseif ($connection->getDriverName() !== 'sqlite') {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Normal outbound lifecycle lock bu veritabanı sürücüsünde doğrulanamadı.',
+            ]);
+        }
+
+        $current = $this->settings();
+        $this->validateManualE2ELifecycleState($current);
+        if (is_array($current['normal_outbound_active_claim'] ?? null)) {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Authoritative external provider attempt sonucu çözülmeden yeni outbound başlatılamaz.',
+            ]);
+        }
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+        if ($context->enabled()
+            || $context->activeRunId() !== null
+            || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN) {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Aktif Manual E2E sırasında normal outbound provider çağrısı yasaktır.',
+            ]);
+        }
+
+        $otherUnresolvedAttempt = TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $dispatchId)
+            ->where('attempt_count', '>', 0)
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->where(function ($query): void {
+                $query->whereIn('status', [
+                    TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                    TechnicalServiceMessageDispatch::STATUS_SENDING,
+                    TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
+                ])->orWhere(function ($query): void {
+                    $query->where('status', TechnicalServiceMessageDispatch::STATUS_CANCELLED)
+                        ->whereNull('provider_message_id')
+                        ->whereNull('sent_at')
+                        ->whereNull('failed_at');
+                });
+            })
+            ->exists();
+        if ($otherUnresolvedAttempt) {
+            throw ValidationException::withMessages([
+                'manual_e2e' => 'Başka bir external provider attempt sonucu belirsizken normal outbound başlatılamaz.',
+            ]);
+        }
+    }
+
+    private function databaseBoolean(mixed $value): bool
+    {
+        return $value === true
+            || $value === 1
+            || in_array(mb_strtolower(trim((string) $value)), ['1', 't', 'true', 'yes', 'on'], true);
     }
 
     /**
@@ -2772,7 +4366,7 @@ class TechnicalServiceMessagingSettingsService
 
             return $callback();
         } finally {
-            $lock->release();
+            $lock();
         }
     }
 
@@ -2786,6 +4380,18 @@ class TechnicalServiceMessagingSettingsService
         $lock->release();
 
         return true;
+    }
+
+    private function lifecycleLockAvailable(): bool
+    {
+        try {
+            $release = $this->acquireLifecycleLock();
+            $release();
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**

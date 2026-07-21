@@ -8,22 +8,47 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
 
 class TechnicalServiceManualE2ERunContextTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->travelTo(Carbon::parse('2026-07-21 12:00:00', 'Europe/Istanbul'));
+        Http::preventStrayRequests();
+    }
+
+    public function runDatabaseMigrations(): void
+    {
+        $this->beforeRefreshingDatabase();
+        $this->refreshTestDatabase();
+        $this->afterRefreshingDatabase();
+
+        $this->beforeApplicationDestroyed(function (): void {
+            // The in-memory connection is discarded, so legacy SQLite down
+            // migrations do not need to run during teardown.
+            RefreshDatabaseState::$migrated = false;
+        });
+    }
 
     public function test_manual_e2e_run_context_defaults_to_inactive_without_generic_run(): void
     {
         $payload = app(TechnicalServiceMessagingSettingsService::class)->payload();
 
         $this->assertFalse($payload['manual_e2e']['active']);
+        $this->assertSame('frozen', $payload['manual_e2e']['phase']);
         $this->assertSame('Aktif run yok', $payload['manual_e2e']['status_label']);
         $this->assertNull($payload['manual_e2e']['active_run_id']);
         $this->assertNull($payload['manual_e2e']['worker_command']);
@@ -42,6 +67,11 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $this->assertNotNull($first['manual_e2e']['started_at']);
         $this->assertSame($first['manual_e2e']['started_at'], $first['manual_e2e']['created_after']);
         $this->assertNotNull($first['manual_e2e']['expires_at']);
+        $this->assertSame('prepared', $first['manual_e2e']['phase']);
+        $this->assertFalse($first['global']['real_send_enabled']);
+        $this->assertTrue($first['global']['queue_paused']);
+        $this->assertNull($first['manual_e2e']['worker_command']);
+        $this->assertNull($first['manual_e2e']['open_window']);
         Http::assertNothingSent();
     }
 
@@ -64,13 +94,93 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_generated_worker_command_uses_active_unique_run_and_persisted_created_after(): void
+    public function test_frozen_outbound_lock_excludes_prepare_transition_for_the_entire_callback(): void
     {
         Http::fake();
         $settings = $this->readyControlledManualE2ESettings();
-        $payload = $settings->enableManualE2E([
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-        ]);
+
+        $settings->withManualE2EFrozenOutbound(function () use ($settings): void {
+            try {
+                $settings->prepareManualE2E();
+                $this->fail('Outbound kilidi tutulurken prepare lifecycle geçişi yapamamalıydı.');
+            } catch (ConflictHttpException) {
+                $payload = $settings->payload();
+                $this->assertFalse($payload['global']['manual_e2e_enabled']);
+                $this->assertFalse($payload['global']['real_send_enabled']);
+                $this->assertTrue($payload['global']['queue_paused']);
+                $this->assertNull($payload['manual_e2e']['active_run_id']);
+                $this->assertContains(
+                    'manual_e2e_lifecycle_busy',
+                    collect($settings->manualE2EReadiness()['blockers'])->pluck('code')->all(),
+                );
+            }
+        });
+
+        $prepared = $settings->prepareManualE2E();
+        $this->assertSame('prepared', $prepared['manual_e2e']['phase']);
+        $settings->freezeManualE2E();
+        Http::assertNothingSent();
+    }
+
+    public function test_frozen_outbound_lock_releases_after_callback_exception(): void
+    {
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+
+        try {
+            $settings->withManualE2EFrozenOutbound(static function (): void {
+                throw new \RuntimeException('controlled outbound failure');
+            });
+            $this->fail('Controlled callback exception dışarı taşınmalıydı.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('controlled outbound failure', $exception->getMessage());
+        }
+
+        $prepared = $settings->prepareManualE2E();
+        $this->assertSame('prepared', $prepared['manual_e2e']['phase']);
+        $settings->freezeManualE2E();
+        Http::assertNothingSent();
+    }
+
+    public function test_stale_main_page_writer_cannot_resurrect_frozen_lifecycle(): void
+    {
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $settings->prepareManualE2E();
+        $mainPage = PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)->firstOrFail();
+        $stalePreparedLayout = (array) $mainPage->layout_json;
+
+        $settings->freezeManualE2E();
+        $mainPage->refresh()->forceFill(['layout_json' => $stalePreparedLayout])->saveQuietly();
+
+        $payload = $settings->payload();
+        $this->assertSame('frozen', $payload['global']['manual_e2e_phase']);
+        $this->assertFalse($payload['global']['manual_e2e_enabled']);
+        $this->assertFalse($payload['global']['real_send_enabled']);
+        $this->assertTrue($payload['global']['queue_paused']);
+        $this->assertNull($payload['manual_e2e']['active_run_id']);
+
+        $callbackRan = false;
+        $settings->withManualE2EFrozenOutbound(function () use (&$callbackRan): void {
+            $callbackRan = true;
+        });
+        $this->assertTrue($callbackRan);
+        Http::assertNothingSent();
+    }
+
+    public function test_worker_command_is_generated_only_for_one_exact_open_dispatch_window(): void
+    {
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $prepared = $settings->enableManualE2E();
+        $this->assertNull($prepared['manual_e2e']['worker_command']);
+
+        $dispatch = $this->manualDispatch($settings, 'evo_whatsapp', 'whatsapp');
+        $settings->openManualE2ESendWindow(
+            (string) $prepared['manual_e2e']['active_run_id'],
+            $dispatch->id,
+        );
+        $payload = $settings->payload();
 
         Artisan::call('technical-service:process-message-dispatches', ['--print-start-command' => true]);
         $output = Artisan::output();
@@ -80,7 +190,13 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $this->assertStringContainsString('--smoke-run-id='.$runId, $output);
         $this->assertStringContainsString('--created-after=\\"'.$createdAfter.'\\"', $output);
         $this->assertStringContainsString('--manual-e2e-only', $output);
-        $this->assertStringContainsString('--provider=evo_whatsapp,nac_sms', $output);
+        $this->assertStringContainsString('--dispatch-id='.$dispatch->id, $output);
+        $this->assertStringContainsString('--provider=evo_whatsapp', $output);
+        $this->assertStringContainsString('--channel=whatsapp', $output);
+        $this->assertStringContainsString('--limit=1', $output);
+        $this->assertStringNotContainsString('--allowlisted-phone', $output);
+        $this->assertStringNotContainsString('905372081633', $output);
+        $this->assertStringNotContainsString('evo_whatsapp,nac_sms', $output);
         $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
         Http::assertNothingSent();
     }
@@ -95,8 +211,22 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $context = $settings->manualE2EContext();
 
         $mismatch = $context->workerBlockingReason($runId, now()->addSecond()->toIso8601String());
+        $this->assertSame('manual_e2e_send_window_missing', $mismatch['code']);
+        $this->assertSame('manual_e2e_send_window_missing', $context->workerBlockingReason($runId, $createdAfter)['code']);
+
+        $dispatch = $this->manualDispatch($settings, 'evo_whatsapp', 'whatsapp');
+        $settings->openManualE2ESendWindow($runId, $dispatch->id);
+        $context = $settings->manualE2EContext();
+        $mismatch = $context->workerBlockingReason($runId, now()->addSecond()->toIso8601String());
         $this->assertSame('manual_e2e_created_after_mismatch', $mismatch['code']);
         $this->assertNull($context->workerBlockingReason($runId, $createdAfter));
+
+        $settings->closeManualE2ESendWindow($runId, $dispatch->id);
+        $closed = $settings->payload();
+        $this->assertSame($runId, $closed['manual_e2e']['active_run_id']);
+        $this->assertSame('prepared', $closed['manual_e2e']['phase']);
+        $this->assertFalse($closed['global']['real_send_enabled']);
+        $this->assertTrue($closed['global']['queue_paused']);
 
         $settings->freezeManualE2E();
         $frozenBlock = $settings->manualE2EContext()->workerBlockingReason($runId, $createdAfter);
@@ -106,7 +236,11 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
     public function test_worker_rejects_cli_run_id_not_matching_active_settings_before_processing(): void
     {
         Http::fake();
-        $payload = $this->readyControlledManualE2ESettings()->enableManualE2E();
+        $settings = $this->readyControlledManualE2ESettings();
+        $prepared = $settings->enableManualE2E();
+        $dispatch = $this->manualDispatch($settings, 'evo_whatsapp', 'whatsapp');
+        $settings->openManualE2ESendWindow((string) $prepared['manual_e2e']['active_run_id'], $dispatch->id);
+        $payload = $settings->payload();
 
         $this->withoutMockingConsoleOutput();
         Artisan::call('technical-service:process-message-dispatches', [
@@ -124,7 +258,10 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
 
         $this->assertStringContainsString('"manual_e2e_worker_started": false', $output);
         $this->assertStringContainsString('"stop_reason": "manual_e2e_run_id_mismatch"', $output);
-        $this->assertSame(0, TechnicalServiceMessageDispatch::query()->count());
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()->count());
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
         Http::assertNothingSent();
     }
 
@@ -138,9 +275,9 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
             ],
         ]);
         $settings->enableManualE2E();
-        $page = PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)->firstOrFail();
+        $page = PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)->firstOrFail();
         $layout = (array) $page->layout_json;
-        Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.manual_e2e_active_run_id', null);
+        Arr::set($layout, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.manual_e2e_active_run_id', null);
         $page->forceFill(['layout_json' => $layout])->save();
 
         $request = TechnicalServiceRequest::query()->create([
@@ -186,6 +323,52 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         }
     }
 
+    private function manualDispatch(
+        TechnicalServiceMessagingSettingsService $settings,
+        string $provider,
+        string $channel,
+    ): TechnicalServiceMessageDispatch {
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-MANUAL-WINDOW-'.strtoupper(substr(hash('sha256', uniqid('', true)), 0, 8)),
+            'customer_name' => 'Manual Window Test',
+            'customer_phone' => '05372081633',
+            'customer_city' => 'İstanbul',
+            'customer_district' => 'Kadıköy',
+            'service_address' => 'Test adresi',
+            'product_name' => 'Test ürün',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+        $token = (string) $request->mrn;
+        $body = "EMAKS Prime {$token} randevu bilgilendirmesi.";
+        $metadata = $settings->manualE2EContext()->dispatchMetadata(
+            $token,
+            '905372081633',
+            'customer',
+        );
+
+        return TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'appointment_updated_customer',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'message_type' => 'appointment_updated_customer',
+            'provider_key' => $provider,
+            'channel' => $channel,
+            'recipient_role' => 'customer',
+            'target_type' => 'customer',
+            'target_phone' => '905372081633',
+            'original_phone' => '905372081633',
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'attempt_count' => 0,
+            'max_attempts' => 1,
+            'idempotency_key' => hash('sha256', uniqid('manual-window-', true)),
+            'queued_at' => now(),
+            'request_payload' => ['body' => $body],
+            'metadata' => $metadata,
+        ]);
+    }
+
     private function readyControlledManualE2ESettings(): TechnicalServiceMessagingSettingsService
     {
         $this->actingAs($this->admin());
@@ -227,6 +410,21 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
             'notes' => 'Fake manual E2E test provider.',
         ]);
         $page->forceFill(['layout_json' => $layout])->save();
+        $lifecyclePage = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $lifecycleLayout = (array) $lifecyclePage->layout_json;
+        Arr::set(
+            $lifecycleLayout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.providers.evo_whatsapp',
+            [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'test_send_allowed' => true,
+                'notes' => 'Fake manual E2E test provider.',
+            ],
+        );
+        $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
         $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
 

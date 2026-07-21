@@ -7,7 +7,9 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceMessagingSettingsController extends Controller
 {
@@ -125,31 +127,67 @@ class TechnicalServiceMessagingSettingsController extends Controller
 
     public function enableManualE2E(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
-        $data = $request->validate([
-            'manual_e2e_allowlisted_phones' => ['sometimes', 'array', 'min:1'],
-            'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],
-            'manual_e2e_ttl_seconds' => ['sometimes', 'integer', 'min:60', 'max:14400'],
-        ]);
+        $operation = $request->validate([
+            'operation' => ['required', 'string', Rule::in(['prepare', 'open_send_window', 'close_send_window'])],
+        ])['operation'];
+
+        if ($operation === 'prepare') {
+            $this->assertLifecyclePayloadKeys($request, ['operation']);
+            $settings->prepareManualE2E();
+            $message = 'Manual E2E run güvenli hazırlık durumuna alındı; gerçek gönderim kapalı ve kuyruk duraklatılmış kaldı.';
+        } else {
+            $this->assertLifecyclePayloadKeys($request, ['operation', 'active_run_id', 'dispatch_id']);
+            $data = $request->validate([
+                'active_run_id' => ['required', 'string', 'max:160'],
+                'dispatch_id' => ['required', 'integer', 'min:1'],
+            ]);
+            if ($operation === 'open_send_window') {
+                $settings->openManualE2ESendWindow((string) $data['active_run_id'], (int) $data['dispatch_id']);
+                $message = 'Exact dispatch için en fazla 30 saniyelik tek kullanımlık gönderim penceresi açıldı; worker otomatik başlatılmadı.';
+            } else {
+                $settings->closeManualE2ESendWindow((string) $data['active_run_id'], (int) $data['dispatch_id']);
+                $message = 'Gönderim penceresi kapatıldı; active run hazırlık durumunda korundu.';
+            }
+        }
 
         return response()->json([
-            'messaging_settings' => $settings->enableManualE2E($data),
-            'message' => 'Manual E2E run context hazırlandı. Worker otomatik başlatılmadı.',
+            'messaging_settings' => $settings->manualE2ELifecyclePayload(),
+            'message' => $message,
         ]);
     }
 
     public function manualE2EReadiness(TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
         return response()->json([
-            'manual_e2e_readiness' => $settings->manualE2EReadiness(),
+            'manual_e2e_readiness' => Arr::except($settings->manualE2EReadiness(), ['allowlisted_phones']),
         ]);
     }
 
-    public function freezeManualE2E(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    public function freezeManualE2E(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
+        $this->assertLifecyclePayloadKeys($request, ['operation']);
+        $request->validate([
+            'operation' => ['required', 'string', Rule::in(['freeze'])],
+        ]);
+        $settings->freezeManualE2E();
+
         return response()->json([
-            'messaging_settings' => $settings->freezeManualE2E(),
+            'messaging_settings' => $settings->manualE2ELifecyclePayload(),
             'message' => 'Manual E2E durduruldu ve aktif run context kapatıldı.',
         ]);
+    }
+
+    /**
+     * @param  array<int, string>  $allowed
+     */
+    private function assertLifecyclePayloadKeys(Request $request, array $allowed): void
+    {
+        $unexpected = array_values(array_diff(array_keys($request->all()), $allowed));
+        if ($unexpected !== []) {
+            throw ValidationException::withMessages([
+                'operation' => 'Manual E2E lifecycle payload yalnız operation, active run ve exact dispatch alanlarını kabul eder.',
+            ]);
+        }
     }
 
     public function validatePhone(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse

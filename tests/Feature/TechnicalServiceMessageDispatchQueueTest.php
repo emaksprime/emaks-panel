@@ -2,13 +2,17 @@
 
 namespace Tests\Feature;
 
+use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestEvent;
+use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
-use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
+use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\Messaging\TechnicalServiceMessageChannelPlanner;
 use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
 use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
@@ -17,21 +21,48 @@ use App\Services\Messaging\TechnicalServiceMessageDispatchStatusRegistry;
 use App\Services\Messaging\TechnicalServiceMessageIdempotencyService;
 use App\Services\Messaging\TechnicalServiceMessageProviderRouter;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use Carbon\CarbonImmutable;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
 
 class TechnicalServiceMessageDispatchQueueTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
 
     private const TEST_RUN_ID = 'MANUAL-E2E-FULL-20260710-000000-TST1';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->travelTo(Carbon::parse('2026-07-21 12:00:00', 'Europe/Istanbul'));
+        Http::preventStrayRequests();
+    }
+
+    public function runDatabaseMigrations(): void
+    {
+        $this->beforeRefreshingDatabase();
+        $this->refreshTestDatabase();
+        $this->afterRefreshingDatabase();
+
+        $this->beforeApplicationDestroyed(function (): void {
+            // SQLite down migrations contain legacy drop-column operations that
+            // are not needed after the in-memory test connection is destroyed.
+            RefreshDatabaseState::$migrated = false;
+        });
+    }
 
     public function test_message_dispatch_schema_and_status_registry_contains_expected_statuses(): void
     {
@@ -239,7 +270,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame('evo_whatsapp-fake-'.$dispatch->id, $dispatch->provider_message_id);
     }
 
-    public function test_manual_e2e_worker_enforces_max_seconds_and_outputs_stop_reason(): void
+    public function test_manual_e2e_broad_worker_does_not_start_without_exact_send_window(): void
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
@@ -258,33 +289,38 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         ]);
 
         $output = Artisan::output();
-        $this->assertStringContainsString('manual_e2e_worker_started_at', $output);
-        $this->assertStringContainsString('manual_e2e_worker_expires_at', $output);
-        $this->assertStringContainsString('"stop_reason": "ttl_expired"', $output);
+        $this->assertStringContainsString('"manual_e2e_worker_started": false', $output);
+        $this->assertStringContainsString('"stop_reason": "manual_e2e_send_window_missing"', $output);
         Http::assertNothingSent();
     }
 
-    public function test_manual_e2e_worker_does_not_stop_on_idle_before_ttl_by_default(): void
+    public function test_manual_e2e_exact_dispatch_dry_run_does_not_claim_or_call_provider(): void
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
 
         Artisan::call('technical-service:process-message-dispatches', [
-            '--worker-loop' => true,
             '--dry-run' => true,
             '--manual-e2e-only' => true,
+            '--dispatch-id' => $dispatch->id,
+            '--limit' => 1,
             '--created-after' => $global['manual_e2e_created_after'],
             '--smoke-run-id' => $global['manual_e2e_active_run_id'],
-            '--allowlisted-phone' => ['905372081633', '905467647428'],
-            '--provider' => 'evo_whatsapp,nac_sms',
-            '--max-seconds' => 1,
-            '--sleep-seconds' => 1,
+            '--provider' => 'evo_whatsapp',
+            '--channel' => 'whatsapp',
         ]);
 
         $output = Artisan::output();
-        $this->assertStringContainsString('"idle_stop": "disabled"', $output);
-        $this->assertStringNotContainsString('idle_limit_reached', $output);
-        $this->assertStringContainsString('"stop_reason": "ttl_expired"', $output);
+        $this->assertStringContainsString('"count": 1', $output);
+        $this->assertStringContainsString('"id": '.$dispatch->id, $output);
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
+        $settings->closeManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
         Http::assertNothingSent();
     }
 
@@ -313,34 +349,21 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     public function test_manual_e2e_processor_blocks_when_run_id_option_is_omitted(): void
     {
         Http::fake();
-        $this->actingAs($this->admin());
         $global = $this->activateManualE2EContext();
-
-        $dispatch = $this->enqueueDispatch([
-            'event' => 'earnings_message_technician',
-            'message_type' => 'earnings_message_technician',
-            'provider_key' => 'evo_whatsapp',
-            'channel' => 'whatsapp',
-            'recipient_role' => 'technician',
-            'target_phone' => '05467647428',
-            'payload' => ['body' => 'Usta hakediş bilgilendirmesi. Hakediş: 1.111,00 TL.'],
-            'metadata' => [
-                'test_smoke' => true,
-                'manual_e2e' => true,
-                'allowlisted_target' => true,
-                'smoke_run_id' => $global['manual_e2e_active_run_id'],
-                'manual_e2e_run_id' => $global['manual_e2e_active_run_id'],
-            ],
-        ]);
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        app(TechnicalServiceMessagingSettingsService::class)
+            ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
 
         $result = app(TechnicalServiceMessageDispatchProcessor::class)
-            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905467647428'], options: [
+            ->processOne($dispatch->id, noExternal: false, options: [
                 'manual_e2e_only' => true,
             ]);
 
         $dispatch->refresh();
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $result['status']);
-        $this->assertSame('manual_e2e_run_id_mismatch', $dispatch->last_error_code);
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
         Http::assertNothingSent();
     }
 
@@ -385,7 +408,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_earnings_message_technician_manual_e2e_with_matching_run_id_reaches_router_guard(): void
+    public function test_earnings_message_technician_prepared_run_cannot_send_without_exact_window(): void
     {
         Http::fake();
         $this->actingAs($this->admin());
@@ -416,8 +439,10 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ]);
 
         $dispatch->refresh();
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
-        $this->assertSame('real_send_disabled', $dispatch->last_error_code);
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $result['status']);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
         Http::assertNothingSent();
     }
 
@@ -425,33 +450,22 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
-        $dispatch = $this->enqueueDispatch([
-            'event' => 'earnings_message_technician',
-            'message_type' => 'earnings_message_technician',
-            'provider_key' => 'nac_sms',
-            'channel' => 'sms',
-            'recipient_role' => 'technician',
-            'target_phone' => '05467647428',
-            'payload' => ['body' => 'Usta hakediş bilgilendirmesi. Hakediş: 1.111,00 TL.'],
-            'metadata' => [
-                'test_smoke' => true,
-                'manual_e2e' => true,
-                'allowlisted_target' => true,
-                'smoke_run_id' => 'WRONG-RUN',
-            ],
-        ]);
+        $dispatch = $this->enqueueManualE2EDispatch($global, provider: 'nac_sms', channel: 'sms');
+        app(TechnicalServiceMessagingSettingsService::class)
+            ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
 
         $result = app(TechnicalServiceMessageDispatchProcessor::class)
-            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905467647428'], options: [
+            ->processOne($dispatch->id, noExternal: false, options: [
                 'manual_e2e_only' => true,
-                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'smoke_run_id' => 'WRONG-RUN',
                 'created_after' => $global['manual_e2e_created_after'],
             ]);
 
         $dispatch->refresh();
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $result['status']);
-        $this->assertSame('manual_e2e_run_id_mismatch', $dispatch->last_error_code);
-        $this->assertStringContainsString('run id', (string) $dispatch->last_error_message_redacted);
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
         Http::assertNothingSent();
     }
 
@@ -533,51 +547,69 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_manual_e2e_worker_requires_real_send_enabled_when_requested(): void
+    public function test_prepared_manual_e2e_keeps_real_send_disabled_and_queue_paused(): void
     {
         Http::fake();
-        $this->actingAs($this->admin());
         $global = $this->activateManualE2EContext();
 
-        Artisan::call('technical-service:process-message-dispatches', [
-            '--worker-loop' => true,
-            '--dry-run' => true,
-            '--manual-e2e-only' => true,
-            '--created-after' => $global['manual_e2e_created_after'],
-            '--smoke-run-id' => $global['manual_e2e_active_run_id'],
-            '--allowlisted-phone' => ['905372081633', '905467647428'],
-            '--provider' => 'evo_whatsapp,nac_sms',
-            '--require-real-send-enabled' => true,
-            '--max-seconds' => 1,
-            '--sleep-seconds' => 0,
-        ]);
-
-        $this->assertStringContainsString('"stop_reason": "real_send_disabled"', Artisan::output());
+        $this->assertTrue($global['manual_e2e_enabled']);
+        $this->assertSame('prepared', $global['manual_e2e_phase']);
+        $this->assertFalse($global['real_send_enabled']);
+        $this->assertTrue($global['queue_paused']);
         Http::assertNothingSent();
     }
 
-    public function test_manual_e2e_worker_requires_queue_not_paused_when_requested(): void
+    public function test_exact_send_window_opens_gates_and_close_restores_prepared_state(): void
     {
         Http::fake();
-        $this->actingAs($this->admin());
-        $global = $this->activateManualE2EContext([
-            'queue_paused' => true,
-        ]);
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
 
-        Artisan::call('technical-service:process-message-dispatches', [
-            '--worker-loop' => true,
-            '--dry-run' => true,
-            '--manual-e2e-only' => true,
-            '--created-after' => $global['manual_e2e_created_after'],
-            '--smoke-run-id' => $global['manual_e2e_active_run_id'],
-            '--allowlisted-phone' => ['905372081633', '905467647428'],
-            '--provider' => 'evo_whatsapp,nac_sms',
-            '--require-queue-not-paused' => true,
-            '--max-seconds' => 1,
-            '--sleep-seconds' => 0,
-        ]);
+        $opened = $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $this->assertSame('window_open', $opened['global']['manual_e2e_phase']);
+        $this->assertTrue($opened['global']['real_send_enabled']);
+        $this->assertFalse($opened['global']['queue_paused']);
+        $this->assertSame($dispatch->id, data_get($opened, 'manual_e2e.open_window.dispatch_id'));
 
-        $this->assertStringContainsString('"stop_reason": "queue_paused"', Artisan::output());
+        $closed = $settings->closeManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $this->assertSame('prepared', $closed['global']['manual_e2e_phase']);
+        $this->assertFalse($closed['global']['real_send_enabled']);
+        $this->assertTrue($closed['global']['queue_paused']);
+        $this->assertSame($global['manual_e2e_active_run_id'], data_get($closed, 'manual_e2e.active_run_id'));
+        $this->assertTrue((bool) data_get($dispatch->fresh()->metadata, 'manual_e2e_window_consumed'));
+        Http::assertNothingSent();
+    }
+
+    public function test_closed_dispatch_cannot_reopen_after_bounded_window_history_is_removed(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $settings->closeManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set($layout, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.manual_e2e_window_history', []);
+        $page->forceFill(['layout_json' => $layout])->saveQuietly();
+
+        $closedAgain = $settings->closeManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $this->assertSame('prepared', data_get($closedAgain, 'manual_e2e.phase'));
+        $this->assertSame($global['manual_e2e_active_run_id'], data_get($closedAgain, 'manual_e2e.active_run_id'));
+
+        try {
+            $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+            $this->fail('Dispatch üzerindeki kalıcı consumed kaydı history kesilse de reopen işlemini engellemeliydi.');
+        } catch (ConflictHttpException) {
+            $dispatch->refresh();
+            $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e_window_consumed'));
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+            $this->assertSame(0, $dispatch->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
@@ -1258,7 +1290,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_manual_e2e_when_real_send_disabled(): void
+    public function test_provider_router_requires_persisted_claim_for_manual_dispatch(): void
     {
         Http::fake();
         $this->actingAs($this->admin());
@@ -1280,55 +1312,46 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ],
         ]);
 
-        $result = app(TechnicalServiceMessageDispatchProcessor::class)
-            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905372081633'], options: [
-                'manual_e2e_only' => true,
-                'smoke_run_id' => $global['manual_e2e_active_run_id'],
-                'created_after' => $global['manual_e2e_created_after'],
-            ]);
+        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
+            $dispatch,
+            noExternal: false,
+            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
+        );
 
         $dispatch->refresh();
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
-        $this->assertSame('real_send_disabled', $dispatch->last_error_code);
-        $this->assertStringContainsString('Gerçek gönderim kapalı', (string) $dispatch->last_error_message_redacted);
+        $this->assertSame('manual_e2e_transport_claim_required', $result['provider_status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_manual_e2e_when_queue_paused(): void
+    public function test_provider_router_blocks_unrelated_dispatch_while_manual_run_is_active(): void
     {
         Http::fake();
         $this->actingAs($this->admin());
-        $global = $this->activateManualE2EContext([
-            'queue_paused' => true,
-        ]);
-        $activeRunId = (string) $global['manual_e2e_active_run_id'];
-
+        $global = $this->activateManualE2EContext();
         $dispatch = $this->enqueueDispatch([
-            'event' => 'manual_e2e_queue_guard',
+            'event' => 'normal_dispatch_during_manual_e2e',
             'message_type' => 'appointment_approved_customer',
             'provider_key' => 'nac_sms',
             'channel' => 'sms',
             'recipient_role' => 'customer',
             'target_phone' => '05372081633',
-            'payload' => ['body' => 'PR88 manual E2E müşteri SMS mesajı.'],
-            'metadata' => [
-                'test_smoke' => true,
-                'manual_e2e' => true,
-                'smoke_run_id' => $activeRunId,
-                'manual_e2e_run_id' => $activeRunId,
-            ],
+            'payload' => ['body' => 'Manual run sırasında unrelated normal mesaj.'],
         ]);
 
         $result = app(TechnicalServiceMessageProviderRouter::class)
-            ->dispatch($dispatch, noExternal: false, allowlistedPhones: ['905372081633'], expectedSmokeRunId: $activeRunId);
+            ->dispatch($dispatch, noExternal: false, expectedSmokeRunId: $global['manual_e2e_active_run_id']);
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
-        $this->assertSame('queue_paused', $result['provider_status']);
-        $this->assertStringContainsString('kuyruğu duraklatılmış', (string) $result['error']);
+        $this->assertSame('manual_e2e_exact_claim_required', $result['provider_status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_manual_e2e_without_expected_run_id_metadata(): void
+    public function test_open_window_rejects_manual_dispatch_without_run_metadata(): void
     {
         Http::fake();
         $this->actingAs($this->admin());
@@ -1348,21 +1371,18 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ],
         ]);
 
-        $result = app(TechnicalServiceMessageProviderRouter::class)
-            ->dispatch(
-                $dispatch,
-                noExternal: false,
-                allowlistedPhones: ['905372081633'],
-                expectedSmokeRunId: $global['manual_e2e_active_run_id'],
-            );
-
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
-        $this->assertSame('manual_e2e_run_id_mismatch', $result['provider_status']);
-        $this->assertStringContainsString('run id', (string) $result['error']);
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+            $this->fail('Run metadata eksik dispatch için window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+            $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_accepts_matching_manual_e2e_run_id_before_send_guards(): void
+    public function test_provider_router_rejects_matching_run_without_internal_claim_nonce(): void
     {
         Http::fake();
         $this->actingAs($this->admin());
@@ -1393,12 +1413,11 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             );
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
-        $this->assertSame('real_send_disabled', $result['provider_status']);
-        $this->assertStringContainsString('Gerçek gönderim kapalı', (string) $result['error']);
+        $this->assertSame('manual_e2e_transport_claim_required', $result['provider_status']);
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_generic_old_manual_e2e_run(): void
+    public function test_open_window_rejects_dispatch_from_replaced_manual_run(): void
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
@@ -1417,18 +1436,17 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ],
         ]);
 
-        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
-            $dispatch,
-            noExternal: false,
-            allowlistedPhones: ['905372081633'],
-            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
-        );
-
-        $this->assertSame('manual_e2e_run_id_mismatch', $result['provider_status']);
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+            $this->fail('Eski run dispatch’i için window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_dispatch_before_active_manual_e2e_run(): void
+    public function test_open_window_rejects_dispatch_created_before_active_run(): void
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
@@ -1450,18 +1468,17 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'created_at' => CarbonImmutable::parse($global['manual_e2e_created_after'])->subSeconds(2),
         ])->saveQuietly();
 
-        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
-            $dispatch->fresh(),
-            noExternal: false,
-            allowlistedPhones: ['905372081633'],
-            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
-        );
-
-        $this->assertSame('manual_e2e_dispatch_before_run', $result['provider_status']);
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+            $this->fail('Run öncesi dispatch için window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_expired_active_manual_e2e_run(): void
+    public function test_open_window_rejects_expired_active_manual_run(): void
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
@@ -1481,18 +1498,17 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         ]);
         $this->travel(5)->hours();
 
-        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
-            $dispatch,
-            noExternal: false,
-            allowlistedPhones: ['905372081633'],
-            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
-        );
-
-        $this->assertSame('manual_e2e_run_expired', $result['provider_status']);
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+            $this->fail('Expired run için window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
-    public function test_provider_router_blocks_non_allowlisted_manual_e2e_target(): void
+    public function test_open_window_rejects_non_allowlisted_manual_e2e_target(): void
     {
         Http::fake();
         $global = $this->activateManualE2EContext();
@@ -1511,44 +1527,1774 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ],
         ]);
 
-        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
-            $dispatch,
-            noExternal: false,
-            allowlistedPhones: ['905372081633', '905467647428'],
-            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
-        );
-
-        $this->assertSame('manual_e2e_target_not_allowlisted', $result['provider_status']);
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+            $this->fail('Allowlist dışı dispatch için window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
-    public function test_evo_manual_e2e_rejects_non_allowlisted_target_at_provider_router(): void
+    public function test_direct_evolution_client_is_blocked_before_dispatch_mutation_during_manual_run(): void
     {
         Http::fake();
-        $global = $this->activateManualE2EContext();
+        $this->activateManualE2EContext();
+        $before = TechnicalServiceMessageDispatch::query()->count();
+
+        try {
+            app(EvolutionWhatsAppMessageService::class)->send(
+                'manual_e2e_direct_bypass',
+                'customer',
+                '905372081633',
+                'Direct bypass engellenmelidir.',
+            );
+            $this->fail('Active Manual E2E sırasında direct Evolution çağrısı engellenmeliydi.');
+        } catch (ValidationException) {
+            $this->assertSame($before, TechnicalServiceMessageDispatch::query()->count());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_direct_clients_reject_outer_transaction_before_dispatch_and_http(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        $actor = $this->admin();
+        $this->actingAs($actor);
+        $this->configureNacDirectClient();
+        Http::fake();
+        $before = TechnicalServiceMessageDispatch::query()->count();
+
+        try {
+            DB::transaction(function (): void {
+                app(EvolutionWhatsAppMessageService::class)->send(
+                    'template_test_whatsapp',
+                    'shared_test_phone',
+                    '905467647428',
+                    'Outer transaction Evolution provider mesajı.',
+                    [
+                        'provider_test' => true,
+                        'manual_ui_send' => true,
+                        'allow_unit_test_http_fake' => true,
+                    ],
+                );
+            });
+            $this->fail('Evolution direct client dış transaction içinden çalışmamalıydı.');
+        } catch (ValidationException) {
+            $this->assertSame($before, TechnicalServiceMessageDispatch::query()->count());
+        }
+
+        try {
+            DB::transaction(function () use ($actor): void {
+                app(TechnicalServiceNacSmsTestClient::class)->sendProviderTest(
+                    '905372081633',
+                    ['real_sms_confirmed' => true],
+                    $actor,
+                );
+            });
+            $this->fail('NAC direct client dış transaction içinden çalışmamalıydı.');
+        } catch (ValidationException) {
+            $this->assertSame($before, TechnicalServiceMessageDispatch::query()->count());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_direct_evolution_claim_is_durable_before_fake_http(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        Http::fake(function () {
+            $claimed = TechnicalServiceMessageDispatch::query()->latest('id')->firstOrFail();
+            $this->assertSame('evo_whatsapp', $claimed->provider_key);
+            $this->assertSame('whatsapp', $claimed->channel);
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $claimed->status);
+            $this->assertSame(1, $claimed->attempt_count);
+            $this->assertTrue((bool) data_get($claimed->metadata, 'normal_outbound_replay_blocked'));
+            $this->assertTrue((bool) data_get($claimed->metadata, 'provider_send_attempted'));
+            $readinessCodes = collect(app(TechnicalServiceMessagingSettingsService::class)->manualE2EReadiness()['blockers'])
+                ->pluck('code')
+                ->all();
+            $this->assertContains('pending_provider_dispatch', $readinessCodes);
+            $this->assertContains('manual_e2e_lifecycle_busy', $readinessCodes);
+
+            return Http::response(['ok' => true], 200);
+        });
+
+        $dispatch = app(EvolutionWhatsAppMessageService::class)->send(
+            'template_test_whatsapp',
+            'shared_test_phone',
+            '905467647428',
+            'Durable direct Evolution fake-provider mesajı.',
+            [
+                'provider_test' => true,
+                'manual_ui_send' => true,
+                'allow_unit_test_http_fake' => true,
+            ],
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        Http::assertSentCount(1);
+    }
+
+    public function test_direct_evolution_ambiguous_http_result_blocks_replay_before_new_dispatch(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+
+            throw new RuntimeException('simulated Evolution timeout');
+        });
+        $service = app(EvolutionWhatsAppMessageService::class);
+        $arguments = [
+            'template_test_whatsapp',
+            'shared_test_phone',
+            '905467647428',
+            'Ambiguous Evolution replay edilmemelidir.',
+            [
+                'provider_test' => true,
+                'manual_ui_send' => true,
+                'allow_unit_test_http_fake' => true,
+            ],
+        ];
+
+        $first = $service->send(...$arguments)->fresh();
+        $countAfterFirst = TechnicalServiceMessageDispatch::query()->count();
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $first->status);
+        $this->assertSame(1, $first->attempt_count);
+        $this->assertSame('ambiguous_no_retry', data_get($first->response_payload, 'status'));
+        $this->assertTrue((bool) data_get($first->metadata, 'normal_outbound_replay_blocked'));
+
+        try {
+            $service->send(...$arguments);
+            $this->fail('Belirsiz Evolution sonucu ikinci outbound attempt üretememeliydi.');
+        } catch (ValidationException) {
+            $this->assertSame($countAfterFirst, TechnicalServiceMessageDispatch::query()->count());
+        }
+
+        $this->assertSame(1, $httpAttempts);
+    }
+
+    public function test_legacy_evolution_ambiguous_attempt_blocks_same_idempotency_without_second_http(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+
+            return Http::response(['ok' => true], 200);
+        });
+        $service = app(EvolutionWhatsAppMessageService::class);
+        $arguments = [
+            'template_test_whatsapp',
+            'shared_test_phone',
+            '905467647428',
+            'Legacy ambiguous Evolution tekrar edilmemelidir.',
+            [
+                'provider_test' => true,
+                'manual_ui_send' => true,
+                'allow_unit_test_http_fake' => true,
+            ],
+        ];
+        $legacy = $service->send(...$arguments);
+        $legacy->forceFill([
+            'provider_key' => null,
+            'channel' => null,
+            'status' => TechnicalServiceMessageDispatch::STATUS_FAILED,
+            'attempt_count' => 0,
+            'provider_message_id' => null,
+            'metadata' => [],
+            'error_message' => 'legacy Evolution timeout',
+            'sent_at' => now(),
+        ])->save();
+
+        $second = $service->send(...$arguments)->fresh();
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE, $second->status);
+        $this->assertSame($legacy->id, data_get($second->response_payload, 'duplicate_dispatch_id'));
+        $forceArguments = $arguments;
+        $forceArguments[4]['force_resend'] = true;
+        $forced = $service->send(...$forceArguments)->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE, $forced->status);
+        $this->assertSame($legacy->id, data_get($forced->response_payload, 'duplicate_dispatch_id'));
+        $this->assertSame(1, $httpAttempts);
+        Http::assertSentCount(1);
+    }
+
+    public function test_normal_router_cannot_reach_http_without_authoritative_outbound_lock(): void
+    {
+        $this->configureEvoDirectApi();
+        Http::fake();
         $dispatch = $this->enqueueDispatch([
-            'message_type' => 'assignment_offer_technician',
+            'event' => 'normal_router_without_lifecycle_lock',
+            'message_type' => 'appointment_approved_customer',
             'provider_key' => 'evo_whatsapp',
             'channel' => 'whatsapp',
-            'recipient_role' => 'technician',
-            'target_phone' => '05551112233',
-            'payload' => ['body' => 'PR88 Manual E2E teknisyen WhatsApp mesajı.'],
+            'recipient_role' => 'customer',
+            'target_phone' => '05372081633',
+            'payload' => ['body' => 'NORMAL-ROUTER-LOCK kontrollü mesaj.'],
             'metadata' => [
                 'test_smoke' => true,
-                'manual_e2e' => true,
-                'smoke_run_id' => $global['manual_e2e_active_run_id'],
-                'manual_e2e_run_id' => $global['manual_e2e_active_run_id'],
+                'smoke_run_id' => 'NORMAL-ROUTER-LOCK',
             ],
         ]);
 
         $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
             $dispatch,
             noExternal: false,
-            allowlistedPhones: ['905372081633', '905467647428'],
-            expectedSmokeRunId: $global['manual_e2e_active_run_id'],
+            allowlistedPhones: ['905372081633'],
+            expectedSmokeRunId: 'NORMAL-ROUTER-LOCK',
         );
 
-        $this->assertSame('manual_e2e_target_not_allowlisted', $result['provider_status']);
+        $this->assertSame('normal_outbound_transport_permit_rejected', $result['provider_status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_manual_e2e_claim_is_committed_before_single_http_and_ack_is_not_delivery_proof(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $dispatch->forceFill([
+            'request_payload' => [
+                'body' => 'MANUAL-E2E-EXACT-TOKEN kontrollü provider mesajı. 905372081633 token=provider-secret-value apikey=evo-live-key api_key=nac-live-key',
+            ],
+        ])->save();
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $httpObservations = 0;
+
+        Http::fake(function () use ($dispatch, $settings, &$httpObservations) {
+            $httpObservations++;
+            $this->assertSame(0, DB::transactionLevel());
+            $persisted = $dispatch->fresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $persisted->status);
+            $this->assertSame(1, $persisted->attempt_count);
+            $this->assertTrue((bool) data_get($persisted->metadata, 'manual_e2e_transport_permit_consumed'));
+            $this->assertSame('http_started', data_get($settings->manualE2EContext()->activeClaim(), 'status'));
+
+            return Http::response([
+                'messageId' => 'EVO-MANUAL-ACK-1',
+                'remoteJid' => '905372081633@s.whatsapp.net',
+                'number' => '905372081633',
+                'api-key' => 'structured-api-key-secret',
+                'basic' => 'structured-basic-secret',
+                'meta' => ['passwd' => 'nested-passwd-secret'],
+                'raw' => 'recipient=905372081633 token=provider-secret-value apikey=evo-response-key api_key=nac-response-key Authorization: Bearer bearer-secret-value, basic=basic-secret-value {"api_key":"quoted-api-secret","token":"quoted-token-secret"}',
+            ], 200);
+        });
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'created_after' => $global['manual_e2e_created_after'],
+            ],
+        );
+
+        $dispatch->refresh();
+        $this->assertSame(
+            TechnicalServiceMessageDispatch::STATUS_SENT,
+            $result['status'],
+            json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        );
+        $this->assertSame(1, $httpObservations);
+        $this->assertSame(1, $dispatch->attempt_count);
+        $this->assertSame('EVO-MANUAL-ACK-1', $dispatch->provider_message_id);
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'provider_accepted'));
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'delivery_proven'));
+        $this->assertSame('provider_accepted', data_get($dispatch->metadata, 'manual_e2e_outcome'));
+        $redactedResponse = json_encode($dispatch->provider_response_redacted, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('905372081633', $redactedResponse);
+        $this->assertStringNotContainsString('provider-secret-value', $redactedResponse);
+        $this->assertStringNotContainsString('evo-live-key', $redactedResponse);
+        $this->assertStringNotContainsString('nac-live-key', $redactedResponse);
+        $this->assertStringNotContainsString('evo-response-key', $redactedResponse);
+        $this->assertStringNotContainsString('nac-response-key', $redactedResponse);
+        $this->assertStringNotContainsString('quoted-api-secret', $redactedResponse);
+        $this->assertStringNotContainsString('quoted-token-secret', $redactedResponse);
+        $this->assertStringNotContainsString('bearer-secret-value', $redactedResponse);
+        $this->assertStringNotContainsString('basic-secret-value', $redactedResponse);
+        $this->assertStringNotContainsString('structured-api-key-secret', $redactedResponse);
+        $this->assertStringNotContainsString('structured-basic-secret', $redactedResponse);
+        $this->assertStringNotContainsString('nested-passwd-secret', $redactedResponse);
+        $this->assertStringContainsString('[redacted-recipient]', $redactedResponse);
+        $this->assertStringContainsString('[redacted-phone]', $redactedResponse);
+        $this->assertStringContainsString('[redacted]', $redactedResponse);
+        $payload = $settings->payload();
+        $this->assertSame('prepared', data_get($payload, 'global.manual_e2e_phase'));
+        $this->assertFalse((bool) data_get($payload, 'global.real_send_enabled'));
+        $this->assertTrue((bool) data_get($payload, 'global.queue_paused'));
+        $this->assertNull(data_get($payload, 'manual_e2e.active_claim'));
+        Http::assertSentCount(1);
+    }
+
+    public function test_claim_transaction_rollback_leaves_window_and_dispatch_unmodified(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+
+        try {
+            DB::transaction(function () use ($settings, $global, $dispatch): void {
+                $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+                throw new RuntimeException('force outer rollback');
+            });
+            $this->fail('Outer transaction rollback testi exception üretmeliydi.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('force outer rollback', $exception->getMessage());
+        }
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertNull(data_get($dispatch->metadata, 'manual_e2e_claim_hash'));
+        $this->assertSame('window_open', $settings->manualE2EContext()->phase());
+        $this->assertNull($settings->manualE2EContext()->activeClaim());
+        $settings->closeManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        Http::assertNothingSent();
+    }
+
+    public function test_only_one_claimant_wins_and_claim_commit_without_transport_cannot_replay(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $claim = $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+
+        try {
+            $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+            $this->fail('İkinci claimant aynı dispatch’i claim edememeliydi.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(1, $dispatch->fresh()->attempt_count);
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        }
+
+        $finalized = $settings->finalizeManualE2ESend($dispatch->id, $claim['claim_nonce'], [
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
+            'provider_status' => '200',
+            'provider_message_id' => 'FORGED-PRE-HTTP-ACK',
+            'transport_started' => true,
+        ]);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $finalized->status);
+        $this->assertNull($finalized->provider_message_id);
+        $this->assertFalse((bool) data_get($finalized->metadata, 'provider_send_attempted'));
+        $this->assertTrue((bool) data_get($finalized->metadata, 'manual_e2e_replay_blocked'));
+        Http::assertNothingSent();
+    }
+
+    public function test_same_transport_claim_nonce_can_authorize_at_most_one_http_call(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $claim = $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+        Http::fake(['*' => Http::response(['messageId' => 'EVO-ONE-TIME-ACK'], 200)]);
+        $router = app(TechnicalServiceMessageProviderRouter::class);
+
+        $first = $router->dispatch($dispatch->fresh(), manualE2EClaimNonce: $claim['claim_nonce']);
+        $second = $router->dispatch($dispatch->fresh(), manualE2EClaimNonce: $claim['claim_nonce']);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $first['status']);
+        $this->assertSame('manual_e2e_transport_permit_rejected', $second['provider_status']);
+        Http::assertSentCount(1);
+        $finalized = $settings->finalizeManualE2ESend($dispatch->id, $claim['claim_nonce'], $first);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $finalized->status);
+        $this->assertSame(1, $finalized->attempt_count);
+    }
+
+    public function test_manual_e2e_timeout_is_ambiguous_and_cannot_trigger_second_http(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+            throw new RuntimeException('simulated timeout');
+        });
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $options = [
+            'manual_e2e_only' => true,
+            'smoke_run_id' => $global['manual_e2e_active_run_id'],
+            'created_after' => $global['manual_e2e_created_after'],
+        ];
+
+        $first = $processor->processOne($dispatch->id, noExternal: false, options: $options);
+        $second = $processor->processOne($dispatch->id, noExternal: false, options: $options);
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $first['status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $second['status']);
+        $this->assertSame(1, $dispatch->attempt_count);
+        $this->assertSame('manual_e2e_ambiguous_no_retry', $dispatch->last_error_code);
+        $this->assertSame('ambiguous_no_retry', data_get($dispatch->metadata, 'manual_e2e_outcome'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
+        $this->assertSame(1, $httpAttempts);
+    }
+
+    public function test_finalize_rollback_keeps_http_started_claim_and_blocks_replay(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $claim = $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+        Http::fake(['*' => Http::response(['messageId' => 'EVO-FINALIZE-ROLLBACK'], 200)]);
+        $router = app(TechnicalServiceMessageProviderRouter::class);
+        $result = $router->dispatch($dispatch->fresh(), manualE2EClaimNonce: $claim['claim_nonce']);
+
+        try {
+            DB::transaction(function () use ($settings, $dispatch, $claim, $result): void {
+                $settings->finalizeManualE2ESend($dispatch->id, $claim['claim_nonce'], $result);
+                throw new RuntimeException('force finalize rollback');
+            });
+            $this->fail('Finalize outer rollback testi exception üretmeliydi.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('force finalize rollback', $exception->getMessage());
+        }
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertNull($dispatch->fresh()->provider_message_id);
+        $this->assertSame('http_started', data_get($settings->manualE2EContext()->activeClaim(), 'status'));
+        $replay = $router->dispatch($dispatch->fresh(), manualE2EClaimNonce: $claim['claim_nonce']);
+        $this->assertSame('manual_e2e_transport_permit_rejected', $replay['provider_status']);
+        Http::assertSentCount(1);
+        $settings->freezeManualE2E();
+    }
+
+    public function test_foreign_finalize_nonce_cannot_change_claim_or_attempt(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $claim = $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+
+        try {
+            $settings->finalizeManualE2ESend($dispatch->id, 'foreign-finalize-token', [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
+                'provider_message_id' => 'FOREIGN',
+            ]);
+            $this->fail('Foreign finalize token reddedilmeliydi.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+            $this->assertSame(1, $dispatch->fresh()->attempt_count);
+            $this->assertNull($dispatch->fresh()->provider_message_id);
+        }
+
+        $finalized = $settings->finalizeManualE2ESend($dispatch->id, $claim['claim_nonce'], [
+            'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+            'provider_status' => 'pre_http_blocked',
+            'provider_message_id' => null,
+            'transport_started' => false,
+        ]);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $finalized->status);
+        $this->assertFalse((bool) data_get($finalized->metadata, 'provider_send_attempted'));
+        Http::assertNothingSent();
+    }
+
+    public function test_open_window_binds_provider_channel_recipient_idempotency_and_body_tuple(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+
+        foreach ([
+            ['provider_key' => 'nac_sms'],
+            ['channel' => 'sms'],
+            ['target_phone' => '905467647428'],
+            ['idempotency_key' => hash('sha256', 'tampered-idempotency-key')],
+            ['request_payload' => ['body' => 'MANUAL-E2E-EXACT-TOKEN değiştirilmiş kontrollü provider mesajı.']],
+        ] as $tamper) {
+            $fresh = $dispatch->fresh();
+            $original = collect(array_keys($tamper))
+                ->mapWithKeys(fn (string $key): array => [$key => $fresh->getAttribute($key)])
+                ->all();
+            $dispatch->forceFill($tamper)->saveQuietly();
+            try {
+                $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+                $this->fail('Window tuple tamper claim edilmemeliydi.');
+            } catch (ConflictHttpException) {
+                $this->assertSame(0, $dispatch->fresh()->attempt_count);
+                $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+            }
+            $dispatch->forceFill($original)->saveQuietly();
+        }
+
+        $settings->closeManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        Http::assertNothingSent();
+    }
+
+    public function test_claimed_dispatch_body_tamper_cannot_start_transport_or_call_provider(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $claim = $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+        $dispatch->forceFill([
+            'request_payload' => ['body' => 'MANUAL-E2E-EXACT-TOKEN claim sonrası değiştirilmiş mesaj.'],
+        ])->saveQuietly();
+
+        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch(
+            $dispatch->fresh(),
+            manualE2EClaimNonce: $claim['claim_nonce'],
+        );
+
+        $this->assertSame('manual_e2e_transport_permit_rejected', $result['provider_status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertFalse((bool) data_get($dispatch->fresh()->metadata, 'manual_e2e_transport_permit_consumed'));
+        Http::assertNothingSent();
+    }
+
+    public function test_expired_window_is_closed_without_claim_or_provider_call(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $this->travel(31)->seconds();
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'created_after' => $global['manual_e2e_created_after'],
+            ],
+        );
+
+        $dispatch->refresh();
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertSame('prepared', $settings->manualE2EContext()->phase());
+        $this->assertNull($settings->manualE2EContext()->openWindow());
+        Http::assertNothingSent();
+    }
+
+    public function test_unrelated_pending_dispatch_blocks_window_without_mutating_either_dispatch(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $target = $this->enqueueManualE2EDispatch($global, token: 'TARGET-TOKEN');
+        $unrelated = $this->enqueueManualE2EDispatch($global, token: 'UNRELATED-TOKEN');
+
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $target->id);
+            $this->fail('Unrelated pending dispatch varken window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $target->fresh()->status);
+            $this->assertSame(0, $target->fresh()->attempt_count);
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $unrelated->fresh()->status);
+            $this->assertSame(0, $unrelated->fresh()->attempt_count);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_normal_processor_commits_one_time_claim_before_http_without_open_transaction(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'normal_durable_claim',
+            'message_type' => 'normal_durable_claim',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-DURABLE-CLAIM controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-DURABLE-CLAIM',
+            ],
+        ]);
+        Http::fake(function () use ($dispatch) {
+            $this->assertSame(0, DB::transactionLevel());
+            $claimed = $dispatch->fresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $claimed->status);
+            $this->assertSame(1, $claimed->attempt_count);
+            $this->assertNotSame('', (string) data_get($claimed->metadata, 'normal_processor_claim_hash'));
+            $this->assertTrue((bool) data_get($claimed->metadata, 'provider_send_attempted'));
+            $this->assertNotNull(data_get($claimed->metadata, 'normal_outbound_http_started_at'));
+
+            return Http::response(['messageId' => 'EVO-NORMAL-ACK-1'], 200);
+        });
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: [
+                'smoke_run_id' => 'NORMAL-DURABLE-CLAIM',
+                'expected_body_token' => 'NORMAL-DURABLE-CLAIM',
+            ],
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $result['status']);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertSame('provider_accepted', data_get($dispatch->fresh()->metadata, 'normal_outbound_outcome'));
+        Http::assertSentCount(1);
+    }
+
+    public function test_stale_queue_cancel_cannot_erase_committed_provider_acceptance(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatchInput = [
+            'event' => 'normal_stale_cancel_accepted',
+            'message_type' => 'normal_stale_cancel_accepted',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-STALE-CANCEL-ACCEPTED controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-ACCEPTED',
+            ],
+        ];
+        $dispatch = $this->enqueueDispatch($dispatchInput);
+        $staleQueuedModel = TechnicalServiceMessageDispatch::query()->findOrFail($dispatch->id);
+        $lateStaleQueuedModel = TechnicalServiceMessageDispatch::query()->findOrFail($dispatch->id);
+        $actor = $this->admin();
+        Http::fake(function () use ($staleQueuedModel, $actor) {
+            $activeClaim = $this->authoritativeLifecycleSetting('normal_outbound_active_claim');
+            $this->assertSame('http_started', data_get($activeClaim, 'status'));
+            $this->assertSame($staleQueuedModel->id, data_get($activeClaim, 'dispatch_id'));
+            $this->assertSame(0, DB::transactionLevel());
+
+            app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($staleQueuedModel, $actor);
+
+            return Http::response(['messageId' => 'EVO-STALE-CANCEL-ACK'], 200);
+        });
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: [
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-ACCEPTED',
+                'expected_body_token' => 'NORMAL-STALE-CANCEL-ACCEPTED',
+            ],
+        );
+
+        $persisted = $dispatch->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $result['status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $persisted->status);
+        $this->assertSame(1, $persisted->attempt_count);
+        $this->assertSame('EVO-STALE-CANCEL-ACK', $persisted->provider_message_id);
+        $this->assertSame('provider_accepted', data_get($persisted->metadata, 'normal_outbound_outcome'));
+        $this->assertNull($this->authoritativeLifecycleSetting('normal_outbound_active_claim'));
+        $history = (array) $this->authoritativeLifecycleSetting('normal_outbound_history');
+        $this->assertTrue(collect($history)->contains(
+            fn (mixed $entry): bool => is_array($entry)
+                && (int) ($entry['dispatch_id'] ?? 0) === $dispatch->id
+                && (string) ($entry['outcome'] ?? '') === 'provider_accepted',
+        ));
+
+        app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($lateStaleQueuedModel, $actor);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_CANCELLED, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $requeued = $this->enqueueDispatch($dispatchInput);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $requeued->status);
+        $this->assertSame($dispatch->idempotency_key, data_get($requeued->metadata, 'terminal_idempotency_key'));
+
+        $replay = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $requeued->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: [
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-ACCEPTED',
+                'expected_body_token' => 'NORMAL-STALE-CANCEL-ACCEPTED',
+            ],
+        );
+        $this->assertTrue((bool) ($replay['blocked'] ?? false));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $requeued->fresh()->status);
+        $this->assertSame(0, $requeued->fresh()->attempt_count);
+        $this->assertSame('normal_outbound_terminal_replay_blocked', $requeued->fresh()->last_error_code);
+        $this->assertTrue(app(TechnicalServiceMessagingSettingsService::class)->withManualE2EFrozenOutbound(fn (): bool => true));
+        $this->assertNotContains(
+            'pending_provider_dispatch',
+            collect(app(TechnicalServiceMessagingSettingsService::class)->manualE2EReadiness()['blockers'])->pluck('code')->all(),
+        );
+        Http::assertSentCount(1);
+    }
+
+    public function test_stale_cancelled_terminal_failure_does_not_block_unrelated_outbound(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'normal_stale_cancel_failed',
+            'message_type' => 'normal_stale_cancel_failed',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-STALE-CANCEL-FAILED controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-FAILED',
+            ],
+        ]);
+        $staleQueuedModel = TechnicalServiceMessageDispatch::query()->findOrFail($dispatch->id);
+        Http::fake(['*' => Http::response(['error' => 'deterministic rejection'], 422)]);
+
+        app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: [
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-FAILED',
+                'expected_body_token' => 'NORMAL-STALE-CANCEL-FAILED',
+            ],
+        );
+        $terminal = $dispatch->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $terminal->status);
+        $this->assertSame(1, $terminal->attempt_count);
+        $this->assertNotNull($terminal->failed_at);
+
+        app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($staleQueuedModel, $this->admin());
+        $cancelled = $dispatch->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_CANCELLED, $cancelled->status);
+        $this->assertNotNull($cancelled->failed_at);
+        $this->assertTrue(app(TechnicalServiceMessagingSettingsService::class)->withManualE2EFrozenOutbound(fn (): bool => true));
+        $this->assertNotContains(
+            'pending_provider_dispatch',
+            collect(app(TechnicalServiceMessagingSettingsService::class)->manualE2EReadiness()['blockers'])->pluck('code')->all(),
+        );
+        Http::assertSentCount(1);
+    }
+
+    public function test_stale_queue_cancel_during_timeout_restores_ambiguous_attempt_and_blocks_replay(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'normal_stale_cancel_ambiguous',
+            'message_type' => 'normal_stale_cancel_ambiguous',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-STALE-CANCEL-AMBIGUOUS controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-AMBIGUOUS',
+            ],
+        ]);
+        $staleQueuedModel = TechnicalServiceMessageDispatch::query()->findOrFail($dispatch->id);
+        $lateStaleQueuedModel = TechnicalServiceMessageDispatch::query()->findOrFail($dispatch->id);
+        $actor = $this->admin();
+        $httpAttempts = 0;
+        Http::fake(function () use ($staleQueuedModel, $actor, &$httpAttempts) {
+            $httpAttempts++;
+            app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($staleQueuedModel, $actor);
+
+            throw new RuntimeException('simulated stale-cancel provider timeout');
+        });
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $arguments = [
+            $dispatch->id,
+            false,
+            ['905372081633'],
+            [
+                'smoke_run_id' => 'NORMAL-STALE-CANCEL-AMBIGUOUS',
+                'expected_body_token' => 'NORMAL-STALE-CANCEL-AMBIGUOUS',
+            ],
+        ];
+
+        $first = $processor->processOne(...$arguments);
+        $reconciled = $dispatch->fresh();
+        $activeClaim = $this->authoritativeLifecycleSetting('normal_outbound_active_claim');
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $first['status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $reconciled->status);
+        $this->assertSame(1, $reconciled->attempt_count);
+        $this->assertSame('ambiguous_no_retry', data_get($reconciled->metadata, 'normal_outbound_outcome'));
+        $this->assertSame('ambiguous_no_retry', data_get($activeClaim, 'status'));
+        $this->assertSame($dispatch->id, data_get($activeClaim, 'dispatch_id'));
+
+        app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($lateStaleQueuedModel, $actor);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_CANCELLED, $dispatch->fresh()->status);
+        $callbackRan = false;
+        try {
+            app(TechnicalServiceMessagingSettingsService::class)->withManualE2EFrozenOutbound(
+                function () use (&$callbackRan): void {
+                    $callbackRan = true;
+                },
+            );
+            $this->fail('Authoritative unresolved claim direct outbound callback çağrısını engellemeliydi.');
+        } catch (ValidationException) {
+            $this->assertFalse($callbackRan);
+        }
+
+        $second = $processor->processOne(...$arguments);
+        $this->assertTrue((bool) ($second['blocked'] ?? false));
+        $this->assertTrue((bool) ($second['skipped'] ?? false));
+        $this->assertSame(1, $httpAttempts);
+    }
+
+    public function test_terminal_requeue_lineage_blocks_second_child_after_first_child_attempt(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatchInput = [
+            'event' => 'normal_terminal_lineage',
+            'message_type' => 'normal_terminal_lineage',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-TERMINAL-LINEAGE controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-TERMINAL-LINEAGE',
+            ],
+        ];
+        $root = $this->enqueueDispatch($dispatchInput);
+        app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($root, $this->admin());
+        $firstChild = $this->enqueueDispatch($dispatchInput);
+        $this->assertSame($root->idempotency_key, data_get($firstChild->metadata, 'terminal_idempotency_key'));
+        Http::fake(['*' => Http::response(['messageId' => 'EVO-FIRST-LINEAGE-ACK'], 200)]);
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $options = [
+            'smoke_run_id' => 'NORMAL-TERMINAL-LINEAGE',
+            'expected_body_token' => 'NORMAL-TERMINAL-LINEAGE',
+        ];
+
+        $firstResult = $processor->processOne(
+            $firstChild->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: $options,
+        );
+        $secondChild = $this->enqueueDispatch($dispatchInput);
+        $secondResult = $processor->processOne(
+            $secondChild->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: $options,
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $firstResult['status']);
+        $this->assertSame(1, $firstChild->fresh()->attempt_count);
+        $this->assertSame($root->idempotency_key, data_get($secondChild->metadata, 'terminal_idempotency_key'));
+        $this->assertTrue((bool) ($secondResult['blocked'] ?? false));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $secondChild->fresh()->status);
+        $this->assertSame(0, $secondChild->fresh()->attempt_count);
+        $this->assertSame('normal_outbound_terminal_replay_blocked', $secondChild->fresh()->last_error_code);
+        Http::assertSentCount(1);
+    }
+
+    public function test_legacy_terminal_provider_evidence_blocks_requeue_even_when_attempt_is_zero(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatchInput = [
+            'event' => 'normal_legacy_terminal_evidence',
+            'message_type' => 'normal_legacy_terminal_evidence',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-LEGACY-TERMINAL-EVIDENCE controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-LEGACY-TERMINAL-EVIDENCE',
+            ],
+        ];
+        $legacy = $this->enqueueDispatch($dispatchInput);
+        $legacy->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_CANCELLED,
+            'attempt_count' => 0,
+            'provider_message_id' => 'LEGACY-PROVIDER-EVIDENCE',
+            'sent_at' => now(),
+        ])->save();
+        $requeued = $this->enqueueDispatch($dispatchInput);
+        Http::fake();
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $requeued->id,
+            noExternal: false,
+            allowlistedPhones: ['905372081633'],
+            options: [
+                'smoke_run_id' => 'NORMAL-LEGACY-TERMINAL-EVIDENCE',
+                'expected_body_token' => 'NORMAL-LEGACY-TERMINAL-EVIDENCE',
+            ],
+        );
+
+        $this->assertSame(0, $legacy->fresh()->attempt_count);
+        $this->assertSame($legacy->idempotency_key, data_get($requeued->metadata, 'terminal_idempotency_key'));
+        $this->assertTrue((bool) ($result['blocked'] ?? false));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $requeued->fresh()->status);
+        $this->assertSame(0, $requeued->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_manual_terminal_requeue_lineage_cannot_open_second_send_window(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-MANUAL-TERMINAL-LINEAGE']);
+        $root = $this->enqueueManualE2EDispatch(
+            $global,
+            token: 'MANUAL-TERMINAL-LINEAGE',
+            request: $request,
+        );
+        app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($root, $this->admin());
+        $firstChild = $this->enqueueManualE2EDispatch(
+            $global,
+            token: 'MANUAL-TERMINAL-LINEAGE',
+            request: $request,
+        );
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $firstChild->id);
+        Http::fake(['*' => Http::response(['messageId' => 'EVO-MANUAL-LINEAGE-ACK'], 200)]);
+
+        $firstResult = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $firstChild->id,
+            noExternal: false,
+            options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'created_after' => $global['manual_e2e_created_after'],
+            ],
+        );
+        $secondChild = $this->enqueueManualE2EDispatch(
+            $global,
+            token: 'MANUAL-TERMINAL-LINEAGE',
+            request: $request,
+        );
+
+        try {
+            $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $secondChild->id);
+            $this->fail('Attempt edilmiş terminal lineage için ikinci Manual window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $firstResult['status']);
+            $this->assertSame(1, $firstChild->fresh()->attempt_count);
+            $this->assertSame($root->idempotency_key, data_get($secondChild->metadata, 'terminal_idempotency_key'));
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $secondChild->fresh()->status);
+            $this->assertSame(0, $secondChild->fresh()->attempt_count);
+        }
+        Http::assertSentCount(1);
+    }
+
+    public function test_corrupt_normal_outbound_claim_is_preserved_as_invalid_and_blocks_provider_paths(): void
+    {
+        Http::fake();
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set(
+            $layout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.normal_outbound_active_claim',
+            'corrupt-claim',
+        );
+        $page->forceFill(['layout_json' => $layout])->saveQuietly();
+
+        try {
+            $settings->assertManualE2ELifecycleStateValid();
+            $this->fail('Corrupt normal outbound claim lifecycle doğrulamasını geçmemeliydi.');
+        } catch (ValidationException) {
+            $callbackRan = false;
+            try {
+                $settings->withManualE2EFrozenOutbound(function () use (&$callbackRan): void {
+                    $callbackRan = true;
+                });
+                $this->fail('Corrupt claim direct provider callback çalıştırmamalıydı.');
+            } catch (ValidationException) {
+                $this->assertFalse($callbackRan);
+            }
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_normal_processor_timeout_keeps_unresolved_attempt_and_blocks_replay(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'normal_timeout_no_replay',
+            'message_type' => 'normal_timeout_no_replay',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-TIMEOUT-NO-REPLAY controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-TIMEOUT-NO-REPLAY',
+            ],
+        ]);
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+
+            throw new RuntimeException('simulated normal processor timeout');
+        });
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $arguments = [
+            $dispatch->id,
+            false,
+            ['905372081633'],
+            [
+                'smoke_run_id' => 'NORMAL-TIMEOUT-NO-REPLAY',
+                'expected_body_token' => 'NORMAL-TIMEOUT-NO-REPLAY',
+            ],
+        ];
+
+        $first = $processor->processOne(...$arguments);
+        $second = $processor->processOne(...$arguments);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $first['status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $second['status']);
+        $this->assertTrue((bool) ($second['skipped'] ?? false));
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertTrue((bool) data_get($dispatch->fresh()->metadata, 'provider_send_attempted'));
+        $this->assertSame('ambiguous_no_retry', data_get($dispatch->fresh()->metadata, 'normal_outbound_outcome'));
+        $this->assertSame(1, $httpAttempts);
+
+        $this->expectException(ValidationException::class);
+        app(TechnicalServiceMessageDispatchQueue::class)->retryFailed($dispatch->fresh(), $this->admin());
+    }
+
+    public function test_normal_evolution_success_without_message_id_is_ambiguous_and_not_replayed(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'normal_missing_provider_id',
+            'message_type' => 'normal_missing_provider_id',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-MISSING-PROVIDER-ID controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-MISSING-PROVIDER-ID',
+            ],
+        ]);
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+
+            return Http::response([], 200);
+        });
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $arguments = [
+            $dispatch->id,
+            false,
+            ['905372081633'],
+            [
+                'smoke_run_id' => 'NORMAL-MISSING-PROVIDER-ID',
+                'expected_body_token' => 'NORMAL-MISSING-PROVIDER-ID',
+            ],
+        ];
+
+        $first = $processor->processOne(...$arguments);
+        $second = $processor->processOne(...$arguments);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $first['status']);
+        $this->assertSame('accepted_without_message_id', $first['provider_status']);
+        $this->assertNull($dispatch->fresh()->provider_message_id);
+        $this->assertSame('ambiguous_no_retry', data_get($dispatch->fresh()->metadata, 'normal_outbound_outcome'));
+        $this->assertTrue((bool) ($second['skipped'] ?? false));
+        $this->assertSame(1, $httpAttempts);
+    }
+
+    public function test_normal_provider_ack_then_finalize_crash_preserves_claim_and_blocks_second_http(): void
+    {
+        $this->configureEvoDirectApi();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'normal_finalize_crash',
+            'message_type' => 'normal_finalize_crash',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-FINALIZE-CRASH controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-FINALIZE-CRASH',
+            ],
+        ]);
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+
+            return Http::response(['messageId' => 'EVO-ACK-BEFORE-FINALIZE-CRASH'], 200);
+        });
+        $throwOnFinalize = true;
+        TechnicalServiceMessageDispatch::saving(function (TechnicalServiceMessageDispatch $saving) use (&$throwOnFinalize): void {
+            if ($throwOnFinalize
+                && $saving->status === TechnicalServiceMessageDispatch::STATUS_SENT
+                && (string) $saving->provider_message_id === 'EVO-ACK-BEFORE-FINALIZE-CRASH') {
+                $throwOnFinalize = false;
+                throw new RuntimeException('simulated normal finalize crash');
+            }
+        });
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $arguments = [
+            $dispatch->id,
+            false,
+            ['905372081633'],
+            [
+                'smoke_run_id' => 'NORMAL-FINALIZE-CRASH',
+                'expected_body_token' => 'NORMAL-FINALIZE-CRASH',
+            ],
+        ];
+
+        try {
+            $processor->processOne(...$arguments);
+            $this->fail('Finalize crash testi exception üretmeliydi.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('simulated normal finalize crash', $exception->getMessage());
+        }
+
+        $persisted = $dispatch->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $persisted->status);
+        $this->assertSame(1, $persisted->attempt_count);
+        $this->assertNull($persisted->provider_message_id);
+        $this->assertTrue((bool) data_get($persisted->metadata, 'provider_send_attempted'));
+        $activeClaim = $this->authoritativeLifecycleSetting('normal_outbound_active_claim');
+        $this->assertSame('http_started', data_get($activeClaim, 'status'));
+        $this->assertSame($dispatch->id, data_get($activeClaim, 'dispatch_id'));
+        $second = $processor->processOne(...$arguments);
+        $this->assertTrue((bool) ($second['blocked'] ?? false));
+        $this->assertTrue((bool) ($second['skipped'] ?? false));
+        $this->assertSame(1, $httpAttempts);
+    }
+
+    public function test_exact_dispatch_send_does_not_mutate_related_second_channel(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-RELATED-CHANNELS']);
+        $target = $this->enqueueManualE2EDispatch($global, request: $request, token: 'RELATED-TOKEN');
+        $sibling = $this->enqueueManualE2EDispatch(
+            $global,
+            provider: 'nac_sms',
+            channel: 'sms',
+            token: 'RELATED-TOKEN',
+            request: $request,
+        );
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $target->id);
+        Http::fake(['*' => Http::response(['messageId' => 'EVO-RELATED-ACK'], 200)]);
+
+        app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $target->id,
+            noExternal: false,
+            options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'created_after' => $global['manual_e2e_created_after'],
+            ],
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $target->fresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $sibling->fresh()->status);
+        $this->assertSame(0, $sibling->fresh()->attempt_count);
+        $this->assertFalse((bool) data_get($sibling->fresh()->metadata, 'provider_send_attempted'));
+        Http::assertSentCount(1);
+    }
+
+    public function test_generic_processor_cannot_mutate_unrelated_dispatch_created_after_window_opens(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $target = $this->enqueueManualE2EDispatch($global, token: 'WINDOW-TARGET');
+        app(TechnicalServiceMessagingSettingsService::class)
+            ->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $target->id);
+
+        $unrelated = $this->enqueueDispatch([
+            'event' => 'unrelated_live_dispatch',
+            'message_type' => 'appointment_updated_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'EMAKS Prime unrelated dispatch.'],
+            'metadata' => ['provider_send_attempted' => false],
+        ]);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $unrelated->id,
+            noExternal: false,
+        );
+
+        $unrelated->refresh();
+        $this->assertTrue((bool) $result['blocked']);
+        $this->assertTrue((bool) $result['skipped']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $unrelated->status);
+        $this->assertSame(0, $unrelated->attempt_count);
+        $this->assertFalse((bool) data_get($unrelated->metadata, 'provider_send_attempted'));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $target->fresh()->status);
+        $this->assertSame(0, $target->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_direct_nac_client_is_blocked_before_dispatch_mutation_during_manual_run(): void
+    {
+        Http::fake();
+        $this->activateManualE2EContext();
+        $before = TechnicalServiceMessageDispatch::query()->count();
+
+        try {
+            app(TechnicalServiceNacSmsTestClient::class)->sendProviderTest(
+                '905372081633',
+                ['real_sms_confirmed' => true],
+                $this->admin(),
+            );
+            $this->fail('Active Manual E2E sırasında direct NAC çağrısı engellenmeliydi.');
+        } catch (ValidationException) {
+            $this->assertSame($before, TechnicalServiceMessageDispatch::query()->count());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_direct_nac_claim_is_durable_before_fake_http(): void
+    {
+        $actor = $this->admin();
+        $this->actingAs($actor);
+        $this->configureNacDirectClient();
+        Http::fake(function () {
+            $claimed = TechnicalServiceMessageDispatch::query()->latest('id')->firstOrFail();
+            $this->assertSame('nac_sms', $claimed->provider_key);
+            $this->assertSame('sms', $claimed->channel);
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $claimed->status);
+            $this->assertSame(1, $claimed->attempt_count);
+            $this->assertTrue((bool) data_get($claimed->metadata, 'normal_outbound_replay_blocked'));
+            $this->assertTrue((bool) data_get($claimed->metadata, 'provider_send_attempted'));
+
+            return Http::response(['err' => null, 'data' => ['pkgID' => 123456]], 200);
+        });
+
+        $dispatch = app(TechnicalServiceNacSmsTestClient::class)->sendProviderTest(
+            '905372081633',
+            ['real_sms_confirmed' => true],
+            $actor,
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        Http::assertSentCount(1);
+    }
+
+    public function test_direct_nac_ambiguous_http_result_blocks_replay_before_new_dispatch(): void
+    {
+        $actor = $this->admin();
+        $this->actingAs($actor);
+        $this->configureNacDirectClient();
+        $httpAttempts = 0;
+        Http::fake(function () use (&$httpAttempts) {
+            $httpAttempts++;
+
+            throw new RuntimeException('simulated NAC timeout');
+        });
+        $service = app(TechnicalServiceNacSmsTestClient::class);
+
+        $first = $service->sendProviderTest(
+            '905372081633',
+            ['real_sms_confirmed' => true],
+            $actor,
+        )->fresh();
+        $countAfterFirst = TechnicalServiceMessageDispatch::query()->count();
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $first->status);
+        $this->assertSame(1, $first->attempt_count);
+        $this->assertSame('ambiguous_no_retry', data_get($first->response_payload, 'status'));
+        $this->assertTrue((bool) data_get($first->metadata, 'normal_outbound_replay_blocked'));
+
+        try {
+            $service->sendProviderTest(
+                '905372081633',
+                ['real_sms_confirmed' => true],
+                $actor,
+            );
+            $this->fail('Belirsiz NAC sonucu ikinci outbound attempt üretememeliydi.');
+        } catch (ValidationException) {
+            $this->assertSame($countAfterFirst, TechnicalServiceMessageDispatch::query()->count());
+        }
+
+        $this->assertSame(1, $httpAttempts);
+    }
+
+    public function test_legacy_nac_ambiguous_attempt_blocks_same_content_before_dispatch_and_http(): void
+    {
+        $actor = $this->admin();
+        $this->actingAs($actor);
+        $this->configureNacDirectClient();
+        $message = 'EMAKS Prime SMS altyapı testi. Gönderim zamanı: '.now()->timezone(config('app.timezone'))->format('d.m.Y H:i').'.';
+        TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'provider_test_sms',
+            'provider_key' => null,
+            'channel' => null,
+            'target_type' => 'shared_test_phone',
+            'target_phone' => '905372081633',
+            'test_mode' => true,
+            'status' => TechnicalServiceMessageDispatch::STATUS_FAILED,
+            'attempt_count' => 0,
+            'provider_message_id' => null,
+            'request_payload' => [
+                'content_preview' => mb_substr($message, 0, 240),
+            ],
+            'response_payload' => ['status' => 'exception'],
+            'error_message' => 'legacy NAC timeout',
+            'sent_at' => now(),
+        ]);
+        $before = TechnicalServiceMessageDispatch::query()->count();
+        Http::fake();
+
+        try {
+            app(TechnicalServiceNacSmsTestClient::class)->sendProviderTest(
+                '905372081633',
+                ['real_sms_confirmed' => true],
+                $actor,
+            );
+            $this->fail('Legacy NAC ambiguous attempt aynı içeriği tekrar göndermemeliydi.');
+        } catch (ValidationException) {
+            $this->assertSame($before, TechnicalServiceMessageDispatch::query()->count());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_explicit_invalid_lifecycle_state_blocks_normal_router_before_http(): void
+    {
+        Http::fake();
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set($layout, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.queue_paused', false);
+        $page->forceFill(['layout_json' => $layout])->saveQuietly();
+        $dispatch = $this->enqueueDispatch([
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'test',
+        ]);
+
+        $processed = app(TechnicalServiceMessageDispatchProcessor::class)->processOne($dispatch->id);
+        $this->assertTrue((bool) $processed['blocked']);
+        $this->assertTrue((bool) $processed['skipped']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+
+        $result = app(TechnicalServiceMessageProviderRouter::class)->dispatch($dispatch);
+
+        $this->assertSame('manual_e2e_lifecycle_invalid', $result['provider_status']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_attempted_manual_dispatch_cannot_retry_or_open_clone_window(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $claim = $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+
+        try {
+            app(TechnicalServiceMessageDispatchQueue::class)->retryFailed($dispatch->fresh(), $this->admin());
+            $this->fail('Attempt=1 sending dispatch retry kuyruğuna alınmamalıydı.');
+        } catch (ValidationException) {
+            $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        }
+
+        $settings->finalizeManualE2ESend($dispatch->id, $claim['claim_nonce'], [
+            'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+            'provider_status' => 'pre_http_crash',
+            'transport_started' => false,
+        ]);
+        $clone = $this->enqueueManualE2EDispatch($global, token: 'CLONE-TOKEN');
+        $clone->forceFill([
+            'parent_dispatch_id' => $dispatch->id,
+            'metadata' => [
+                ...((array) $clone->metadata),
+                'force_resend_from_dispatch_id' => $dispatch->id,
+            ],
+        ])->saveQuietly();
+
+        try {
+            $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $clone->id);
+            $this->fail('Attempted parent üzerinden Manual E2E clone window açılmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(0, $clone->fresh()->attempt_count);
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $clone->fresh()->status);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_terminal_idempotency_requeue_cannot_replay_attempted_manual_dispatch(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-TERMINAL-REPLAY']);
+        $original = $this->enqueueManualE2EDispatch(
+            $global,
+            token: 'TERMINAL-REPLAY',
+            request: $request,
+        );
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $original->id);
+        $claim = $settings->claimManualE2ESend($original->id, $global['manual_e2e_active_run_id']);
+        $settings->finalizeManualE2ESend($original->id, $claim['claim_nonce'], [
+            'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+            'provider_status' => 'pre_http_crash',
+        ]);
+
+        $requeued = $this->enqueueManualE2EDispatch(
+            $global,
+            token: 'TERMINAL-REPLAY',
+            request: $request,
+        );
+        $this->assertTrue((bool) data_get($requeued->metadata, 'terminal_idempotency_requeued'));
+        $this->assertSame($original->idempotency_key, data_get($requeued->metadata, 'terminal_idempotency_key'));
+
+        try {
+            $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $requeued->id);
+            $this->fail('Attempted terminal idempotency kaydı yeni dispatch üzerinden replay edilememeliydi.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $requeued->fresh()->status);
+            $this->assertSame(0, $requeued->fresh()->attempt_count);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_closed_dispatch_cannot_reopen_but_second_related_channel_can_open(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-SECOND-CHANNEL']);
+        $whatsapp = $this->enqueueManualE2EDispatch($global, request: $request, token: 'SECOND-CHANNEL');
+        $sms = $this->enqueueManualE2EDispatch(
+            $global,
+            provider: 'nac_sms',
+            channel: 'sms',
+            token: 'SECOND-CHANNEL',
+            request: $request,
+        );
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $runId = $global['manual_e2e_active_run_id'];
+
+        $settings->openManualE2ESendWindow($runId, $whatsapp->id);
+        $settings->closeManualE2ESendWindow($runId, $whatsapp->id);
+        try {
+            $settings->openManualE2ESendWindow($runId, $whatsapp->id);
+            $this->fail('Closed dispatch window yeniden açılamamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertSame(0, $whatsapp->fresh()->attempt_count);
+        }
+
+        $opened = $settings->openManualE2ESendWindow($runId, $sms->id);
+        $this->assertSame($sms->id, data_get($opened, 'manual_e2e.open_window.dispatch_id'));
+        $this->assertSame('nac_sms', data_get($opened, 'manual_e2e.open_window.provider'));
+        $settings->closeManualE2ESendWindow($runId, $sms->id);
+        Http::assertNothingSent();
+    }
+
+    public function test_second_stale_open_loses_and_first_window_remains_authoritative(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-STALE-SECOND-OPEN']);
+        $first = $this->enqueueManualE2EDispatch(
+            $global,
+            token: 'STALE-SECOND-OPEN',
+            request: $request,
+        );
+        $second = $this->enqueueManualE2EDispatch(
+            $global,
+            provider: 'nac_sms',
+            channel: 'sms',
+            token: 'STALE-SECOND-OPEN',
+            request: $request,
+        );
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $runId = $global['manual_e2e_active_run_id'];
+        $settings->openManualE2ESendWindow($runId, $first->id);
+
+        try {
+            $settings->openManualE2ESendWindow($runId, $second->id);
+            $this->fail('Aynı run için ikinci open çağrısı ilk pencereyi değiştirmemeliydi.');
+        } catch (ConflictHttpException) {
+            $current = $settings->payload();
+            $this->assertSame($first->id, data_get($current, 'manual_e2e.open_window.dispatch_id'));
+            $this->assertSame('evo_whatsapp', data_get($current, 'manual_e2e.open_window.provider'));
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $second->fresh()->status);
+            $this->assertSame(0, $second->fresh()->attempt_count);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_freeze_preserves_unresolved_claim_and_attempt_audit_without_reopening_dispatch(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $settings->claimManualE2ESend($dispatch->id, $global['manual_e2e_active_run_id']);
+
+        $frozen = $settings->freezeManualE2E();
+        $secondFreeze = $settings->freezeManualE2E();
+
+        $this->assertSame('frozen', data_get($frozen, 'global.manual_e2e_phase'));
+        $this->assertFalse((bool) data_get($frozen, 'global.manual_e2e_enabled'));
+        $this->assertFalse((bool) data_get($frozen, 'global.real_send_enabled'));
+        $this->assertTrue((bool) data_get($frozen, 'global.queue_paused'));
+        $this->assertNull(data_get($frozen, 'manual_e2e.active_run_id'));
+        $this->assertSame($global['manual_e2e_active_run_id'], data_get($secondFreeze, 'manual_e2e.last_run_id'));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertFalse((bool) data_get($dispatch->fresh()->metadata, 'provider_send_attempted'));
+        $history = (array) data_get(
+            PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)->value('layout_json'),
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.manual_e2e_window_history',
+            [],
+        );
+        $this->assertTrue(collect($history)->contains(
+            fn (array $entry): bool => (int) ($entry['dispatch_id'] ?? 0) === $dispatch->id
+                && (string) ($entry['status'] ?? '') === 'frozen_unresolved',
+        ));
+        Http::assertNothingSent();
+    }
+
+    public function test_unresolved_manual_attempt_blocks_normal_direct_outbound_after_freeze(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $manualDispatch = $this->enqueueManualE2EDispatch($global);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $manualDispatch->id);
+        $settings->claimManualE2ESend($manualDispatch->id, $global['manual_e2e_active_run_id']);
+        $settings->freezeManualE2E();
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        $countBefore = TechnicalServiceMessageDispatch::query()->count();
+
+        try {
+            app(EvolutionWhatsAppMessageService::class)->send(
+                'template_test_whatsapp',
+                'shared_test_phone',
+                '905467647428',
+                'Unresolved Manual attempt varken normal outbound engellenmelidir.',
+                [
+                    'provider_test' => true,
+                    'manual_ui_send' => true,
+                    'allow_unit_test_http_fake' => true,
+                ],
+            );
+            $this->fail('Freeze unresolved Manual attempt gerçeğini normal outbound için görünmez yapmamalıydı.');
+        } catch (ValidationException) {
+            $this->assertSame($countBefore, TechnicalServiceMessageDispatch::query()->count());
+        }
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $manualDispatch->fresh()->status);
+        $this->assertSame(1, $manualDispatch->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_stale_cancel_and_freeze_during_manual_http_cannot_hide_unresolved_attempt(): void
+    {
+        $global = $this->activateManualE2EContext();
+        $dispatch = $this->enqueueManualE2EDispatch($global);
+        $staleQueuedModel = TechnicalServiceMessageDispatch::query()->findOrFail($dispatch->id);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->openManualE2ESendWindow($global['manual_e2e_active_run_id'], $dispatch->id);
+        $actor = $this->admin();
+
+        Http::fake(function () use ($staleQueuedModel, $settings, $actor) {
+            app(TechnicalServiceMessageDispatchQueue::class)->cancelQueued($staleQueuedModel, $actor);
+            $settings->freezeManualE2E();
+
+            return Http::response(['messageId' => 'EVO-STALE-FREEZE-ACK'], 200);
+        });
+
+        app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            noExternal: false,
+            options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => $global['manual_e2e_active_run_id'],
+                'created_after' => $global['manual_e2e_created_after'],
+            ],
+        );
+
+        $unresolved = $dispatch->fresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_CANCELLED, $unresolved->status);
+        $this->assertSame(1, $unresolved->attempt_count);
+        $this->assertContains(
+            'pending_provider_dispatch',
+            collect($settings->manualE2EReadiness()['blockers'])->pluck('code')->all(),
+        );
+        $countBefore = TechnicalServiceMessageDispatch::query()->count();
+
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        try {
+            app(EvolutionWhatsAppMessageService::class)->send(
+                'template_test_whatsapp',
+                'shared_test_phone',
+                '905467647428',
+                'Stale cancel ve freeze unresolved attempt gerçeğini gizlememelidir.',
+                [
+                    'provider_test' => true,
+                    'manual_ui_send' => true,
+                    'allow_unit_test_http_fake' => true,
+                ],
+            );
+            $this->fail('Cancelled attempt=1 varken yeni normal outbound başlatılmamalıydı.');
+        } catch (ValidationException) {
+            $this->assertSame($countBefore, TechnicalServiceMessageDispatch::query()->count());
+        }
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_prepared_assignment_offer_plans_two_run_scoped_dispatches_without_provider_call(): void
+    {
+        Http::fake();
+        $global = $this->activateManualE2EContext();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Prepared Assignment Usta',
+            'technician_type' => 'locksmith',
+            'phone' => '+905467647428',
+            'city' => 'Istanbul',
+            'active' => true,
+            'cari_code' => 'PREPARED-ASSIGNMENT-USTA',
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'PREPARED-ASSIGNMENT-PARTNER',
+            'display_name' => 'Prepared Assignment Partner',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+            'source' => 'manual_e2e_lifecycle_test',
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-PREPARED-ASSIGNMENT',
+            'technical_service_technician_id' => $technician->id,
+        ]);
+        $actor = $this->admin();
+
+        app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
+            $request,
+            'assignment_offer_technician',
+            'technician',
+            'EMAKS Prime Teknik Servis yeni iş teklifi. MRN-PREPARED-ASSIGNMENT İş Kartı http://example.test/pj/1',
+            [],
+            $actor,
+            null,
+            [
+                'recipient_phone' => '905467647428',
+                'triggered_by' => 'manual_e2e_prepared_assignment_test',
+            ],
+        );
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'assignment_offer_technician')
+            ->orderBy('id')
+            ->get();
+        $this->assertCount(2, $dispatches);
+        $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->sort()->values()->all());
+        foreach ($dispatches as $dispatch) {
+            $this->assertSame(
+                TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                $dispatch->status,
+                json_encode($dispatch->only(['id', 'channel', 'status', 'last_error_code', 'last_error_message_redacted']), JSON_UNESCAPED_UNICODE),
+            );
+            $this->assertSame(0, $dispatch->attempt_count);
+            $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+            $this->assertSame($global['manual_e2e_active_run_id'], data_get($dispatch->metadata, 'manual_e2e_run_id'));
+            $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
+        }
+        $current = app(TechnicalServiceMessagingSettingsService::class)->payload();
+        $this->assertSame('prepared', data_get($current, 'global.manual_e2e_phase'));
+        $this->assertFalse((bool) data_get($current, 'global.real_send_enabled'));
+        $this->assertTrue((bool) data_get($current, 'global.queue_paused'));
         Http::assertNothingSent();
     }
 
@@ -2262,35 +4008,108 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function activateManualE2EContext(array $overrides = []): array
+    private function activateManualE2EContext(): array
     {
+        $this->actingAs($this->admin());
         $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
         $settings->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'shared_test_phone' => '905467647428',
             'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
             'ops_whatsapp_phone' => '905467647428',
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'manual_e2e_ttl_seconds' => 14400,
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'manual-e2e-test',
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS TEST',
+            ],
+            'message_types' => [
+                'assignment_offer_technician' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
+                'earnings_message_technician' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_only',
+                ],
+            ],
         ]);
         $page = PageConfig::query()
             ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
             ->firstOrFail();
         $layout = (array) $page->layout_json;
-        $startedAt = CarbonImmutable::now();
-        $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
-        $context = [
-            'manual_e2e_enabled' => true,
-            'queue_paused' => false,
-            'real_send_enabled' => false,
-            'manual_e2e_active_run_id' => $runId,
-            'manual_e2e_started_at' => $startedAt->toIso8601String(),
-            'manual_e2e_created_after' => $startedAt->toIso8601String(),
-            'manual_e2e_expires_at' => $startedAt->addHours(4)->toIso8601String(),
-            ...$overrides,
-        ];
-        foreach ($context as $key => $value) {
-            Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.'.$key, $value);
-        }
+        Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.providers.evo_whatsapp', [
+            'enabled' => true,
+            'real_send_allowed' => true,
+            'test_send_allowed' => true,
+            'notes' => 'Fake Manual E2E queue test provider.',
+        ]);
         $page->forceFill(['layout_json' => $layout])->save();
+        $lifecyclePage = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $lifecycleLayout = (array) $lifecyclePage->layout_json;
+        Arr::set(
+            $lifecycleLayout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.providers.evo_whatsapp',
+            [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'test_send_allowed' => true,
+                'notes' => 'Fake Manual E2E queue test provider.',
+            ],
+        );
+        $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
+        $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
+        $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
 
-        return $settings->payload()['global'];
+        return $settings->prepareManualE2E()['global'];
+    }
+
+    private function enqueueManualE2EDispatch(
+        array $global,
+        string $provider = 'evo_whatsapp',
+        string $channel = 'whatsapp',
+        string $targetPhone = '905372081633',
+        string $token = 'MANUAL-E2E-EXACT-TOKEN',
+        ?TechnicalServiceRequest $request = null,
+    ): TechnicalServiceMessageDispatch {
+        $request ??= $this->technicalServiceRequest([
+            'mrn' => 'MRN-'.$token,
+            'customer_phone' => $targetPhone,
+        ]);
+        $metadata = app(TechnicalServiceMessagingSettingsService::class)
+            ->manualE2EContext()
+            ->dispatchMetadata($token, $targetPhone, 'customer');
+
+        return $this->enqueueDispatch([
+            'event' => 'manual_e2e_exact_customer',
+            'message_type' => 'manual_e2e_exact_customer',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'provider_key' => $provider,
+            'channel' => $channel,
+            'recipient_role' => 'customer',
+            'target_phone' => $targetPhone,
+            'payload' => ['body' => "{$token} kontrollü provider mesajı."],
+            'metadata' => [
+                ...$metadata,
+                'provider_send_attempted' => false,
+                'fixture_run_id' => $global['manual_e2e_active_run_id'],
+            ],
+        ]);
     }
 
     /**
@@ -2309,7 +4128,65 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                 ...$overrides,
             ],
         ]);
+        foreach ([
+            [
+                'page_code' => TechnicalServiceMessagingSettingsService::PAGE_CODE,
+                'root' => TechnicalServiceMessagingSettingsService::ROOT_KEY,
+            ],
+            [
+                'page_code' => TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE,
+                'root' => TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY,
+            ],
+        ] as $target) {
+            $page = PageConfig::query()->where('page_code', $target['page_code'])->firstOrFail();
+            $layout = (array) $page->layout_json;
+            Arr::set($layout, $target['root'].'.providers.evo_whatsapp', [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'test_send_allowed' => true,
+                'notes' => 'Fake normal queue provider.',
+            ]);
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
         $settings->saveEvoWhatsappCredentials(['api_key' => 'evo-secret-key']);
+    }
+
+    private function configureNacDirectClient(): void
+    {
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'nac_sms' => [
+                'enabled' => true,
+                'profile' => 'legacy_working_http_9587',
+                'request_shape' => 'legacy_working_minimal',
+                'scheme' => 'http',
+                'host' => 'smslogin.nac.com.tr',
+                'port' => 9587,
+                'path' => '/sms/create',
+                'sender' => 'EMAKS PRIME',
+                'validity' => 60,
+            ],
+        ]);
+        IntegrationProviderCredential::query()->create([
+            'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
+            'provider' => 'nac_sms',
+            'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
+            'mode' => IntegrationProviderCredential::MODE_LIVE,
+            'username_encrypted' => 'nac-user',
+            'password_encrypted' => 'nac-pass',
+            'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
+        ]);
+    }
+
+    private function authoritativeLifecycleSetting(string $key): mixed
+    {
+        $layout = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->value('layout_json');
+
+        return Arr::get(
+            is_array($layout) ? $layout : [],
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.'.$key,
+        );
     }
 
     private function admin(): User

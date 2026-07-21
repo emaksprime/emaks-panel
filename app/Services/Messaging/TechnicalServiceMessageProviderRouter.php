@@ -5,8 +5,10 @@ namespace App\Services\Messaging;
 use App\Models\IntegrationProviderCredential;
 use App\Models\TechnicalServiceMessageDispatch;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Throwable;
 
 class TechnicalServiceMessageProviderRouter
@@ -23,8 +25,28 @@ class TechnicalServiceMessageProviderRouter
         bool $noExternal = false,
         array $allowlistedPhones = [],
         ?string $expectedSmokeRunId = null,
+        ?string $manualE2EClaimNonce = null,
+        ?string $normalOutboundClaimNonce = null,
     ): array {
+        try {
+            $this->settings->assertManualE2ELifecycleStateValid();
+        } catch (Throwable) {
+            return $this->blocked('manual_e2e_lifecycle_invalid', 'Manual E2E lifecycle durumu provider gönderimine uygun değil.');
+        }
+
         $provider = (string) ($dispatch->provider_key ?: 'null_local');
+        $manualE2e = $this->isManualE2eDispatch($dispatch);
+        $manualContext = $this->settings->manualE2EContext();
+        $activeManualE2e = $manualContext->enabled()
+            || $manualContext->activeRunId() !== null
+            || $manualContext->phase() !== TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_FROZEN;
+
+        if (! $noExternal && $activeManualE2e && ! $manualE2e) {
+            return $this->blocked('manual_e2e_exact_claim_required', 'Aktif Manual E2E sırasında yalnız exact persisted claim dispatch’i provider’a ulaşabilir.');
+        }
+        if (! $noExternal && $manualE2e && trim((string) $manualE2EClaimNonce) === '') {
+            return $this->blocked('manual_e2e_transport_claim_required', 'Manual E2E provider gönderimi için tek kullanımlık persisted claim zorunlu.');
+        }
 
         if ($provider === 'null_local') {
             return [
@@ -45,30 +67,24 @@ class TechnicalServiceMessageProviderRouter
         }
 
         if ($provider === 'nac_sms') {
-            if (! $noExternal && $this->isManualE2eDispatch($dispatch)) {
-                $blocking = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones, $expectedSmokeRunId);
-                if ($blocking !== null) {
-                    return $this->blocked($blocking['code'], $blocking['message']);
-                }
+            if (! $noExternal && $manualE2e) {
+                return $this->sendNacSms($dispatch, (string) $manualE2EClaimNonce, null);
             }
 
             if (! $noExternal && $this->canRunControlledSmoke($dispatch, $allowlistedPhones, $expectedSmokeRunId)) {
-                return $this->sendNacSms($dispatch);
+                return $this->sendNacSms($dispatch, null, $normalOutboundClaimNonce);
             }
 
             return $this->fakeableAccepted($dispatch, $noExternal, 'nac_sms', 'direct_laravel');
         }
 
         if ($provider === 'evo_whatsapp') {
-            if (! $noExternal && $this->isManualE2eDispatch($dispatch)) {
-                $blocking = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones, $expectedSmokeRunId);
-                if ($blocking !== null) {
-                    return $this->blocked($blocking['code'], $blocking['message']);
-                }
+            if (! $noExternal && $manualE2e) {
+                return $this->sendEvoWhatsApp($dispatch, (string) $manualE2EClaimNonce, null);
             }
 
             if (! $noExternal && $this->canRunControlledSmoke($dispatch, $allowlistedPhones, $expectedSmokeRunId)) {
-                return $this->sendEvoWhatsApp($dispatch);
+                return $this->sendEvoWhatsApp($dispatch, null, $normalOutboundClaimNonce);
             }
 
             return $this->fakeableAccepted($dispatch, $noExternal, 'evo_whatsapp', 'evo_adapter');
@@ -161,69 +177,6 @@ class TechnicalServiceMessageProviderRouter
 
     /**
      * @param  array<int, string>  $allowlistedPhones
-     * @return array{code:string,message:string}|null
-     */
-    private function manualE2eBlockingReason(
-        TechnicalServiceMessageDispatch $dispatch,
-        array $allowlistedPhones,
-        ?string $expectedSmokeRunId = null,
-    ): ?array {
-        $global = (array) ($this->settings->payload()['global'] ?? []);
-        $expectedSmokeRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($expectedSmokeRunId);
-        $context = TechnicalServiceManualE2ERunContext::fromSettings($global);
-
-        $contextBlock = $context->contextBlockingReason();
-        if ($contextBlock !== null) {
-            return $contextBlock;
-        }
-
-        if ((bool) ($global['queue_paused'] ?? false)) {
-            return ['code' => 'queue_paused', 'message' => 'Mesaj kuyruğu duraklatılmış; Manual E2E provider gönderimi engellendi.'];
-        }
-
-        if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)) {
-            return ['code' => 'manual_e2e_provider_not_allowed', 'message' => 'Manual E2E sadece Evo WhatsApp veya NAC SMS provider ile çalışır.'];
-        }
-
-        $targetBlock = $context->dispatchBlockingReason((string) $dispatch->target_phone);
-        if ($targetBlock !== null || ! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
-            return $targetBlock ?? ['code' => 'manual_e2e_target_not_allowlisted', 'message' => 'Manual E2E worker allowlist dışında hedef. Gönderim engellendi.'];
-        }
-
-        if ($expectedSmokeRunId === null || $expectedSmokeRunId !== $context->activeRunId()) {
-            return ['code' => 'manual_e2e_run_id_mismatch', 'message' => 'Worker run id aktif Manual E2E run id ile eşleşmiyor.'];
-        }
-
-        if (! $context->matchesDispatch($dispatch)) {
-            return ['code' => 'manual_e2e_run_id_mismatch', 'message' => 'Dispatch run id aktif Manual E2E run id ile eşleşmiyor.'];
-        }
-
-        if ($dispatch->created_at !== null && $context->createdAfter() !== null && $dispatch->created_at->lt($context->createdAfter()->subSecond())) {
-            return ['code' => 'manual_e2e_dispatch_before_run', 'message' => 'Dispatch aktif Manual E2E run başlangıcından önce oluşturulmuş.'];
-        }
-
-        if ($dispatch->created_at !== null && $context->expiresAt() !== null && ! $dispatch->created_at->lt($context->expiresAt())) {
-            return ['code' => 'manual_e2e_run_expired', 'message' => 'Dispatch aktif Manual E2E run süresi dışında oluşturulmuş.'];
-        }
-
-        if (! (bool) ($global['real_send_enabled'] ?? false)) {
-            return ['code' => 'real_send_disabled', 'message' => 'Gerçek gönderim kapalı; Manual E2E provider gönderimi engellendi.'];
-        }
-
-        if (trim($dispatch->bodyForProvider()) === '') {
-            return ['code' => 'invalid_dispatch_body', 'message' => 'Provider mesaj gövdesi boş; gönderim engellendi.'];
-        }
-
-        $bodyErrors = [...$dispatch->providerBodyValidationErrors(), ...$dispatch->roleBodyValidationErrors()];
-        if ($bodyErrors !== []) {
-            return ['code' => 'invalid_dispatch_body', 'message' => implode(' ', $bodyErrors)];
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array<int, string>  $allowlistedPhones
      */
     private function targetIsAllowlisted(TechnicalServiceMessageDispatch $dispatch, array $allowlistedPhones): bool
     {
@@ -243,8 +196,11 @@ class TechnicalServiceMessageProviderRouter
     /**
      * @return array<string, mixed>
      */
-    private function sendEvoWhatsApp(TechnicalServiceMessageDispatch $dispatch): array
-    {
+    private function sendEvoWhatsApp(
+        TechnicalServiceMessageDispatch $dispatch,
+        ?string $manualE2EClaimNonce,
+        ?string $normalOutboundClaimNonce,
+    ): array {
         if (! $this->providerReady('evo_whatsapp')) {
             return $this->blocked('provider_not_ready', 'Evo WhatsApp provider kapalı veya readiness eksik.');
         }
@@ -269,7 +225,15 @@ class TechnicalServiceMessageProviderRouter
             );
         }
 
-        return $this->sendEvoDirectApi($dispatch, $directConfig, $targetPhone, $body, $bodyHash);
+        return $this->sendEvoDirectApi(
+            $dispatch,
+            $directConfig,
+            $targetPhone,
+            $body,
+            $bodyHash,
+            $manualE2EClaimNonce,
+            $normalOutboundClaimNonce,
+        );
     }
 
     /**
@@ -282,10 +246,14 @@ class TechnicalServiceMessageProviderRouter
         string $targetPhone,
         string $body,
         string $bodyHash,
+        ?string $manualE2EClaimNonce,
+        ?string $normalOutboundClaimNonce,
     ): array {
         $url = rtrim((string) $directConfig['base_url'], '/').'/message/sendText/'.rawurlencode((string) $directConfig['instance_name']);
         $targetType = $dispatch->target_type ?: $dispatch->recipient_role ?: 'explicit_phone';
         $dispatchEvent = (string) ($dispatch->event ?: $dispatch->message_type ?: 'message_dispatch');
+        $auditTarget = $manualE2EClaimNonce !== null ? $dispatch->effective_target_phone_mask : $targetPhone;
+        $recipientFingerprint = $manualE2EClaimNonce !== null ? hash('sha256', $targetPhone) : null;
 
         $payload = [
             'number' => $targetPhone,
@@ -297,8 +265,23 @@ class TechnicalServiceMessageProviderRouter
             $payload['delay'] = (int) $directConfig['delay'];
         }
 
+        $permit = $this->consumeManualE2ETransportPermit($dispatch, $manualE2EClaimNonce);
+        if ($permit !== null) {
+            return $permit;
+        }
+        if ($manualE2EClaimNonce === null) {
+            $permit = $this->consumeNormalOutboundTransportPermit($dispatch, $normalOutboundClaimNonce);
+            if ($permit !== null) {
+                return $permit;
+            }
+        }
+
         try {
-            $response = Http::timeout(15)
+            $request = Http::timeout(15);
+            if ($manualE2EClaimNonce !== null) {
+                $request = $request->withOptions(['allow_redirects' => false]);
+            }
+            $response = $request
                 ->acceptJson()
                 ->asJson()
                 ->withHeaders(['apikey' => (string) $directConfig['api_key']])
@@ -307,12 +290,13 @@ class TechnicalServiceMessageProviderRouter
             $responseBody = is_array($responseBody)
                 ? $responseBody
                 : ['raw' => mb_substr($response->body(), 0, 1000)];
+            $providerMessageId = $this->providerMessageId($responseBody);
 
-            if ($response->successful()) {
+            if ($response->successful() && $providerMessageId !== null) {
                 return [
                     'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
                     'provider_status' => (string) $response->status(),
-                    'provider_message_id' => $this->providerMessageId($responseBody) ?? 'evo-accepted-'.$dispatch->id,
+                    'provider_message_id' => $providerMessageId,
                     'response' => [
                         'http_status' => $response->status(),
                         'provider' => 'evo_whatsapp',
@@ -323,19 +307,26 @@ class TechnicalServiceMessageProviderRouter
                         'provider_request_event' => $dispatchEvent,
                         'provider_request_dispatch_event' => $dispatchEvent,
                         'provider_request_transport_event' => 'evolution_direct_api',
-                        'provider_request_target_phone' => $targetPhone,
+                        'provider_request_target_phone' => $auditTarget,
+                        'provider_request_recipient_fingerprint' => $recipientFingerprint,
                         'provider_request_target_type' => $targetType,
                         'provider_request_recipient_role' => $dispatch->recipient_role,
-                        'provider_request_preview' => $this->preview($body),
-                        'body' => $this->redactPayload($responseBody),
+                        'provider_request_preview' => $this->providerRequestPreview($body, $manualE2EClaimNonce !== null),
+                        'body' => $this->redactPayload($responseBody, $manualE2EClaimNonce !== null),
                     ],
                     'error' => null,
+                    'transport_started' => true,
+                    'ambiguous' => false,
                 ];
             }
 
             return [
-                'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
-                'provider_status' => (string) $response->status(),
+                'status' => $response->successful()
+                    ? TechnicalServiceMessageDispatch::STATUS_SENDING
+                    : TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                'provider_status' => $response->successful()
+                    ? 'accepted_without_message_id'
+                    : (string) $response->status(),
                 'provider_message_id' => null,
                 'response' => [
                     'http_status' => $response->status(),
@@ -347,17 +338,22 @@ class TechnicalServiceMessageProviderRouter
                     'provider_request_event' => $dispatchEvent,
                     'provider_request_dispatch_event' => $dispatchEvent,
                     'provider_request_transport_event' => 'evolution_direct_api',
-                    'provider_request_target_phone' => $targetPhone,
+                    'provider_request_target_phone' => $auditTarget,
+                    'provider_request_recipient_fingerprint' => $recipientFingerprint,
                     'provider_request_target_type' => $targetType,
                     'provider_request_recipient_role' => $dispatch->recipient_role,
-                    'provider_request_preview' => $this->preview($body),
-                    'body' => $this->redactPayload($responseBody),
+                    'provider_request_preview' => $this->providerRequestPreview($body, $manualE2EClaimNonce !== null),
+                    'body' => $this->redactPayload($responseBody, $manualE2EClaimNonce !== null),
                 ],
-                'error' => mb_substr('Evo provider yanıtı başarısız: '.$this->redactText($response->body()), 0, 1000),
+                'error' => $response->successful()
+                    ? 'Evo provider HTTP kabul yanıtında message ID yok; sonuç belirsiz ve tekrar gönderim kapalı.'
+                    : mb_substr('Evo provider yanıtı başarısız: '.$this->redactText($response->body(), $manualE2EClaimNonce !== null), 0, 1000),
+                'transport_started' => true,
+                'ambiguous' => $response->successful(),
             ];
         } catch (Throwable $exception) {
             return [
-                'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
                 'provider_status' => 'exception',
                 'provider_message_id' => null,
                 'response' => [
@@ -369,13 +365,16 @@ class TechnicalServiceMessageProviderRouter
                     'provider_request_event' => $dispatchEvent,
                     'provider_request_dispatch_event' => $dispatchEvent,
                     'provider_request_transport_event' => 'evolution_direct_api',
-                    'provider_request_target_phone' => $targetPhone,
+                    'provider_request_target_phone' => $auditTarget,
+                    'provider_request_recipient_fingerprint' => $recipientFingerprint,
                     'provider_request_target_type' => $targetType,
                     'provider_request_recipient_role' => $dispatch->recipient_role,
-                    'provider_request_preview' => $this->preview($body),
-                    'message' => $this->redactText($exception->getMessage()),
+                    'provider_request_preview' => $this->providerRequestPreview($body, $manualE2EClaimNonce !== null),
+                    'message' => $this->redactText($exception->getMessage(), $manualE2EClaimNonce !== null),
                 ],
-                'error' => 'Evo endpoint erişilemedi: '.$this->redactText($exception->getMessage()),
+                'error' => 'Evo endpoint erişilemedi: '.$this->redactText($exception->getMessage(), $manualE2EClaimNonce !== null),
+                'transport_started' => true,
+                'ambiguous' => true,
             ];
         }
     }
@@ -429,8 +428,11 @@ class TechnicalServiceMessageProviderRouter
     /**
      * @return array<string, mixed>
      */
-    private function sendNacSms(TechnicalServiceMessageDispatch $dispatch): array
-    {
+    private function sendNacSms(
+        TechnicalServiceMessageDispatch $dispatch,
+        ?string $manualE2EClaimNonce,
+        ?string $normalOutboundClaimNonce,
+    ): array {
         if (! $this->providerReady('nac_sms')) {
             return $this->blocked('provider_not_ready', 'NAC SMS provider kapalı veya readiness eksik.');
         }
@@ -449,6 +451,8 @@ class TechnicalServiceMessageProviderRouter
             return $this->blocked('role_body_mismatch', implode(' ', $roleBodyValidation));
         }
         $bodyHash = hash('sha256', $body);
+        $auditTarget = $manualE2EClaimNonce !== null ? $dispatch->effective_target_phone_mask : $phone;
+        $recipientFingerprint = $manualE2EClaimNonce !== null ? hash('sha256', $phone) : null;
         $blocking = $this->nacBlockingReasons($nac, $credential, $phone, $body);
 
         if ($blocking !== []) {
@@ -461,8 +465,23 @@ class TechnicalServiceMessageProviderRouter
         $requestPayload = $this->nacRequestPayload($nac, $phone, $body, $title, $customId, $encoding);
         $payloadHash = hash('sha256', json_encode($requestPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
 
+        $permit = $this->consumeManualE2ETransportPermit($dispatch, $manualE2EClaimNonce);
+        if ($permit !== null) {
+            return $permit;
+        }
+        if ($manualE2EClaimNonce === null) {
+            $permit = $this->consumeNormalOutboundTransportPermit($dispatch, $normalOutboundClaimNonce);
+            if ($permit !== null) {
+                return $permit;
+            }
+        }
+
         try {
-            $response = Http::timeout(15)
+            $request = Http::timeout(15);
+            if ($manualE2EClaimNonce !== null) {
+                $request = $request->withOptions(['allow_redirects' => false]);
+            }
+            $response = $request
                 ->withBasicAuth((string) $credential?->username_encrypted, (string) $credential?->password_encrypted)
                 ->acceptJson()
                 ->asJson()
@@ -488,20 +507,27 @@ class TechnicalServiceMessageProviderRouter
                         'dispatch_body_hash' => $bodyHash,
                         'provider_payload_body_hash' => $bodyHash,
                         'provider_payload_body_matches_dispatch' => true,
-                        'provider_request_target_phone' => $phone,
+                        'provider_request_target_phone' => $auditTarget,
+                        'provider_request_recipient_fingerprint' => $recipientFingerprint,
                         'provider_request_target_type' => $dispatch->target_type ?: $dispatch->recipient_role,
                         'provider_request_recipient_role' => $dispatch->recipient_role,
-                        'provider_request_preview' => $this->preview($body),
+                        'provider_request_preview' => $this->providerRequestPreview($body, $manualE2EClaimNonce !== null),
                         'customID' => $customId,
-                        'body' => $this->redactPayload($responseBody),
+                        'body' => $this->redactPayload($responseBody, $manualE2EClaimNonce !== null),
                     ],
                     'error' => null,
+                    'transport_started' => true,
+                    'ambiguous' => false,
                 ];
             }
 
             return [
-                'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
-                'provider_status' => (string) $response->status(),
+                'status' => $response->successful()
+                    ? TechnicalServiceMessageDispatch::STATUS_SENDING
+                    : TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                'provider_status' => $response->successful()
+                    ? 'accepted_without_pkgid'
+                    : (string) $response->status(),
                 'provider_message_id' => null,
                 'response' => [
                     'http_status' => $response->status(),
@@ -511,18 +537,23 @@ class TechnicalServiceMessageProviderRouter
                     'dispatch_body_hash' => $bodyHash,
                     'provider_payload_body_hash' => $bodyHash,
                     'provider_payload_body_matches_dispatch' => true,
-                    'provider_request_target_phone' => $phone,
+                    'provider_request_target_phone' => $auditTarget,
+                    'provider_request_recipient_fingerprint' => $recipientFingerprint,
                     'provider_request_target_type' => $dispatch->target_type ?: $dispatch->recipient_role,
                     'provider_request_recipient_role' => $dispatch->recipient_role,
-                    'provider_request_preview' => $this->preview($body),
+                    'provider_request_preview' => $this->providerRequestPreview($body, $manualE2EClaimNonce !== null),
                     'customID' => $customId,
-                    'body' => $this->redactPayload($responseBody),
+                    'body' => $this->redactPayload($responseBody, $manualE2EClaimNonce !== null),
                 ],
-                'error' => $this->nacErrorMessage($responseBody, $response->body(), $response->status()),
+                'error' => $response->successful()
+                    ? 'NAC provider HTTP kabul yanıtında pkgID yok; sonuç belirsiz ve tekrar gönderim kapalı.'
+                    : $this->nacErrorMessage($responseBody, $response->body(), $response->status(), $manualE2EClaimNonce !== null),
+                'transport_started' => true,
+                'ambiguous' => $response->successful(),
             ];
         } catch (Throwable $exception) {
             return [
-                'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
                 'provider_status' => 'exception',
                 'provider_message_id' => null,
                 'response' => [
@@ -530,15 +561,79 @@ class TechnicalServiceMessageProviderRouter
                     'dispatch_body_hash' => $bodyHash,
                     'provider_payload_body_hash' => $bodyHash,
                     'provider_payload_body_matches_dispatch' => true,
-                    'provider_request_target_phone' => $phone,
+                    'provider_request_target_phone' => $auditTarget,
+                    'provider_request_recipient_fingerprint' => $recipientFingerprint,
                     'provider_request_target_type' => $dispatch->target_type ?: $dispatch->recipient_role,
                     'provider_request_recipient_role' => $dispatch->recipient_role,
-                    'provider_request_preview' => $this->preview($body),
-                    'message' => $this->redactText($exception->getMessage()),
+                    'provider_request_preview' => $this->providerRequestPreview($body, $manualE2EClaimNonce !== null),
+                    'message' => $this->redactText($exception->getMessage(), $manualE2EClaimNonce !== null),
                 ],
-                'error' => 'NAC endpoint erişilemedi: scheme/host/port kontrol edin. '.$this->redactText($exception->getMessage()),
+                'error' => 'NAC endpoint erişilemedi: scheme/host/port kontrol edin. '.$this->redactText($exception->getMessage(), $manualE2EClaimNonce !== null),
+                'transport_started' => true,
+                'ambiguous' => true,
             ];
         }
+    }
+
+    /**
+     * Returns a blocked result when a Manual E2E permit cannot be consumed.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function consumeManualE2ETransportPermit(
+        TechnicalServiceMessageDispatch $dispatch,
+        ?string $manualE2EClaimNonce,
+    ): ?array {
+        if ($manualE2EClaimNonce === null) {
+            return null;
+        }
+
+        if (DB::transactionLevel() !== 0) {
+            throw new RuntimeException('Manual E2E transport izni açık DB transaction içinde tüketilemez.');
+        }
+
+        try {
+            $this->settings->startManualE2ETransport($dispatch->id, $manualE2EClaimNonce);
+        } catch (Throwable) {
+            return $this->blocked('manual_e2e_transport_permit_rejected', 'Manual E2E transport izni geçersiz veya daha önce kullanılmış.');
+        }
+
+        if (DB::transactionLevel() !== 0) {
+            throw new RuntimeException('Provider HTTP açık DB transaction içinde başlatılamaz.');
+        }
+
+        return null;
+    }
+
+    /**
+     * Consume the durable normal-processor claim before the first HTTP byte can
+     * leave this process. A missing, stale, or reused nonce is fail-closed.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function consumeNormalOutboundTransportPermit(
+        TechnicalServiceMessageDispatch $dispatch,
+        ?string $normalOutboundClaimNonce,
+    ): ?array {
+        if (DB::transactionLevel() !== 0) {
+            return $this->blocked('normal_outbound_transaction_open', 'Provider HTTP açık DB transaction içinde başlatılamaz.');
+        }
+
+        try {
+            $this->settings->assertManualE2EFrozenOutboundLockHeld($dispatch->id);
+            $this->settings->startNormalOutboundTransport(
+                $dispatch->id,
+                (string) $normalOutboundClaimNonce,
+            );
+        } catch (Throwable) {
+            return $this->blocked('normal_outbound_transport_permit_rejected', 'Normal outbound transport claim geçersiz veya daha önce kullanılmış.');
+        }
+
+        if (DB::transactionLevel() !== 0) {
+            throw new RuntimeException('Provider HTTP açık DB transaction içinde başlatılamaz.');
+        }
+
+        return null;
     }
 
     private function nacCredential(): ?IntegrationProviderCredential
@@ -690,7 +785,7 @@ class TechnicalServiceMessageProviderRouter
     /**
      * @param  array<string, mixed>  $body
      */
-    private function nacErrorMessage(array $body, string $fallback, int $httpStatus): string
+    private function nacErrorMessage(array $body, string $fallback, int $httpStatus, bool $redactRecipient = false): string
     {
         $status = Arr::get($body, 'err.status') ?? Arr::get($body, 'status');
         $code = Arr::get($body, 'err.code') ?? Arr::get($body, 'error.code') ?? Arr::get($body, 'code');
@@ -703,7 +798,7 @@ class TechnicalServiceMessageProviderRouter
         if (is_scalar($code) && trim((string) $code) !== '') {
             $parts[] = 'NAC code '.trim((string) $code);
         }
-        $parts[] = $this->redactText((string) ($message ?: 'NAC SMS provider yanıtı başarısız.'));
+        $parts[] = $this->redactText((string) ($message ?: 'NAC SMS provider yanıtı başarısız.'), $redactRecipient);
 
         return mb_substr(implode(' - ', array_unique($parts)), 0, 1000);
     }
@@ -731,34 +826,66 @@ class TechnicalServiceMessageProviderRouter
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    private function redactPayload(array $payload): array
+    private function redactPayload(array $payload, bool $redactRecipient = false): array
     {
         foreach ($payload as $key => $value) {
             $normalized = mb_strtolower((string) $key);
             if (str_contains($normalized, 'password')
+                || str_contains($normalized, 'passwd')
                 || str_contains($normalized, 'authoriz'.'ation')
                 || str_contains($normalized, 'apikey')
                 || str_contains($normalized, 'api_key')
+                || str_contains($normalized, 'api-key')
+                || $normalized === 'basic'
                 || str_contains($normalized, 'token')
                 || str_contains($normalized, 'secret')) {
                 $payload[$key] = '[redacted]';
+            } elseif ($redactRecipient && (
+                str_contains($normalized, 'phone')
+                || str_contains($normalized, 'number')
+                || str_contains($normalized, 'recipient')
+                || str_contains($normalized, 'remotejid')
+                || $normalized === 'jid'
+                || $normalized === 'to'
+            )) {
+                $payload[$key] = '[redacted-recipient]';
             } elseif (is_array($value)) {
-                $payload[$key] = $this->redactPayload($value);
+                $payload[$key] = $this->redactPayload($value, $redactRecipient);
+            } elseif ($redactRecipient && is_string($value)) {
+                $payload[$key] = $this->redactText($value, true);
             }
         }
 
         return $payload;
     }
 
-    private function redactText(string $text): string
+    private function redactText(string $text, bool $redactRecipient = false): string
     {
         $redacted = preg_replace(
-            '/(password|passwd|secret|token|authoriz'.'ation|basic)\s*[:=]\s*[^\s,;]+/i',
-            '$1=[redacted]',
+            "/([\"']?(?:authorization|basic)[\"']?\\s*[:=]\\s*)(?:\"[^\"]*\"|'[^']*'|[^,;}\\]\\r\\n]+)/i",
+            '$1[redacted]',
             $text,
         );
+        $redacted = preg_replace(
+            "/([\"']?(?:password|passwd|secret|token|api[_-]?key)[\"']?\\s*[:=]\\s*)(?:\"[^\"]*\"|'[^']*'|[^\\s,;}\\]]+)/i",
+            '$1[redacted]',
+            $redacted ?? $text,
+        );
+
+        if ($redactRecipient) {
+            $redacted = preg_replace(
+                '/(?<!\d)\+?\d(?:[\s().-]*\d){9,}(?!\d)/u',
+                '[redacted-phone]',
+                (string) $redacted,
+            );
+        }
 
         return trim((string) ($redacted ?: 'Provider işlemi başarısız.'));
+    }
+
+    private function providerRequestPreview(string $body, bool $manualE2E): string
+    {
+        return $this->preview($manualE2E ? $this->redactText($body, true) : $body);
     }
 
     /**
@@ -772,6 +899,8 @@ class TechnicalServiceMessageProviderRouter
             'provider_message_id' => null,
             'response' => ['status' => $code, 'message' => $message],
             'error' => $message,
+            'transport_started' => false,
+            'ambiguous' => false,
         ];
     }
 }

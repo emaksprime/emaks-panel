@@ -4,6 +4,7 @@ namespace App\Services\Messaging;
 
 use App\Models\TechnicalServiceMessageDispatch;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use LogicException;
 use Throwable;
@@ -69,6 +70,43 @@ class TechnicalServiceManualE2ERunContext
         return (bool) ($this->settings['manual_e2e_enabled'] ?? false);
     }
 
+    public function phase(): string
+    {
+        $phase = is_scalar($this->settings['manual_e2e_phase'] ?? null)
+            ? trim((string) $this->settings['manual_e2e_phase'])
+            : '';
+
+        return in_array($phase, [
+            TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_FROZEN,
+            TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_PREPARED,
+            TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_WINDOW_OPEN,
+        ], true)
+            ? $phase
+            : (! $this->enabled() && $this->activeRunId() === null
+                ? TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_FROZEN
+                : 'invalid');
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function openWindow(): ?array
+    {
+        return is_array($this->settings['manual_e2e_open_window'] ?? null)
+            ? $this->settings['manual_e2e_open_window']
+            : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function activeClaim(): ?array
+    {
+        return is_array($this->settings['manual_e2e_active_claim'] ?? null)
+            ? $this->settings['manual_e2e_active_claim']
+            : null;
+    }
+
     public function activeRunId(): ?string
     {
         return self::normalizeRunId($this->settings['manual_e2e_active_run_id'] ?? null);
@@ -103,6 +141,16 @@ class TechnicalServiceManualE2ERunContext
             return [
                 'code' => 'manual_e2e_active_run_missing',
                 'message' => 'Aktif Manual E2E run bulunamadı.',
+            ];
+        }
+
+        if (! in_array($this->phase(), [
+            TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_PREPARED,
+            TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_WINDOW_OPEN,
+        ], true)) {
+            return [
+                'code' => 'manual_e2e_invalid_phase',
+                'message' => 'Manual E2E run phase bilgisi eksik veya geçersiz.',
             ];
         }
 
@@ -209,6 +257,14 @@ class TechnicalServiceManualE2ERunContext
             ];
         }
 
+        if ($this->phase() !== TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_WINDOW_OPEN
+            || $this->openWindow() === null) {
+            return [
+                'code' => 'manual_e2e_send_window_missing',
+                'message' => 'Exact Manual E2E gönderim penceresi açık değil.',
+            ];
+        }
+
         $workerCreatedAfter = $this->parseDate($createdAfter);
         $activeCreatedAfter = $this->createdAfter();
         if ($workerCreatedAfter === null || $activeCreatedAfter === null || ! $workerCreatedAfter->equalTo($activeCreatedAfter)) {
@@ -260,33 +316,53 @@ class TechnicalServiceManualE2ERunContext
 
     public function workerCommand(int $sleepSeconds = 10): ?string
     {
+        $window = $this->openWindow();
         if (! $this->isActive()
+            || $this->phase() !== TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_WINDOW_OPEN
+            || $window === null
             || ! (bool) ($this->settings['real_send_enabled'] ?? false)
             || (bool) ($this->settings['queue_paused'] ?? true)
-            || $this->allowlistedPhones() === []
             || $this->remainingTtlSeconds() <= 0) {
+            return null;
+        }
+
+        $dispatchId = (int) ($window['dispatch_id'] ?? 0);
+        $provider = trim((string) ($window['provider'] ?? ''));
+        $channel = trim((string) ($window['channel'] ?? ''));
+        if ($dispatchId <= 0
+            || ! in_array($provider, ['evo_whatsapp', 'nac_sms'], true)
+            || ! in_array($channel, ['whatsapp', 'sms'], true)) {
+            return null;
+        }
+
+        try {
+            $windowExpiresAt = CarbonImmutable::parse((string) ($window['expires_at'] ?? ''));
+        } catch (Throwable) {
+            return null;
+        }
+        $windowRemaining = max(0, (int) floor($this->now->diffInSeconds($windowExpiresAt)));
+        if ($windowRemaining <= 0 || ! $this->now->lt($windowExpiresAt)) {
             return null;
         }
 
         $parts = [
             'php artisan technical-service:process-message-dispatches',
-            '--worker-loop',
             '--manual-e2e-only',
+            '--dispatch-id='.$dispatchId,
+            '--limit=1',
             '--created-after="'.$this->createdAfter()?->toIso8601String().'"',
             '--smoke-run-id='.$this->activeRunId(),
+            '--provider='.$provider,
+            '--channel='.$channel,
         ];
-        foreach ($this->allowlistedPhones() as $phone) {
-            $parts[] = '--allowlisted-phone='.$phone;
-        }
 
         return implode(' ', [
             ...$parts,
-            '--provider=evo_whatsapp,nac_sms',
             '--require-real-send-enabled',
             '--require-queue-not-paused',
-            '--max-seconds='.$this->remainingTtlSeconds(),
-            '--sleep-seconds='.max(1, min(60, $sleepSeconds)),
-            '--stop-after-idle-cycles=0',
+            '--max-seconds='.min(TechnicalServiceMessagingSettingsService::MANUAL_E2E_WINDOW_TTL_SECONDS, $windowRemaining),
+            '--sleep-seconds=0',
+            '--stop-after-idle-cycles=1',
         ]);
     }
 
@@ -305,6 +381,7 @@ class TechnicalServiceManualE2ERunContext
         return [
             'enabled' => $this->enabled(),
             'active' => $block === null,
+            'phase' => $this->phase(),
             'status' => $status,
             'status_label' => match ($status) {
                 'active' => 'Aktif',
@@ -319,12 +396,42 @@ class TechnicalServiceManualE2ERunContext
             'remaining_ttl_seconds' => $this->remainingTtlSeconds(),
             'worker_command_ready' => $this->workerCommand() !== null,
             'worker_command' => $this->workerCommand(),
-            'allowlisted_phones' => $this->allowlistedPhones(),
+            'allowlisted_phone_count' => count($this->allowlistedPhones()),
+            'open_window' => $this->publicWindow($this->openWindow()),
+            'active_claim' => $this->publicWindow($this->activeClaim()),
             'blocker_code' => $block['code'] ?? null,
             'blocker_message' => $block['message'] ?? null,
             'last_run_id' => self::normalizeRunId($this->settings['manual_e2e_last_run_id'] ?? null),
             'last_stopped_at' => $this->parseDate($this->settings['manual_e2e_last_stopped_at'] ?? null)?->toIso8601String(),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $window
+     * @return array<string, mixed>|null
+     */
+    private function publicWindow(?array $window): ?array
+    {
+        if ($window === null) {
+            return null;
+        }
+
+        return Arr::only($window, [
+            'id',
+            'status',
+            'run_id',
+            'dispatch_id',
+            'provider',
+            'channel',
+            'role_target',
+            'request_id',
+            'offer_cycle_id',
+            'opened_at',
+            'expires_at',
+            'claimed_at',
+            'http_started_at',
+            'maximum_attempts',
+        ]);
     }
 
     private function targetIsAllowlisted(string $phone): bool

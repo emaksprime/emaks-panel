@@ -423,7 +423,6 @@ type ManualE2EReadiness = {
     warnings: Array<{ code: string; message: string }>;
     evo_ready: boolean;
     nac_ready: boolean;
-    allowlisted_phones: string[];
     allowlisted_phone_masks: string[];
     customer_allowlisted_phone_masks: string[];
     ops_whatsapp_phone_mask: string | null;
@@ -455,6 +454,7 @@ type MessagingSettings = {
         real_send_enabled: boolean;
         test_mode_enabled: boolean;
         manual_e2e_enabled: boolean;
+        manual_e2e_phase: 'frozen' | 'prepared' | 'window_open';
         manual_e2e_active_run_id: string | null;
         manual_e2e_started_at: string | null;
         manual_e2e_created_after: string | null;
@@ -541,6 +541,7 @@ type MessagingSettings = {
     manual_e2e: {
         enabled: boolean;
         active: boolean;
+        phase: 'frozen' | 'prepared' | 'window_open' | 'invalid';
         status: 'active' | 'expired' | 'not_started' | 'inactive';
         status_label: string;
         active_run_id: string | null;
@@ -550,7 +551,37 @@ type MessagingSettings = {
         remaining_ttl_seconds: number;
         worker_command_ready: boolean;
         worker_command: string | null;
-        allowlisted_phones: string[];
+        allowlisted_phone_count: number;
+        open_window: {
+            id: string;
+            status: string;
+            run_id: string;
+            dispatch_id: number;
+            provider: string;
+            channel: string;
+            role_target: string;
+            request_id: number;
+            offer_cycle_id: number | null;
+            opened_at: string;
+            expires_at: string;
+            maximum_attempts: number;
+        } | null;
+        active_claim: {
+            id: string;
+            status: string;
+            run_id: string;
+            dispatch_id: number;
+            provider: string;
+            channel: string;
+            role_target: string;
+            request_id: number;
+            offer_cycle_id: number | null;
+            opened_at: string;
+            expires_at: string;
+            claimed_at?: string;
+            http_started_at?: string;
+            maximum_attempts: number;
+        } | null;
         blocker_code: string | null;
         blocker_message: string | null;
         last_run_id: string | null;
@@ -1274,8 +1305,8 @@ export default function TechnicalServiceAdmin({
     const [messagingSaving, setMessagingSaving] = useState(false);
     const [manualE2EReadinessChecking, setManualE2EReadinessChecking] =
         useState(false);
-    const [manualE2ELifecycleBusy, setManualE2ELifecycleBusy] =
-        useState(false);
+    const [manualE2ELifecycleBusy, setManualE2ELifecycleBusy] = useState(false);
+    const manualE2ELifecycleBusyRef = useRef(false);
     const [manualE2EReadiness, setManualE2EReadiness] =
         useState<ManualE2EReadiness | null>(null);
     const [manualE2EEnableConfirmationOpen, setManualE2EEnableConfirmationOpen] =
@@ -1837,6 +1868,28 @@ export default function TechnicalServiceAdmin({
         setMessageTypeInputs(messageTypeInputsFromSettings(nextSettings));
     };
 
+    const applyManualE2ELifecycle = (nextSettings: {
+        global: Partial<MessagingSettings['global']>;
+        manual_e2e: MessagingSettings['manual_e2e'];
+        readiness: Partial<MessagingSettings['readiness']>;
+    }) => {
+        setMessaging((current) => ({
+            ...current,
+            global: { ...current.global, ...nextSettings.global },
+            manual_e2e: nextSettings.manual_e2e,
+            readiness: { ...current.readiness, ...nextSettings.readiness },
+        }));
+        setMessagingInputs((current) => ({
+            ...current,
+            messaging_enabled:
+                nextSettings.global.messaging_enabled ??
+                current.messaging_enabled,
+            test_mode_enabled:
+                nextSettings.global.test_mode_enabled ??
+                current.test_mode_enabled,
+        }));
+    };
+
     const applyMessageTemplatePayload = (
         payload:
             | { templates?: MessageTemplateRecord[] }
@@ -2327,15 +2380,20 @@ export default function TechnicalServiceAdmin({
         }
     };
 
-    const enableManualE2E = async () => {
+    const prepareManualE2E = async () => {
         if (!manualE2EReadiness?.eligible) {
             setMessagingMessage(
-                'Manual E2E açılmadan önce readiness kontrolü başarılı olmalı.',
+                'Manual E2E hazırlanmadan önce readiness kontrolü başarılı olmalı.',
             );
 
             return;
         }
 
+        if (manualE2ELifecycleBusyRef.current) {
+            return;
+        }
+
+        manualE2ELifecycleBusyRef.current = true;
         setManualE2ELifecycleBusy(true);
         setMessagingMessage('');
 
@@ -2351,10 +2409,7 @@ export default function TechnicalServiceAdmin({
                     },
                     credentials: 'same-origin',
                     body: JSON.stringify({
-                        manual_e2e_allowlisted_phones:
-                            manualE2EReadiness.allowlisted_phones,
-                        manual_e2e_ttl_seconds:
-                            manualE2EReadiness.ttl_seconds,
+                        operation: 'prepare',
                     }),
                 },
             );
@@ -2363,7 +2418,7 @@ export default function TechnicalServiceAdmin({
                 setMessagingMessage(
                     await errorMessageFromResponse(
                         response,
-                        'Manual E2E güvenli biçimde açılamadı.',
+                        'Manual E2E güvenli hazırlık durumuna alınamadı.',
                     ),
                 );
 
@@ -2371,15 +2426,81 @@ export default function TechnicalServiceAdmin({
             }
 
             const payload = await response.json();
-            applyMessagingSettings(payload.messaging_settings);
+            applyManualE2ELifecycle(payload.messaging_settings);
             setManualE2EEnableConfirmationOpen(false);
             setManualE2EReadiness(null);
             setMessagingMessage(
                 payload.message ?? 'Manual E2E run context hazırlandı.',
             );
         } catch {
-            setMessagingMessage('Manual E2E güvenli biçimde açılamadı.');
+            setMessagingMessage(
+                'Manual E2E güvenli hazırlık durumuna alınamadı; otomatik tekrar yapılmadı.',
+            );
         } finally {
+            manualE2ELifecycleBusyRef.current = false;
+            setManualE2ELifecycleBusy(false);
+        }
+    };
+
+    const changeManualE2ESendWindow = async (
+        operation: 'open_send_window' | 'close_send_window',
+        dispatchId: number,
+    ) => {
+        if (manualE2ELifecycleBusyRef.current) {
+            return;
+        }
+
+        const runId = messaging.manual_e2e.active_run_id;
+
+        if (!runId) {
+            setMessagingMessage('Aktif Manual E2E run bulunamadı.');
+
+            return;
+        }
+
+        manualE2ELifecycleBusyRef.current = true;
+        setManualE2ELifecycleBusy(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/manual-e2e/enable',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        operation,
+                        active_run_id: runId,
+                        dispatch_id: dispatchId,
+                    }),
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Exact dispatch gönderim penceresi değiştirilemedi.',
+                    ),
+                );
+
+                return;
+            }
+
+            const payload = await response.json();
+            applyManualE2ELifecycle(payload.messaging_settings);
+            setMessagingMessage(payload.message);
+        } catch {
+            setMessagingMessage(
+                'Exact dispatch gönderim penceresi değiştirilemedi; otomatik tekrar yapılmadı.',
+            );
+        } finally {
+            manualE2ELifecycleBusyRef.current = false;
             setManualE2ELifecycleBusy(false);
         }
     };
@@ -2387,13 +2508,16 @@ export default function TechnicalServiceAdmin({
     const freezeManualE2E = async () => {
         if (
             typeof window !== 'undefined' &&
-            !window.confirm(
-                'Manual E2E ve gerçek gönderimler dondurulsun mu?',
-            )
+            !window.confirm('Manual E2E ve gerçek gönderimler dondurulsun mu?')
         ) {
             return;
         }
 
+        if (manualE2ELifecycleBusyRef.current) {
+            return;
+        }
+
+        manualE2ELifecycleBusyRef.current = true;
         setManualE2ELifecycleBusy(true);
         setMessagingMessage('');
 
@@ -2408,6 +2532,7 @@ export default function TechnicalServiceAdmin({
                         'X-CSRF-TOKEN': csrfToken(),
                     },
                     credentials: 'same-origin',
+                    body: JSON.stringify({ operation: 'freeze' }),
                 },
             );
 
@@ -2423,15 +2548,14 @@ export default function TechnicalServiceAdmin({
             }
 
             const payload = await response.json();
-            applyMessagingSettings(payload.messaging_settings);
+            applyManualE2ELifecycle(payload.messaging_settings);
             setManualE2EEnableConfirmationOpen(false);
             setManualE2EReadiness(null);
-            setMessagingMessage(
-                payload.message ?? 'Gönderimler donduruldu.',
-            );
+            setMessagingMessage(payload.message ?? 'Gönderimler donduruldu.');
         } catch {
             setMessagingMessage('Gönderimler dondurulamadı.');
         } finally {
+            manualE2ELifecycleBusyRef.current = false;
             setManualE2ELifecycleBusy(false);
         }
     };
@@ -6474,9 +6598,11 @@ export default function TechnicalServiceAdmin({
                                                 Manual E2E kontrol paneli
                                             </p>
                                             <p className="mt-1 text-sm leading-6 text-slate-600">
-                                                Gerçek gönderim yaşam döngüsü yalnızca
-                                                bu güvenli açma ve dondurma
-                                                aksiyonlarıyla değiştirilebilir.
+                                                Önce provider kapalı güvenli run
+                                                hazırlanır. Gerçek gönderim
+                                                yalnız seçilen exact dispatch
+                                                için ayrı ve tek kullanımlık
+                                                pencereyle açılır.
                                             </p>
                                         </div>
                                         <div className="flex flex-wrap gap-2">
@@ -6501,7 +6627,8 @@ export default function TechnicalServiceAdmin({
                                                 data-testid="manual-e2e-enable-button"
                                                 disabled={
                                                     manualE2ELifecycleBusy ||
-                                                    messaging.manual_e2e.active ||
+                                                    messaging.manual_e2e
+                                                        .active ||
                                                     !manualE2EReadiness?.eligible
                                                 }
                                                 onClick={() =>
@@ -6511,24 +6638,31 @@ export default function TechnicalServiceAdmin({
                                                 }
                                                 className="rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
                                             >
-                                                Manual E2E’yi Aç
+                                                Güvenli Run Hazırla
                                             </button>
                                             <button
                                                 type="button"
                                                 data-testid="manual-e2e-freeze-button"
-                                                disabled={manualE2ELifecycleBusy}
+                                                disabled={
+                                                    manualE2ELifecycleBusy
+                                                }
                                                 onClick={() => {
                                                     void freezeManualE2E();
                                                 }}
                                                 className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                                             >
-                                                Gönderimleri Dondur
+                                                Manual E2E’yi Dondur
                                             </button>
                                         </div>
                                     </div>
 
                                     <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
                                         {[
+                                            [
+                                                'Lifecycle phase',
+                                                messaging.global
+                                                    .manual_e2e_phase,
+                                            ],
                                             [
                                                 'Manual E2E',
                                                 messaging.global
@@ -6554,6 +6688,15 @@ export default function TechnicalServiceAdmin({
                                                 messaging.manual_e2e
                                                     .active_run_id ??
                                                     'Aktif run yok',
+                                            ],
+                                            [
+                                                'Exact pencere',
+                                                messaging.manual_e2e.open_window
+                                                    ? `Dispatch #${messaging.manual_e2e.open_window.dispatch_id} / ${messaging.manual_e2e.open_window.provider}`
+                                                    : messaging.manual_e2e
+                                                            .active_claim
+                                                      ? `Claimed dispatch #${messaging.manual_e2e.active_claim.dispatch_id}`
+                                                      : 'Kapalı',
                                             ],
                                             [
                                                 'Başlangıç',
@@ -6598,11 +6741,14 @@ export default function TechnicalServiceAdmin({
                                                           : 'Yok',
                                             ],
                                         ].map(([label, value]) => (
-                                            <div key={label} className="min-w-0">
+                                            <div
+                                                key={label}
+                                                className="min-w-0"
+                                            >
                                                 <dt className="font-semibold text-slate-500">
                                                     {label}
                                                 </dt>
-                                                <dd className="mt-1 break-all font-semibold text-slate-950">
+                                                <dd className="mt-1 font-semibold break-all text-slate-950">
                                                     {value}
                                                 </dd>
                                             </div>
@@ -8825,15 +8971,74 @@ export default function TechnicalServiceAdmin({
                                                 }
                                             </p>
                                         </div>
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                setSelectedDispatchDetail(null)
-                                            }
-                                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                                        >
-                                            Kapat
-                                        </button>
+                                        <div className="flex flex-wrap justify-end gap-2">
+                                            {messaging.manual_e2e.phase ===
+                                                'prepared' &&
+                                            messaging.manual_e2e.open_window ===
+                                                null &&
+                                            messaging.manual_e2e
+                                                .active_claim === null &&
+                                            selectedDispatchDetail.status ===
+                                                'queued' &&
+                                            selectedDispatchDetail.attempt_count ===
+                                                0 ? (
+                                                <button
+                                                    type="button"
+                                                    data-testid="manual-e2e-open-window-button"
+                                                    disabled={
+                                                        manualE2ELifecycleBusy
+                                                    }
+                                                    onClick={() => {
+                                                        if (
+                                                            typeof window ===
+                                                                'undefined' ||
+                                                            window.confirm(
+                                                                `Yalnız dispatch #${selectedDispatchDetail.id} için kısa tek kullanımlık gönderim penceresi açılsın mı? Worker otomatik başlamaz.`,
+                                                            )
+                                                        ) {
+                                                            void changeManualE2ESendWindow(
+                                                                'open_send_window',
+                                                                selectedDispatchDetail.id,
+                                                            );
+                                                        }
+                                                    }}
+                                                    className="rounded-lg border border-amber-700 bg-amber-700 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    Exact pencereyi aç
+                                                </button>
+                                            ) : null}
+                                            {messaging.manual_e2e.open_window
+                                                ?.dispatch_id ===
+                                            selectedDispatchDetail.id ? (
+                                                <button
+                                                    type="button"
+                                                    data-testid="manual-e2e-close-window-button"
+                                                    disabled={
+                                                        manualE2ELifecycleBusy
+                                                    }
+                                                    onClick={() => {
+                                                        void changeManualE2ESendWindow(
+                                                            'close_send_window',
+                                                            selectedDispatchDetail.id,
+                                                        );
+                                                    }}
+                                                    className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    Pencereyi kapat
+                                                </button>
+                                            ) : null}
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    setSelectedDispatchDetail(
+                                                        null,
+                                                    )
+                                                }
+                                                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                                            >
+                                                Kapat
+                                            </button>
+                                        </div>
                                     </div>
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">
                                         {[
@@ -8858,18 +9063,13 @@ export default function TechnicalServiceAdmin({
                                                 selectedDispatchDetail.recipient_role_label,
                                             ],
                                             [
-                                                'Tam hedef telefon',
-                                                selectedDispatchDetail.target_phone_full ??
-                                                    '-',
-                                            ],
-                                            [
-                                                'Maskeli hedef',
+                                                'Hedef telefon',
                                                 selectedDispatchDetail.target_phone_masked ??
                                                     '-',
                                             ],
                                             [
                                                 'Orijinal alıcı',
-                                                selectedDispatchDetail.original_recipient_phone_full ??
+                                                selectedDispatchDetail.original_recipient_phone_masked ??
                                                     '-',
                                             ],
                                             [
@@ -8942,11 +9142,6 @@ export default function TechnicalServiceAdmin({
                                                             false
                                                           ? 'Provider payload uyuşmazlığı'
                                                           : 'Eski kayıt / payload karşılaştırması yok'),
-                                            ],
-                                            [
-                                                'Provider hedef telefonu',
-                                                selectedDispatchDetail.provider_request_target_phone ??
-                                                    '-',
                                             ],
                                             [
                                                 'Provider hedef rolü',
@@ -9142,20 +9337,21 @@ export default function TechnicalServiceAdmin({
                         className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
                     >
                         <DialogHeader>
-                            <DialogTitle>Manual E2E’yi aç</DialogTitle>
+                            <DialogTitle>Manual E2E run hazırlığı</DialogTitle>
                             <DialogDescription>
-                                Bu işlem gerçek Evo WhatsApp ve NAC SMS
-                                gönderimlerini yalnızca aşağıdaki allowlist için
-                                etkinleştirir. HTTP isteği worker başlatmaz.
+                                Bu işlem yalnız güvenli run context oluşturur.
+                                Gerçek gönderim kapalı, queue duraklatılmış ve
+                                provider worker kapalı kalır.
                             </DialogDescription>
                         </DialogHeader>
 
                         {manualE2EReadiness ? (
                             <div className="grid gap-4">
-                                <div className="border-l-4 border-red-600 bg-red-50 px-4 py-3 text-sm font-semibold leading-6 text-red-950">
-                                    Onaydan sonra gerçek provider mesajları
-                                    gönderilebilir. Worker yalnızca oluşan aktif
-                                    run komutuyla ayrıca başlatılmalıdır.
+                                <div className="border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm leading-6 font-semibold text-emerald-950">
+                                    Hazırlık provider kapılarını açmaz. Her dış
+                                    gönderim için Queue / Logs içinden exact
+                                    dispatch ayrıca seçilmeli ve kısa pencere
+                                    server tarafından doğrulanmalıdır.
                                 </div>
 
                                 <dl className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
@@ -9163,11 +9359,10 @@ export default function TechnicalServiceAdmin({
                                         <dt className="font-semibold text-slate-500">
                                             Müşteri allowlist
                                         </dt>
-                                        <dd className="mt-1 break-words font-semibold text-slate-950">
+                                        <dd className="mt-1 font-semibold break-words text-slate-950">
                                             {manualE2EReadiness
                                                 .customer_allowlisted_phone_masks
-                                                .length >
-                                            0
+                                                .length > 0
                                                 ? manualE2EReadiness.customer_allowlisted_phone_masks.join(
                                                       ', ',
                                                   )
@@ -9178,7 +9373,7 @@ export default function TechnicalServiceAdmin({
                                         <dt className="font-semibold text-slate-500">
                                             Test Usta / OPS telefonu
                                         </dt>
-                                        <dd className="mt-1 break-words font-semibold text-slate-950">
+                                        <dd className="mt-1 font-semibold break-words text-slate-950">
                                             {manualE2EReadiness.ops_whatsapp_phone_mask ??
                                                 'Yok'}
                                         </dd>
@@ -9264,10 +9459,7 @@ export default function TechnicalServiceAdmin({
                                                               policy.message_type
                                                           }
                                                       >
-                                                          {
-                                                              policy.message_type
-                                                          }
-                                                          :{' '}
+                                                          {policy.message_type}:{' '}
                                                           {
                                                               policy.channel_policy
                                                           }
@@ -9304,13 +9496,13 @@ export default function TechnicalServiceAdmin({
                                     !manualE2EReadiness?.eligible
                                 }
                                 onClick={() => {
-                                    void enableManualE2E();
+                                    void prepareManualE2E();
                                 }}
                                 className="rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 {manualE2ELifecycleBusy
                                     ? 'Hazırlanıyor'
-                                    : 'Gerçek gönderim riskini kabul et ve aç'}
+                                    : 'Güvenli run hazırlığını başlat'}
                             </button>
                         </DialogFooter>
                     </DialogContent>

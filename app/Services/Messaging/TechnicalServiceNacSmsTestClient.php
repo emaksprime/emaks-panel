@@ -70,6 +70,31 @@ class TechnicalServiceNacSmsTestClient
         string $messageSource,
         array $preview,
     ): TechnicalServiceMessageDispatch {
+        return $this->settings->withManualE2EFrozenOutbound(fn (): TechnicalServiceMessageDispatch => $this->sendDirectWhileFrozen(
+            event: $event,
+            phone: $phone,
+            input: $input,
+            actor: $actor,
+            message: $message,
+            messageSource: $messageSource,
+            preview: $preview,
+        ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     * @param  array<string, mixed>  $preview
+     */
+    private function sendDirectWhileFrozen(
+        string $event,
+        string $phone,
+        array $input,
+        ?User $actor,
+        string $message,
+        string $messageSource,
+        array $preview,
+    ): TechnicalServiceMessageDispatch {
+
         if (! (bool) ($input['real_sms_confirmed'] ?? false)) {
             throw ValidationException::withMessages([
                 'real_sms_confirmed' => 'NAC gerçek test SMS gönderimi için açık SMS onayı zorunlu.',
@@ -90,9 +115,17 @@ class TechnicalServiceNacSmsTestClient
         $endpointUrl = $this->endpointUrl($nac);
         $internalTestCode = $this->internalTestCode();
         $previousPayloadHash = $this->previousPayloadHash($phone, $event);
+        if ($this->legacyAmbiguousAttemptExists($event, $phone, $message)) {
+            throw ValidationException::withMessages([
+                'nac_sms' => 'Aynı NAC test içeriği için legacy provider sonucu belirsiz; tekrar gönderim kapalı.',
+            ]);
+        }
 
         $dispatch = TechnicalServiceMessageDispatch::query()->create([
             'event' => $event,
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'shared_test_phone',
             'target_type' => 'shared_test_phone',
             'original_phone' => $phone,
             'target_phone' => $phone,
@@ -140,7 +173,19 @@ class TechnicalServiceNacSmsTestClient
                 'payload_hash' => $payloadHash,
                 'nac_payload_shape' => $this->redactPayload($requestPayload),
             ],
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+            'sending_started_at' => now(),
+            'attempt_count' => 1,
+            'metadata' => [
+                ...((array) $dispatch->metadata),
+                'normal_outbound_claimed_at' => now()->toIso8601String(),
+                'normal_outbound_replay_blocked' => true,
+                'provider_send_attempted' => true,
+            ],
         ])->save();
+
+        $this->settings->assertManualE2EFrozenOutboundLockHeld($dispatch->id);
+        $this->settings->assertProviderHttpOutsideTransaction();
 
         try {
             $response = Http::timeout(15)
@@ -183,9 +228,9 @@ class TechnicalServiceNacSmsTestClient
             ])->save();
         } catch (Throwable $exception) {
             $dispatch->forceFill([
-                'status' => TechnicalServiceMessageDispatch::STATUS_FAILED,
+                'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
                 'response_payload' => [
-                    'status' => 'exception',
+                    'status' => 'ambiguous_no_retry',
                     'test_code' => $packageCode,
                     'package_code' => $packageCode,
                     'customID' => $customId,
@@ -195,8 +240,13 @@ class TechnicalServiceNacSmsTestClient
                     'previous_payload_hash' => $previousPayloadHash,
                     'message' => $this->redactText($exception->getMessage()),
                 ],
-                'error_message' => 'NAC endpoint erişilemedi: scheme/host/port/path kontrol edin. '.$this->redactText($exception->getMessage()),
-                'sent_at' => now(),
+                'error_message' => 'NAC provider sonucu belirsiz; replay kapalı. '.$this->redactText($exception->getMessage()),
+                'sent_at' => null,
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'normal_outbound_outcome' => 'ambiguous_no_retry',
+                    'normal_outbound_replay_blocked' => true,
+                ],
             ])->save();
         }
 
@@ -368,6 +418,31 @@ class TechnicalServiceNacSmsTestClient
         $hash = is_array($payload) ? Arr::get($payload, 'payload_hash') : null;
 
         return is_scalar($hash) && trim((string) $hash) !== '' ? (string) $hash : null;
+    }
+
+    private function legacyAmbiguousAttemptExists(string $event, string $phone, string $message): bool
+    {
+        $contentPreview = mb_substr($message, 0, 240);
+        $bodyHash = hash('sha256', $message);
+
+        return TechnicalServiceMessageDispatch::query()
+            ->where('event', $event)
+            ->where('target_phone', $phone)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_FAILED)
+            ->where('attempt_count', 0)
+            ->whereNull('provider_message_id')
+            ->whereNotNull('sent_at')
+            ->latest('id')
+            ->get()
+            ->contains(function (TechnicalServiceMessageDispatch $dispatch) use ($contentPreview, $bodyHash): bool {
+                $legacyException = (string) data_get($dispatch->response_payload, 'status') === 'exception'
+                    || trim((string) $dispatch->error_message) !== '';
+                $sameBody = (string) data_get($dispatch->request_payload, 'template_body_hash') === $bodyHash
+                    || (string) data_get($dispatch->request_payload, 'content_preview') === $contentPreview
+                    || (string) data_get($dispatch->request_payload, 'text') === $contentPreview;
+
+                return $legacyException && $sameBody;
+            });
     }
 
     /**
