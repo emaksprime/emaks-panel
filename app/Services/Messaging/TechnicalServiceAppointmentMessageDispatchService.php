@@ -159,8 +159,6 @@ class TechnicalServiceAppointmentMessageDispatchService
             if ($targetPhone === '') {
                 return $this->addBlocked($request, $actor, $summary, $messageType, $recipientRole, $channel, $providerKey, 'shared_test_phone_missing', 'Test modu için ortak test telefonu eksik.');
             }
-        } elseif (! (bool) ($global['real_send_enabled'] ?? false)) {
-            return $this->addBlocked($request, $actor, $summary, $messageType, $recipientRole, $channel, $providerKey, 'real_send_disabled', 'Gerçek gönderim kapalı.');
         }
 
         $manualE2e = $this->manualE2ePreparation($global, $recipientRole, $targetPhone, $request);
@@ -177,6 +175,15 @@ class TechnicalServiceAppointmentMessageDispatchService
                 $manualE2e['blocker']['code'],
                 $manualE2e['blocker']['message'],
             );
+        }
+        $manualE2eAuthorized = filter_var(
+            $manualE2eMetadata['manual_e2e'] ?? false,
+            FILTER_VALIDATE_BOOL,
+        );
+        if (! $testMode
+            && ! (bool) ($global['real_send_enabled'] ?? false)
+            && ! $manualE2eAuthorized) {
+            return $this->addBlocked($request, $actor, $summary, $messageType, $recipientRole, $channel, $providerKey, 'real_send_disabled', 'Gerçek gönderim kapalı.');
         }
 
         $jobCardContext = $recipientRole === 'technician'
@@ -275,7 +282,9 @@ class TechnicalServiceAppointmentMessageDispatchService
                 'warnings' => array_values((array) ($preview['warnings'] ?? [])),
                 'test_redirect_applied' => $testRedirectApplied,
                 'controlled_role_target_applied' => $controlledRoleTargetApplied,
-                'role_target_phone' => $controlledRoleTargetApplied ? $targetPhone : null,
+                'role_target_phone' => $controlledRoleTargetApplied
+                    ? $targetPhone
+                    : ($manualE2eMetadata['role_target_phone'] ?? null),
             ],
         ], $actor);
 

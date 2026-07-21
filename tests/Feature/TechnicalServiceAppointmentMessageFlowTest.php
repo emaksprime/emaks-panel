@@ -16,13 +16,11 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
-use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -292,11 +290,18 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
     public function test_manual_e2e_dispatches_are_tagged_and_allowlist_blocks_wrong_target(): void
     {
+        Http::preventStrayRequests();
         $actor = $this->admin();
         $this->configureMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
-        $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
+        $prepared = $this->activateManualE2EFixture();
+        $activeRunId = (string) $prepared['manual_e2e_active_run_id'];
+        $this->assertSame(TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_PREPARED, $prepared['manual_e2e_phase']);
+        $this->assertTrue($prepared['manual_e2e_enabled']);
+        $this->assertFalse($prepared['real_send_enabled']);
+        $this->assertFalse($prepared['test_mode_enabled']);
+        $this->assertTrue($prepared['queue_paused']);
         $request = $this->technicalServiceRequest([
             'customer_phone' => '05372081633',
             'mrn' => 'MRN-MANUAL-E2E-OK',
@@ -315,12 +320,20 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         );
 
         $this->assertSame(1, $summary['queued']);
+        $this->assertSame(0, $summary['blocked']);
         $dispatch = TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)
             ->where('message_type', 'appointment_approved_customer')
             ->firstOrFail();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertNull($dispatch->sent_at);
+        $this->assertNull($dispatch->provider_message_id);
         $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'test_smoke'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
         $this->assertSame($activeRunId, data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame($activeRunId, data_get($dispatch->metadata, 'manual_e2e_run_id'));
         $this->assertSame('905372081633', data_get($dispatch->metadata, 'role_target_phone'));
 
         $blockedRequest = $this->technicalServiceRequest([
@@ -341,7 +354,47 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
         $this->assertSame(0, $blocked['queued']);
         $this->assertSame(1, $blocked['blocked']);
-        $this->assertStringContainsString('allowlist', json_encode($blocked['blockers'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        $this->assertSame('manual_e2e_target_not_allowlisted', $blocked['blockers'][0]['code']);
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $blockedRequest->id,
+            'message_type' => 'appointment_approved_customer',
+        ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_non_manual_appointment_dispatch_remains_blocked_when_real_send_disabled(): void
+    {
+        Http::preventStrayRequests();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+        ]);
+        app(TechnicalServiceMessagingSettingsService::class)->freezeManualE2E();
+        $request = $this->technicalServiceRequest([
+            'customer_phone' => '05372081633',
+            'mrn' => 'MRN-NON-MANUAL-REAL-SEND-OFF',
+        ]);
+        $action = $this->appointmentAction($request);
+
+        $summary = app(TechnicalServiceAppointmentMessageDispatchService::class)->dispatchApproval(
+            $request->refresh(),
+            $action,
+            $actor,
+            [
+                'slot' => ['date' => '2026-07-08', 'start_time' => '14:00', 'end_time' => '16:00'],
+                'metadata' => ['test_smoke' => true],
+                'controlled_smoke_targets' => ['customer' => '905372081633'],
+            ],
+        );
+
+        $this->assertSame(0, $summary['queued']);
+        $this->assertSame(1, $summary['blocked']);
+        $this->assertSame('real_send_disabled', $summary['blockers'][0]['code']);
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'appointment_approved_customer',
+        ]);
+        Http::assertNothingSent();
     }
 
     public function test_ops_workflow_message_uses_whatsapp_only_to_configured_ops_phone(): void
@@ -1524,30 +1577,51 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
      */
     private function activateManualE2EFixture(array $overrides = []): array
     {
+        Http::preventStrayRequests();
         $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $opsWhatsappEnabled = (bool) $settings->payload()['global']['ops_whatsapp_enabled'];
+        $settings->freezeManualE2E();
         $settings->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'shared_test_phone' => '905467647428',
             'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'manual-e2e-fixture',
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS TEST',
+            ],
+            'ops_whatsapp_enabled' => $opsWhatsappEnabled,
             'ops_whatsapp_phone' => '905467647428',
-        ]);
-        $page = PageConfig::query()
-            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
-            ->firstOrFail();
-        $layout = (array) $page->layout_json;
-        $startedAt = now()->toImmutable();
-        $context = [
-            'manual_e2e_enabled' => true,
-            'manual_e2e_active_run_id' => TechnicalServiceManualE2ERunContext::generateRunId($startedAt),
-            'manual_e2e_started_at' => $startedAt->toIso8601String(),
-            'manual_e2e_created_after' => $startedAt->toIso8601String(),
-            'manual_e2e_expires_at' => $startedAt->addHours(4)->toIso8601String(),
             ...$overrides,
-        ];
-        foreach ($context as $key => $value) {
-            Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.'.$key, $value);
-        }
-        $page->forceFill(['layout_json' => $layout])->save();
+        ]);
+        $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
+        $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
+        $payload = $settings->prepareManualE2E();
+        $global = $payload['global'];
+        $lifecycleLayout = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->value('layout_json');
 
-        return $settings->payload()['global'];
+        $this->assertSame(TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_PREPARED, $global['manual_e2e_phase']);
+        $this->assertTrue($global['manual_e2e_enabled']);
+        $this->assertFalse($global['real_send_enabled']);
+        $this->assertFalse($global['test_mode_enabled']);
+        $this->assertTrue($global['queue_paused']);
+        $this->assertNotSame('', (string) data_get(
+            $lifecycleLayout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.manual_e2e_run_snapshot.allowlist_fingerprint',
+        ));
+
+        return $global;
     }
 
     private function admin(): User

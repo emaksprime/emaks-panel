@@ -9,13 +9,36 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertFalse(DB::connection()->getPdo()->inTransaction());
+    }
+
+    public function runDatabaseMigrations(): void
+    {
+        $this->beforeRefreshingDatabase();
+        $this->refreshTestDatabase();
+        $this->afterRefreshingDatabase();
+
+        $this->beforeApplicationDestroyed(function (): void {
+            // The in-memory connection is discarded after each test.
+            RefreshDatabaseState::$migrated = false;
+        });
+    }
 
     public function test_unit_tests_never_send_real_whatsapp_http(): void
     {

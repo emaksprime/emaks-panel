@@ -15,6 +15,7 @@ use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceTechnicianPortalLinkResolver;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
@@ -516,6 +517,7 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
         $global = [
             'test_mode_enabled' => false,
             'manual_e2e_enabled' => true,
+            'manual_e2e_phase' => TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_PREPARED,
             'manual_e2e_active_run_id' => 'MANUAL-E2E-REL4E17A1-TEST',
             'manual_e2e_started_at' => $now->subMinute()->toIso8601String(),
             'manual_e2e_created_after' => $now->subMinute()->toIso8601String(),

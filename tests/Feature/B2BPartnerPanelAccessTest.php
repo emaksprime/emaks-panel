@@ -39,7 +39,6 @@ use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
-use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\PanelAccessService;
 use App\Services\PanelNavigationService;
@@ -50,7 +49,6 @@ use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -8635,7 +8633,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_appointment_proposed_ops_creates_whatsapp_without_ops_sms(): void
     {
-        Http::fake();
+        Http::preventStrayRequests();
         $scope = $this->partnerPortalScopeFixture();
         app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
@@ -9904,24 +9902,50 @@ class B2BPartnerPanelAccessTest extends TestCase
      */
     private function activateManualE2EFixture(): array
     {
+        Http::preventStrayRequests();
         $settings = app(TechnicalServiceMessagingSettingsService::class);
-        $page = PageConfig::query()
-            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
-            ->firstOrFail();
-        $layout = (array) $page->layout_json;
-        $startedAt = now()->toImmutable();
-        foreach ([
-            'manual_e2e_enabled' => true,
-            'manual_e2e_active_run_id' => TechnicalServiceManualE2ERunContext::generateRunId($startedAt),
-            'manual_e2e_started_at' => $startedAt->toIso8601String(),
-            'manual_e2e_created_after' => $startedAt->toIso8601String(),
-            'manual_e2e_expires_at' => $startedAt->addHours(4)->toIso8601String(),
-        ] as $key => $value) {
-            Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.'.$key, $value);
-        }
-        $page->forceFill(['layout_json' => $layout])->save();
+        $opsWhatsappEnabled = (bool) $settings->payload()['global']['ops_whatsapp_enabled'];
+        $settings->freezeManualE2E();
+        $settings->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'shared_test_phone' => '905467647428',
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'manual-e2e-fixture',
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS TEST',
+            ],
+            'ops_whatsapp_enabled' => $opsWhatsappEnabled,
+            'ops_whatsapp_phone' => '905467647428',
+        ]);
+        $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
+        $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
+        $payload = $settings->prepareManualE2E();
+        $global = $payload['global'];
+        $lifecycleLayout = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->value('layout_json');
 
-        return $settings->payload()['global'];
+        $this->assertSame(TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_PREPARED, $global['manual_e2e_phase']);
+        $this->assertTrue($global['manual_e2e_enabled']);
+        $this->assertFalse($global['real_send_enabled']);
+        $this->assertFalse($global['test_mode_enabled']);
+        $this->assertTrue($global['queue_paused']);
+        $this->assertNotSame('', (string) data_get(
+            $lifecycleLayout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.manual_e2e_run_snapshot.allowlist_fingerprint',
+        ));
+
+        return $global;
     }
 
     /**

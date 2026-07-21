@@ -665,8 +665,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Test telefon numarası', $source);
         $this->assertStringContainsString('Manual E2E kontrol paneli', $source);
         $this->assertStringContainsString('Manual E2E Readiness Kontrolü', $source);
-        $this->assertStringContainsString('Manual E2E’yi Aç', $source);
-        $this->assertStringContainsString('Gönderimleri Dondur', $source);
+        $this->assertStringContainsString('Güvenli Run Hazırla', $source);
+        $this->assertStringContainsString('Manual E2E’yi Dondur', $source);
         $this->assertStringNotContainsString("['real_send_enabled', 'Gerçek gönderim aktif']", $source);
         $this->assertStringContainsString('Duplicate cooldown dakika', $source);
         $this->assertStringContainsString('Güvenli queue', $source);

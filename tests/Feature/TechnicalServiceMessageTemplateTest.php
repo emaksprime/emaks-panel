@@ -5,13 +5,36 @@ namespace Tests\Feature;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMessageTemplate;
 use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class TechnicalServiceMessageTemplateTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertFalse(DB::connection()->getPdo()->inTransaction());
+    }
+
+    public function runDatabaseMigrations(): void
+    {
+        $this->beforeRefreshingDatabase();
+        $this->refreshTestDatabase();
+        $this->afterRefreshingDatabase();
+
+        $this->beforeApplicationDestroyed(function (): void {
+            // The in-memory connection is discarded after each test.
+            RefreshDatabaseState::$migrated = false;
+        });
+    }
 
     public function test_message_template_can_be_saved_and_previewed_without_send(): void
     {
