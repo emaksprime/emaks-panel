@@ -12,11 +12,11 @@ REL-4H, REL-4G, REL-7, REL-9, REL-10A and INT-MIKRO preparation.
 
 ## Included scope
 
-Fault/diagnosis/repair, part request/decision, reservation, shipment/delivery/use/return, child SRV/repeat visit, part cost/fee/earning, final serial, completion blocker and Mikro outbox/reconcile.
+Fault/diagnosis/repair, part request/decision, reservation, shipment/delivery/use/return, child SRV/repeat visit, part cost/fee/earning, final serial, warranty/service completion blockers and Mikro outbox/reconcile.
 
 ## Excluded scope
 
-Rebuilding already accepted basic part request/OPS decision, generic audit UI (REL-10B), CRM projection (REL-13) and final Mikro credential activation.
+Rebuilding already accepted basic part request/OPS decision, generic audit UI (REL-10B), warranty CRM presentation (REL-13), warranty KPI formula (REL-14) and final Mikro credential activation.
 
 ## Source of truth
 
@@ -28,7 +28,7 @@ State/final-serial contracts, event backbone, settlement ownership and Mikro ope
 
 ## Exit/acceptance criteria
 
-Every part has an auditable lifecycle; stock movement is idempotent and reconciled; repeat visit/child SRV links are correct; costs/earnings agree; unresolved/ambiguous part or ERP state blocks completion.
+Every part has an auditable lifecycle; stock movement is idempotent and reconciled; repeat visit/child SRV and final-serial links are correct; costs/earnings agree; service or warranty completion cannot close while repair, part or ERP state is unresolved/ambiguous.
 
 ## Exact evidence requirements
 
@@ -108,7 +108,7 @@ One synthetic part request through reserve/use/return or accepted subset with ex
 
 ## Data reconciliation
 
-Request/decision, quantities, reservation/movement, warehouse/document, child SRV, final serial, fees and earning totals must agree.
+Request/decision, quantities, reservation/movement, warehouse/document, child SRV/repeat visit, final serial, warranty/service completion blocker, fees and earning totals must agree.
 
 ## S0/S1/S2 blockers
 

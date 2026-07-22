@@ -13,7 +13,8 @@ Current PR #88 product chain, environment foundation, partner/technician identit
 ## Included scope
 
 - Preserve accepted copy/upload/job-card/assignment/appointment/payment/earning behavior.
-- Preserve the independently accepted claim/permit/HTTP/finalize guarantees and guarded messaging execution-mode lineage at the current product head; current-head PostgreSQL/RBAC/browser acceptance remains a separate gate.
+- Preserve accepted before/after/warranty upload evidence without treating upload acceptance as completion of the warranty lifecycle, CRM projection or KPI contract.
+- Preserve the independently accepted claim/permit/HTTP/finalize guarantees and the local PostgreSQL/RBAC/browser execution-mode evidence at `f94c8c7...`; the current descendant changes only internal/external retry scope, while exact-head closeout and full workflow browser/staging acceptance remain separate gates.
 - Run one separately authorized, allowlisted assignment-offer WhatsApp + SMS pair with exact reconciliation.
 - Complete current-head browser, clean-migration and staging acceptance before PR #88 readiness is decided.
 
@@ -27,7 +28,7 @@ Laravel Technical Service request/assignment/dispatch/settlement records are aut
 
 ## Entry criteria
 
-Exact remote product head `29546a546bccf4575d3c9fd9c6c2587355c81aef` and tree `b2b140a3b40758ed519853eeb0d0db110ba2217e` on open Draft PR #88; guarded messaging implementation `63e8e9febe96dbfc64b666aa9c82adf054d36d1f`, fixture alignment `78a3a82a4d734875aec9ad85bd2bca0251b342f2`, deterministic repair at the current head; exact-SHA quality and PHP 8.3/8.4/8.5 CI green with 1681 tests, 15315 assertions and 18 skipped; external send zero. Current-head disposable PostgreSQL, targeted RBAC/browser, public HTTPS/provider readiness and separate send authorization remain gates.
+Exact remote product head `cad310aeb8d0d73d6e8778bd9f2f1dfd891d4be4` and tree `f932c9e0ab39837dcad48ed746a83f18f4674880` on open Draft PR #88; guarded messaging implementation `63e8e9febe96dbfc64b666aa9c82adf054d36d1f`, global authority core `d1096bdd3ff98be221cbbdb03b75935087a7af1a`, single Management Panel control/navigation alignment and local PostgreSQL/RBAC/browser evidence at `f94c8c701ef44ec76691518d7fc7c56ab1aac068`, and internal/external retry correction at the current head. The retry delta passed four focused tests/56 assertions and current exact-SHA quality plus PHP 8.3/8.4/8.5 CI; external send is zero. Public HTTPS/provider readiness, controlled send, staging/production acceptance and PR closeout remain separate gates.
 
 ## Exit/acceptance criteria
 
@@ -71,11 +72,11 @@ Default is frozen: Manual E2E off, real send off, queue paused, OPS channels off
 
 ## Inherited Local/Live control-plane
 
-REL-4E inherits the global contract in [MASTER_REL_ROADMAP.md](../MASTER_REL_ROADMAP.md); status remains only in the ledger.
+REL-4E inherits the global contract in [MASTER_REL_ROADMAP.md](../MASTER_REL_ROADMAP.md); status remains only in the ledger. Technical Service Admin owns messaging/provider administration and read-only global mode/readiness presentation. It does not own or expose the mutable global mode control; that exact single control is on Management Panel `/admin`.
 
 | Capability | Class | Activation | Readiness |
 | --- | --- | --- | --- |
-| `messaging.evolution.send` | `OUTBOUND_COMMUNICATION` | `REQUIRED` | Environment-bound Evo profile, queue/claim/permit, consent/allowlist, public URL and reconciliation |
+| `messaging.evo.send` | `OUTBOUND_COMMUNICATION` | `REQUIRED` | Environment-bound Evo profile, queue/claim/permit, consent/allowlist, public URL and reconciliation |
 | `messaging.nac.send` | `OUTBOUND_COMMUNICATION` | `REQUIRED` | Environment-bound NAC profile, queue/claim/permit, consent/allowlist and reconciliation |
 
 `LOCAL` preserves suppressed intent/audit and produces provider HTTP zero, including in PROD; it never substitutes a localhost endpoint. `LIVE` requires the current global epoch, capability revision and profile fingerprint. Non-production provider access additionally requires the exact run/window/claim/one-time permit. Stale queue/retry/DLQ work stays blocked. Close/freeze preserves accepted or ambiguous provider truth and never blindly retries.

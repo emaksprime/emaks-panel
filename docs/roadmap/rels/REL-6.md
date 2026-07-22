@@ -12,7 +12,7 @@ REL-4H, REL-4G, REL-7, REL-5C, environment public HTTPS and REL-10A.
 
 ## Included scope
 
-QR Product Passport, final-serial resolution, customer/SRV authorization, OTP issue/verify, expiry/rate/attempt/one-use controls, self-service request actions, changed/cancelled/old serial behavior and enumeration protection.
+QR Product Passport, final-installed-serial resolution, sourced warranty/activation display, customer/SRV authorization, OTP issue/verify, expiry/rate/attempt/one-use controls, self-service request actions, changed/cancelled/old serial behavior and enumeration protection.
 
 ## Excluded scope
 
@@ -28,7 +28,7 @@ Final serial and state machines accepted, customer identity unambiguous, public 
 
 ## Exit/acceptance criteria
 
-Only the authorized customer can access the current serial/SRV; old/exchanged/cancelled serials behave explicitly; OTP is expiring, bounded and single-use; enumeration and replay fail PII-safe; payment/mount/warranty data comes from authoritative sources.
+Only the authorized customer can access the current serial/SRV and warranty projection; old/exchanged/cancelled serials behave explicitly; ambiguous or unauthorized warranty data is denied rather than guessed; OTP is expiring, bounded and single-use; enumeration and replay fail PII-safe; payment/mount/warranty data comes from authoritative sources.
 
 ## Exact evidence requirements
 
@@ -108,7 +108,7 @@ One synthetic authorized current serial plus negative old/wrong/consumed/rate-li
 
 ## Data reconciliation
 
-Passport serial, customer, root MRN, SRV, installation, payment, warranty and activation sources must agree.
+Passport serial, customer, root MRN, SRV, final installation, payment, warranty start/end/status/source and activation/QR sources must agree; old/exchanged/cancelled serials cannot silently become current.
 
 ## S0/S1/S2 blockers
 

@@ -7,12 +7,12 @@ This directory is the canonical execution plan for all non-AI work required befo
 Snapshot verified on 2026-07-22:
 
 - Product branch: `burhan/technical-service-b2b-integration-local`
-- Remote product SHA: `29546a546bccf4575d3c9fd9c6c2587355c81aef`
-- Remote product tree: `b2b140a3b40758ed519853eeb0d0db110ba2217e`
-- Guarded messaging execution mode: implementation commit `63e8e9febe96dbfc64b666aa9c82adf054d36d1f`, fixture alignment `78a3a82a4d734875aec9ad85bd2bca0251b342f2`, deterministic fixture repair/current head `29546a546bccf4575d3c9fd9c6c2587355c81aef`
-- Exact-SHA CI: quality and PHP 8.3/8.4/8.5 passed; the suite reported 1681 tests, 15315 assertions and 18 skipped tests
+- Remote product SHA: `cad310aeb8d0d73d6e8778bd9f2f1dfd891d4be4`
+- Remote product tree: `f932c9e0ab39837dcad48ed746a83f18f4674880`
+- Product lineage: guarded messaging implementation `63e8e9febe96dbfc64b666aa9c82adf054d36d1f`; global execution authority core `d1096bdd3ff98be221cbbdb03b75935087a7af1a`; Management Panel control and OPS navigation alignment `f94c8c701ef44ec76691518d7fc7c56ab1aac068`; internal/external retry correction at current head `cad310aeb8d0d73d6e8778bd9f2f1dfd891d4be4`. The prior `29546a546bccf4575d3c9fd9c6c2587355c81aef` acceptance is retained as lineage, not current head.
+- Exact-SHA CI: quality and PHP 8.3/8.4/8.5 are all `SUCCESS`; the retry delta also passed four focused tests with 56 assertions
 - External send delta: `0`
-- Messaging execution-mode implementation remains subject to current-head disposable PostgreSQL, targeted RBAC and browser acceptance; it is not production-ready or live-verified
+- The global authority core and messaging Evo/NAC adapters are implemented with local PostgreSQL/RBAC/browser evidence and current exact-SHA CI, but staging/production acceptance is absent and 12 `REQUIRED` capability adapters remain unadapted. Global LIVE is intentionally `BLOCKED`; the product is not production-ready or live-verified.
 - Product PR: [#88](https://github.com/emaksprime/emaks-panel/pull/88), open and Draft; merge and deploy were not performed
 
 The roadmap branch is based on `origin/main` and contains documentation only. It does not contain product commits. Product SHA, roadmap SHA, PR Ready, merge, and deploy are separate gates.
@@ -49,12 +49,13 @@ Voibot call summaries and transcripts are operational records, not post-live AI 
 
 ## Global Local/Live Control-Plane Contract
 
-The messaging execution-mode vertical slice and the future global control plane are separate deliverables. Their authoritative status is recorded only in the [ledger](REL_STATUS_LEDGER.md):
+The implemented global authority core, the adapted messaging vertical slice and the remaining capability adapters are separate deliverables. Their authoritative status is recorded only in the [ledger](REL_STATUS_LEDGER.md):
 
 | Scope | Implementation status | Live readiness | Mandatory next gate |
 | --- | --- | --- | --- |
-| Guarded messaging Local/Live mode | `IMPLEMENTED_CURRENT_HEAD_ACCEPTANCE_PENDING` | `CI_ACCEPTED` | Disposable PostgreSQL plus targeted RBAC/browser exact-head acceptance |
-| `FOUNDATION-CONTROL-PLANE` | `NOT_IMPLEMENTED` | `NOT_ASSESSED` | Separate small foundation branch/PR before any adapter is globally activated |
+| Guarded messaging Local/Live adapter | `IMPLEMENTED_CURRENT_HEAD_ACCEPTANCE_PENDING` | `CI_ACCEPTED` | Preserve local PostgreSQL/RBAC/browser evidence and current exact-SHA CI; staging/production and controlled real send remain separate gates |
+| `FOUNDATION-CONTROL-PLANE` / global authority core | `IMPLEMENTED_CURRENT_HEAD_ACCEPTANCE_PENDING` | `CI_ACCEPTED` | Independent closeout plus staging/production acceptance; do not infer Global LIVE readiness |
+| `FOUNDATION-CONTROL-PLANE` / remaining `REQUIRED` capability adapters | `NOT_IMPLEMENTED` | `BLOCKED` | Complete the exact 12 unadapted adapters in their sole owner RELs through small separate branch/PR and exact acceptance |
 
 `FOUNDATION-CONTROL-PLANE` is a named cross-cutting owner track, not a fabricated REL suffix. Every historical and future REL inherits this contract:
 
@@ -71,6 +72,18 @@ The messaging execution-mode vertical slice and the future global control plane 
 11. **Callbacks:** inbound processing is `receive -> verify signature/timestamp/replay -> durable journal -> correlate/idempotency -> reconcile -> domain processing -> downstream automation`. LOCAL may safely journal/reconcile prior real effects but cannot start new outbound automation.
 12. **Single control:** one operator action may request the global desired mode, but it cannot bypass guards. If any `REQUIRED` capability is not ready, no required capability is left partially LIVE and exact blockers remain visible in the panel.
 
+### Operations Surface Truth Matrix
+
+| Surface | Canonical purpose | State | Mutable global control | Sole owner |
+| --- | --- | --- | --- | --- |
+| Management Panel `/admin` | System administration and the single global Local/Live control | Current implementation | Exact `1` | `FOUNDATION-CONTROL-PLANE` |
+| Operations Center `/technical-service` | Canonical operating surface for Technical Service work | Existing; completion contract open | `0`; read-only status is allowed | REL-7 |
+| Operations Dashboard `/technical-service/dashboard` | Pilot KPI/dashboard surface | `PILOT / GELİŞTİRİLİYOR` | `0` | REL-14 |
+| Technical Service Admin | Messaging/provider administration and read-only global mode/readiness | Management surface | `0` | REL-4E |
+| CRM 360 | Customer/serial/MRN/SRV/warranty sourced projection | Future pre-live scope | `0` | REL-13 |
+
+The sole mutable global Local/Live control is `/admin`; every other surface may only display authoritative read-only mode/readiness. Operations Center and Pilot Dashboard are neither aliases nor the same product promise. A route/button is visible only when its user-facing screen exists, its permission is satisfied and the action is accepted; otherwise it is hidden or explicitly labelled `Pilot / Geliştiriliyor`. Server authorization remains mandatory. Dead, misleading, duplicate and incorrect active-state navigation must be zero, including deep-link, refresh and browser-back behavior.
+
 ### Capability Classification and Ownership
 
 Classification values are `INTERNAL_ONLY`, `EXTERNAL_READ`, `EXTERNAL_MUTATION`, `OUTBOUND_COMMUNICATION`, `FINANCIAL_MUTATION`, `INBOUND_CALLBACK`, `BACKGROUND_AUTOMATION`, `BULK_APPLY_OR_INVITATION` and `PROVIDER_OR_CREDENTIAL_CONTROL`. Each stable key has one owner; dependencies do not transfer ownership.
@@ -78,7 +91,7 @@ Classification values are `INTERNAL_ONLY`, `EXTERNAL_READ`, `EXTERNAL_MUTATION`,
 | Capability key | Class | Sole owner track | Activation class | Minimum readiness |
 | --- | --- | --- | --- | --- |
 | `provider.profile.control` | `PROVIDER_OR_CREDENTIAL_CONTROL` | `FOUNDATION-CONTROL-PLANE` | `REQUIRED` | Environment binding, secret separation, RBAC/audit and atomic revision |
-| `messaging.evolution.send` | `OUTBOUND_COMMUNICATION` | REL-4E | `REQUIRED` | Evo profile, queue/claim/permit, consent/allowlist and reconciliation |
+| `messaging.evo.send` | `OUTBOUND_COMMUNICATION` | REL-4E | `REQUIRED` | Evo profile, queue/claim/permit, consent/allowlist and reconciliation |
 | `messaging.nac.send` | `OUTBOUND_COMMUNICATION` | REL-4E | `REQUIRED` | NAC profile, queue/claim/permit, consent/allowlist and reconciliation |
 | `serial.exchange.apply` | `INTERNAL_ONLY` | REL-4G | `REQUIRED` | Authoritative old/new serial, root MRN and ERP-intent reconciliation |
 | `identity.root_mrn.allocate` | `INTERNAL_ONLY` | REL-4H | `REQUIRED` | Concurrency-safe uniqueness, non-reuse and restore proof |
@@ -95,8 +108,8 @@ Classification values are `INTERNAL_ONLY`, `EXTERNAL_READ`, `EXTERNAL_MUTATION`,
 | `payment.iyzico.callback` | `INBOUND_CALLBACK` | REL-9 | `REQUIRED` | Signature/replay verification, durable journal and exact reconcile |
 | `audit.event.append` | `INTERNAL_ONLY` | REL-10A | `REQUIRED` | Append-only schema, actor/correlation and redaction coverage |
 | `mail.incoming.health` | `EXTERNAL_READ` | REL-11 | `OPTIONAL` | Environment-bound mailbox health probe with no message mutation |
-| `voibot.call` | `OUTBOUND_COMMUNICATION` | REL-11 | `OPTIONAL` | Consent, target scope, one intent/call identity and no blind retry |
-| `voibot.webhook` | `INBOUND_CALLBACK` | REL-11 | `OPTIONAL` | Signature/replay verification, journal, correlation and retention |
+| `voibot.outbound` | `OUTBOUND_COMMUNICATION` | REL-11 | `OPTIONAL` | Consent, target scope, one intent/call identity and no blind retry |
+| `voibot.inbound` | `INBOUND_CALLBACK` | REL-11 | `OPTIONAL` | Signature/replay verification, journal, correlation and retention |
 | `parts.movement.intent` | `INTERNAL_ONLY` | REL-12 | `REQUIRED` | Domain authorization, outbox identity and completion blocker |
 | `crm.projection.refresh` | `BACKGROUND_AUTOMATION` | REL-13 | `REQUIRED` | Source checkpoint, freshness, idempotency and dead-letter visibility |
 | `survey.followup.plan` | `BACKGROUND_AUTOMATION` | REL-14 | `REQUIRED` | Eligibility/version/dedupe, consent and channel handoff guard |
@@ -104,7 +117,9 @@ Classification values are `INTERNAL_ONLY`, `EXTERNAL_READ`, `EXTERNAL_MUTATION`,
 | `gateway.n8n.execute` | `EXTERNAL_MUTATION` | INT-MIKRO | `OPTIONAL` | Registered non-ERP operation only; ERP fallback prohibited |
 | `erp.mikro.read` | `EXTERNAL_READ` | INT-MIKRO | `REQUIRED` | Typed operation, tenant/period binding, parity and rate policy |
 | `erp.mikro.write` | `EXTERNAL_MUTATION` | INT-MIKRO | `REQUIRED` | Outbox/idempotency, ambiguity quarantine and exact reconciliation |
-| `maps.google.routes` | `EXTERNAL_READ` | Accepted field track (`REL suffix UNASSIGNED`) | `OPTIONAL` | Approved fixed profile, scoped route input, timeout/rate and no hidden mutation |
+| `maps.google.routes` | `EXTERNAL_READ` | `FIELD-TRACK` (canonical REL suffix `UNASSIGNED`) | `OPTIONAL` | Approved fixed profile, scoped route input, timeout/rate and no hidden mutation |
+
+Current product registry evidence at `cad310a...` is `28 registered / 20 REQUIRED / 8 REQUIRED adapted / 12 REQUIRED unadapted`. `messaging.evo.send` and `messaging.nac.send` are adapted. The remaining 12 are explicit readiness blockers, so Global LIVE stays blocked.
 
 ### CI Performance Contract (Pre-Live, Not Implemented)
 
@@ -127,8 +142,8 @@ Numeric REL order does not override this dependency order.
 
 | Order | Track | Required result before advancing |
 | ---: | --- | --- |
-| 0 | [REL-4E / PR #88 closure](rels/REL-4E.md) | Preserve green exact-SHA CI at `29546a5...`; complete disposable PostgreSQL plus targeted RBAC/browser acceptance for guarded messaging, then separately authorize any controlled provider canary and decide PR Ready/merge. |
-| 1 | `FOUNDATION-CONTROL-PLANE` plus environment/runtime foundation | Implement the global inherited Local/Live contract, DEV/UAT/PROD isolation, capability registry, atomic readiness, epoch/revision fencing, callback journal/reconcile, public HTTPS, egress guards, health, kill switches, observability, deterministic dependencies, backup/restore and rollback. |
+| 0 | [REL-4E / PR #88 closure](rels/REL-4E.md) | Preserve green exact-SHA CI at `cad310a...`; reconcile the current-head closeout and separately authorize any controlled provider canary before deciding PR Ready/merge. |
+| 1 | `FOUNDATION-CONTROL-PLANE` plus environment/runtime foundation | Preserve the implemented global authority core and single `/admin` control; complete the exact 12 owner-REL adapters, DEV/UAT/PROD runtime acceptance, callback/reconcile coverage, public HTTPS, egress guards, health, kill switches, observability, deterministic dependencies, backup/restore and rollback before Global LIVE can be considered. |
 | 2 | [REL-4H](rels/REL-4H.md) | Immutable non-resetting root MRN separated from child SRV identity, collision-free migration/backfill, orphan/duplicate zero. |
 | 3 | [REL-5 and REL-5C](rels/REL-5.md) | Full RBAC, PII controls, customer identity, reversible duplicate management, partner/technician isolation, and final locksmith onboarding/import acceptance. |
 | 4 | [REL-10A](rels/REL-10.md) | Append-only actor/entity/correlation/state audit events usable by every later module and KPI. |

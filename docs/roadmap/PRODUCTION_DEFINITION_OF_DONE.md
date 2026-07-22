@@ -49,6 +49,15 @@ CI speed work cannot remove tests, PHP versions or release coverage.
 8. Do not enable ParaTest until isolation and shared/global state safety are proven.
 9. Preserve timing history and require exact dependency/runtime fingerprints in release evidence.
 
+## Operations Surface, Navigation and Warranty Gate
+
+- The Management Panel `/admin` contains the exact single mutable global Local/Live control. `/dashboard`, `/technical-service`, `/technical-service/dashboard`, Technical Service Admin and provider/integration surfaces expose no second mutation authority.
+- Operations Center `/technical-service` is the canonical Technical Service operation surface owned by REL-7. Operations Dashboard `/technical-service/dashboard` is a distinct REL-14 Pilot surface and remains labelled `Pilot / Geliştiriliyor` until its graduation contract passes.
+- Every user-facing route/button has a real screen, declared permission, server-side authorization and correct active-state behavior. Dead, missing, duplicate, misleading, unauthorized and alias navigation counts are zero.
+- Final exact-artifact browser acceptance covers superadmin/admin, OPS, partner, technician, unauthorized and anonymous roles on desktop/mobile, including deep-link, refresh, back navigation, 404/403 expectations, tenant isolation, console output and environment separation.
+- Warranty ownership remains split: REL-4G selects the authoritative installed final serial; REL-7 owns operational state/action; REL-12 enforces repair/part completion blockers; REL-6 exposes authorized self-service; REL-13 displays a sourced projection; REL-14 owns deterministic warranty KPI; REL-15 accepts the combined release matrix.
+- `TS-006` proves scoped warranty upload only. It cannot be used as evidence that the complete warranty lifecycle, CRM projection or KPI is finished.
+
 ## REL-15 Execution Order
 
 1. Freeze exact release SHA and immutable artifact.

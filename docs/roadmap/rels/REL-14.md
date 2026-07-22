@@ -4,7 +4,7 @@ Status is owned only by [the canonical ledger](../REL_STATUS_LEDGER.md).
 
 ## Business outcome
 
-Close the service quality loop with auditable Happy Call/surveys and deterministic, explainable management KPIs and scorecards that drill to source records.
+Graduate the current Pilot Dashboard into an accepted management surface only after auditable Happy Call/surveys and deterministic, explainable operations/warranty KPIs and scorecards drill to source records.
 
 ## Dependencies
 
@@ -12,11 +12,11 @@ REL-10A, REL-11, REL-12, REL-13, REL-5 and accepted lifecycle event coverage.
 
 ## Included scope
 
-Happy Call eligibility/delay/re-version/dedup/outcomes/escalation/owner/SLA; versioned immutable survey, manual phone survey, non-response, negative follow-up; operational KPIs, latency distributions, first response/visit/reopen/parts/no-show/document/customer/Happy Call/survey/complaint metrics, person/technician/partner/product scorecards, filters, drill-down, test exclusion, freshness, complete-data-since, sample warnings and versioned formulas.
+Pilot Dashboard shell/graduation, Happy Call eligibility/delay/re-version/dedup/outcomes/escalation/owner/SLA; versioned immutable survey, manual phone survey, non-response, negative follow-up; operational and warranty KPIs, latency distributions, first response/visit/reopen/parts/no-show/document/customer/Happy Call/survey/complaint metrics, person/technician/partner/product scorecards, filters, raw-record drill-down, test exclusion, freshness, complete-data-since, sample warnings and versioned formulas.
 
 ## Excluded scope
 
-Generic call engine (REL-11), CRM ownership (REL-13), AI-generated scores/recommendations and automatic earning deductions.
+Generic call engine (REL-11), CRM ownership (REL-13), Operations Center state mutation engine (REL-7), AI-generated scores/recommendations and automatic earning deductions.
 
 ## Source of truth
 
@@ -28,7 +28,7 @@ Complete stage events, call engine, CRM drill-down, test-data classification and
 
 ## Exit/acceptance criteria
 
-Happy Call duplicates are prevented/re-versioned on reopen; survey answers are immutable/versioned; negative responses escalate; every metric is deterministic, sourced and drillable; fixed fixture outputs exactly equal hand calculations; minimum sample/freshness are visible.
+Happy Call duplicates are prevented/re-versioned on reopen; survey answers are immutable/versioned; negative responses escalate; every operations/warranty metric is deterministic, sourced and drillable; fixed fixture outputs exactly equal hand calculations; minimum sample/freshness are visible; Pilot labelling is removed only after all graduation gates pass.
 
 ## Exact evidence requirements
 
@@ -65,6 +65,10 @@ Call/message/survey credentials remain external. Survey free text and PII are re
 ## Feature flag and safe default
 
 Happy Call task generation, survey send and KPI publication default off independently.
+
+## Pilot Dashboard graduation contract
+
+`/technical-service/dashboard` remains `Pilot / Geliştiriliyor` until accepted event completeness, deterministic/versioned formulas, hand-calculated fixture parity, filters, raw-record drill-down, source/freshness, complete-data-since, minimum-sample warning, test-data exclusion, role visibility, desktop/mobile browser acceptance, console error zero and misleading/dead action zero all pass. Warranty KPI uses only authoritative operational events/records from REL-4G/7/12 and sourced projection parity from REL-13. REL-14 never becomes the Operations Center mutation engine.
 
 ## Inherited Local/Live control-plane
 
@@ -108,7 +112,7 @@ Synthetic completion/reopen/negative survey plus fixed KPI fixture validates ded
 
 ## Data reconciliation
 
-Eligible/completed/attempt/response/escalation counts and every KPI aggregate reconcile to exact source events and formula version.
+Eligible/completed/attempt/response/escalation counts and every operations/warranty KPI aggregate reconcile to exact source events/records, exclusions, completeness window and formula version, with raw-record drill-down parity.
 
 ## S0/S1/S2 blockers
 
@@ -120,4 +124,4 @@ Business operations, customer experience, analytics/data, security/privacy and r
 
 ## Open decisions
 
-CSAT/NPS definition, formula thresholds/weights, minimum sample, complete-data-since date, exclusion authority and survey channel/cadence.
+Pilot graduation evidence window, CSAT/NPS definition, warranty/operations formula thresholds and weights, minimum sample, complete-data-since date, exclusion authority and survey channel/cadence.

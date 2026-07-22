@@ -4,7 +4,7 @@ Status is owned only by [the canonical ledger](../REL_STATUS_LEDGER.md).
 
 ## Business outcome
 
-Provide explicit, reachable and dead-end-free root MRN and child SRV lifecycles with clear actors, actions, preconditions, SLAs, escalation, reopen/cancel and audited override.
+Provide the canonical Operations Center with explicit, reachable and dead-end-free root MRN and child SRV lifecycles, clear actors/actions/routes, preconditions, SLAs, escalation, warranty operations, reopen/cancel and audited override.
 
 ## Dependencies
 
@@ -12,11 +12,11 @@ REL-4H, REL-4G, REL-5 and REL-10A.
 
 ## Included scope
 
-Separate root/SRV state machines, transition matrix, actor/action/precondition definitions, terminal/non-terminal rules, reopen/cancel, SLA/escalation and reason-required admin override.
+Separate root/SRV state machines, canonical Operations Center `/technical-service`, transition and navigation truth matrices, actor/action/precondition definitions, terminal/non-terminal rules, warranty operations, reopen/cancel, SLA/escalation and reason-required admin override.
 
 ## Excluded scope
 
-QR public UI, generic collaboration/chat, repair domain internals and KPI visualization.
+QR public UI, generic collaboration/chat, repair domain internals, KPI visualization and Pilot Dashboard mutation logic. `/technical-service/dashboard` is a REL-14 read-oriented Pilot surface, not an Operations Center alias or state mutation engine.
 
 ## Source of truth
 
@@ -28,7 +28,7 @@ Root/child identity accepted, exchange/final-serial contract defined, actor perm
 
 ## Exit/acceptance criteria
 
-Every reachable non-terminal state has a valid next action or timed escalation; invalid transitions fail server-side; reopen/cancel/override preserve history; property/reachability tests find zero dead ends.
+Every reachable non-terminal state has a valid visible action or timed escalation; invalid transitions fail server-side; reopen/cancel/override preserve history; canonical route/button and active-state remain exact; property/reachability and browser matrices find zero dead ends and zero dead, missing or misleading actions.
 
 ## Exact evidence requirements
 
@@ -65,6 +65,10 @@ No domain secret. External escalation channels use separately managed provider c
 ## Feature flag and safe default
 
 New transition engine defaults read-only/off until backfill and parity pass; unknown state/action fails closed.
+
+## Operations Center completion contract
+
+For every root MRN and child SRV state, the accepted matrix records the visible work, actor, permitted action, precondition, disabled/hidden reason, next state, SLA/escalation, audit event and canonical route/button. Warranty state/action follows the authoritative final installed serial from REL-4G. Reopen, cancel and override require explicit reason and append-only audit. Every authorized existing surface is reachable without aliasing the Pilot Dashboard; every unauthorized route/action is hidden and denied server-side. Dead-end states and dead/missing/misleading buttons are each zero.
 
 ## Inherited Local/Live control-plane
 
@@ -108,7 +112,7 @@ One synthetic root with multiple child SRVs traverses permitted states; invalid/
 
 ## Data reconciliation
 
-Current state equals the latest accepted event; roots/children, terminal flags, SLA and escalation records have no orphan or contradiction.
+Current state equals the latest accepted event; roots/children, warranty operation state, terminal flags, SLA, escalation and canonical route/action records have no orphan or contradiction.
 
 ## S0/S1/S2 blockers
 
@@ -120,4 +124,4 @@ Technical Service operations, product, security, data and release owners.
 
 ## Open decisions
 
-Final state vocabulary, SLA calendar/owners, reopen limits and admin override escalation policy.
+Final state vocabulary, state/actor/action/button matrix, warranty operation transitions, SLA calendar/owners, reopen limits and admin override escalation policy.

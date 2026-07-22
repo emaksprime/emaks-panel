@@ -12,11 +12,11 @@ REL-4H, REL-10A design, environment foundation, existing Admin Users/membership 
 
 ## Included scope
 
-Full RBAC matrix, authoritative superadmin boundary, delegated permission envelope, partner/technician isolation, Admin Review queue, masked cari/reveal/copy/export permissions, customer contacts/addresses, multiple Mikro accounts, duplicate review, reversible merge/split, snapshot retention, PII retention, and locksmith importer final acceptance.
+Full RBAC matrix, authoritative superadmin boundary, delegated permission envelope, partner/technician isolation, route/button visibility for admin, OPS, partner, technician and unauthorized actors, Admin Review queue, masked cari/reveal/copy/export permissions, customer contacts/addresses, multiple Mikro accounts, duplicate review, reversible merge/split, snapshot retention, PII retention, and locksmith importer final acceptance.
 
 ## Excluded scope
 
-Composite roles, silent role escalation, phone-as-global-identity, CRM 360 presentation (REL-13), and production Mikro activation.
+Composite roles, silent role escalation, phone-as-global-identity, CRM 360 presentation (REL-13), ownership of Operations Center workflow/state (REL-7), Pilot Dashboard completion (REL-14), and production Mikro activation.
 
 ## Source of truth
 
@@ -32,11 +32,11 @@ Direct HTTP permission/tenant matrix passes; no role/composite-role shortcut; no
 
 ## Exact evidence requirements
 
-Exact SHA, permission matrix, query/response leak tests, multi-membership browser proof, random-code superadmin flag tests, merge/split snapshots, import preview/apply hashes, row-level results and cleanup.
+Exact SHA, route/component/permission and direct-API matrix, query/response leak tests, multi-membership browser proof, random-code superadmin flag tests, merge/split snapshots, import preview/apply hashes, row-level results and cleanup.
 
 ## RBAC/tenant isolation
 
-Server-side authorization precedes lookup/mutation. Reveal, copy and export are separate permissions. Denials are generic and PII-free. A user sees only active manageable memberships/scopes; frontend filters are never authorization.
+Server-side authorization precedes route lookup and mutation. UI hiding is never sufficient authorization. Admin, OPS, partner, technician and unauthorized visibility must agree with direct-route/API denial, active membership and exact tenant scope. Reveal, copy and export are separate permissions. Denials are generic and PII-free. REL-5 owns this visibility/permission contract, not the operational workflow behind an accepted button.
 
 ## Audit/event contract
 

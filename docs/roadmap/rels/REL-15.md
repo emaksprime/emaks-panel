@@ -12,7 +12,7 @@ All non-AI ledger rows accepted, launch-critical decisions zero, environment fou
 
 ## Included scope
 
-Exact artifact, fresh/upgrade migrations, backup/restore rehearsal, anonymized staging, full test/build/browser/security/performance, outbound-disabled deploy, controlled queue/scheduler, real locksmith import, provider canaries, final Mikro credential/activation, ERP n8n zero, canonical final flow, alerts, Go/No-Go, public traffic and intensive monitoring.
+Exact artifact, fresh/upgrade migrations, backup/restore rehearsal, anonymized staging, full test/build/browser/security/performance, final route/role/navigation matrix, outbound-disabled deploy, controlled queue/scheduler, real locksmith import, provider canaries, final Mikro credential/activation, ERP n8n zero, canonical final flow, alerts, Go/No-Go, public traffic and intensive monitoring.
 
 ## Excluded scope
 
@@ -28,7 +28,7 @@ All non-AI implementation/live gates meet their declared pre-production level, S
 
 ## Exit/acceptance criteria
 
-All 22 ordered cutover steps in [Production Definition of Done](../PRODUCTION_DEFINITION_OF_DONE.md) pass; Mikro activates atomically only after all checks; ERP n8n traffic is zero; one canonical end-to-end flow reconciles; alerts remain below thresholds; public traffic is stable through intensive monitoring.
+All 22 ordered cutover steps and the final navigation/browser matrix in [Production Definition of Done](../PRODUCTION_DEFINITION_OF_DONE.md) pass; Mikro activates atomically only after all checks; ERP n8n traffic is zero; one canonical end-to-end flow reconciles; alerts remain below thresholds; public traffic is stable through intensive monitoring.
 
 ## Exact evidence requirements
 
@@ -65,6 +65,10 @@ Secrets are entered/rotated through external management. Mikro production creden
 ## Feature flag and safe default
 
 Outbound messaging, invitations, payment creation, Voibot and Mikro start off. Each capability has an independent kill switch and named enable owner.
+
+## Final navigation/browser contract
+
+The exact release artifact tests `/admin`, `/technical-service`, `/technical-service/dashboard`, Technical Service Admin, CRM 360 and every other accepted operational route across superadmin/admin, OPS, partner, technician, unauthorized and anonymous actors. Authorized routes avoid unexpected 404/403; unauthorized mutation and cross-tenant leakage are zero. Desktop/mobile, deep-link, refresh and back navigation pass; incorrect active-state, console error/warning and production-route/environment mixing are zero. The mutable global control count is exact one on `/admin`; the Pilot label remains until REL-14 graduation passes; dead/missing/misleading buttons are zero.
 
 ## Inherited Local/Live control-plane
 
@@ -104,7 +108,7 @@ Trigger on cross-tenant leak, duplicate payment/message/Mikro write, MRN/serial 
 
 ## Production smoke
 
-After bounded provider/import checks, run one new canonical customer + serial + root MRN full flow under explicit authorization and reconcile every domain source.
+After bounded provider/import checks, run the final role/navigation matrix and one new canonical customer + serial + root MRN full flow under explicit authorization, then reconcile every domain source.
 
 ## Data reconciliation
 

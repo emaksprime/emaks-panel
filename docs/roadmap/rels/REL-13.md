@@ -12,7 +12,7 @@ REL-5C, REL-4H, REL-10A/B, REL-11, REL-12, REL-9 and INT-MIKRO read projection.
 
 ## Included scope
 
-Identity/contacts/masked cari, products/serials, order/invoice/dispatch dates, Laravel installation, warranty/activation/QR, root MRN/child SRVs, appointments/technicians/parts, payments/earnings, messages/calls/comments/files/surveys/admin decisions, unified timeline, source/last-sync and exact drill-down. Search by phone/customer/MRN/SRV/all serials/cari/order/invoice/dispatch.
+Identity/contacts/masked cari, products/serials, order/invoice/dispatch dates, Laravel installation, warranty start/end/status/source, activation/QR, root MRN/child SRVs, appointments/technicians/parts, payments/earnings, messages/calls/comments/files/surveys/admin decisions, unified timeline, source/last-sync and exact drill-down. Warranty history includes current/final serial, old/exchanged serial lineage, repair/part history and authoritative source. Search by phone/customer/MRN/SRV/all serials/cari/order/invoice/dispatch.
 
 ## Excluded scope
 
@@ -20,7 +20,7 @@ Owning or mutating ERP truth, generic interaction engine (REL-11), Happy Call/su
 
 ## Source of truth
 
-Mikro owns ERP stock/cari/order/proforma/invoice/dispatch/sale/serial movement. Laravel owns customer identity/link decisions, MRN/SRV, installation, service, warranty, parts/payment operations, calls, audit, Happy Call and surveys. CRM 360 is a sourced projection.
+Mikro owns ERP stock/cari/order/proforma/invoice/dispatch/sale/serial movement. Laravel owns customer identity/link decisions, MRN/SRV, installation, service, warranty, parts/payment operations, calls, audit, Happy Call and surveys. CRM 360 is a sourced projection and never creates an independent warranty truth.
 
 ## Entry criteria
 
@@ -28,7 +28,7 @@ Identity/duplicate rules, event backbone, interactions/repair/payment domains an
 
 ## Exit/acceptance criteria
 
-Every field/timeline row shows source and freshness; all required searches are server-side, authorized and complete; drill-down reaches exact source; no competing edits or hidden partner/customer leakage; projection reconciles to sources.
+Every field/timeline row shows source and freshness; warranty shows customer, root MRN, child SRV, current/final serial, old/exchanged history, installation, start/end/status/source, activation/QR and repair/part history; all required searches are server-side, authorized and complete; drill-down reaches exact source; no competing edits or hidden partner/customer leakage; projection reconciles to sources.
 
 ## Exact evidence requirements
 
@@ -65,6 +65,10 @@ Source credentials remain external; search/log/evidence redact PII and identifie
 ## Feature flag and safe default
 
 Projection and UI default read-only/off; stale source is shown as stale, never silently treated current.
+
+## Warranty 360 projection contract
+
+Warranty is read-only sourced projection. Each displayed field identifies its authoritative source and last-sync time and drills to the exact serial, installation, MRN/SRV, repair/part or activation record. Ambiguous source conflicts are visible and block a current assertion; CRM 360 cannot synthesize a start/end/status or overwrite operational state.
 
 ## Inherited Local/Live control-plane
 
@@ -108,7 +112,7 @@ Synthetic customer with multiple contacts/assets/serials/root/SRVs/interactions 
 
 ## Data reconciliation
 
-Per-source row counts/checkpoints, customer/entity links, timeline events, financial totals and last-sync values must agree.
+Per-source row counts/checkpoints, customer/entity links, root/child service links, final/old serial warranty history, installation/activation/repair/part timeline events, financial totals and last-sync values must agree.
 
 ## S0/S1/S2 blockers
 

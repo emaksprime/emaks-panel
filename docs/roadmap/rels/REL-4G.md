@@ -12,7 +12,7 @@ REL-4H, REL-5, REL-10A and INT-MIKRO preparation.
 
 ## Included scope
 
-Cancellation, compatibility, extra information, exchange, sales task/mail, authoritative replacement product/serial lookup, old-serial retention, quarantine/return, root-MRN linkage, final installed serial, Mikro outbox/reconcile and replay protection.
+Cancellation, compatibility, extra information, exchange, sales task/mail, authoritative replacement product/serial lookup, old-serial retention, quarantine/return, root-MRN linkage, final installed serial as the sole warranty/activation/QR selector, Mikro outbox/reconcile and replay protection.
 
 ## Excluded scope
 
@@ -28,7 +28,7 @@ Root MRN accepted, event contract available, Mikro operations mapped with `unmap
 
 ## Exit/acceptance criteria
 
-Old serial is immutable; uninstalled serial cannot start warranty/activation/QR; replacement links to the same root; ERP failure/ambiguity blocks completion; replay creates no second ERP document; return/quarantine and sales follow-up are auditable.
+Old serial is immutable and remains linked as history; an old or uninstalled serial cannot start warranty/activation/QR; replacement links to the same root MRN; final installed serial, old/new lineage and ERP result reconcile before completion; replay creates no second ERP document; return/quarantine and sales follow-up are auditable.
 
 ## Exact evidence requirements
 
@@ -108,7 +108,7 @@ One authorized synthetic exchange with exact old/new serial and ERP reconciliati
 
 ## Data reconciliation
 
-Root-to-old/new serial, installed flag, warranty/QR source, ERP document, return/quarantine and outbox terminal state must match.
+Root MRN, old/new serial lineage, exact installed-final selector, warranty/activation/QR source, ERP document/result, return/quarantine and outbox terminal state must match.
 
 ## S0/S1/S2 blockers
 
