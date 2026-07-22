@@ -1655,7 +1655,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
     public function test_direct_evolution_claim_is_durable_before_fake_http(): void
     {
-        $this->activateProductionLiveQueueContext();
+        $this->configureGuardedLiveQueueContext();
         config([
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => true,
@@ -1687,7 +1687,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
     public function test_direct_evolution_ambiguous_http_result_blocks_replay_before_new_dispatch(): void
     {
-        $this->activateProductionLiveQueueContext();
+        $this->configureGuardedLiveQueueContext();
         config([
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => true,
@@ -1730,7 +1730,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
     public function test_legacy_evolution_ambiguous_attempt_blocks_same_idempotency_without_second_http(): void
     {
-        $this->activateProductionLiveQueueContext();
+        $this->configureGuardedLiveQueueContext();
         config([
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => true,

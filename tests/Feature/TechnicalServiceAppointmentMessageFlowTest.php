@@ -961,9 +961,6 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->configureGuardedLiveMessaging([
             'customer_approval_request' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
-        app(TechnicalServiceMessagingSettingsService::class)->update([
-            'test_mode_enabled' => false,
-        ]);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-REL4E10-APPROVAL',
             'customer_phone' => '05372081633',
