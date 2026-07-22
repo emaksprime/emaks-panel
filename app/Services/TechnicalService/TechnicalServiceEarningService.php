@@ -3,7 +3,9 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceEarning;
+use App\Models\TechnicalServiceEarningPayment;
 use App\Models\TechnicalServiceEarningsPeriod;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceRequest;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
@@ -13,7 +15,24 @@ use Illuminate\Validation\ValidationException;
 class TechnicalServiceEarningService
 {
     public const PERIOD_STATUSES = ['draft', 'reviewing', 'approved', 'paid', 'locked'];
-    public const EARNING_STATUSES = ['Kontrol Bekliyor', 'Ödenecek', 'Ödendi', 'İtirazlı'];
+    public const EARNING_STATUSES = ['Kontrol Bekliyor', 'Ödenecek', 'Kısmi ödendi', 'Ödendi', 'İtirazlı'];
+    public const EARNING_STATUS_FILTERS = [
+        'Kontrol Bekliyor',
+        'Mutabakat oluşmadı',
+        'Ödenecek',
+        'Kısmi ödendi',
+        'Ödendi',
+        'Şirket ödemesi yok',
+        'Admin incelemesi',
+        'Hakedişe dahil değil',
+        'İtirazlı',
+    ];
+
+    public function __construct(
+        private readonly TechnicalServiceEarningSettlementSummaryService $settlementSummary,
+        private readonly TechnicalServiceSettlementCompletionService $settlementCompletion,
+    ) {
+    }
 
     public function calculatePeriod(int $year, int $month): TechnicalServiceEarningsPeriod
     {
@@ -31,17 +50,19 @@ class TechnicalServiceEarningService
                 ]);
             }
 
-            if ($period->earnings()->where('status', 'Ödendi')->exists()) {
+            if ($period->earnings()->whereIn('status', ['Kısmi ödendi', 'Ödendi'])->exists()) {
                 throw ValidationException::withMessages([
                     'period' => 'Ödenmiş hakediş içeren dönem yeniden hesaplanamaz.',
                 ]);
             }
 
-            $period->earnings()->delete();
-
             $start = CarbonImmutable::create($year, $month, 1)->startOfMonth();
             $end = $start->endOfMonth();
             $requests = $this->completedRequestsForPeriod($start, $end);
+            $this->ensureRequestsHaveNoAppliedCompanyPayouts($requests);
+            $this->ensurePeriodHasNoAppliedCompanyPayouts($period);
+
+            $period->earnings()->delete();
 
             $requests
                 ->groupBy(fn (TechnicalServiceRequest $request) => (string) ($request->technical_service_technician_id ?? 'unassigned'))
@@ -61,17 +82,18 @@ class TechnicalServiceEarningService
                     ]);
 
                     foreach ($group as $request) {
-                        $laborAmount = $this->money($request->technician_payment_amount);
-                        $travelFee = $this->money($request->travel_fee_amount);
+                        $amounts = $this->earningAmountsForRequest($request);
+                        $laborAmount = $amounts['labor_amount'];
+                        $travelFee = $amounts['travel_fee_amount'];
                         $note = $laborAmount <= 0 ? 'usta hizmet bedeli boş' : null;
 
-                        $earning->items()->create([
+                        $item = $earning->items()->create([
                             'technical_service_request_id' => $request->id,
                             'mrn' => $request->mrn,
                             'job_date' => $this->jobDate($request),
                             'customer_city' => $request->customer_city,
                             'customer_district' => $request->customer_district,
-                            'service_type' => $request->service_type,
+                            'service_type' => $this->displayServiceType($request),
                             'product_name' => $request->product_name,
                             'serial_number' => $request->serial_number,
                             'labor_amount' => $laborAmount,
@@ -81,6 +103,10 @@ class TechnicalServiceEarningService
                             'line_total' => $laborAmount + $travelFee,
                             'note' => $note,
                         ]);
+                        $settlement = $this->settlementCompletion->apply($request);
+                        $settlement->forceFill([
+                            'technical_service_earning_item_id' => $item->id,
+                        ])->save();
                     }
 
                     $this->refreshEarningTotals($earning);
@@ -117,6 +143,7 @@ class TechnicalServiceEarningService
 
         $query = TechnicalServiceEarning::query()
             ->where('period_id', $period->id)
+            ->with(['items.request.settlement.earningPayments'])
             ->withCount('items')
             ->orderBy('technician_name_snapshot');
 
@@ -124,11 +151,16 @@ class TechnicalServiceEarningService
             $query->where('technical_service_technician_id', $filters['technician_id']);
         }
 
-        if (! empty($filters['status'])) {
-            $query->where('status', $filters['status']);
-        }
+        $items = $query->get()
+            ->map(fn (TechnicalServiceEarning $earning): TechnicalServiceEarning => $this->settlementSummary->decorate($earning));
 
-        $items = $query->get();
+        if (! empty($filters['status'])) {
+            $status = (string) $filters['status'];
+            $items = $items
+                ->filter(fn (TechnicalServiceEarning $earning): bool => $earning->status === $status
+                    || $earning->getAttribute('settlement_status_label') === $status)
+                ->values();
+        }
 
         return [
             'period' => $period,
@@ -139,9 +171,15 @@ class TechnicalServiceEarningService
 
     public function getEarningDetail(int $id): TechnicalServiceEarning
     {
-        return TechnicalServiceEarning::query()
-            ->with(['period', 'items' => fn ($query) => $query->orderBy('job_date')->orderBy('mrn')])
+        $earning = TechnicalServiceEarning::query()
+            ->with([
+                'period',
+                'items' => fn ($query) => $query->orderBy('job_date')->orderBy('mrn'),
+                'items.request.settlement.earningPayments',
+            ])
             ->findOrFail($id);
+
+        return $this->settlementSummary->decorate($earning, true);
     }
 
     public function updateEarningStatus(int $id, string $status, ?string $internalNote = null, ?string $disputeNote = null): TechnicalServiceEarning
@@ -150,7 +188,7 @@ class TechnicalServiceEarningService
             throw ValidationException::withMessages(['status' => 'Geçersiz hakediş durumu.']);
         }
 
-        $earning = $this->getEarningDetail($id);
+        $earning = TechnicalServiceEarning::query()->findOrFail($id);
         $payload = [
             'status' => $status,
             'internal_note' => $internalNote,
@@ -169,14 +207,9 @@ class TechnicalServiceEarningService
 
     public function markPaid(int $id): TechnicalServiceEarning
     {
-        $earning = $this->getEarningDetail($id);
-        $earning->update([
-            'status' => 'Ödendi',
-            'paid_at' => now(),
+        throw ValidationException::withMessages([
+            'amount' => 'Hakediş ödemesi için ödenen tutar girilmelidir.',
         ]);
-        $this->syncPeriodPaidStatus($earning->period_id);
-
-        return $this->getEarningDetail($id);
     }
 
     public function buildWhatsappText(int $id): string
@@ -219,7 +252,7 @@ class TechnicalServiceEarningService
         }
 
         $lines[] = '';
-        $lines[] = "Durum: {$earning->status}";
+        $lines[] = 'Durum: '.($earning->getAttribute('settlement_status_label') ?: $earning->status);
         $lines[] = 'Kontrolünüzü rica ederiz.';
 
         return implode("\n", $lines);
@@ -235,8 +268,8 @@ class TechnicalServiceEarningService
     private function completedRequestsForPeriod(CarbonImmutable $start, CarbonImmutable $end): Collection
     {
         return TechnicalServiceRequest::query()
-            ->with('technicianRecord')
-            ->where('status', 'Tamamlandı')
+            ->with(['technicianRecord', 'latestAssignmentOffer', 'settlement.earningPayments'])
+            ->whereNull('cancelled_at')
             ->where(function ($query) use ($start, $end) {
                 $query->whereBetween('installation_completed_at', [$start, $end])
                     ->orWhere(function ($query) use ($start, $end) {
@@ -247,7 +280,70 @@ class TechnicalServiceEarningService
             ->orderBy('technical_service_technician_id')
             ->orderBy('installation_completed_at')
             ->orderBy('completed_at')
-            ->get();
+            ->get()
+            ->filter(fn (TechnicalServiceRequest $request): bool => $this->isCompletedRequest($request)
+                && ! $this->isCancelledRequest($request))
+            ->values();
+    }
+
+    /**
+     * @return array{labor_amount:float,travel_fee_amount:float}
+     */
+    private function earningAmountsForRequest(TechnicalServiceRequest $request): array
+    {
+        $offer = $request->latestAssignmentOffer;
+
+        if ($offer instanceof TechnicalServiceAssignmentOffer) {
+            return [
+                'labor_amount' => $this->money($offer->labor_amount),
+                'travel_fee_amount' => $this->money($offer->route_fee_amount),
+            ];
+        }
+
+        return [
+            'labor_amount' => $this->money($request->technician_payment_amount),
+            'travel_fee_amount' => $this->money($request->travel_fee_amount),
+        ];
+    }
+
+    private function displayServiceType(TechnicalServiceRequest $request): ?string
+    {
+        if ($request->parent_request_id !== null || $request->service_code !== null) {
+            return 'Servis';
+        }
+
+        return $request->service_type;
+    }
+
+    private function isCompletedRequest(TechnicalServiceRequest $request): bool
+    {
+        return $this->statusIncludes($request->status, 'tamamland')
+            || $this->statusIncludes($request->workflow_status, 'tamamland');
+    }
+
+    private function isCancelledRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || $this->statusIncludes($request->status, 'ptal')
+            || $this->statusIncludes($request->workflow_status, 'ptal')
+            || $this->isCancellationReviewRequest($request);
+    }
+
+    private function isCancellationReviewRequest(TechnicalServiceRequest $request): bool
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY]
+            ?? $operationControl['cancellation_review']
+            ?? null;
+        $reviewStatus = is_array($review) ? (string) ($review['status'] ?? '') : '';
+
+        return (string) $request->pending_reason === TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON
+            || in_array($reviewStatus, ['pending', 'review'], true);
+    }
+
+    private function statusIncludes(?string $value, string $needle): bool
+    {
+        return str_contains(mb_strtolower((string) $value), $needle);
     }
 
     private function jobDate(TechnicalServiceRequest $request): CarbonImmutable
@@ -305,6 +401,13 @@ class TechnicalServiceEarningService
             'payable_count' => 0,
             'paid_count' => 0,
             'disputed_count' => 0,
+            'partial_paid_count' => 0,
+            'reconciliation_missing_count' => 0,
+            'no_company_payable_count' => 0,
+            'company_payable_total' => 0,
+            'company_paid_total' => 0,
+            'company_remaining_total' => 0,
+            'admin_review_count' => 0,
         ];
     }
 
@@ -316,9 +419,66 @@ class TechnicalServiceEarningService
             'labor_total' => round((float) $items->sum('labor_total'), 2),
             'travel_fee_total' => round((float) $items->sum('travel_fee_total'), 2),
             'grand_total' => round((float) $items->sum('grand_total'), 2),
-            'payable_count' => $items->where('status', 'Ödenecek')->count(),
-            'paid_count' => $items->where('status', 'Ödendi')->count(),
+            'payable_count' => $items->where('settlement_status_label', 'Ödenecek')->count(),
+            'paid_count' => $items->where('settlement_status_label', 'Ödendi')->count(),
             'disputed_count' => $items->where('status', 'İtirazlı')->count(),
+            'partial_paid_count' => $items->where('settlement_status_label', 'Kısmi ödendi')->count(),
+            'reconciliation_missing_count' => $items->where('settlement_status_label', 'Mutabakat oluşmadı')->count(),
+            'no_company_payable_count' => $items->where('settlement_status_label', 'Şirket ödemesi yok')->count(),
+            'company_payable_total' => round((float) $items->sum(fn (TechnicalServiceEarning $earning): float => (float) $earning->getAttribute('company_payable_amount')), 2),
+            'company_paid_total' => round((float) $items->sum(fn (TechnicalServiceEarning $earning): float => (float) $earning->getAttribute('company_paid_amount')), 2),
+            'company_remaining_total' => round((float) $items->sum(fn (TechnicalServiceEarning $earning): float => (float) $earning->getAttribute('company_remaining_amount')), 2),
+            'admin_review_count' => $items->sum(fn (TechnicalServiceEarning $earning): int => (int) ($earning->getAttribute('settlement_summary')['admin_review_count'] ?? 0)),
         ];
+    }
+
+    private function ensurePeriodHasNoAppliedCompanyPayouts(TechnicalServiceEarningsPeriod $period): void
+    {
+        $requestIds = $period->earnings()
+            ->with('items')
+            ->get()
+            ->flatMap(fn (TechnicalServiceEarning $earning) => $earning->items->pluck('technical_service_request_id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($requestIds->isEmpty()) {
+            return;
+        }
+
+        $this->ensureRequestIdsHaveNoAppliedCompanyPayouts($requestIds->all());
+    }
+
+    private function ensureRequestsHaveNoAppliedCompanyPayouts(Collection $requests): void
+    {
+        $requestIds = $requests
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($requestIds->isEmpty()) {
+            return;
+        }
+
+        $this->ensureRequestIdsHaveNoAppliedCompanyPayouts($requestIds->all());
+    }
+
+    /**
+     * @param array<int, int> $requestIds
+     */
+    private function ensureRequestIdsHaveNoAppliedCompanyPayouts(array $requestIds): void
+    {
+        $hasAppliedPayout = TechnicalServiceEarningPayment::query()
+            ->where('payment_type', TechnicalServiceEarningPayment::TYPE_COMPANY_PAYOUT)
+            ->where('status', TechnicalServiceEarningPayment::STATUS_APPLIED)
+            ->whereHas('settlement', fn ($query) => $query->whereIn('technical_service_request_id', $requestIds))
+            ->exists();
+
+        if ($hasAppliedPayout) {
+            throw ValidationException::withMessages([
+                'period' => 'Şirket ödeme kaydı olan işler için dönem yeniden hesaplanamaz.',
+            ]);
+        }
     }
 }

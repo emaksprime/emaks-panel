@@ -93,6 +93,7 @@ export type PanelExternalIntegration = {
 
 export type PanelNavigationPayload = {
     groups: PanelNavigationGroup[];
+    resources: string[];
     currentPage: PanelPagePayload | null;
     role: {
         name: string;

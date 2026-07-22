@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { apiRequest } from '@/lib/api';
+import { copyTextToClipboard } from '@/lib/clipboard';
 
 type ActiveTab = 'guide' | 'activation';
 
@@ -92,43 +93,6 @@ type SupportPageProps = {
     supportPermissions?: SupportPermissions;
     supportActivationSummary?: SupportActivationSummary;
 };
-
-async function copyTextToClipboard(value: string): Promise<boolean> {
-    if (navigator.clipboard?.writeText) {
-        try {
-            await navigator.clipboard.writeText(value);
-
-            return true;
-        } catch {
-            // Fall through to the textarea fallback for restricted browser contexts.
-        }
-    }
-
-    if (typeof document === 'undefined' || !document.body) {
-        return false;
-    }
-
-    const textarea = document.createElement('textarea');
-    textarea.value = value;
-    textarea.setAttribute('readonly', 'true');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '-9999px';
-    textarea.style.opacity = '0';
-
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    textarea.setSelectionRange(0, textarea.value.length);
-
-    try {
-        return document.execCommand('copy');
-    } catch {
-        return false;
-    } finally {
-        textarea.remove();
-    }
-}
 
 const emptyFilters: Filters = {
     device: '',
@@ -551,7 +515,9 @@ function ActivationSearch({ totalRecords }: { totalRecords: number }) {
             return;
         }
 
-        if (await copyTextToClipboard(activationCode)) {
+        const copyResult = await copyTextToClipboard(activationCode);
+
+        if (copyResult.copied) {
             setError(null);
             setCopyMessage('Aktivasyon kodu kopyalandı.');
             setCopiedId(item.id);

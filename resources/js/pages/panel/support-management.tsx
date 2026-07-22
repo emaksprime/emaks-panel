@@ -15,6 +15,7 @@ import {
 import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '@/lib/api';
+import { copyTextToClipboard } from '@/lib/clipboard';
 
 type ManagementTab = 'activation' | 'import' | 'guides';
 
@@ -230,30 +231,36 @@ function TabButton({ active, children, onClick }: { active: boolean; children: R
 
 function CopyButton({ value, label = 'Kopyala' }: { value: string | null | undefined; label?: string }) {
     const [copied, setCopied] = useState(false);
+    const [copyFailed, setCopyFailed] = useState(false);
 
     if (!value) {
         return null;
     }
 
     const copy = async () => {
-        await navigator.clipboard?.writeText(value);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
+        const result = await copyTextToClipboard(value);
+        setCopied(result.copied);
+        setCopyFailed(!result.copied);
+        window.setTimeout(() => {
+            setCopied(false);
+            setCopyFailed(false);
+        }, 1200);
     };
+    const copyLabel = copied ? 'Kopyalandı' : copyFailed ? 'Otomatik kopyalanamadı; metni manuel kopyalayın.' : label;
 
     return (
         <button
             type="button"
             onClick={() => void copy()}
-            title={copied ? 'Kopyalandı' : label}
-            aria-label={copied ? 'Kopyalandı' : label}
+            title={copyLabel}
+            aria-label={copyLabel}
             className={[
                 'inline-flex size-9 shrink-0 items-center justify-center rounded-lg border bg-white text-slate-600 transition',
-                copied ? 'border-emerald-300 text-emerald-700 ring-2 ring-emerald-100' : 'border-slate-200 hover:border-blue-200 hover:text-blue-700',
+                copied ? 'border-emerald-300 text-emerald-700 ring-2 ring-emerald-100' : copyFailed ? 'border-amber-300 text-amber-700 ring-2 ring-amber-100' : 'border-slate-200 hover:border-blue-200 hover:text-blue-700',
             ].join(' ')}
         >
             {copied ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
-            <span className="sr-only">{copied ? 'Kopyalandı' : label}</span>
+            <span className="sr-only">{copyLabel}</span>
         </button>
     );
 }

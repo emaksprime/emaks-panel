@@ -1,29 +1,51 @@
 <?php
 
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\B2B\B2BDashboardController;
+use App\Http\Controllers\Api\B2B\B2BPartnerController;
+use App\Http\Controllers\Api\B2B\B2BPartnerUserController;
 use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
 use App\Http\Controllers\Api\PageDataController;
+use App\Http\Controllers\Api\PartnerServiceJobController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\StockCriticalSettingController;
 use App\Http\Controllers\Api\SupportActivationCodeSearchController;
 use App\Http\Controllers\Api\SupportManagementController;
+use App\Http\Controllers\Api\TechnicalServiceAdminOverrideController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
+use App\Http\Controllers\Api\TechnicalServicePartnerPortalOpsController;
+use App\Http\Controllers\Api\TechnicalServicePartRequestController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
+use App\Http\Controllers\B2BPortalPreviewController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
+use App\Http\Controllers\PartnerPortalController;
+use App\Http\Controllers\ServiceJobConfirmationController;
 use App\Http\Controllers\SupportController;
+use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
+use App\Services\Messaging\TechnicalServiceMessageTemplateService;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\TechnicalService\QrPublicFlowSettingsService;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
 require __DIR__.'/settings.php';
 
 Route::get('/', HomeController::class)->name('home');
+Route::get('service-job-confirmation/{token}', [ServiceJobConfirmationController::class, 'show'])
+    ->name('service-job-confirmation.show');
+Route::post('service-job-confirmation/{token}/approve', [ServiceJobConfirmationController::class, 'approve'])
+    ->name('service-job-confirmation.approve');
+Route::post('service-job-confirmation/{token}/reject', [ServiceJobConfirmationController::class, 'reject'])
+    ->name('service-job-confirmation.reject');
 
 Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::prefix('api')->group(function () {
@@ -76,7 +98,177 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             });
         });
 
+        Route::prefix('b2b')
+            ->middleware('panel.access:b2b.dashboard.view,b2b.partners.view,b2b.view,b2b.manage,b2b.dealers.view,b2b.dealers.manage,b2b.locksmiths.view,b2b.locksmiths.manage,b2b.manufacturers.view,b2b.manufacturers.manage,b2b.sellers.view,b2b.sellers.manage,b2b.partner_users.manage')
+            ->group(function () {
+                Route::get('dashboard/summary', [B2BDashboardController::class, 'summary'])
+                    ->middleware('panel.access:b2b.dashboard.view')
+                    ->name('api.b2b.dashboard.summary');
+                Route::get('dashboard/orders', [B2BDashboardController::class, 'orders'])
+                    ->middleware('panel.access:b2b.dashboard.view')
+                    ->name('api.b2b.dashboard.orders');
+                Route::get('dashboard/stock', [B2BDashboardController::class, 'stock'])
+                    ->middleware('panel.access:b2b.dashboard.view')
+                    ->name('api.b2b.dashboard.stock');
+                Route::get('dashboard/locksmiths', [B2BDashboardController::class, 'locksmiths'])
+                    ->middleware('panel.access:b2b.dashboard.view')
+                    ->name('api.b2b.dashboard.locksmiths');
+                Route::get('dashboard/earnings', [B2BDashboardController::class, 'earnings'])
+                    ->middleware('panel.access:b2b.dashboard.view')
+                    ->name('api.b2b.dashboard.earnings');
+                Route::get('partners', [B2BPartnerController::class, 'index'])
+                    ->name('api.b2b.partners.index');
+                Route::post('partners', [B2BPartnerController::class, 'store'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partners.store');
+                Route::get('cari-control', [B2BPartnerController::class, 'cariControl'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.cari-control.index');
+                Route::post('cari-control/apply', [B2BPartnerController::class, 'applyCariControl'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.cari-control.apply');
+                Route::post('cari-control/import', [B2BPartnerController::class, 'importCariControl'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.cari-control.import');
+                Route::get('users/search', [B2BPartnerUserController::class, 'searchUsers'])
+                    ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
+                    ->name('api.b2b.users.search');
+                Route::post('partners/provision-admin-users', [B2BPartnerController::class, 'bulkProvisionAdminUsers'])
+                    ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
+                    ->name('api.b2b.partners.provision-admin-users');
+                Route::get('locksmith-technicians', [B2BPartnerController::class, 'locksmithTechnicians'])
+                    ->name('api.b2b.locksmith-technicians.index');
+                Route::post('locksmith-technicians/sync', [B2BPartnerController::class, 'syncLocksmithTechnicians'])
+                    ->middleware('panel.access:b2b.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.locksmith-technicians.sync');
+                Route::get('partners/{partner}/technicians', [B2BPartnerController::class, 'partnerTechnicians'])
+                    ->name('api.b2b.partner-technicians.index');
+                Route::post('partners/{partner}/technicians', [B2BPartnerController::class, 'storePartnerTechnician'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partner-technicians.store');
+                Route::patch('partners/{partner}/technicians/{link}', [B2BPartnerController::class, 'updatePartnerTechnician'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partner-technicians.update');
+                Route::post('partners/{partner}/technicians/{link}/mark-reviewed', [B2BPartnerController::class, 'markPartnerTechnicianReviewed'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partner-technicians.mark-reviewed');
+                Route::delete('partners/{partner}/technicians/{link}', [B2BPartnerController::class, 'destroyPartnerTechnician'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partner-technicians.destroy');
+                Route::get('partners/{partner}/users', [B2BPartnerUserController::class, 'index'])
+                    ->name('api.b2b.partner-users.index');
+                Route::post('partners/{partner}/users', [B2BPartnerUserController::class, 'store'])
+                    ->name('api.b2b.partner-users.store');
+                Route::patch('partners/{partner}/users/{user}', [B2BPartnerUserController::class, 'update'])
+                    ->name('api.b2b.partner-users.update');
+                Route::delete('partners/{partner}/users/{user}', [B2BPartnerUserController::class, 'destroy'])
+                    ->name('api.b2b.partner-users.destroy');
+                Route::post('partners/{partner}/provision-admin-user', [B2BPartnerController::class, 'provisionAdminUser'])
+                    ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
+                    ->name('api.b2b.partners.provision-admin-user');
+                Route::post('partners/{partner}/geocode', [B2BPartnerController::class, 'geocodePartner'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partners.geocode');
+                Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
+                    ->name('api.b2b.partners.show');
+                Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partners.active');
+                Route::patch('partners/{partner}/capabilities', [B2BPartnerController::class, 'updateCapabilities'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partners.capabilities');
+                Route::patch('partners/{partner}', [B2BPartnerController::class, 'update'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partners.update');
+            });
+
+        Route::prefix('partner')
+            ->middleware('panel.access:partner.portal.view')
+            ->group(function () {
+                Route::get('products', [PartnerPortalController::class, 'products'])
+                    ->middleware('panel.access:partner.stock.view')
+                    ->name('api.partner.products');
+                Route::get('orders', [PartnerPortalController::class, 'orderIndex'])
+                    ->middleware('panel.access:partner.orders.view')
+                    ->name('api.partner.orders.index');
+                Route::post('orders', [PartnerPortalController::class, 'storeOrder'])
+                    ->middleware('panel.access:partner.orders.view')
+                    ->name('api.partner.orders.store');
+                Route::get('service-jobs', [PartnerServiceJobController::class, 'index'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.index');
+                Route::get('service-jobs/{technicalServiceRequest}', [PartnerServiceJobController::class, 'show'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.show');
+                Route::get('service-jobs/{technicalServiceRequest}/uploads/{upload}', [PartnerServiceJobController::class, 'showUpload'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.uploads.show');
+                Route::post('service-jobs/{technicalServiceRequest}/accept', [PartnerServiceJobController::class, 'accept'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.accept');
+                Route::post('service-jobs/{technicalServiceRequest}/accept-appointment', [PartnerServiceJobController::class, 'accept'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.accept-appointment');
+                Route::post('service-jobs/{technicalServiceRequest}/appointment-proposal', [PartnerServiceJobController::class, 'appointmentProposal'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.appointment-proposal');
+                Route::post('service-jobs/{technicalServiceRequest}/reject', [PartnerServiceJobController::class, 'reject'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.reject');
+                Route::post('service-jobs/{technicalServiceRequest}/photos', [PartnerServiceJobController::class, 'uploadPhotos'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.photos');
+                Route::post('service-jobs/{technicalServiceRequest}/customer-otp-request', [PartnerServiceJobController::class, 'customerOtpRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.customer-otp-request');
+                Route::post('service-jobs/{technicalServiceRequest}/support-request', [PartnerServiceJobController::class, 'supportRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.support-request');
+                Route::post('service-jobs/{technicalServiceRequest}/part-requests/{partRequest}/received', [PartnerServiceJobController::class, 'receivePart'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.part-requests.received');
+                Route::post('service-jobs/{technicalServiceRequest}/price-revision-request', [PartnerServiceJobController::class, 'priceRevisionRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.price-revision-request');
+                Route::post('service-jobs/{technicalServiceRequest}/request-revisit', [PartnerServiceJobController::class, 'requestRevisit'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.request-revisit');
+                Route::post('service-jobs/{technicalServiceRequest}/submit-completion', [PartnerServiceJobController::class, 'submitCompletion'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.submit-completion');
+                Route::post('service-jobs/{technicalServiceRequest}/note', [PartnerServiceJobController::class, 'note'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.note');
+                Route::post('service-jobs/{technicalServiceRequest}/correction-request', [PartnerServiceJobController::class, 'correctionRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.correction-request');
+                Route::get('earnings', [PartnerServiceJobController::class, 'earnings'])
+                    ->middleware('panel.access:partner.earnings.view')
+                    ->name('api.partner.earnings');
+            });
+
         Route::prefix('technical-service')->group(function () {
+            Route::prefix('ops-support/service-jobs')
+                ->middleware('panel.access:technical_service_manage')
+                ->group(function () {
+                    Route::get('/', [PartnerServiceJobController::class, 'index'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.index');
+                    Route::get('{technicalServiceRequest}', [PartnerServiceJobController::class, 'show'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.show');
+                    Route::get('{technicalServiceRequest}/uploads/{upload}', [PartnerServiceJobController::class, 'showUpload'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.uploads.show');
+                    Route::post('{technicalServiceRequest}/accept', [PartnerServiceJobController::class, 'accept'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.accept');
+                    Route::post('{technicalServiceRequest}/accept-appointment', [PartnerServiceJobController::class, 'accept'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.accept-appointment');
+                    Route::post('{technicalServiceRequest}/appointment-proposal', [PartnerServiceJobController::class, 'appointmentProposal'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.appointment-proposal');
+                    Route::post('{technicalServiceRequest}/reject', [PartnerServiceJobController::class, 'reject'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.reject');
+                    Route::post('{technicalServiceRequest}/photos', [PartnerServiceJobController::class, 'uploadPhotos'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.photos');
+                    Route::post('{technicalServiceRequest}/customer-otp-request', [PartnerServiceJobController::class, 'customerOtpRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.customer-otp-request');
+                    Route::post('{technicalServiceRequest}/support-request', [PartnerServiceJobController::class, 'supportRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.support-request');
+                    Route::post('{technicalServiceRequest}/part-requests/{partRequest}/received', [PartnerServiceJobController::class, 'receivePart'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.part-requests.received');
+                    Route::post('{technicalServiceRequest}/price-revision-request', [PartnerServiceJobController::class, 'priceRevisionRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.price-revision-request');
+                    Route::post('{technicalServiceRequest}/request-revisit', [PartnerServiceJobController::class, 'requestRevisit'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.request-revisit');
+                    Route::post('{technicalServiceRequest}/submit-completion', [PartnerServiceJobController::class, 'submitCompletion'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.submit-completion');
+                    Route::post('{technicalServiceRequest}/note', [PartnerServiceJobController::class, 'note'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.note');
+                    Route::post('{technicalServiceRequest}/correction-request', [PartnerServiceJobController::class, 'correctionRequest'])->defaults('ops_support_mode', true)->name('api.technical-service.ops-support.service-jobs.correction-request');
+                });
+
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
                 ->middleware('panel.access:technical_service,technical_service_technicians')
                 ->name('api.technical-service.technicians.index');
@@ -86,9 +278,24 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::patch('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'update'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.update');
+            Route::patch('technicians/{technician}/location-review', [TechnicalServiceTechnicianController::class, 'locationReview'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.location-review');
+            Route::post('technicians/{technician}/geocode', [TechnicalServiceTechnicianController::class, 'geocode'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.geocode');
+            Route::post('technicians/{technician}/mark-reviewed', [TechnicalServiceTechnicianController::class, 'markReviewed'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.mark-reviewed');
             Route::delete('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'destroy'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.destroy');
+            Route::post('technicians/import-preview', [TechnicalServiceTechnicianController::class, 'importPreview'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.import-preview');
+            Route::post('technicians/import-apply', [TechnicalServiceTechnicianController::class, 'importApply'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.import-apply');
             Route::post('technicians/import', [TechnicalServiceTechnicianController::class, 'importCsv'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.import');
@@ -110,6 +317,42 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assign');
+            Route::post('requests/{technicalServiceRequest}/partner-appointment-proposals/{partnerJobAction}/approve', [TechnicalServicePartnerPortalOpsController::class, 'approveAppointmentProposal'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-appointment-proposals.approve');
+            Route::post('requests/{technicalServiceRequest}/partner-appointment-proposals/{partnerJobAction}/reject', [TechnicalServicePartnerPortalOpsController::class, 'rejectAppointmentProposal'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-appointment-proposals.reject');
+            Route::post('requests/{technicalServiceRequest}/partner-completions/{partnerJobAction}/approve', [TechnicalServicePartnerPortalOpsController::class, 'approveCompletionSubmission'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-completions.approve');
+            Route::post('requests/{technicalServiceRequest}/customer-approval-requests', [TechnicalServicePartnerPortalOpsController::class, 'resendCustomerApprovalRequest'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.customer-approval-requests.resend');
+            Route::post('requests/{technicalServiceRequest}/partner-revisits/{partnerJobAction}/service-visit', [TechnicalServicePartnerPortalOpsController::class, 'createServiceVisitFromRevisit'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-revisits.service-visit');
+            Route::post('requests/{technicalServiceRequest}/part-requests', [TechnicalServicePartRequestController::class, 'store'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.part-requests.store');
+            Route::patch('requests/{technicalServiceRequest}/part-requests/{partRequest}', [TechnicalServicePartRequestController::class, 'transition'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.part-requests.transition');
+            Route::post('requests/{technicalServiceRequest}/part-requests/{partRequest}/service-visit', [TechnicalServicePartRequestController::class, 'createServiceVisit'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.part-requests.service-visit');
+            Route::post('requests/{technicalServiceRequest}/ops-extra-documents', [TechnicalServiceController::class, 'uploadOpsExtraDocuments'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.ops-extra-documents.store');
+            Route::patch('requests/{technicalServiceRequest}/field-documents/{upload}/review', [TechnicalServiceController::class, 'reviewFieldDocument'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.field-documents.review');
+            Route::patch('requests/{technicalServiceRequest}/assignment-offers/{assignmentOffer}', [TechnicalServicePartnerPortalOpsController::class, 'updateAssignmentOffer'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.assignment-offers.update');
+            Route::post('requests/{technicalServiceRequest}/partner-actions/{partnerJobAction}/review', [TechnicalServicePartnerPortalOpsController::class, 'reviewPartnerAction'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-actions.review');
             Route::patch('requests/{technicalServiceRequest}/workflow', [TechnicalServiceController::class, 'updateWorkflow'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.workflow');
@@ -129,6 +372,21 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::get('requests/{technicalServiceRequest}/audit-logs', [TechnicalServiceController::class, 'auditLogs'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.requests.audit-logs');
+            Route::get('requests/{technicalServiceRequest}/overrides', [TechnicalServiceAdminOverrideController::class, 'index'])
+                ->middleware('panel.access:technical_service')
+                ->name('api.technical-service.requests.overrides.index');
+            Route::post('requests/{technicalServiceRequest}/overrides', [TechnicalServiceAdminOverrideController::class, 'store'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.overrides.store');
+            Route::post('requests/{technicalServiceRequest}/overrides/{override}/approve', [TechnicalServiceAdminOverrideController::class, 'approve'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.overrides.approve');
+            Route::post('requests/{technicalServiceRequest}/overrides/{override}/reject', [TechnicalServiceAdminOverrideController::class, 'reject'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.overrides.reject');
+            Route::post('requests/{technicalServiceRequest}/admin-recompute', [TechnicalServiceAdminOverrideController::class, 'recompute'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.admin-recompute');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.summary');
@@ -150,6 +408,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('earnings/{earning}/mark-paid', [TechnicalServiceEarningController::class, 'markPaid'])
                 ->middleware('panel.access:technical_service_earnings_pay')
                 ->name('api.technical-service.earnings.mark-paid');
+            Route::post('earnings/{earning}/review', [TechnicalServiceEarningController::class, 'review'])
+                ->middleware('panel.access:technical_service_earnings_pay')
+                ->name('api.technical-service.earnings.review');
             Route::get('earnings/{earning}/whatsapp-text', [TechnicalServiceEarningController::class, 'whatsappText'])
                 ->middleware('panel.access:technical_service_earnings')
                 ->name('api.technical-service.earnings.whatsapp-text');
@@ -182,6 +443,27 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
     Route::get('orders', [PanelPageController::class, 'orders'])->name('orders.redirect');
+
+    Route::get('pj/{technicalServiceRequest}', [PartnerPortalController::class, 'shortServiceJob'])
+        ->middleware('panel.access:partner.portal.view')
+        ->name('partner.service-jobs.short');
+
+    Route::prefix('partner')
+        ->middleware('panel.access:partner.portal.view')
+        ->group(function () {
+            Route::get('dashboard', [PartnerPortalController::class, 'dashboard'])->name('partner.dashboard');
+            Route::get('profile', [PartnerPortalController::class, 'profile'])->name('partner.profile');
+            Route::get('settings', [PartnerPortalController::class, 'settings'])->name('partner.settings');
+            Route::get('orders', [PartnerPortalController::class, 'orders'])->name('partner.orders');
+            Route::get('stock', [PartnerPortalController::class, 'stock'])->name('partner.stock');
+            Route::get('service-jobs', [PartnerPortalController::class, 'serviceJobs'])->name('partner.service-jobs');
+            Route::get('earnings', [PartnerPortalController::class, 'earnings'])->name('partner.earnings');
+        });
+
+    Route::get('technical-service/ops-support/service-jobs', [PartnerPortalController::class, 'opsSupportServiceJobs'])
+        ->middleware('panel.access:technical_service_manage')
+        ->name('technical-service.ops-support.service-jobs');
+
     Route::get('support', [SupportController::class, 'index'])
         ->middleware('panel.access:support')
         ->name('support.index');
@@ -195,6 +477,46 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         ->middleware('panel.access:support_management')
         ->name('support.management');
 
+    Route::get('panel/b2b/partners', fn () => Inertia::render('panel/b2b/partners', [
+        'page' => [
+            'title' => 'B2B Partner Yönetimi',
+            'slug' => 'b2b_partners',
+            'routePath' => '/panel/b2b/partners',
+            'component' => 'panel/b2b/partners',
+            'layoutType' => 'module',
+            'description' => 'Bayi ve çilingir partner kayıtları',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:b2b.partners.view,b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.manufacturers.view,b2b.sellers.view')->name('b2b.partners');
+
+    Route::get('panel/b2b/partners/{partner}/portal-preview', B2BPortalPreviewController::class)
+        ->middleware('panel.access:b2b.portal_preview.view')
+        ->name('b2b.portal-preview');
+
+    Route::get('panel/b2b', fn () => Inertia::render('panel/b2b/dashboard', [
+        'page' => [
+            'title' => 'Bayi & Çilingir Kokpiti',
+            'slug' => 'b2b_dashboard',
+            'routePath' => '/panel/b2b',
+            'component' => 'panel/b2b/dashboard',
+            'layoutType' => 'module',
+            'description' => 'Operasyon ve yönetim için B2B partner durum ekranı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:b2b.dashboard.view')->name('b2b.dashboard');
+
+    Route::get('panel/b2b/users', fn () => Inertia::render('panel/b2b/users', [
+        'page' => [
+            'title' => 'B2B Partner Kullanıcıları',
+            'slug' => 'b2b_partner_users',
+            'routePath' => '/panel/b2b/users',
+            'component' => 'panel/b2b/users',
+            'layoutType' => 'module',
+            'description' => 'Mevcut panel kullanıcılarını B2B partner kayıtlarına bağlama ve yetkilendirme',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:b2b.manage,b2b.partner_users.manage')->name('b2b.users');
+
     Route::get('technical-service/serial-query', fn () => Inertia::render('panel/technical-service-serial-query', [
         'page' => [
             'title' => 'Seri No Sorgu',
@@ -206,6 +528,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:technical_service_serial_query')->name('technical-service.serial-query');
+
+    Route::get('technical-service/qr-products', fn () => Inertia::render('panel/technical-service-qr-products', [
+        'page' => [
+            'title' => 'Ürün QR Yönetimi',
+            'slug' => 'technical_service_qr_products',
+            'routePath' => '/technical-service/qr-products',
+            'component' => 'panel/technical-service-qr-products',
+            'layoutType' => 'module',
+            'description' => 'Ürün QR üretimi, toplu seri yükleme ve QR yazdırma ekranı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service_manage')->name('technical-service.qr-products');
 
     Route::get('technical-service/dashboard', fn () => Inertia::render('panel/technical-service-dashboard', [
         'page' => [
@@ -255,7 +589,14 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         ],
     ]))->middleware('panel.access:technical_service_earnings')->name('technical-service.earnings');
 
-    Route::get('technical-service/admin', fn () => Inertia::render('panel/technical-service-admin', [
+    Route::get('technical-service/admin', fn (
+        QrPublicFlowSettingsService $settings,
+        TechnicalServiceMessagingSettingsService $messagingSettings,
+        TechnicalServiceMessageTemplateService $messageTemplates,
+        TechnicalServiceMessageDispatchLogService $messageDispatchLogs,
+        TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
+        TechnicalServiceMailTransportSettingsService $mailTransportSettings,
+    ) => Inertia::render('panel/technical-service-admin', [
         'page' => [
             'title' => 'Teknik Servis Admin',
             'slug' => 'technical_service_admin',
@@ -265,6 +606,12 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'description' => 'Teknik servis modül ayarları ve yetki merkezi',
             'buttons' => [],
         ],
+        'qrPublicFlowSettings' => $settings->payload(),
+        'messagingSettings' => $messagingSettings->payload(),
+        'messageTemplateSettings' => $messageTemplates->payload(),
+        'messageDispatchQueue' => $messageDispatchLogs->payload(),
+        'paymentProviderSettings' => $paymentProviderSettings->payload(),
+        'mailTransportSettings' => $mailTransportSettings->payload(),
     ]))->middleware('panel.access:technical_service_admin')->name('technical-service.admin');
 
     Route::get('{panelPath}', PanelPageController::class)

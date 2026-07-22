@@ -65,6 +65,16 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('Stok Yönetimi', $dashboard);
         $this->assertStringContainsString('Sipariş Yönetimi', $dashboard);
         $this->assertStringContainsString('Teknik Servis', $dashboard);
+        $this->assertStringContainsString("primaryHref: '/technical-service'", $dashboard);
+        $this->assertStringContainsString("pilotHref: '/technical-service/dashboard'", $dashboard);
+        $this->assertStringContainsString('canOpenOperationsCenter', $dashboard);
+        $this->assertStringContainsString('Operasyon Merkezi', $dashboard);
+        $this->assertStringContainsString('Operasyon Dashboard — Pilot', $dashboard);
+        $this->assertStringContainsString('Pilot / Geliştiriliyor', $dashboard);
+        $this->assertStringNotContainsString("'/technical-service/serial-query',", $dashboard);
+        $this->assertStringNotContainsString("'/technical-service/technicians',", $dashboard);
+        $this->assertStringNotContainsString("'/technical-service/earnings',", $dashboard);
+        $this->assertStringNotContainsString("'/technical-service/admin',", $dashboard);
         $this->assertStringContainsString('Müşteri Yönetimi', $dashboard);
         $this->assertStringContainsString('Proforma', $dashboard);
         $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
@@ -86,7 +96,6 @@ class DashboardTest extends TestCase
         $this->assertStringNotContainsString('truncate', $appLogo);
         $this->assertStringNotContainsString('Güvenli yetki görünümü', $dashboard);
         $this->assertStringNotContainsString('erişilebilir modül', $dashboard);
-        $this->assertStringNotContainsString('Operasyon Merkezi', $dashboard);
         $this->assertStringNotContainsString('backend yetki payload', $dashboard);
     }
 }

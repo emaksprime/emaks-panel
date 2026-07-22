@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Services\PanelNavigationService;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -54,11 +55,11 @@ class HandleInertiaRequests extends Middleware
             ),
             'panelContext' => [
                 'brand' => config('panel.brand'),
-                'host' => parse_url((string) config('app.url'), PHP_URL_HOST),
+                'host' => PartnerPortalPublicUrl::panelHost($request),
                 'environment' => app()->environment(),
-                'publicUrl' => config('panel.public_url'),
-                'apiBaseUrl' => config('panel.api_base_url'),
-                'webhookBaseUrl' => config('panel.webhook_base_url'),
+                'publicUrl' => PartnerPortalPublicUrl::panelBaseUrl($request),
+                'apiBaseUrl' => PartnerPortalPublicUrl::panelApiBaseUrl($request),
+                'webhookBaseUrl' => PartnerPortalPublicUrl::panelWebhookBaseUrl($request),
                 'workflowUrls' => config('panel.workflow_urls'),
             ],
         ];

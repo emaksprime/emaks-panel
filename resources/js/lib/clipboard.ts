@@ -1,0 +1,107 @@
+export type ClipboardCopyStatus = 'copied' | 'manual';
+
+export type ClipboardCopyResult = {
+    status: ClipboardCopyStatus;
+    copied: boolean;
+    manualCopyRequired: boolean;
+    text: string;
+};
+
+function copyTextWithTextarea(text: string): boolean {
+    if (typeof document === 'undefined' || !document.body) {
+        return false;
+    }
+
+    const textarea = document.createElement('textarea');
+
+    try {
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '0';
+        textarea.style.top = '0';
+        textarea.style.width = '1px';
+        textarea.style.height = '1px';
+        textarea.style.padding = '0';
+        textarea.style.border = '0';
+        textarea.style.opacity = '0';
+        textarea.style.pointerEvents = 'none';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+
+        return document.execCommand('copy');
+    } catch {
+        return false;
+    } finally {
+        textarea.remove();
+    }
+}
+
+async function clipboardMatchesText(text: string): Promise<boolean | null> {
+    try {
+        if (
+            typeof navigator === 'undefined' ||
+            !navigator.clipboard?.readText
+        ) {
+            return null;
+        }
+
+        return (await navigator.clipboard.readText()) === text;
+    } catch {
+        return null;
+    }
+}
+
+export async function copyTextToClipboard(
+    value: string,
+): Promise<ClipboardCopyResult> {
+    const text = String(value ?? '');
+
+    try {
+        if (
+            typeof navigator !== 'undefined' &&
+            navigator.clipboard?.writeText
+        ) {
+            await navigator.clipboard.writeText(text);
+            const verification = await clipboardMatchesText(text);
+
+            // A resolved modern Clipboard API write is authoritative unless a
+            // readable clipboard proves that a different value was written.
+            if (verification !== false) {
+                return {
+                    status: 'copied',
+                    copied: true,
+                    manualCopyRequired: false,
+                    text,
+                };
+            }
+        }
+    } catch {
+        // Fall through to textarea fallback for denied permissions, HTTP contexts, and focus-trap edge cases.
+    }
+
+    const textareaCopied = copyTextWithTextarea(text);
+    const textareaVerification = textareaCopied
+        ? await clipboardMatchesText(text)
+        : false;
+
+    // execCommand only reports that the command ran. Do not claim success
+    // unless the actual clipboard can be read back and matches exactly.
+    if (textareaVerification === true) {
+        return {
+            status: 'copied',
+            copied: true,
+            manualCopyRequired: false,
+            text,
+        };
+    }
+
+    return {
+        status: 'manual',
+        copied: false,
+        manualCopyRequired: true,
+        text,
+    };
+}
