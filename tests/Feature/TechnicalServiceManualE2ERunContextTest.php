@@ -268,10 +268,11 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
     public function test_dispatch_creation_blocks_when_manual_e2e_active_run_is_missing(): void
     {
         Http::fake();
-        $settings = $this->readyControlledManualE2ESettings();
-        $settings->update([
-            'message_types' => [
-                'appointment_updated_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+        $settings = $this->readyControlledManualE2ESettings([
+            'appointment_updated_customer' => [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'channel_policy' => 'whatsapp_only',
             ],
         ]);
         $settings->enableManualE2E();
@@ -341,11 +342,14 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         ]);
         $token = (string) $request->mrn;
         $body = "EMAKS Prime {$token} randevu bilgilendirmesi.";
-        $metadata = $settings->manualE2EContext()->dispatchMetadata(
-            $token,
-            '905372081633',
-            'customer',
-        );
+        $metadata = [
+            ...$settings->executionModeSnapshot(),
+            ...$settings->manualE2EContext()->dispatchMetadata(
+                $token,
+                '905372081633',
+                'customer',
+            ),
+        ];
 
         return TechnicalServiceMessageDispatch::query()->create([
             'event' => 'appointment_updated_customer',
@@ -369,9 +373,10 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         ]);
     }
 
-    private function readyControlledManualE2ESettings(): TechnicalServiceMessagingSettingsService
+    private function readyControlledManualE2ESettings(array $messageTypes = []): TechnicalServiceMessagingSettingsService
     {
-        $this->actingAs($this->admin());
+        $admin = $this->admin();
+        $this->actingAs($admin);
         $settings = app(TechnicalServiceMessagingSettingsService::class);
         $settings->freezeManualE2E();
         $settings->update([
@@ -391,15 +396,22 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
             ],
             'nac_sms' => [
                 'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
                 'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
             ],
-            'message_types' => [
+            'message_types' => array_replace_recursive([
                 'assignment_offer_technician' => [
                     'enabled' => true,
                     'real_send_allowed' => true,
                     'channel_policy' => 'whatsapp_and_sms',
                 ],
-            ],
+            ], $messageTypes),
         ]);
         $page = PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)->firstOrFail();
         $layout = (array) $page->layout_json;
@@ -427,6 +439,13 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
         $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            'Manual E2E run-context test fixture preparation.',
+            $admin,
+            'CANLI MODU AÇ',
+            'TEST-MANUAL-E2E-RUN-CONTEXT-MODE',
+        );
 
         return $settings;
     }

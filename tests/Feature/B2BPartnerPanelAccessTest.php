@@ -47,8 +47,10 @@ use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -58,7 +60,18 @@ use Tests\TestCase;
 
 class B2BPartnerPanelAccessTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
+
+    public function runDatabaseMigrations(): void
+    {
+        $this->beforeRefreshingDatabase();
+        $this->refreshTestDatabase();
+        $this->afterRefreshingDatabase();
+
+        $this->beforeApplicationDestroyed(function (): void {
+            RefreshDatabaseState::$migrated = false;
+        });
+    }
 
     public function test_super_admin_can_see_all_partners(): void
     {
@@ -5408,7 +5421,6 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'part_request_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
-
         $this->actingAs($admin)
             ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
                 'type' => 'technical_support',
@@ -8855,22 +8867,29 @@ class B2BPartnerPanelAccessTest extends TestCase
             'message_types' => [
                 'appointment_approved_customer' => [
                     'enabled' => true,
+                    'real_send_allowed' => true,
                     'channel_policy' => 'whatsapp_only',
                     'whatsapp_provider' => 'evo_whatsapp',
                 ],
                 'appointment_approved_technician' => [
                     'enabled' => true,
+                    'real_send_allowed' => true,
                     'channel_policy' => 'whatsapp_only',
                     'whatsapp_provider' => 'evo_whatsapp',
                 ],
             ],
         ]);
+        $prepared = $this->activateManualE2EFixture();
+        $activeRunId = (string) $prepared['manual_e2e_active_run_id'];
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_LOCKSMITH,
             'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
             'display_name' => 'Appointment Locksmith',
         ]);
-        $technician = $this->technician(['name' => 'Appointment Portal Usta']);
+        $technician = $this->technician([
+            'name' => 'Appointment Portal Usta',
+            'phone' => '0546 764 74 28',
+        ]);
         B2BPartnerTechnician::query()->create([
             'partner_id' => $partner->id,
             'technical_service_technician_id' => $technician->id,
@@ -8878,6 +8897,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'active' => true,
         ]);
         $job = $this->serviceRequestForTechnician($technician, 'MRN-APPOINTMENT-PROPOSE', [
+            'customer_phone' => '05372081633',
             'workflow_status' => 'Usta Onayı Bekleyen',
             'status' => 'Atandı',
         ]);
@@ -8961,7 +8981,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('message_payloads.blocked', 0)
             ->assertJsonPath('message_payloads.dispatches.0.message_type', 'appointment_approved_customer')
             ->assertJsonPath('message_payloads.dispatches.0.status', TechnicalServiceMessageDispatch::STATUS_QUEUED)
-            ->assertJsonPath('message_payloads.dispatches.0.test_redirect_applied', true)
+            ->assertJsonPath('message_payloads.dispatches.0.test_redirect_applied', false)
             ->assertJsonPath('message_payloads.dispatches.1.message_type', 'appointment_approved_technician')
             ->assertJsonPath('message_payloads.dispatches.1.status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
 
@@ -8983,16 +9003,16 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'message_type' => 'appointment_approved_customer',
             'target_type' => 'customer',
-            'test_mode' => true,
-            'test_redirect_applied' => true,
+            'test_mode' => false,
+            'test_redirect_applied' => false,
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
         ]);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
             'message_type' => 'appointment_approved_technician',
             'target_type' => 'technician',
-            'test_mode' => true,
-            'test_redirect_applied' => true,
+            'test_mode' => false,
+            'test_redirect_applied' => false,
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
         ]);
         $customerDispatch = TechnicalServiceMessageDispatch::query()
@@ -9004,9 +9024,13 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('message_type', 'appointment_approved_technician')
             ->firstOrFail();
 
-        $this->assertSame('905467647428', $customerDispatch->target_phone);
+        $this->assertSame('905372081633', $customerDispatch->target_phone);
         $this->assertNotEmpty($customerDispatch->original_phone);
-        $this->assertSame('9054***428', $customerDispatch->effective_target_phone_mask);
+        $this->assertSame('9053***633', $customerDispatch->effective_target_phone_mask);
+        $this->assertTrue((bool) data_get($customerDispatch->metadata, 'manual_e2e'));
+        $this->assertTrue((bool) data_get($technicianDispatch->metadata, 'manual_e2e'));
+        $this->assertSame($activeRunId, data_get($customerDispatch->metadata, 'manual_e2e_run_id'));
+        $this->assertSame($activeRunId, data_get($technicianDispatch->metadata, 'manual_e2e_run_id'));
         $this->assertStringContainsString('09:00 - 13:00 arası', (string) ($customerDispatch->request_payload['body'] ?? ''));
         $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 600,00 TL.', (string) ($customerDispatch->request_payload['body'] ?? ''));
         $this->assertStringContainsString('10:00 - 11:00', (string) ($technicianDispatch->request_payload['body'] ?? ''));
@@ -9903,6 +9927,8 @@ class B2BPartnerPanelAccessTest extends TestCase
     private function activateManualE2EFixture(): array
     {
         Http::preventStrayRequests();
+        $admin = $this->userWithRole('admin', true);
+        $this->actingAs($admin);
         $settings = app(TechnicalServiceMessagingSettingsService::class);
         $opsWhatsappEnabled = (bool) $settings->payload()['global']['ops_whatsapp_enabled'];
         $settings->freezeManualE2E();
@@ -9922,13 +9948,35 @@ class B2BPartnerPanelAccessTest extends TestCase
             ],
             'nac_sms' => [
                 'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
                 'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
+            ],
+            'message_types' => [
+                'assignment_offer_technician' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
             ],
             'ops_whatsapp_enabled' => $opsWhatsappEnabled,
             'ops_whatsapp_phone' => '905467647428',
         ]);
+        $this->enableExecutionModeProviders();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
         $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            'B2B Manual E2E test fixture preparation.',
+            $admin,
+            'CANLI MODU AÇ',
+            'TEST-B2B-MANUAL-E2E-MODE',
+        );
         $payload = $settings->prepareManualE2E();
         $global = $payload['global'];
         $lifecycleLayout = PageConfig::query()
@@ -9946,6 +9994,30 @@ class B2BPartnerPanelAccessTest extends TestCase
         ));
 
         return $global;
+    }
+
+    private function enableExecutionModeProviders(): void
+    {
+        foreach ([
+            [
+                'page_code' => TechnicalServiceMessagingSettingsService::PAGE_CODE,
+                'root' => TechnicalServiceMessagingSettingsService::ROOT_KEY,
+            ],
+            [
+                'page_code' => TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE,
+                'root' => TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY,
+            ],
+        ] as $target) {
+            $page = PageConfig::query()->where('page_code', $target['page_code'])->firstOrFail();
+            $layout = (array) $page->layout_json;
+            Arr::set($layout, $target['root'].'.providers.evo_whatsapp', [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'test_send_allowed' => true,
+                'notes' => 'Synthetic execution-mode fixture provider.',
+            ]);
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
     }
 
     /**

@@ -17,6 +17,7 @@ use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
@@ -226,6 +227,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
 
     public function test_paid_reconcile_sends_notification_when_enabled_and_duplicate_sync_does_not_resend(): void
     {
+        Http::preventStrayRequests();
         Mail::fake();
         $this->enablePaymentNotification('payment-audit@example.test');
         $this->configureReadySmtpProfile();
@@ -311,13 +313,21 @@ class PaymentProviderReconciliationContractTest extends TestCase
             'channel' => 'whatsapp',
             'recipient_role' => 'ops',
             'provider_key' => 'evo_whatsapp',
-            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+            'last_error_code' => 'outbound_execution_mode_local',
         ]);
         $this->assertDatabaseMissing('technical_service_message_dispatches', [
             'technical_service_request_id' => $request->id,
             'message_type' => 'payment_received_ops',
             'channel' => 'sms',
         ]);
+        $opsDispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_received_ops')
+            ->firstOrFail();
+        $this->assertFalse((bool) data_get($opsDispatch->metadata, 'provider_send_attempted'));
+        $this->assertFalse((bool) data_get($opsDispatch->metadata, 'external_provider_call'));
+        Http::assertNothingSent();
 
         $opsBody = (string) TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)

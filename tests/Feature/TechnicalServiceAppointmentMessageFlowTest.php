@@ -21,6 +21,7 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -32,7 +33,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_appointment_message_flow_ops_appointment_approved_creates_customer_and_technician_dispatches_without_provider_call(): void
     {
         Http::fake();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             'appointment_approved_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
@@ -61,7 +62,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'provider_key' => 'evo_whatsapp',
             'recipient_role' => 'customer',
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
-            'test_redirect_applied' => true,
+            'test_redirect_applied' => false,
         ]);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $request->id,
@@ -70,7 +71,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'provider_key' => 'evo_whatsapp',
             'recipient_role' => 'technician',
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
-            'test_redirect_applied' => true,
+            'test_redirect_applied' => false,
         ]);
 
         $customer = TechnicalServiceMessageDispatch::query()
@@ -82,9 +83,11 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->where('message_type', 'appointment_approved_technician')
             ->firstOrFail();
 
-        $this->assertSame('9054***428', $customer->effective_target_phone_mask);
-        $this->assertSame('905467647428', $customer->target_phone);
+        $this->assertSame('9055***877', $customer->effective_target_phone_mask);
+        $this->assertSame('905559998877', $customer->target_phone);
         $this->assertSame('905559998877', $customer->original_phone);
+        $this->assertTrue((bool) data_get($customer->metadata, 'manual_e2e'));
+        $this->assertTrue((bool) data_get($technician->metadata, 'manual_e2e'));
         $this->assertStringContainsString('13:00 - 19:00 arası', (string) ($customer->request_payload['body'] ?? ''));
         $this->assertStringNotContainsString('14:00 - 16:00', (string) ($customer->request_payload['body'] ?? ''));
         $this->assertStringContainsString('14:00 - 16:00', (string) ($technician->request_payload['body'] ?? ''));
@@ -99,7 +102,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_channel_policy_approval_whatsapp_and_sms_creates_two_dispatches_and_fallback_creates_primary_only(): void
     {
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest();
@@ -119,8 +122,11 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->sort()
             ->values()
             ->all());
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->delete());
 
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_primary_sms_fallback'],
         ]);
         $fallbackRequest = $this->technicalServiceRequest(['mrn' => 'MRN-FALLBACK-'.Str::upper(Str::random(5))]);
@@ -150,7 +156,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_target_parity_controlled_smoke_plans_customer_and_technician_whatsapp_sms_to_role_targets(): void
     {
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
             'appointment_approved_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
@@ -220,7 +226,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_rel4e_smoke_customer_body_contains_payment_note_and_technician_body_contains_earning_amounts(): void
     {
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
             'appointment_approved_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
@@ -576,7 +582,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest([
@@ -637,7 +643,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest([
@@ -691,7 +697,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest([
@@ -806,7 +812,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'part_fee_payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest([
@@ -891,15 +897,11 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_payment_received_ops_trusted_paid_queues_ops_whatsapp_only(): void
     {
         Http::fake();
-        app(TechnicalServiceMessagingSettingsService::class)->update([
-            'messaging_enabled' => true,
-            'test_mode_enabled' => true,
-            'shared_test_phone' => '0546 764 74 28',
+        $this->configureGuardedLiveMessaging([
+            'payment_received_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+        ], [
             'ops_whatsapp_enabled' => true,
             'ops_whatsapp_phone' => '0546 764 74 28',
-            'message_types' => [
-                'payment_received_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
-            ],
         ]);
         $session = $this->mountSession('REL4E13B-PAID');
         $request = $this->technicalServiceRequest([
@@ -956,7 +958,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
     public function test_customer_approval_blocks_provider_dispatch_without_public_url(): void
     {
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'customer_approval_request' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         app(TechnicalServiceMessagingSettingsService::class)->update([
@@ -1058,7 +1060,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_final_control_activation_warranty_customer_message_is_single_queue_message(): void
     {
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'activation_warranty_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest([
@@ -1185,7 +1187,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_template_source_dispatch_uses_active_db_template_over_default_and_matches_preview(): void
     {
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
         TechnicalServiceMessageTemplate::query()->create([
@@ -1245,7 +1247,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
     public function test_duplicate_guard_reapproval_duplicate_blocked_for_same_appointment_event(): void
     {
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
         $actor = $this->admin();
@@ -1271,7 +1273,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
     public function test_appointment_updated_message_flow_meaningful_change_dispatches_update_and_repeat_is_duplicate(): void
     {
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_updated_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
         $actor = $this->admin();
@@ -1303,7 +1305,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::fake();
         config()->set('services.partner_portal.public_url', 'https://technician-portal.example.test');
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'appointment_updated_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
             'appointment_updated_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
@@ -1385,10 +1387,9 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        $this->configureMessaging([
+        $this->configureGuardedLiveMessaging([
             'new_request_created_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
-        ]);
-        app(TechnicalServiceMessagingSettingsService::class)->update([
+        ], [
             'ops_whatsapp_enabled' => true,
             'ops_whatsapp_phone' => '905467647428',
         ]);
@@ -1557,6 +1558,76 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     /**
      * @param  array<string, array<string, mixed>>  $messageTypes
      */
+    private function configureGuardedLiveMessaging(array $messageTypes, array $overrides = []): void
+    {
+        Http::preventStrayRequests();
+        $admin = $this->admin();
+        $this->actingAs($admin);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        if (($settings->executionModePayload()['mode'] ?? null) !== TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL) {
+            $settings->transitionExecutionMode(
+                TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
+                'Appointment fixture settings are being refreshed safely.',
+                $admin,
+            );
+        }
+
+        $messageTypes = array_map(
+            fn (array $messageType): array => [
+                'real_send_allowed' => true,
+                ...$messageType,
+            ],
+            $messageTypes,
+        );
+        $this->configureMessaging($messageTypes);
+
+        $settings->update([
+            'test_mode_enabled' => false,
+            'manual_e2e_allowlisted_phones' => [
+                '905372081633',
+                '905467647428',
+                '905559998877',
+                '905551112233',
+            ],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.10.10.10:8000',
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'appointment-live-fixture',
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
+                'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
+            ],
+            ...$overrides,
+        ]);
+        $this->enableExecutionModeProviders();
+        $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
+        $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            'Appointment queue fixture guarded live mode.',
+            $admin,
+            'CANLI MODU AÇ',
+            'TEST-APPOINTMENT-LIVE-MODE',
+        );
+        $settings->prepareManualE2E();
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $messageTypes
+     */
     private function configureMessaging(array $messageTypes): void
     {
         app(TechnicalServiceMessagingSettingsService::class)->update([
@@ -1578,6 +1649,8 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     private function activateManualE2EFixture(array $overrides = []): array
     {
         Http::preventStrayRequests();
+        $admin = $this->admin();
+        $this->actingAs($admin);
         $settings = app(TechnicalServiceMessagingSettingsService::class);
         $opsWhatsappEnabled = (bool) $settings->payload()['global']['ops_whatsapp_enabled'];
         $settings->freezeManualE2E();
@@ -1597,14 +1670,36 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ],
             'nac_sms' => [
                 'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
                 'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
+            ],
+            'message_types' => [
+                'assignment_offer_technician' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
             ],
             'ops_whatsapp_enabled' => $opsWhatsappEnabled,
             'ops_whatsapp_phone' => '905467647428',
             ...$overrides,
         ]);
+        $this->enableExecutionModeProviders();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
         $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
+        $settings->transitionExecutionMode(
+            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
+            'Appointment Manual E2E test fixture preparation.',
+            $admin,
+            'CANLI MODU AÇ',
+            'TEST-APPOINTMENT-MANUAL-E2E-MODE',
+        );
         $payload = $settings->prepareManualE2E();
         $global = $payload['global'];
         $lifecycleLayout = PageConfig::query()
@@ -1622,6 +1717,30 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ));
 
         return $global;
+    }
+
+    private function enableExecutionModeProviders(): void
+    {
+        foreach ([
+            [
+                'page_code' => TechnicalServiceMessagingSettingsService::PAGE_CODE,
+                'root' => TechnicalServiceMessagingSettingsService::ROOT_KEY,
+            ],
+            [
+                'page_code' => TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE,
+                'root' => TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY,
+            ],
+        ] as $target) {
+            $page = PageConfig::query()->where('page_code', $target['page_code'])->firstOrFail();
+            $layout = (array) $page->layout_json;
+            Arr::set($layout, $target['root'].'.providers.evo_whatsapp', [
+                'enabled' => true,
+                'real_send_allowed' => true,
+                'test_send_allowed' => true,
+                'notes' => 'Synthetic execution-mode fixture provider.',
+            ]);
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
     }
 
     private function admin(): User
