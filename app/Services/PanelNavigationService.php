@@ -35,8 +35,7 @@ class PanelNavigationService
 
     public function __construct(
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -46,6 +45,7 @@ class PanelNavigationService
         if (! $user) {
             return [
                 'groups' => [],
+                'resources' => [],
                 'currentPage' => null,
                 'role' => null,
                 'meta' => $this->meta(),
@@ -59,6 +59,7 @@ class PanelNavigationService
 
         return [
             'groups' => $this->navigationGroups($pages),
+            'resources' => $this->access->resourceCodesFor($user)->sort()->values()->all(),
             'currentPage' => $currentPage ? $this->pagePayload($currentPage, $user) : null,
             'role' => $this->rolePayload($user->role),
             'meta' => $this->meta(),
@@ -217,7 +218,7 @@ class PanelNavigationService
                         'pageOrder' => $item->sort_order,
                         'item' => [
                             'id' => $page->id,
-                            'title' => $item->label ?: $page->name,
+                            'title' => $this->navigationItemTitle($page->route, $item->label ?: $page->name),
                             'href' => $page->route,
                             'icon' => $item->icon ?: $page->icon,
                         ],
@@ -242,6 +243,13 @@ class PanelNavigationService
             })
             ->sortBy('order')
             ->values();
+    }
+
+    private function navigationItemTitle(string $route, string $title): string
+    {
+        return $this->normalizePath($route) === '/technical-service/dashboard'
+            ? 'Operasyon Dashboard — Pilot'
+            : $title;
     }
 
     /**

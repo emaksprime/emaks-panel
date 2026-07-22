@@ -66,6 +66,12 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             'resource_code' => 'technical_service_manage',
             'can_view' => true,
         ]);
+        $managementViewer = User::factory()->create(['role_code' => 'ops']);
+        UserAccess::query()->create([
+            'user_id' => $managementViewer->id,
+            'resource_code' => 'admin_panel',
+            'can_view' => true,
+        ]);
 
         $this->getJson('/api/technical-service/execution-control')
             ->assertUnauthorized();
@@ -78,6 +84,18 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
                 'reason' => 'Yetkisiz mode degisiklik denemesi.',
+                'expected_revision' => 1,
+            ])
+            ->assertForbidden();
+        $this->actingAs($managementViewer)
+            ->getJson('/api/technical-service/execution-control')
+            ->assertOk()
+            ->assertJsonPath('execution_control.mode', 'local')
+            ->assertJsonPath('execution_control.can_transition', false);
+        $this->actingAs($managementViewer)
+            ->postJson('/api/technical-service/execution-control', [
+                'mode' => 'local',
+                'reason' => 'Yonetim paneli gorunurlugu mutation yetkisi degildir.',
                 'expected_revision' => 1,
             ])
             ->assertForbidden();
@@ -1028,17 +1046,18 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
 
     public function test_execution_mode_ui_exposes_read_only_environment_readiness_and_non_optimistic_controls(): void
     {
+        $managementSource = File::get(resource_path('js/pages/panel/admin/AdminIndex.jsx'));
         $operationsSource = File::get(resource_path('js/pages/panel/technical-service.tsx'));
-        $adminSource = File::get(resource_path('js/pages/panel/technical-service-admin.tsx'));
-        $postBody = $this->executionControlPostBody($operationsSource);
+        $messagingAdminSource = File::get(resource_path('js/pages/panel/technical-service-admin.tsx'));
+        $postBody = $this->executionControlPostBody($managementSource);
 
-        $this->assertStringContainsString('Sistem Çalışma Modu', $operationsSource);
-        $this->assertStringContainsString('Canlıya Geç', $operationsSource);
-        $this->assertStringContainsString('Lokale Al', $operationsSource);
-        $this->assertStringContainsString('CANLI MODU AÇ', $operationsSource);
-        $this->assertStringContainsString('/api/technical-service/execution-control', $operationsSource);
-        $this->assertStringContainsString('executionControlExpectedRevision', $operationsSource);
-        $this->assertStringContainsString('setExecutionControlExpectedRevision(current.revision)', $operationsSource);
+        $this->assertStringContainsString('Sistem Çalışma Modu', $managementSource);
+        $this->assertStringContainsString('Canlıya Geç', $managementSource);
+        $this->assertStringContainsString('Lokale Al', $managementSource);
+        $this->assertStringContainsString('CANLI MODU AÇ', $managementSource);
+        $this->assertStringContainsString('/api/technical-service/execution-control', $managementSource);
+        $this->assertStringContainsString('executionControlExpectedRevision', $managementSource);
+        $this->assertStringContainsString('setExecutionControlExpectedRevision(current.revision)', $managementSource);
         $this->assertStringContainsString('expected_revision: executionControlExpectedRevision', $postBody);
         $this->assertStringContainsString('response.status === 409', $postBody);
         $this->assertStringContainsString('await loadExecutionControl(false)', $postBody);
@@ -1046,15 +1065,30 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $this->assertStringNotContainsString('runtime_environment:', $postBody);
         $this->assertStringNotContainsString('retry', $postBody);
 
-        $this->assertStringContainsString('Global Sistem Çalışma Modu', $adminSource);
-        $this->assertStringContainsString('Operasyon Merkezi’nde yönetilir.', $adminSource);
-        $this->assertStringContainsString('href="/technical-service"', $adminSource);
-        $this->assertStringNotContainsString('Lokalde Çalıştır', $adminSource);
-        $this->assertStringNotContainsString('Canlıda Çalıştır', $adminSource);
-        $this->assertStringNotContainsString('transitionExecutionControl', $adminSource);
+        $this->assertStringContainsString('data-testid="global-execution-control-readonly"', $operationsSource);
+        $this->assertStringContainsString('Yönetim Paneli’nde yönetilir', $operationsSource);
+        $this->assertStringNotContainsString('transitionExecutionControl', $operationsSource);
+        $this->assertStringNotContainsString('data-testid="global-execution-control-action"', $operationsSource);
+
+        $this->assertStringContainsString('Global Sistem Çalışma Modu', $messagingAdminSource);
+        $this->assertStringContainsString('Yönetim Paneli’nde yönetilir.', $messagingAdminSource);
+        $this->assertStringContainsString('Salt okunur', $messagingAdminSource);
+        $this->assertStringNotContainsString('Lokalde Çalıştır', $messagingAdminSource);
+        $this->assertStringNotContainsString('Canlıda Çalıştır', $messagingAdminSource);
+        $this->assertStringNotContainsString('transitionExecutionControl', $messagingAdminSource);
         $this->assertSame(
             1,
-            substr_count($operationsSource.$adminSource, 'data-testid="global-execution-control-confirm"'),
+            substr_count(
+                $managementSource.$operationsSource.$messagingAdminSource,
+                'data-testid="global-execution-control-confirm"',
+            ),
+        );
+        $this->assertSame(
+            1,
+            substr_count(
+                $managementSource.$operationsSource.$messagingAdminSource,
+                'data-testid="global-execution-control-action"',
+            ),
         );
     }
 
@@ -1244,7 +1278,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
     private function executionControlPostBody(string $source): string
     {
         $start = strpos($source, 'const transitionExecutionControl');
-        $end = strpos($source, 'const loadRequests', $start === false ? 0 : $start);
+        $end = strpos($source, 'const counts =', $start === false ? 0 : $start);
         $this->assertNotFalse($start);
         $this->assertNotFalse($end);
 

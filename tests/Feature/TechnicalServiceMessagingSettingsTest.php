@@ -668,8 +668,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Güvenli Run Hazırla', $source);
         $this->assertStringContainsString('Manual E2E’yi Dondur', $source);
         $this->assertStringContainsString('Global Sistem Çalışma Modu', $source);
-        $this->assertStringContainsString('Operasyon Merkezi’nde yönetilir.', $source);
-        $this->assertStringContainsString('href="/technical-service"', $source);
+        $this->assertStringContainsString('Yönetim Paneli’nde yönetilir.', $source);
+        $this->assertStringContainsString('Salt okunur', $source);
         $this->assertStringNotContainsString('Lokalde Çalıştır', $source);
         $this->assertStringNotContainsString('Canlıda Çalıştır', $source);
         $this->assertStringNotContainsString("['real_send_enabled', 'Gerçek gönderim aktif']", $source);

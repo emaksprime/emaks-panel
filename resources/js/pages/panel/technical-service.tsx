@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react'
-import { Power, Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
+import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
@@ -1098,14 +1098,7 @@ export function TechnicalServiceOperationCenter() {
   const [filters, setFilters] = useState<FilterState>(() => getTechnicalServiceInitialFilters())
   const [executionControl, setExecutionControl] = useState<ExternalExecutionControl | null>(null)
   const [executionControlLoading, setExecutionControlLoading] = useState(true)
-  const [executionControlSaving, setExecutionControlSaving] = useState(false)
   const [executionControlMessage, setExecutionControlMessage] = useState<string | null>(null)
-  const [executionControlDialogOpen, setExecutionControlDialogOpen] = useState(false)
-  const [executionControlTarget, setExecutionControlTarget] = useState<'local' | 'live'>('live')
-  const [executionControlReason, setExecutionControlReason] = useState('')
-  const [executionControlConfirmation, setExecutionControlConfirmation] = useState('')
-  const [executionControlExpectedRevision, setExecutionControlExpectedRevision] = useState<number | null>(null)
-  const executionControlBusyRef = useRef(false)
   const [readRequestIds, setReadRequestIds] = useState<Set<string>>(() => readStoredRequestIds())
   const [selectedPlanDayKey, setSelectedPlanDayKey] = useState<string | null>(null)
   const [planSummaryFilter, setPlanSummaryFilter] = useState<PlanSummaryFilter | null>(null)
@@ -1290,85 +1283,6 @@ export function TechnicalServiceOperationCenter() {
       setExecutionControlLoading(false)
     }
   }, [])
-
-  const resetExecutionControlDialog = useCallback(() => {
-    setExecutionControlDialogOpen(false)
-    setExecutionControlExpectedRevision(null)
-    setExecutionControlReason('')
-    setExecutionControlConfirmation('')
-  }, [])
-
-  const openExecutionControlDialog = async () => {
-    if (executionControlBusyRef.current) {
-      return
-    }
-
-    const target = executionControl?.mode === 'live' ? 'local' : 'live'
-    setExecutionControlTarget(target)
-    setExecutionControlReason('')
-    setExecutionControlConfirmation('')
-    setExecutionControlExpectedRevision(null)
-    setExecutionControlDialogOpen(true)
-    const current = await loadExecutionControl()
-
-    if (current !== null) {
-      setExecutionControlTarget(current.mode === 'live' ? 'local' : 'live')
-      setExecutionControlExpectedRevision(current.revision)
-    }
-  }
-
-  const transitionExecutionControl = async () => {
-    if (executionControlBusyRef.current || executionControlExpectedRevision === null) {
-      return
-    }
-
-    executionControlBusyRef.current = true
-    setExecutionControlSaving(true)
-    setExecutionControlMessage(null)
-
-    try {
-      const token = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? ''
-      const response = await fetch('/api/technical-service/execution-control', {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          ...(token ? { 'X-CSRF-TOKEN': token } : {}),
-        },
-        credentials: 'same-origin',
-        body: JSON.stringify({
-          mode: executionControlTarget,
-          reason: executionControlReason.trim(),
-          confirmation: executionControlTarget === 'live' ? executionControlConfirmation : undefined,
-          expected_revision: executionControlExpectedRevision,
-        }),
-      })
-
-      if (response.status === 409) {
-        await loadExecutionControl(false)
-        resetExecutionControlDialog()
-        setExecutionControlMessage('Sistem çalışma modu başka bir yönetici tarafından değiştirildi. Güncel durum yüklendi; kararınızı yeniden verin.')
-
-        return
-      }
-
-      if (!response.ok) {
-        setExecutionControlMessage(await responseErrorMessage(response, 'Sistem çalışma modu değiştirilemedi.'))
-
-        return
-      }
-
-      const payload = await response.json() as { execution_control: ExternalExecutionControl, message?: string }
-      setExecutionControl(payload.execution_control)
-      resetExecutionControlDialog()
-      setExecutionControlMessage(payload.message ?? 'Sistem çalışma modu güncellendi.')
-    } catch {
-      setExecutionControlMessage('Sistem çalışma modu değiştirilemedi; otomatik tekrar yapılmadı.')
-    } finally {
-      executionControlBusyRef.current = false
-      setExecutionControlSaving(false)
-    }
-  }
 
   const loadRequests = useCallback(async (options: { silent?: boolean, preserveSelection?: boolean } = {}) => {
     if (!options.silent) {
@@ -4630,13 +4544,13 @@ export function TechnicalServiceOperationCenter() {
               </div>
 
               <div
-                data-testid="global-execution-control"
-                className="flex w-full flex-col gap-3 border-l-4 border-[#06143A] bg-[#F8FAFD] px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                data-testid="global-execution-control-readonly"
+                className="w-full border-l-4 border-[#06143A] bg-[#F8FAFD] px-4 py-3"
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <ShieldCheck className="h-4 w-4 text-[#06143A]" />
-                    <p className="text-sm font-semibold text-slate-950">Sistem Çalışma Modu</p>
+                    <p className="text-sm font-semibold text-slate-950">Sistem: {executionControlLoading ? 'YÜKLENİYOR' : (executionControl?.state ?? 'local').toLocaleUpperCase('tr-TR')}</p>
                     <span
                       className={[
                         'inline-flex min-w-16 items-center justify-center rounded-full border px-2.5 py-1 text-xs font-semibold',
@@ -4645,7 +4559,7 @@ export function TechnicalServiceOperationCenter() {
                           : 'border-slate-300 bg-white text-slate-700',
                       ].join(' ')}
                     >
-                      {executionControlLoading ? 'YÜKLENİYOR' : (executionControl?.state ?? 'local').toLocaleUpperCase('tr-TR')}
+                      Salt okunur
                     </span>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-slate-600">
@@ -4654,6 +4568,8 @@ export function TechnicalServiceOperationCenter() {
                     Epoch {executionControl?.epoch ?? '—'} / Rev {executionControl?.revision ?? '—'}
                     {' · '}
                     {executionControl?.readiness.required_ready_count ?? 0}/{executionControl?.readiness.required_count ?? 0} required hazır
+                    {' · '}
+                    Yönetim Paneli’nde yönetilir
                   </p>
                   {executionControlMessage ? (
                     <p className="mt-1 flex items-start gap-1.5 text-xs font-medium text-amber-800" role="status">
@@ -4662,21 +4578,6 @@ export function TechnicalServiceOperationCenter() {
                     </p>
                   ) : null}
                 </div>
-
-                {executionControl?.can_transition ? (
-                  <Button
-                    type="button"
-                    variant={executionControl.mode === 'live' ? 'outline' : 'default'}
-                    className="h-10 shrink-0 rounded-md px-4 font-semibold"
-                    disabled={executionControlLoading || executionControlSaving || ['activating', 'freezing', 'blocked'].includes(executionControl.state)}
-                    onClick={() => {
-                      void openExecutionControlDialog()
-                    }}
-                  >
-                    <Power className="mr-2 h-4 w-4" />
-                    {executionControl.mode === 'live' ? 'Lokale Al' : 'Canlıya Geç'}
-                  </Button>
-                ) : null}
               </div>
 
               <div className="flex flex-wrap items-center gap-2 xl:justify-end">
@@ -4837,120 +4738,6 @@ export function TechnicalServiceOperationCenter() {
           </div>
         </div>
       </section>
-
-      <Dialog
-        open={executionControlDialogOpen}
-        onOpenChange={(open) => {
-          if (executionControlSaving) {
-            return
-          }
-
-          if (open) {
-            setExecutionControlDialogOpen(true)
-          } else {
-            resetExecutionControlDialog()
-          }
-        }}
-      >
-        <DialogContent data-testid="global-execution-control-dialog" className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{executionControlTarget === 'live' ? 'Sistemi canlı etkilere hazırla' : 'Sistemi Lokal moda al'}</DialogTitle>
-            <DialogDescription>
-              Bu karar bütün dış etki capability’lerinin global otoritesini değiştirir. Provider profilleri, credential veya APP_ENV bu işlemle değiştirilmez.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid gap-4">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-y border-slate-200 py-3 text-sm">
-              <div>
-                <dt className="text-xs font-medium text-slate-500">Runtime</dt>
-                <dd className="mt-1 font-semibold text-slate-900">{executionControl?.runtime_environment_label ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium text-slate-500">Epoch / revision</dt>
-                <dd className="mt-1 font-semibold text-slate-900">{executionControl?.epoch ?? '—'} / {executionControlExpectedRevision ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium text-slate-500">Required readiness</dt>
-                <dd className="mt-1 font-semibold text-slate-900">
-                  {executionControl?.readiness.required_ready_count ?? 0}/{executionControl?.readiness.required_count ?? 0}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium text-slate-500">Exact blocker</dt>
-                <dd className="mt-1 font-semibold text-slate-900">{executionControl?.readiness.blocker_count ?? 0}</dd>
-              </div>
-            </dl>
-
-            {executionControlTarget === 'live' && (executionControl?.readiness.blockers.length ?? 0) > 0 ? (
-              <div className="border-l-4 border-amber-600 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                <p className="font-semibold">Canlı aktivasyon fail-closed durumda</p>
-                <ul className="mt-2 space-y-1.5">
-                  {executionControl?.readiness.blockers.map((blocker) => (
-                    <li key={blocker.code}>
-                      <span className="font-mono text-xs">{blocker.code}</span>: {blocker.message}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            <p className="border-l-4 border-slate-400 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
-              {executionControlTarget === 'live'
-                ? 'Canlı geçiş yalnız bütün REQUIRED capability’ler adapted ve ready ise atomik tamamlanır. Non-production ortamında broad provider trafiği yine kapalıdır.'
-                : 'Lokal geçiş yeni enqueue, claim ve transport yetkisini keser; eski veya belirsiz işleri yeniden göndermez.'}
-            </p>
-
-            <label className="grid gap-1.5 text-sm font-semibold text-slate-800">
-              Değişiklik gerekçesi
-              <textarea
-                value={executionControlReason}
-                onChange={(event) => setExecutionControlReason(event.target.value)}
-                rows={3}
-                maxLength={500}
-                disabled={executionControlSaving}
-                placeholder="En az 10 karakterlik operasyon gerekçesi"
-                className="min-h-24 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:opacity-60"
-              />
-            </label>
-
-            {executionControlTarget === 'live' ? (
-              <label className="grid gap-1.5 text-sm font-semibold text-slate-800">
-                Onay metni
-                <Input
-                  value={executionControlConfirmation}
-                  onChange={(event) => setExecutionControlConfirmation(event.target.value)}
-                  disabled={executionControlSaving}
-                  autoComplete="off"
-                  placeholder="CANLI MODU AÇ"
-                />
-              </label>
-            ) : null}
-          </div>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" disabled={executionControlSaving} onClick={resetExecutionControlDialog}>
-              Vazgeç
-            </Button>
-            <Button
-              type="button"
-              data-testid="global-execution-control-confirm"
-              disabled={
-                executionControlSaving
-                || executionControlExpectedRevision === null
-                || executionControlReason.trim().length < 10
-                || (executionControlTarget === 'live'
-                  && (!executionControl?.readiness.eligible || executionControlConfirmation !== 'CANLI MODU AÇ'))
-              }
-              onClick={() => {
-                void transitionExecutionControl()
-              }}
-            >
-              {executionControlSaving ? 'Uygulanıyor' : executionControlTarget === 'live' ? 'Canlıya geç' : 'Lokale al'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <TechnicalServicePageLinks />
 

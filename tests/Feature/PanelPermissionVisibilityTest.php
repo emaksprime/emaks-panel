@@ -255,6 +255,49 @@ class PanelPermissionVisibilityTest extends TestCase
         }
     }
 
+    public function test_technical_service_navigation_uses_exact_routes_and_resource_permissions(): void
+    {
+        $baseUser = $this->createExactUser(['technical_service']);
+        $pilotUser = $this->createExactUser(['technical_service_dashboard']);
+        $manageUser = $this->createExactUser(['technical_service_manage']);
+
+        $basePayload = $this->actingAs($baseUser)->getJson('/api/navigation')->assertOk()->json();
+        $pilotPayload = $this->actingAs($pilotUser)->getJson('/api/navigation')->assertOk()->json();
+        $managePayload = $this->actingAs($manageUser)->getJson('/api/navigation')->assertOk()->json();
+
+        $baseHrefs = collect($basePayload['groups'])
+            ->flatMap(fn (array $group) => $group['items'] ?? [])
+            ->pluck('href');
+        $pilotItems = collect($pilotPayload['groups'])
+            ->flatMap(fn (array $group) => $group['items'] ?? []);
+
+        $this->assertContains('technical_service', $basePayload['resources']);
+        $this->assertContains('/technical-service', $baseHrefs);
+        $this->assertNotContains('/technical-service/dashboard', $baseHrefs);
+        $this->assertContains('technical_service_dashboard', $pilotPayload['resources']);
+        $this->assertSame(
+            'Operasyon Dashboard — Pilot',
+            $pilotItems->firstWhere('href', '/technical-service/dashboard')['title'] ?? null,
+        );
+        $this->assertContains('technical_service_manage', $managePayload['resources']);
+        $this->actingAs($baseUser)->get('/technical-service/qr-products')->assertForbidden();
+        $this->actingAs($manageUser)->get('/technical-service/qr-products')->assertOk();
+
+        $source = file_get_contents(resource_path('js/components/technical-service/TechnicalServicePageLinks.tsx')) ?: '';
+
+        $this->assertStringContainsString("href: '/technical-service'", $source);
+        $this->assertStringContainsString("href: '/technical-service/dashboard'", $source);
+        $this->assertStringContainsString("resourceCode: 'technical_service_manage'", $source);
+        $this->assertStringContainsString('Operasyon Dashboard — Pilot', $source);
+        $this->assertStringContainsString('Geliştiriliyor', $source);
+        $this->assertStringContainsString('return currentPath === target', $source);
+        $this->assertStringNotContainsString('hrefCandidates', $source);
+        $this->assertStringNotContainsString('visibleWhen', $source);
+        $this->assertStringNotContainsString('activeWhen', $source);
+        $this->assertSame(1, substr_count($source, "href: '/technical-service'"));
+        $this->assertSame(1, substr_count($source, "href: '/technical-service/dashboard'"));
+    }
+
     public function test_default_roles_can_see_stock_and_order_pages_unless_user_deny_blocks_them(): void
     {
         $access = app(PanelAccessService::class);

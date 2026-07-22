@@ -5397,16 +5397,15 @@ export default function TechnicalServiceAdmin({
                                             capability adapter’ıdır. Bu ekran
                                             provider profile ve readiness
                                             gösterir; çalışma modu yalnız
-                                            Operasyon Merkezi’nde yönetilir.
+                                            Yönetim Paneli’nde yönetilir.
                                         </p>
                                     </div>
 
-                                    <a
-                                        href="/technical-service"
-                                        className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100"
+                                    <span
+                                        className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700"
                                     >
-                                        Operasyon Merkezi’nde yönet
-                                    </a>
+                                        Salt okunur
+                                    </span>
                                 </div>
 
                                 <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">

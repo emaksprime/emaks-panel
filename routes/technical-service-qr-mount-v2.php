@@ -57,7 +57,7 @@ Route::middleware(['auth', 'panel.session'])
     ->prefix('api/technical-service')
     ->group(function (): void {
         Route::get('execution-control', [ExternalExecutionControlPlaneController::class, 'show'])
-            ->middleware('panel.access:technical_service_manage')
+            ->middleware('panel.access:technical_service,technical_service_manage,technical_service_admin,admin_panel')
             ->name('api.technical-service.execution-control.show');
         Route::post('execution-control', [ExternalExecutionControlPlaneController::class, 'update'])
             ->middleware('panel.access:technical_service_admin')
