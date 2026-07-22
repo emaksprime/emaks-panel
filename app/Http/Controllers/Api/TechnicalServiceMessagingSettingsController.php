@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use Illuminate\Http\JsonResponse;
@@ -126,16 +127,18 @@ class TechnicalServiceMessagingSettingsController extends Controller
         ]);
     }
 
-    public function executionModeReadiness(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    public function executionModeReadiness(ExternalExecutionControlPlaneService $controlPlane): JsonResponse
     {
         return response()->json([
-            'execution_mode' => $settings->executionModePayload(),
+            'execution_mode' => $controlPlane->payload(),
+            'deprecated' => true,
+            'canonical_endpoint' => '/api/technical-service/execution-control',
         ]);
     }
 
     public function updateExecutionMode(
         Request $request,
-        TechnicalServiceMessagingSettingsService $settings,
+        ExternalExecutionControlPlaneService $controlPlane,
     ): JsonResponse {
         $this->assertExecutionModePayloadKeys($request);
         $data = $request->validate([
@@ -164,7 +167,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
         }
 
         return response()->json([
-            'execution_mode' => $settings->transitionExecutionMode(
+            'execution_mode' => $controlPlane->transition(
                 (string) $data['mode'],
                 (string) $data['reason'],
                 $actor,
@@ -173,8 +176,10 @@ class TechnicalServiceMessagingSettingsController extends Controller
                 $correlationId,
             ),
             'message' => $data['mode'] === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE
-                ? 'Mesajlaşma çalışma modu readiness doğrulamasıyla Canlı olarak güncellendi.'
-                : 'Mesajlaşma çalışma modu Lokal olarak donduruldu; dış provider kapıları kapalı.',
+                ? 'Global sistem çalışma modu readiness doğrulamasıyla Canlı olarak güncellendi.'
+                : 'Global sistem çalışma modu Lokal olarak donduruldu; dış etki kapıları kapalı.',
+            'deprecated' => true,
+            'canonical_endpoint' => '/api/technical-service/execution-control',
         ]);
     }
 

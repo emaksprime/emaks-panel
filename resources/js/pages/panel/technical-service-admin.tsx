@@ -450,6 +450,8 @@ type ManualE2EReadiness = {
 
 type MessagingExecutionMode = {
     mode: 'local' | 'live';
+    state: 'local' | 'activating' | 'live' | 'freezing' | 'blocked';
+    epoch: number;
     revision: number;
     runtime_environment: 'local' | 'staging' | 'production' | string;
     runtime_environment_label: string;
@@ -464,6 +466,11 @@ type MessagingExecutionMode = {
     release_sha: string | null;
     readiness: {
         eligible: boolean;
+        blocker_count: number;
+        required_count: number;
+        required_adapted_count: number;
+        required_ready_count: number;
+        registered_count: number;
         target_mode: 'live';
         runtime_environment: string;
         classification: string;
@@ -1252,16 +1259,6 @@ function messagingQueueStatus(settings: MessagingSettings): {
     return { label: 'Aktif run context eksik', ready: false };
 }
 
-function executionModeIsSafelyLocal(settings: MessagingSettings): boolean {
-    return (
-        settings.execution_mode.mode === 'local' &&
-        !settings.execution_mode.real_send_enabled &&
-        settings.execution_mode.queue_paused &&
-        !settings.execution_mode.manual_e2e_enabled &&
-        settings.execution_mode.manual_e2e_phase === 'frozen'
-    );
-}
-
 function csrfToken(): string {
     if (typeof document === 'undefined') {
         return '';
@@ -1380,19 +1377,6 @@ export default function TechnicalServiceAdmin({
         useState<ManualE2EReadiness | null>(null);
     const [manualE2EEnableConfirmationOpen, setManualE2EEnableConfirmationOpen] =
         useState(false);
-    const [executionModeDialogOpen, setExecutionModeDialogOpen] =
-        useState(false);
-    const [executionModeTarget, setExecutionModeTarget] = useState<
-        'local' | 'live'
-    >('local');
-    const [executionModeReason, setExecutionModeReason] = useState('');
-    const [executionModeConfirmation, setExecutionModeConfirmation] =
-        useState('');
-    const [executionModeExpectedRevision, setExecutionModeExpectedRevision] =
-        useState<number | null>(null);
-    const [executionModeChecking, setExecutionModeChecking] = useState(false);
-    const [executionModeSaving, setExecutionModeSaving] = useState(false);
-    const executionModeBusyRef = useRef(false);
     const [templateSaving, setTemplateSaving] = useState(false);
     const [templatePreviewing, setTemplatePreviewing] = useState(false);
     const [templateTestSending, setTemplateTestSending] = useState(false);
@@ -1972,61 +1956,6 @@ export default function TechnicalServiceAdmin({
         }));
     };
 
-    const applyExecutionMode = (
-        nextMode: MessagingExecutionMode,
-        lifecycleReset = false,
-    ) => {
-        setMessaging((current) => ({
-            ...current,
-            execution_mode: nextMode,
-            global: {
-                ...current.global,
-                real_send_enabled: nextMode.real_send_enabled,
-                queue_paused: nextMode.queue_paused,
-                manual_e2e_enabled: nextMode.manual_e2e_enabled,
-                manual_e2e_phase: nextMode.manual_e2e_phase as MessagingSettings['global']['manual_e2e_phase'],
-                manual_e2e_active_run_id: lifecycleReset
-                    ? null
-                    : current.global.manual_e2e_active_run_id,
-                manual_e2e_started_at: lifecycleReset
-                    ? null
-                    : current.global.manual_e2e_started_at,
-                manual_e2e_created_after: lifecycleReset
-                    ? null
-                    : current.global.manual_e2e_created_after,
-                manual_e2e_expires_at: lifecycleReset
-                    ? null
-                    : current.global.manual_e2e_expires_at,
-            },
-            manual_e2e: lifecycleReset
-                ? {
-                      ...current.manual_e2e,
-                      enabled: nextMode.manual_e2e_enabled,
-                      active: false,
-                      phase: nextMode.manual_e2e_phase as MessagingSettings['manual_e2e']['phase'],
-                      status: 'inactive',
-                      active_run_id: null,
-                      started_at: null,
-                      created_after: null,
-                      expires_at: null,
-                      remaining_ttl_seconds: 0,
-                      worker_command_ready: false,
-                      worker_command: null,
-                      open_window: null,
-                      active_claim: null,
-                  }
-                : current.manual_e2e,
-        }));
-
-        if (lifecycleReset) {
-            setMessagingInputs((current) => ({
-                ...current,
-                test_mode_enabled: false,
-            }));
-            setManualE2EReadiness(null);
-        }
-    };
-
     const applyMessageTemplatePayload = (
         payload:
             | { templates?: MessageTemplateRecord[] }
@@ -2467,150 +2396,6 @@ export default function TechnicalServiceAdmin({
             );
         } finally {
             setMessagingSaving(false);
-        }
-    };
-
-    const refreshExecutionModeReadiness = async (): Promise<MessagingExecutionMode | null> => {
-        setExecutionModeChecking(true);
-        setMessagingMessage('');
-
-        try {
-            const response = await fetch(
-                '/api/technical-service/messaging-settings/execution-mode/readiness',
-                {
-                    method: 'GET',
-                    headers: { Accept: 'application/json' },
-                    credentials: 'same-origin',
-                },
-            );
-
-            if (!response.ok) {
-                setMessagingMessage(
-                    await errorMessageFromResponse(
-                        response,
-                        'Çalışma modu readiness bilgisi alınamadı.',
-                    ),
-                );
-
-                return null;
-            }
-
-            const payload = await response.json();
-            const nextMode = payload.execution_mode as MessagingExecutionMode;
-            applyExecutionMode(nextMode);
-
-            return nextMode;
-        } catch {
-            setMessagingMessage(
-                'Çalışma modu readiness bilgisi alınamadı; otomatik tekrar yapılmadı.',
-            );
-
-            return null;
-        } finally {
-            setExecutionModeChecking(false);
-        }
-    };
-
-    const openExecutionModeDialog = async (target: 'local' | 'live') => {
-        if (executionModeBusyRef.current) {
-            return;
-        }
-
-        setExecutionModeTarget(target);
-        setExecutionModeReason('');
-        setExecutionModeConfirmation('');
-        setExecutionModeExpectedRevision(null);
-        setExecutionModeDialogOpen(true);
-        const executionMode = await refreshExecutionModeReadiness();
-
-        if (executionMode !== null) {
-            setExecutionModeExpectedRevision(executionMode.revision);
-        }
-    };
-
-    const transitionExecutionMode = async () => {
-        if (executionModeBusyRef.current) {
-            return;
-        }
-
-        if (executionModeExpectedRevision === null) {
-            setMessagingMessage(
-                'Çalışma modu revision bilgisi doğrulanamadı. Güncel durumu yeniden yükleyin.',
-            );
-
-            return;
-        }
-
-        executionModeBusyRef.current = true;
-        setExecutionModeSaving(true);
-        setMessagingMessage('');
-
-        try {
-            const response = await fetch(
-                '/api/technical-service/messaging-settings/execution-mode',
-                {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': csrfToken(),
-                    },
-                    credentials: 'same-origin',
-                    body: JSON.stringify({
-                        mode: executionModeTarget,
-                        reason: executionModeReason.trim(),
-                        confirmation:
-                            executionModeTarget === 'live'
-                                ? executionModeConfirmation
-                                : undefined,
-                        expected_revision: executionModeExpectedRevision,
-                    }),
-                },
-            );
-
-            if (response.status === 409) {
-                await refreshExecutionModeReadiness();
-                setExecutionModeDialogOpen(false);
-                setExecutionModeExpectedRevision(null);
-                setExecutionModeReason('');
-                setExecutionModeConfirmation('');
-                setMessagingMessage(
-                    'Çalışma modu başka bir yönetici tarafından değiştirildi. Güncel durumu yeniden yükleyip kararınızı tekrar verin.',
-                );
-
-                return;
-            }
-
-            if (!response.ok) {
-                setMessagingMessage(
-                    await errorMessageFromResponse(
-                        response,
-                        'Mesajlaşma çalışma modu değiştirilemedi.',
-                    ),
-                );
-
-                return;
-            }
-
-            const payload = await response.json();
-            applyExecutionMode(
-                payload.execution_mode as MessagingExecutionMode,
-                true,
-            );
-            setExecutionModeDialogOpen(false);
-            setExecutionModeExpectedRevision(null);
-            setExecutionModeReason('');
-            setExecutionModeConfirmation('');
-            setMessagingMessage(
-                payload.message ?? 'Mesajlaşma çalışma modu güncellendi.',
-            );
-        } catch {
-            setMessagingMessage(
-                'Mesajlaşma çalışma modu değiştirilemedi; otomatik tekrar yapılmadı.',
-            );
-        } finally {
-            executionModeBusyRef.current = false;
-            setExecutionModeSaving(false);
         }
     };
 
@@ -5577,20 +5362,19 @@ export default function TechnicalServiceAdmin({
 
                         {activeAdminSection === 'messaging' ? (
                             <div
-                                data-testid="messaging-execution-mode-card"
+                                data-testid="messaging-global-execution-mode-readonly"
                                 className="mt-5 border-y border-slate-200 py-4"
                             >
                                 <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                                     <div className="min-w-0">
                                         <p className="text-xs font-semibold tracking-[0.14em] text-slate-500 uppercase">
-                                            Mesajlaşma Çalışma Modu
+                                            Global Sistem Çalışma Modu
                                         </p>
                                         <div className="mt-2 flex flex-wrap items-center gap-2">
                                             <h3 className="text-base font-bold text-slate-950">
-                                                {messaging.execution_mode.mode ===
-                                                'live'
-                                                    ? 'Canlı'
-                                                    : 'Lokal'}
+                                                {messaging.execution_mode.state.toLocaleUpperCase(
+                                                    'tr-TR',
+                                                )}
                                             </h3>
                                             <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold text-slate-700">
                                                 {
@@ -5599,68 +5383,30 @@ export default function TechnicalServiceAdmin({
                                                 }
                                             </span>
                                             <span className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600">
-                                                Revision #{
+                                                Epoch #{
+                                                    messaging.execution_mode
+                                                        .epoch
+                                                } / Revision #{
                                                     messaging.execution_mode
                                                         .revision
                                                 }
                                             </span>
                                         </div>
                                         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                                            {
-                                                messaging.execution_mode
-                                                    .classification
-                                            }
-                                            {messaging.execution_mode.mode ===
-                                            'local'
-                                                ? ' Dış Evo/NAC çağrıları kapalıdır; dispatch ve audit kayıtları korunur.'
-                                                : messaging.execution_mode
-                                                        .runtime_environment ===
-                                                    'production'
-                                                  ? ' Normal outbound yalnız readiness ve exact release worker kapıları açıkken çalışır.'
-                                                  : ' Normal operasyon outbound kapalıdır; yalnız allowlist içindeki exact Manual E2E penceresi provider kullanabilir.'}
+                                            Mesajlaşma bu global otoritenin bir
+                                            capability adapter’ıdır. Bu ekran
+                                            provider profile ve readiness
+                                            gösterir; çalışma modu yalnız
+                                            Operasyon Merkezi’nde yönetilir.
                                         </p>
                                     </div>
 
-                                    <div
-                                        data-testid="messaging-execution-mode-controls"
-                                        className="grid w-full shrink-0 grid-cols-2 gap-2 sm:w-auto"
+                                    <a
+                                        href="/technical-service"
+                                        className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100"
                                     >
-                                        <button
-                                            type="button"
-                                            disabled={
-                                                executionModeChecking ||
-                                                executionModeSaving ||
-                                                executionModeIsSafelyLocal(
-                                                    messaging,
-                                                )
-                                            }
-                                            onClick={() => {
-                                                void openExecutionModeDialog(
-                                                    'local',
-                                                );
-                                            }}
-                                            className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Lokalde Çalıştır
-                                        </button>
-                                        <button
-                                            type="button"
-                                            disabled={
-                                                executionModeChecking ||
-                                                executionModeSaving ||
-                                                messaging.execution_mode
-                                                    .mode === 'live'
-                                            }
-                                            onClick={() => {
-                                                void openExecutionModeDialog(
-                                                    'live',
-                                                );
-                                            }}
-                                            className="min-h-10 rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Canlıda Çalıştır
-                                        </button>
-                                    </div>
+                                        Operasyon Merkezi’nde yönet
+                                    </a>
                                 </div>
 
                                 <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
@@ -5680,28 +5426,22 @@ export default function TechnicalServiceAdmin({
                                                 : 'Eksik',
                                         ],
                                         [
-                                            'Queue / worker',
-                                            messaging.execution_mode.readiness
-                                                .queue_worker_ready
-                                                ? 'Hazır'
-                                                : messaging.execution_mode
-                                                        .readiness
-                                                        .queue_worker_state,
+                                            'Global required',
+                                            `${messaging.execution_mode.readiness.required_ready_count} / ${messaging.execution_mode.readiness.required_count}`,
                                         ],
                                         [
-                                            'Public URL',
-                                            messaging.execution_mode.readiness
-                                                .public_https_ready
-                                                ? 'Hazır'
-                                                : messaging.execution_mode
-                                                        .readiness
-                                                        .manual_e2e_origin_ready
-                                                  ? 'Manual E2E origin hazır'
-                                                  : 'Eksik',
+                                            'Global blocker',
+                                            String(
+                                                messaging.execution_mode
+                                                    .readiness.blocker_count,
+                                            ),
                                         ],
                                         [
-                                            'Pending / unsafe',
-                                            `${messaging.execution_mode.readiness.pending_external_count} / ${messaging.execution_mode.readiness.unsafe_external_count}`,
+                                            'Kayıtlı capability',
+                                            String(
+                                                messaging.execution_mode
+                                                    .readiness.registered_count,
+                                            ),
                                         ],
                                         [
                                             'Son değişiklik',
@@ -9789,217 +9529,6 @@ export default function TechnicalServiceAdmin({
                     </section>
                 ) : null}
 
-                <Dialog
-                    open={executionModeDialogOpen}
-                    onOpenChange={(open) => {
-                        if (!executionModeSaving) {
-                            setExecutionModeDialogOpen(open);
-                        }
-                    }}
-                >
-                    <DialogContent
-                        data-testid="messaging-execution-mode-dialog"
-                        className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
-                    >
-                        <DialogHeader>
-                            <DialogTitle>
-                                {executionModeTarget === 'live'
-                                    ? 'Canlı çalışma modu readiness onayı'
-                                    : 'Lokal çalışma moduna dön'}
-                            </DialogTitle>
-                            <DialogDescription>
-                                {executionModeTarget === 'live'
-                                    ? 'Server readiness kapıları tekrar doğrulanır. Bu işlem tek başına dispatch oluşturmaz, worker başlatmaz veya provider çağırmaz.'
-                                    : 'Bu işlem dış provider kapılarını kapatır, queue’yu duraklatır ve açık Manual E2E yaşam döngüsünü güvenli biçimde dondurur.'}
-                            </DialogDescription>
-                        </DialogHeader>
-
-                        <div className="grid gap-4">
-                            <div
-                                className={[
-                                    'border-l-4 px-4 py-3 text-sm leading-6 font-semibold',
-                                    executionModeTarget === 'live' &&
-                                    messaging.execution_mode
-                                        .runtime_environment !== 'production'
-                                        ? 'border-amber-600 bg-amber-50 text-amber-950'
-                                        : executionModeTarget === 'live'
-                                          ? 'border-red-700 bg-red-50 text-red-950'
-                                          : 'border-emerald-700 bg-emerald-50 text-emerald-950',
-                                ].join(' ')}
-                            >
-                                {executionModeTarget === 'live' &&
-                                messaging.execution_mode
-                                    .runtime_environment !== 'production'
-                                    ? 'Gerçek Evo/NAC endpointleri kullanılabilir; yalnız allowlist Manual E2E gönderimleri serbesttir. Normal operasyon kuyruğu kapalı kalır.'
-                                    : executionModeTarget === 'live'
-                                      ? 'Production outbound ancak bütün readiness kapıları birlikte geçerse açılır. Geçmiş veya eski-revision dispatchler serbest bırakılmaz.'
-                                      : 'Lokal mode dış HTTP’yi keser. Mevcut dispatch, attempt ve audit gerçeği silinmez.'}
-                            </div>
-
-                            {executionModeTarget === 'live' ? (
-                                <div>
-                                    <div className="flex items-center justify-between gap-3">
-                                        <p className="text-sm font-bold text-slate-950">
-                                            Readiness kapıları
-                                        </p>
-                                        <button
-                                            type="button"
-                                            disabled={
-                                                executionModeChecking ||
-                                                executionModeSaving
-                                            }
-                                            onClick={() => {
-                                                void refreshExecutionModeReadiness();
-                                            }}
-                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            {executionModeChecking
-                                                ? 'Kontrol ediliyor'
-                                                : 'Yeniden kontrol et'}
-                                        </button>
-                                    </div>
-
-                                    {messaging.execution_mode.readiness
-                                        .blockers.length > 0 ? (
-                                        <ul
-                                            data-testid="messaging-execution-mode-blockers"
-                                            className="mt-3 grid max-h-48 gap-2 overflow-y-auto border-y border-slate-200 py-3 text-sm text-red-900"
-                                        >
-                                            {messaging.execution_mode.readiness.blockers.map(
-                                                (blocker) => (
-                                                    <li
-                                                        key={blocker.code}
-                                                        className="leading-5"
-                                                    >
-                                                        <span className="font-bold">
-                                                            {blocker.code}
-                                                        </span>
-                                                        : {blocker.message}
-                                                    </li>
-                                                ),
-                                            )}
-                                        </ul>
-                                    ) : (
-                                        <p className="mt-3 border-y border-emerald-200 bg-emerald-50 py-3 text-sm font-semibold text-emerald-900">
-                                            Tüm server-side readiness kapıları
-                                            hazır.
-                                        </p>
-                                    )}
-
-                                    {messaging.execution_mode
-                                        .runtime_environment !==
-                                    'production' ? (
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setExecutionModeDialogOpen(
-                                                    false,
-                                                );
-                                                setActiveMessagingSection(
-                                                    'general',
-                                                );
-                                                window.requestAnimationFrame(
-                                                    () => {
-                                                        document
-                                                            .querySelector(
-                                                                '[data-testid="manual-e2e-lifecycle-panel"]',
-                                                            )
-                                                            ?.scrollIntoView({
-                                                                behavior:
-                                                                    'smooth',
-                                                                block: 'start',
-                                                            });
-                                                    },
-                                                );
-                                            }}
-                                            className="mt-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100"
-                                        >
-                                            Manual E2E paneline git
-                                        </button>
-                                    ) : null}
-                                </div>
-                            ) : null}
-
-                            <label className="grid gap-1.5 text-sm font-semibold text-slate-800">
-                                Değişiklik gerekçesi
-                                <textarea
-                                    value={executionModeReason}
-                                    onChange={(event) =>
-                                        setExecutionModeReason(
-                                            event.target.value,
-                                        )
-                                    }
-                                    rows={3}
-                                    maxLength={500}
-                                    disabled={executionModeSaving}
-                                    placeholder="En az 10 karakterlik operasyon gerekçesi"
-                                    className="min-h-24 resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:opacity-60"
-                                />
-                            </label>
-
-                            {executionModeTarget === 'live' ? (
-                                <label className="grid gap-1.5 text-sm font-semibold text-slate-800">
-                                    Onay metni
-                                    <input
-                                        type="text"
-                                        value={executionModeConfirmation}
-                                        onChange={(event) =>
-                                            setExecutionModeConfirmation(
-                                                event.target.value,
-                                            )
-                                        }
-                                        disabled={executionModeSaving}
-                                        autoComplete="off"
-                                        placeholder="CANLI MODU AÇ"
-                                        className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:opacity-60"
-                                    />
-                                </label>
-                            ) : null}
-                        </div>
-
-                        <DialogFooter>
-                            <button
-                                type="button"
-                                disabled={executionModeSaving}
-                                onClick={() =>
-                                    setExecutionModeDialogOpen(false)
-                                }
-                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                                Vazgeç
-                            </button>
-                            <button
-                                type="button"
-                                data-testid="messaging-execution-mode-confirm"
-                                disabled={
-                                    executionModeSaving ||
-                                    executionModeExpectedRevision === null ||
-                                    executionModeReason.trim().length < 10 ||
-                                    (executionModeTarget === 'live' &&
-                                        (!messaging.execution_mode.readiness
-                                            .eligible ||
-                                            executionModeConfirmation !==
-                                                'CANLI MODU AÇ'))
-                                }
-                                onClick={() => {
-                                    void transitionExecutionMode();
-                                }}
-                                className={[
-                                    'rounded-lg border px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50',
-                                    executionModeTarget === 'live'
-                                        ? 'border-red-700 bg-red-700 hover:bg-red-800'
-                                        : 'border-slate-900 bg-slate-950 hover:bg-slate-800',
-                                ].join(' ')}
-                            >
-                                {executionModeSaving
-                                    ? 'Uygulanıyor'
-                                    : executionModeTarget === 'live'
-                                      ? 'Canlı modu aç'
-                                      : 'Lokal moda dön ve dondur'}
-                            </button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
 
                 <Dialog
                     open={manualE2EEnableConfirmationOpen}

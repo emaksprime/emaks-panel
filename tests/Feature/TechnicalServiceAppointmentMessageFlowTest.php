@@ -24,11 +24,12 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Tests\Support\InteractsWithExternalExecutionControlPlane;
 use Tests\TestCase;
 
 class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithExternalExecutionControlPlane, RefreshDatabase;
 
     public function test_appointment_message_flow_ops_appointment_approved_creates_customer_and_technician_dispatches_without_provider_call(): void
     {
@@ -1613,14 +1614,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->enableExecutionModeProviders();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
         $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'Appointment queue fixture guarded live mode.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-            'TEST-APPOINTMENT-LIVE-MODE',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $settings->prepareManualE2E();
     }
 
@@ -1692,14 +1686,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->enableExecutionModeProviders();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
         $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'Appointment Manual E2E test fixture preparation.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-            'TEST-APPOINTMENT-MANUAL-E2E-MODE',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $payload = $settings->prepareManualE2E();
         $global = $payload['global'];
         $lifecycleLayout = PageConfig::query()

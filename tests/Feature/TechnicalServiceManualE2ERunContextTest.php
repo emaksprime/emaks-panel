@@ -16,11 +16,12 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Tests\Support\InteractsWithExternalExecutionControlPlane;
 use Tests\TestCase;
 
 class TechnicalServiceManualE2ERunContextTest extends TestCase
 {
-    use DatabaseMigrations;
+    use DatabaseMigrations, InteractsWithExternalExecutionControlPlane;
 
     protected function setUp(): void
     {
@@ -439,14 +440,7 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
         $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'Manual E2E run-context test fixture preparation.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-            'TEST-MANUAL-E2E-RUN-CONTEXT-MODE',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
 
         return $settings;
     }

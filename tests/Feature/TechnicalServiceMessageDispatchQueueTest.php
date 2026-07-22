@@ -12,6 +12,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestEvent;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\Messaging\TechnicalServiceMessageChannelPlanner;
 use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
@@ -37,11 +38,12 @@ use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Tests\Support\InteractsWithExternalExecutionControlPlane;
 use Tests\TestCase;
 
 class TechnicalServiceMessageDispatchQueueTest extends TestCase
 {
-    use DatabaseMigrations;
+    use DatabaseMigrations, InteractsWithExternalExecutionControlPlane;
 
     private const TEST_RUN_ID = 'MANUAL-E2E-FULL-20260710-000000-TST1';
 
@@ -3596,7 +3598,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             );
             $this->fail('Direct Evo profili eksikken LIVE aktivasyonu engellenmeliydi.');
         } catch (ValidationException $exception) {
-            $this->assertStringContainsString('[evo_not_ready]', json_encode($exception->errors(), JSON_THROW_ON_ERROR));
+            $errors = json_encode($exception->errors(), JSON_THROW_ON_ERROR);
+            $this->assertStringContainsString('capability_not_ready:messaging.evo.send', $errors);
+            $this->assertStringContainsString('messaging_transition_not_ready:evo_not_ready', $errors);
         }
 
         $this->assertSame(
@@ -3904,6 +3908,23 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue((bool) data_get($fallback->metadata, 'test_smoke'));
         $this->assertSame('REL4E5', data_get($fallback->metadata, 'pr88_rel'));
         $this->assertSame('PR88-REL4E5-FALLBACK', data_get($fallback->metadata, 'smoke_run_id'));
+        $this->assertSame(
+            ExternalEffectCapabilityRegistry::MESSAGING_EVOLUTION_SEND,
+            data_get($dispatch->metadata, 'external_capability_code'),
+        );
+        $this->assertSame(
+            ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND,
+            data_get($fallback->metadata, 'external_capability_code'),
+        );
+        $this->assertSame(
+            data_get($dispatch->metadata, 'global_execution_revision'),
+            data_get($fallback->metadata, 'global_execution_revision'),
+        );
+        $capabilitySnapshots = (array) data_get($dispatch->metadata, 'external_capability_snapshots', []);
+        $this->assertSame(
+            data_get($capabilitySnapshots[ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND] ?? [], 'revision'),
+            data_get($fallback->metadata, 'external_capability_revision'),
+        );
         $this->assertNotSame((string) data_get($dispatch->request_payload, 'body'), (string) data_get($fallback->request_payload, 'body'));
         Http::assertSentCount(1);
     }
@@ -4292,14 +4313,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                 now()->addMinute()->toImmutable(),
             );
         }
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'Manual E2E queue izolasyon testi hazirligi.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-            'TEST-MANUAL-E2E-MODE-QUEUE',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
 
         return $settings;
     }

@@ -56,11 +56,12 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
+use Tests\Support\InteractsWithExternalExecutionControlPlane;
 use Tests\TestCase;
 
 class B2BPartnerPanelAccessTest extends TestCase
 {
-    use DatabaseMigrations;
+    use DatabaseMigrations, InteractsWithExternalExecutionControlPlane;
 
     public function runDatabaseMigrations(): void
     {
@@ -9970,14 +9971,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->enableExecutionModeProviders();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'fixture-evo-api-key']);
         $settings->saveNacSmsCredentials(['username' => 'fixture-nac-user', 'password' => 'fixture-nac-password']);
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'B2B Manual E2E test fixture preparation.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-            'TEST-B2B-MANUAL-E2E-MODE',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $payload = $settings->prepareManualE2E();
         $global = $payload['global'];
         $lifecycleLayout = PageConfig::query()

@@ -16,11 +16,12 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Tests\Support\InteractsWithExternalExecutionControlPlane;
 use Tests\TestCase;
 
 class TechnicalServiceManualE2EEntryPointTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithExternalExecutionControlPlane, RefreshDatabase;
 
     private const PROTECTED_UPDATE_MESSAGE = 'Manual E2E ve gerçek gönderim durumu genel ayarlar üzerinden değiştirilemez. Manual E2E kontrol panelindeki güvenli açma/dondurma aksiyonunu kullanın.';
 
@@ -517,13 +518,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             $lifecycleLock->release();
         }
 
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'Worker lock regresyonu icin Manual E2E live test profili.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
 
         $workerLock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 30);
         $this->assertTrue($workerLock->get());
@@ -847,14 +842,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
         $lifecyclePage->forceFill(['layout_json' => $lifecycleLayout])->save();
         $settings->saveEvoWhatsappCredentials(['api_key' => 'test-evo-key']);
         $settings->saveNacSmsCredentials(['username' => 'test-user', 'password' => 'test-password']);
-        $settings->transitionExecutionMode(
-            TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
-            'Manual E2E entrypoint izolasyon testi hazirligi.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-            'TEST-MANUAL-E2E-MODE-ENTRYPOINT',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
 
         return $settings;
     }

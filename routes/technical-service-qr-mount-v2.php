@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ExternalExecutionControlPlaneController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceMessageDispatchController;
 use App\Http\Controllers\Api\TechnicalServiceMessageTemplateController;
@@ -55,6 +56,12 @@ Route::post('mount-payment/{token}/fake-approve', [PublicMountPaymentController:
 Route::middleware(['auth', 'panel.session'])
     ->prefix('api/technical-service')
     ->group(function (): void {
+        Route::get('execution-control', [ExternalExecutionControlPlaneController::class, 'show'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.execution-control.show');
+        Route::post('execution-control', [ExternalExecutionControlPlaneController::class, 'update'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.execution-control.update');
         Route::get('qr-products', [TechnicalServiceQrLinkController::class, 'index'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.qr-products.index');

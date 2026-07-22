@@ -8,6 +8,9 @@ use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Models\UserAccess;
+use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
+use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
 use App\Services\Messaging\TechnicalServiceMessageDispatchQueue;
@@ -25,11 +28,12 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\InteractsWithExternalExecutionControlPlane;
 use Tests\TestCase;
 
 class TechnicalServiceMessagingExecutionModeTest extends TestCase
 {
-    use DatabaseMigrations;
+    use DatabaseMigrations, InteractsWithExternalExecutionControlPlane;
 
     protected function setUp(): void
     {
@@ -57,14 +61,21 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
     {
         $admin = $this->admin();
         $operator = User::factory()->create(['role_code' => 'ops']);
+        UserAccess::query()->create([
+            'user_id' => $operator->id,
+            'resource_code' => 'technical_service_manage',
+            'can_view' => true,
+        ]);
 
-        $this->getJson('/api/technical-service/messaging-settings/execution-mode/readiness')
+        $this->getJson('/api/technical-service/execution-control')
             ->assertUnauthorized();
         $this->actingAs($operator)
-            ->getJson('/api/technical-service/messaging-settings/execution-mode/readiness')
-            ->assertForbidden();
+            ->getJson('/api/technical-service/execution-control')
+            ->assertOk()
+            ->assertJsonPath('execution_control.mode', 'local')
+            ->assertJsonPath('execution_control.can_transition', false);
         $this->actingAs($operator)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
                 'reason' => 'Yetkisiz mode degisiklik denemesi.',
                 'expected_revision' => 1,
@@ -72,14 +83,15 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->assertForbidden();
 
         $response = $this->actingAs($admin)
-            ->getJson('/api/technical-service/messaging-settings/execution-mode/readiness')
+            ->getJson('/api/technical-service/execution-control')
             ->assertOk()
-            ->assertJsonPath('execution_mode.mode', 'local')
-            ->assertJsonPath('execution_mode.revision', 1)
-            ->assertJsonPath('execution_mode.runtime_environment', 'local')
-            ->assertJsonPath('execution_mode.classification', 'Lokal no-send modu')
-            ->assertJsonPath('execution_mode.real_send_enabled', false)
-            ->assertJsonPath('execution_mode.queue_paused', true);
+            ->assertJsonPath('execution_control.mode', 'local')
+            ->assertJsonPath('execution_control.state', 'local')
+            ->assertJsonPath('execution_control.epoch', 1)
+            ->assertJsonPath('execution_control.revision', 1)
+            ->assertJsonPath('execution_control.runtime_environment', 'local')
+            ->assertJsonPath('execution_control.readiness.registered_count', 28)
+            ->assertJsonPath('execution_control.can_transition', true);
 
         $encoded = $response->getContent();
         $this->assertStringNotContainsString('api_key', $encoded);
@@ -87,7 +99,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $this->assertStringNotContainsString('manual_e2e_allowlisted_phones', $encoded);
 
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'live',
                 'reason' => 'Canli moda gecis testi.',
                 'expected_revision' => 1,
@@ -95,7 +107,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('confirmation');
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
                 'reason' => 'kisa',
                 'expected_revision' => 1,
@@ -103,7 +115,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('reason');
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
                 'reason' => 'Strict payload dogrulama testi.',
                 'expected_revision' => 1,
@@ -113,10 +125,70 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('mode');
 
+        $this->actingAs($admin)
+            ->getJson('/api/technical-service/messaging-settings/execution-mode/readiness')
+            ->assertOk()
+            ->assertJsonPath('deprecated', true)
+            ->assertJsonPath('canonical_endpoint', '/api/technical-service/execution-control')
+            ->assertJsonPath('execution_mode.mode', 'local')
+            ->assertJsonPath('execution_mode.revision', 1);
+
         $current = app(TechnicalServiceMessagingSettingsService::class)->executionModePayload();
         $this->assertSame('local', $current['mode']);
         $this->assertSame(1, $current['revision']);
         $this->assertDatabaseCount('panel.logs', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_global_registry_is_complete_and_unknown_capabilities_fail_closed(): void
+    {
+        $registry = app(ExternalEffectCapabilityRegistry::class);
+        $controlPlane = app(ExternalExecutionControlPlaneService::class);
+        $definitions = $registry->definitions();
+        $payload = $controlPlane->payload();
+
+        $this->assertCount(28, $definitions);
+        $this->assertSame(28, data_get($payload, 'readiness.registered_count'));
+        $this->assertFalse((bool) data_get($payload, 'readiness.eligible'));
+        $this->assertGreaterThan(0, (int) data_get($payload, 'readiness.blocker_count'));
+        $this->assertFalse((bool) $definitions['bulk.support.apply']['adapted']);
+        $this->assertTrue((bool) $definitions['bulk.support.apply']['required']);
+
+        $authorization = $controlPlane->authorizeCapabilitySnapshot('future.unregistered.effect', []);
+        $this->assertFalse($authorization['allowed']);
+        $this->assertSame('external_capability_unknown', $authorization['code']);
+        Http::assertNothingSent();
+    }
+
+    public function test_legacy_messaging_live_value_cannot_promote_global_authority(): void
+    {
+        Http::fake();
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        $this->setPersistedSetting('outbound_execution_mode', 'live');
+        $this->setPersistedSetting('real_send_enabled', true);
+        $this->setPersistedSetting('queue_paused', false);
+
+        $controlPlane = app(ExternalExecutionControlPlaneService::class);
+        $this->assertSame('local', $controlPlane->state()['operator_mode']);
+        $this->assertSame('local', $settings->executionModePayload()['mode']);
+        $this->assertSame(
+            'outbound_execution_mode_local',
+            $settings->directProviderExecutionBlock('evo_whatsapp')['code'],
+        );
+
+        $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->enqueue([
+            'event' => 'legacy_mode_must_not_promote_global_live',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_type' => 'technician',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Synthetic legacy mode isolation message.'],
+        ]);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $dispatch->status);
+        $this->assertSame(0, $dispatch->attempt_count);
         Http::assertNothingSent();
     }
 
@@ -172,7 +244,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         foreach ($cases as $case => $expectation) {
             $this->actingAs($admin)
                 ->postJson(
-                    '/api/technical-service/messaging-settings/execution-mode',
+                    '/api/technical-service/execution-control',
                     $expectation['payload'],
                 )
                 ->assertUnprocessable()
@@ -186,7 +258,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             $this->assertSame(
                 0,
                 AuditLog::query()
-                    ->where('action', 'technical_service.messaging.execution_mode.changed')
+                    ->where('action', 'external_execution_control.mode.changed')
                     ->count(),
                 'Invalid CAS payload created an execution-mode audit for case: '.$case,
             );
@@ -200,22 +272,29 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $admin = $this->admin();
         $settings = app(TechnicalServiceMessagingSettingsService::class);
         $capturedRevision = (int) $settings->executionModePayload()['revision'];
+        $reason = 'Exact revision token=fake-secret Authorization: Bearer fake-bearer telefon 905000000001';
 
-        $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+        $response = $this->actingAs($admin)
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
-                'reason' => 'Exact revision transition acceptance test.',
+                'reason' => $reason,
                 'expected_revision' => $capturedRevision,
             ])
             ->assertOk()
-            ->assertJsonPath('execution_mode.mode', 'local')
-            ->assertJsonPath('execution_mode.revision', $capturedRevision + 1);
+            ->assertJsonPath('execution_control.mode', 'local')
+            ->assertJsonPath('execution_control.revision', $capturedRevision + 1);
 
         $audit = AuditLog::query()
-            ->where('action', 'technical_service.messaging.execution_mode.changed')
+            ->where('action', 'external_execution_control.mode.changed')
             ->sole();
         $this->assertSame($capturedRevision, data_get($audit->payload, 'previous_revision'));
         $this->assertSame($capturedRevision + 1, data_get($audit->payload, 'new_revision'));
+        $encoded = $response->getContent().json_encode($audit->payload, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('fake-secret', $encoded);
+        $this->assertStringNotContainsString('fake-bearer', $encoded);
+        $this->assertStringNotContainsString('905000000001', $encoded);
+        $this->assertStringContainsString('[redacted]', $encoded);
+        $this->assertStringContainsString('[redacted-phone]', $encoded);
         Http::assertNothingSent();
     }
 
@@ -223,25 +302,23 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
     {
         $adminA = $this->admin();
         $adminB = $this->admin();
-        $settings = $this->configureLiveReadiness($adminA);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
         $capturedRevision = (int) $settings->executionModePayload()['revision'];
 
         $this->actingAs($adminA)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
-                'mode' => 'live',
+            ->postJson('/api/technical-service/execution-control', [
+                'mode' => 'local',
                 'reason' => 'First administrator exact transition.',
-                'confirmation' => 'CANLI MODU AÇ',
                 'expected_revision' => $capturedRevision,
             ])
             ->assertOk()
-            ->assertJsonPath('execution_mode.revision', $capturedRevision + 1);
+            ->assertJsonPath('execution_control.revision', $capturedRevision + 1);
 
         $afterFirstTransition = $this->executionModeMutationSnapshot($settings);
         $this->actingAs($adminB)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
-                'mode' => 'live',
+            ->postJson('/api/technical-service/execution-control', [
+                'mode' => 'local',
                 'reason' => 'Second administrator stale same-mode transition.',
-                'confirmation' => 'CANLI MODU AÇ',
                 'expected_revision' => $capturedRevision,
             ])
             ->assertConflict()
@@ -254,13 +331,13 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $this->assertSame(
             1,
             AuditLog::query()
-                ->where('action', 'technical_service.messaging.execution_mode.changed')
+                ->where('action', 'external_execution_control.mode.changed')
                 ->count(),
         );
         $this->assertSame(
             0,
             AuditLog::query()
-                ->where('action', 'technical_service.messaging.execution_mode.changed')
+                ->where('action', 'external_execution_control.mode.changed')
                 ->where('user_id', $adminB->id)
                 ->count(),
         );
@@ -272,19 +349,13 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
         $capturedRevision = (int) $settings->executionModePayload()['revision'];
-        $settings->transitionExecutionMode(
-            'live',
-            'Prepare stale lifecycle conflict test.',
-            $admin,
-            $capturedRevision,
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $prepared = $settings->prepareManualE2E()['global'];
         $this->assertNotNull($prepared['manual_e2e_active_run_id']);
         $beforeConflict = $this->executionModeMutationSnapshot($settings);
 
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
                 'reason' => 'Stale request must not freeze active lifecycle.',
                 'expected_revision' => $capturedRevision,
@@ -293,43 +364,41 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
 
         $this->assertSame($beforeConflict, $this->executionModeMutationSnapshot($settings));
         $this->assertSame(
-            1,
+            0,
             AuditLog::query()
-                ->where('action', 'technical_service.messaging.execution_mode.changed')
+                ->where('action', 'external_execution_control.mode.changed')
                 ->count(),
         );
         Http::assertNothingSent();
     }
 
-    public function test_non_production_live_transition_is_atomic_audited_and_keeps_normal_queue_closed(): void
+    public function test_global_live_rejects_required_unadapted_capabilities_without_partial_mutation(): void
     {
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
         $reason = 'Kontrollu test token=fake-secret api_key_encrypted=encrypted-key token_encrypted=encrypted-token password_encrypted=encrypted-password Authorization: Basic ZmFrZTpmYWtl https://user:pass@evo.example.test/send?apikey=query-secret&client_secret=client-secret telefon 905000000001';
+        $before = $this->executionModeMutationSnapshot($settings);
 
-        $this->actingAs($admin)
-            ->getJson('/api/technical-service/messaging-settings/execution-mode/readiness')
+        $readiness = $this->actingAs($admin)
+            ->getJson('/api/technical-service/execution-control')
             ->assertOk()
-            ->assertJsonPath('execution_mode.readiness.eligible', true)
-            ->assertJsonPath('execution_mode.readiness.evo_ready', true)
-            ->assertJsonPath('execution_mode.readiness.nac_ready', true)
-            ->assertJsonPath('execution_mode.classification', 'Lokal no-send modu')
-            ->assertJsonPath('execution_mode.readiness.classification', 'Canlı API Testi — yalnız Manual E2E');
+            ->assertJsonPath('execution_control.readiness.eligible', false)
+            ->assertJsonPath('execution_control.readiness.registered_count', 28)
+            ->assertJsonPath('execution_control.mode', 'local')
+            ->json('execution_control.readiness');
+        $this->assertGreaterThan(0, (int) $readiness['blocker_count']);
+        $this->assertContains('bulk.support.apply', array_column($readiness['blockers'], 'capability'));
 
         $response = $this->actingAs($admin)
             ->withHeader('X-Request-ID', 'MODE-TEST-CORRELATION-1')
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'live',
                 'reason' => $reason,
                 'confirmation' => 'CANLI MODU AÇ',
                 'expected_revision' => 1,
             ])
-            ->assertOk()
-            ->assertJsonPath('execution_mode.mode', 'live')
-            ->assertJsonPath('execution_mode.revision', 2)
-            ->assertJsonPath('execution_mode.real_send_enabled', false)
-            ->assertJsonPath('execution_mode.queue_paused', true)
-            ->assertJsonPath('execution_mode.manual_e2e_enabled', false);
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('mode');
 
         $encoded = $response->getContent();
         $this->assertStringNotContainsString('fake-secret', $encoded);
@@ -341,45 +410,9 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $this->assertStringNotContainsString('encrypted-password', $encoded);
         $this->assertStringNotContainsString('client-secret', $encoded);
         $this->assertStringNotContainsString('905000000001', $encoded);
-        $this->assertStringContainsString('[redacted]', $encoded);
-        $this->assertStringContainsString('[redacted-phone]', $encoded);
-
-        $audit = AuditLog::query()->where('action', 'technical_service.messaging.execution_mode.changed')->sole();
-        $this->assertSame($admin->id, $audit->user_id);
-        $this->assertSame('local', data_get($audit->payload, 'previous_mode'));
-        $this->assertSame('live', data_get($audit->payload, 'new_mode'));
-        $this->assertSame('MODE-TEST-CORRELATION-1', data_get($audit->payload, 'correlation_id'));
-        $this->assertStringNotContainsString('fake-secret', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('ZmFrZTpmYWtl', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('user:pass', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('query-secret', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('encrypted-key', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('encrypted-token', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('encrypted-password', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('client-secret', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-        $this->assertStringNotContainsString('905000000001', json_encode($audit->payload, JSON_THROW_ON_ERROR));
-
-        $this->actingAs($admin)
-            ->patchJson('/api/technical-service/messaging-settings', ['send_delay_seconds' => 90])
-            ->assertConflict();
-        $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/evo-whatsapp/credentials', ['api_key' => 'replacement-key'])
-            ->assertConflict();
-
-        $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
-                'mode' => 'local',
-                'reason' => 'Kontrollu test tamamlandi ve provider kapilari donduruldu.',
-                'expected_revision' => 2,
-            ])
-            ->assertOk()
-            ->assertJsonPath('execution_mode.mode', 'local')
-            ->assertJsonPath('execution_mode.revision', 3)
-            ->assertJsonPath('execution_mode.real_send_enabled', false)
-            ->assertJsonPath('execution_mode.queue_paused', true);
-
+        $this->assertSame($before, $this->executionModeMutationSnapshot($settings));
         $this->assertSame('local', $settings->executionModePayload()['mode']);
-        $this->assertDatabaseCount('panel.logs', 2);
+        $this->assertDatabaseCount('panel.logs', 0);
         Http::assertNothingSent();
     }
 
@@ -395,7 +428,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $before = $settings->executionModePayload();
 
         $response = $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'live',
                 'reason' => 'Eksik provider readiness atomic gecis testi.',
                 'confirmation' => 'CANLI MODU AÇ',
@@ -404,7 +437,9 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->assertUnprocessable();
 
         $this->assertStringContainsString(
-            $missingProvider === 'evo_whatsapp' ? 'evo_not_ready' : 'nac_not_ready',
+            $missingProvider === 'evo_whatsapp'
+                ? ExternalEffectCapabilityRegistry::MESSAGING_EVOLUTION_SEND
+                : ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND,
             $response->getContent(),
         );
         $after = $settings->executionModePayload();
@@ -429,13 +464,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         Http::fake();
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
-        $settings->transitionExecutionMode(
-            'live',
-            'Manual E2E run hazirlik modu.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $prepared = $settings->prepareManualE2E()['global'];
 
         $this->assertTrue($prepared['manual_e2e_enabled']);
@@ -444,7 +473,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $this->assertNotNull($prepared['manual_e2e_active_run_id']);
 
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'live',
                 'reason' => 'Active run varken yeniden acma denemesi.',
                 'confirmation' => 'CANLI MODU AÇ',
@@ -453,20 +482,21 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             ->assertUnprocessable();
 
         $this->actingAs($admin)
-            ->postJson('/api/technical-service/messaging-settings/execution-mode', [
+            ->postJson('/api/technical-service/execution-control', [
                 'mode' => 'local',
                 'reason' => 'Emergency freeze ile provider kapilarini kapat.',
                 'expected_revision' => (int) $settings->executionModePayload()['revision'],
             ])
             ->assertOk()
-            ->assertJsonPath('execution_mode.mode', 'local')
-            ->assertJsonPath('execution_mode.manual_e2e_enabled', false)
-            ->assertJsonPath('execution_mode.manual_e2e_phase', 'frozen')
-            ->assertJsonPath('execution_mode.real_send_enabled', false)
-            ->assertJsonPath('execution_mode.queue_paused', true);
+            ->assertJsonPath('execution_control.mode', 'local')
+            ->assertJsonPath('execution_control.state', 'local');
 
         $payload = $settings->payload();
         $this->assertNull($payload['manual_e2e']['active_run_id']);
+        $this->assertFalse($payload['global']['manual_e2e_enabled']);
+        $this->assertSame('frozen', $payload['global']['manual_e2e_phase']);
+        $this->assertFalse($payload['global']['real_send_enabled']);
+        $this->assertTrue($payload['global']['queue_paused']);
         Http::assertNothingSent();
     }
 
@@ -475,13 +505,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         Http::fake();
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
-        $settings->transitionExecutionMode(
-            'live',
-            'Emergency local transition setup.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $settings->prepareManualE2E();
         Cache::put(TechnicalServiceMessagingSettingsService::OUTBOUND_WORKER_LEASE_KEY, [
             'lock_owner' => 'stale-worker-owner',
@@ -513,13 +537,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         Http::fake();
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
-        $settings->transitionExecutionMode(
-            'live',
-            'Manual E2E environment binding setup.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $settings->prepareManualE2E();
 
         $this->withProductionRuntime(function () use ($settings): void {
@@ -567,13 +585,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
 
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
-        $settings->transitionExecutionMode(
-            'live',
-            'Stale queue revision guard testi.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $child = $queue->enqueue([
             'event' => 'execution_mode_parent',
             'message_type' => 'assignment_offer_technician',
@@ -604,11 +616,57 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             'target_phone' => '905000000001',
             'payload' => ['body' => 'Execution mode stale revision message.'],
         ]);
-        $this->setPersistedSetting('outbound_mode_revision', 3);
+        $retryCandidate = $queue->enqueue([
+            'event' => 'execution_mode_stale_retry',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'technician',
+            'target_type' => 'technician',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Execution mode stale retry message.'],
+        ]);
+        $retryCandidate->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+        ])->save();
+        $retryBefore = $retryCandidate->fresh()->getRawOriginal();
+        $settings->transitionExecutionMode(
+            'local',
+            'Stale dispatch fencing revision advance.',
+            $admin,
+            (int) $settings->executionModePayload()['revision'],
+        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $staleResult = $processor->processOne($stale->id);
         $this->assertTrue((bool) ($staleResult['blocked'] ?? false));
         $this->assertSame('outbound_mode_revision_stale', $stale->fresh()->last_error_code);
         $this->assertSame(0, $stale->fresh()->attempt_count);
+
+        $staleResend = $queue->enqueue([
+            'event' => 'execution_mode_stale_force_resend',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_type' => 'technician',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Stale force resend must be blocked before queue release.'],
+            'parent_dispatch_id' => $stale->id,
+            'force_resend' => true,
+            'force_resend_reason' => 'Stale global revision regression.',
+        ], $admin);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $staleResend->status);
+        $this->assertSame('outbound_mode_revision_stale', $staleResend->last_error_code);
+        $this->assertSame(0, $staleResend->attempt_count);
+        $this->assertNull($staleResend->queued_at);
+
+        try {
+            $queue->retryFailed($retryCandidate->fresh(), $admin);
+            $this->fail('Stale global revision dispatch retry kuyruğuna alınmamalıydı.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('dispatch', $exception->errors());
+        }
+        $this->assertSame($retryBefore, $retryCandidate->fresh()->getRawOriginal());
 
         $normal = $queue->enqueue([
             'event' => 'execution_mode_non_production_normal',
@@ -632,13 +690,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         Http::fake();
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
-        $settings->transitionExecutionMode(
-            'live',
-            'Local retry ve resend siniri kurulumu.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $queue = app(TechnicalServiceMessageDispatchQueue::class);
         $parent = $queue->enqueue([
             'event' => 'execution_mode_live_parent',
@@ -707,13 +759,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
     {
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
-        $settings->transitionExecutionMode(
-            'live',
-            'Direct provider bypass guvenlik testi.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         config([
             'services.evolution.n8n_webhook_url' => 'https://legacy-evo.example.test/send',
             'services.evolution.test_mode' => false,
@@ -759,20 +805,15 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'execution-mode-worker-owner';
             $settings->registerOutboundWorkerLease($owner, now()->toImmutable(), now()->addMinute()->toImmutable());
-            $settings->transitionExecutionMode(
-                'live',
-                'Production fake provider acceptance testi.',
-                $admin,
-                (int) $settings->executionModePayload()['revision'],
-                'CANLI MODU AÇ',
-            );
+            $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
 
             $mode = $settings->executionModePayload();
             $this->assertSame('production', $mode['runtime_environment']);
             $this->assertSame('live', $mode['mode']);
             $this->assertTrue($mode['real_send_enabled']);
             $this->assertFalse($mode['queue_paused']);
-            $this->assertTrue($mode['readiness']['eligible']);
+            $this->assertFalse($mode['readiness']['eligible']);
+            $this->assertGreaterThan(0, (int) $mode['readiness']['blocker_count']);
 
             $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->enqueue([
                 'event' => 'execution_mode_production_'.$provider,
@@ -840,13 +881,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'all-or-nothing-worker-owner';
             $settings->registerOutboundWorkerLease($owner, now()->toImmutable(), now()->addMinute()->toImmutable());
-            $settings->transitionExecutionMode(
-                'live',
-                'Provider set final boundary setup.',
-                $admin,
-                (int) $settings->executionModePayload()['revision'],
-                'CANLI MODU AÇ',
-            );
+            $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
             $missingProvider = $provider === 'evo_whatsapp' ? 'nac_sms' : 'evo_whatsapp';
             IntegrationProviderCredential::query()
                 ->where('scope', IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE)
@@ -886,13 +921,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'redirect-worker-owner';
             $settings->registerOutboundWorkerLease($owner, now()->toImmutable(), now()->addMinute()->toImmutable());
-            $settings->transitionExecutionMode(
-                'live',
-                'Provider redirect suppression setup.',
-                $admin,
-                (int) $settings->executionModePayload()['revision'],
-                'CANLI MODU AÇ',
-            );
+            $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
             $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->enqueue([
                 'event' => 'execution_mode_redirect_'.$provider,
                 'message_type' => 'assignment_offer_technician',
@@ -946,13 +975,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'outer-transaction-worker-owner';
             $settings->registerOutboundWorkerLease($owner, now()->toImmutable(), now()->addMinute()->toImmutable());
-            $settings->transitionExecutionMode(
-                'live',
-                'Outer transaction execution mode testi.',
-                $admin,
-                (int) $settings->executionModePayload()['revision'],
-                'CANLI MODU AÇ',
-            );
+            $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
             $dispatch = $queue->enqueue([
                 'event' => 'execution_mode_outer_transaction',
                 'message_type' => 'assignment_offer_technician',
@@ -982,13 +1005,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         $admin = $this->admin();
         $settings = $this->configureLiveReadiness($admin);
         $this->assertSame('local', $settings->executionModePayload()['mode']);
-        $settings->transitionExecutionMode(
-            'live',
-            'Seeder ve restart kalicilik testi.',
-            $admin,
-            (int) $settings->executionModePayload()['revision'],
-            'CANLI MODU AÇ',
-        );
+        $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
         $before = $settings->executionModePayload();
         $credentialsBefore = IntegrationProviderCredential::query()
             ->orderBy('provider')
@@ -1011,37 +1028,34 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
 
     public function test_execution_mode_ui_exposes_read_only_environment_readiness_and_non_optimistic_controls(): void
     {
-        $source = File::get(resource_path('js/pages/panel/technical-service-admin.tsx'));
-        $postBody = $this->executionModePostBody($source);
+        $operationsSource = File::get(resource_path('js/pages/panel/technical-service.tsx'));
+        $adminSource = File::get(resource_path('js/pages/panel/technical-service-admin.tsx'));
+        $postBody = $this->executionControlPostBody($operationsSource);
 
-        $this->assertStringContainsString('Mesajlaşma Çalışma Modu', $source);
-        $this->assertStringContainsString('Lokalde Çalıştır', $source);
-        $this->assertStringContainsString('Canlıda Çalıştır', $source);
-        $this->assertStringContainsString('CANLI MODU AÇ', $source);
-        $this->assertStringContainsString('execution-mode/readiness', $source);
-        $this->assertStringContainsString('execution-mode', $source);
-        $this->assertStringContainsString('Gerçek Evo/NAC endpointleri kullanılabilir', $source);
-        $this->assertStringContainsString('mode.readiness.blockers.map', $source);
-        $this->assertStringContainsString('executionModeIsSafelyLocal(', $source);
-        $this->assertStringContainsString("label: 'Production worker hazır'", $source);
-        $this->assertStringContainsString('No-send test kaydı', $source);
-        $this->assertMatchesRegularExpression(
-            '/applyExecutionMode\(\s*payload\.execution_mode\s+as\s+MessagingExecutionMode,\s*true,?\s*\)/',
-            $source,
-        );
-        $this->assertStringContainsString('sm:grid-cols-2', $source);
-        $this->assertStringContainsString('executionModeExpectedRevision', $source);
-        $this->assertStringContainsString('setExecutionModeExpectedRevision(executionMode.revision)', $source);
-        $this->assertStringContainsString('expected_revision: executionModeExpectedRevision', $postBody);
+        $this->assertStringContainsString('Sistem Çalışma Modu', $operationsSource);
+        $this->assertStringContainsString('Canlıya Geç', $operationsSource);
+        $this->assertStringContainsString('Lokale Al', $operationsSource);
+        $this->assertStringContainsString('CANLI MODU AÇ', $operationsSource);
+        $this->assertStringContainsString('/api/technical-service/execution-control', $operationsSource);
+        $this->assertStringContainsString('executionControlExpectedRevision', $operationsSource);
+        $this->assertStringContainsString('setExecutionControlExpectedRevision(current.revision)', $operationsSource);
+        $this->assertStringContainsString('expected_revision: executionControlExpectedRevision', $postBody);
         $this->assertStringContainsString('response.status === 409', $postBody);
-        $this->assertStringContainsString('await refreshExecutionModeReadiness()', $postBody);
-        $this->assertStringContainsString('setExecutionModeDialogOpen(false)', $postBody);
-        $this->assertStringContainsString('setExecutionModeExpectedRevision(null)', $postBody);
-        $this->assertStringContainsString("setExecutionModeReason('')", $postBody);
-        $this->assertStringContainsString("setExecutionModeConfirmation('')", $postBody);
+        $this->assertStringContainsString('await loadExecutionControl(false)', $postBody);
+        $this->assertStringContainsString('resetExecutionControlDialog()', $postBody);
         $this->assertStringNotContainsString('runtime_environment:', $postBody);
-        $this->assertStringNotContainsString('setMessagingSettings((current)', $postBody);
         $this->assertStringNotContainsString('retry', $postBody);
+
+        $this->assertStringContainsString('Global Sistem Çalışma Modu', $adminSource);
+        $this->assertStringContainsString('Operasyon Merkezi’nde yönetilir.', $adminSource);
+        $this->assertStringContainsString('href="/technical-service"', $adminSource);
+        $this->assertStringNotContainsString('Lokalde Çalıştır', $adminSource);
+        $this->assertStringNotContainsString('Canlıda Çalıştır', $adminSource);
+        $this->assertStringNotContainsString('transitionExecutionControl', $adminSource);
+        $this->assertSame(
+            1,
+            substr_count($operationsSource.$adminSource, 'data-testid="global-execution-control-confirm"'),
+        );
     }
 
     public function test_legacy_missing_mode_with_open_flags_can_be_repaired_through_local_transition(): void
@@ -1227,10 +1241,10 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         ]);
     }
 
-    private function executionModePostBody(string $source): string
+    private function executionControlPostBody(string $source): string
     {
-        $start = strpos($source, 'const transitionExecutionMode');
-        $end = strpos($source, 'const checkManualE2EReadiness', $start === false ? 0 : $start);
+        $start = strpos($source, 'const transitionExecutionControl');
+        $end = strpos($source, 'const loadRequests', $start === false ? 0 : $start);
         $this->assertNotFalse($start);
         $this->assertNotFalse($end);
 
@@ -1249,7 +1263,10 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         return [
             'execution_mode' => Arr::only($executionMode, [
                 'mode',
+                'state',
+                'epoch',
                 'revision',
+                'profile_fingerprint',
                 'real_send_enabled',
                 'queue_paused',
                 'manual_e2e_enabled',

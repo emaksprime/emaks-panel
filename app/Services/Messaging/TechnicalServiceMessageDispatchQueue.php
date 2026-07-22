@@ -120,6 +120,34 @@ class TechnicalServiceMessageDispatchQueue
             return $dispatch;
         }
 
+        if ($this->usesExternalProvider($input)) {
+            $authorization = $this->settings->outboundSnapshotAuthorization(
+                (string) ($input['provider_key'] ?? ''),
+                (array) ($input['metadata'] ?? []),
+            );
+            if (! $authorization['allowed']) {
+                $code = (string) ($authorization['code'] ?? 'external_execution_control_blocked');
+                $message = (string) ($authorization['message'] ?? 'Global execution snapshot current state ile eşleşmiyor.');
+                $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
+                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    'queued_at' => null,
+                    'next_attempt_at' => null,
+                    'provider_status' => 'execution_control_blocked',
+                    'last_error_code' => $code,
+                    'last_error_message_redacted' => $message,
+                    'metadata' => [
+                        ...((array) ($input['metadata'] ?? [])),
+                        'execution_control_blocked' => true,
+                        'provider_send_attempted' => false,
+                        'external_provider_call' => false,
+                    ],
+                ]);
+                $this->recordEvent($dispatch, 'message_execution_control_blocked', 'Mesaj global execution fence ile engellendi.');
+
+                return $dispatch;
+            }
+        }
+
         $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
             'queued_at' => now(),
@@ -257,11 +285,21 @@ class TechnicalServiceMessageDispatchQueue
             ]);
         }
 
-        $currentSnapshot = $this->settings->executionModeSnapshot();
+        $currentSnapshot = $this->settings->executionModeSnapshot((string) $dispatch->provider_key);
         if (($currentSnapshot['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
             && $this->usesExternalProvider(['provider_key' => $dispatch->provider_key])) {
             throw ValidationException::withMessages([
                 'dispatch' => 'Lokal çalışma modunda dış provider dispatch retry edilemez.',
+            ]);
+        }
+
+        $authorization = $this->settings->outboundSnapshotAuthorization(
+            (string) $dispatch->provider_key,
+            (array) $dispatch->metadata,
+        );
+        if (! $authorization['allowed']) {
+            throw ValidationException::withMessages([
+                'dispatch' => (string) ($authorization['message'] ?? 'Dispatch global execution snapshotı current state ile eşleşmiyor.'),
             ]);
         }
 
@@ -402,7 +440,9 @@ class TechnicalServiceMessageDispatchQueue
     private function withServerExecutionModeSnapshot(array $input): array
     {
         $metadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
-        $currentSnapshot = $this->settings->executionModeSnapshot();
+        $currentSnapshot = $this->settings->executionModeSnapshot(
+            is_scalar($input['provider_key'] ?? null) ? (string) $input['provider_key'] : null,
+        );
         $parentId = is_numeric($input['parent_dispatch_id'] ?? null)
             ? (int) $input['parent_dispatch_id']
             : 0;
@@ -411,6 +451,15 @@ class TechnicalServiceMessageDispatchQueue
             $parent = TechnicalServiceMessageDispatch::query()->find($parentId);
             if ($parent instanceof TechnicalServiceMessageDispatch) {
                 $parentMetadata = (array) $parent->metadata;
+                $capabilityCode = is_scalar($currentSnapshot['external_capability_code'] ?? null)
+                    ? (string) $currentSnapshot['external_capability_code']
+                    : null;
+                $capabilitySnapshots = is_array($parentMetadata['external_capability_snapshots'] ?? null)
+                    ? $parentMetadata['external_capability_snapshots']
+                    : [];
+                $capabilitySnapshot = $capabilityCode !== null && is_array($capabilitySnapshots[$capabilityCode] ?? null)
+                    ? $capabilitySnapshots[$capabilityCode]
+                    : [];
                 $snapshot = ($currentSnapshot['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
                     ? [
                         ...$currentSnapshot,
@@ -419,6 +468,17 @@ class TechnicalServiceMessageDispatchQueue
                         'parent_outbound_mode_revision' => (int) ($parentMetadata['outbound_mode_revision'] ?? 0),
                     ]
                     : [
+                        'global_execution_mode' => $parentMetadata['global_execution_mode'] ?? 'local',
+                        'global_execution_state' => $parentMetadata['global_execution_state'] ?? 'local',
+                        'global_execution_epoch' => (int) ($parentMetadata['global_execution_epoch'] ?? 0),
+                        'global_execution_revision' => (int) ($parentMetadata['global_execution_revision'] ?? 0),
+                        'global_runtime_environment' => $parentMetadata['global_runtime_environment'] ?? 'unknown',
+                        'global_profile_fingerprint' => $parentMetadata['global_profile_fingerprint'] ?? '',
+                        'global_execution_snapshot_at' => $parentMetadata['global_execution_snapshot_at'] ?? $parent->created_at?->toIso8601String(),
+                        'external_capability_code' => $capabilityCode,
+                        'external_capability_revision' => (int) ($capabilitySnapshot['revision'] ?? 0),
+                        'external_capability_profile_fingerprint' => $capabilitySnapshot['profile_fingerprint'] ?? '',
+                        'external_capability_snapshots' => $capabilitySnapshots,
                         'outbound_execution_mode' => $parentMetadata['outbound_execution_mode'] ?? 'local',
                         'outbound_mode_revision' => (int) ($parentMetadata['outbound_mode_revision'] ?? 0),
                         'runtime_environment' => $parentMetadata['runtime_environment'] ?? 'unknown',
