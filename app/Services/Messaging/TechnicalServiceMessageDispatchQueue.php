@@ -285,22 +285,24 @@ class TechnicalServiceMessageDispatchQueue
             ]);
         }
 
-        $currentSnapshot = $this->settings->executionModeSnapshot((string) $dispatch->provider_key);
-        if (($currentSnapshot['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
-            && $this->usesExternalProvider(['provider_key' => $dispatch->provider_key])) {
-            throw ValidationException::withMessages([
-                'dispatch' => 'Lokal çalışma modunda dış provider dispatch retry edilemez.',
-            ]);
-        }
+        $usesExternalProvider = $this->usesExternalProvider(['provider_key' => $dispatch->provider_key]);
+        if ($usesExternalProvider) {
+            $currentSnapshot = $this->settings->executionModeSnapshot((string) $dispatch->provider_key);
+            if (($currentSnapshot['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL) {
+                throw ValidationException::withMessages([
+                    'dispatch' => 'Lokal çalışma modunda dış provider dispatch retry edilemez.',
+                ]);
+            }
 
-        $authorization = $this->settings->outboundSnapshotAuthorization(
-            (string) $dispatch->provider_key,
-            (array) $dispatch->metadata,
-        );
-        if (! $authorization['allowed']) {
-            throw ValidationException::withMessages([
-                'dispatch' => (string) ($authorization['message'] ?? 'Dispatch global execution snapshotı current state ile eşleşmiyor.'),
-            ]);
+            $authorization = $this->settings->outboundSnapshotAuthorization(
+                (string) $dispatch->provider_key,
+                (array) $dispatch->metadata,
+            );
+            if (! $authorization['allowed']) {
+                throw ValidationException::withMessages([
+                    'dispatch' => (string) ($authorization['message'] ?? 'Dispatch global execution snapshotı current state ile eşleşmiyor.'),
+                ]);
+            }
         }
 
         $dispatch->forceFill([

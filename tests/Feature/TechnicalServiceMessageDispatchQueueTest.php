@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AuditLog;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
@@ -99,6 +100,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
     public function test_duplicate_guard_sent_message_not_requeued_and_failed_can_retry_if_policy_allows(): void
     {
+        Http::fake();
+
         $sent = $this->enqueueDispatch(['message_type' => 'customer_approval_request']);
         $sent->forceFill(['status' => TechnicalServiceMessageDispatch::STATUS_SENT, 'sent_at' => now()])->save();
 
@@ -114,6 +117,37 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->json('dispatch');
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $retry['status']);
+        Http::assertNothingSent();
+    }
+
+    public function test_retry_rejects_unknown_external_provider_without_mutating_dispatch_or_events(): void
+    {
+        Http::fake();
+        $this->activateManualE2EContext();
+        $dispatch = $this->enqueueDispatch(['message_type' => 'unknown_external_retry']);
+        $dispatch->forceFill([
+            'provider_key' => 'unknown_external_provider',
+            'status' => TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+        ])->save();
+        $before = $dispatch->fresh()->getRawOriginal();
+        $auditCount = AuditLog::query()->count();
+        $eventCount = TechnicalServiceRequestEvent::query()->count();
+
+        $authorization = app(TechnicalServiceMessagingSettingsService::class)
+            ->outboundSnapshotAuthorization('unknown_external_provider', (array) $dispatch->metadata);
+        $this->assertFalse($authorization['allowed']);
+        $this->assertSame('external_capability_unknown', $authorization['code']);
+
+        $this->actingAs($this->admin())
+            ->postJson("/api/technical-service/message-dispatches/{$dispatch->id}/retry")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['dispatch'])
+            ->assertJsonPath('errors.dispatch.0', 'Dispatch provider capability registry içinde kayıtlı değil.');
+
+        $this->assertSame($before, $dispatch->fresh()->getRawOriginal());
+        $this->assertSame($auditCount, AuditLog::query()->count());
+        $this->assertSame($eventCount, TechnicalServiceRequestEvent::query()->count());
+        Http::assertNothingSent();
     }
 
     public function test_stale_cancelled_manual_e2e_dispatch_does_not_block_new_dispatch(): void
