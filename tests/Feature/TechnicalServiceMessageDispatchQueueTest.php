@@ -3580,6 +3580,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
             'Direct Evo profile drift test reset.',
             $actor,
+            (int) $settings->executionModePayload()['revision'],
         );
         $settings->update([
             'evo_whatsapp' => ['direct_api_enabled' => false],
@@ -3590,6 +3591,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                 TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
                 'Missing direct profile must block Live mode.',
                 $actor,
+                (int) $settings->executionModePayload()['revision'],
                 'CANLI MODU AÇ',
             );
             $this->fail('Direct Evo profili eksikken LIVE aktivasyonu engellenmeliydi.');
@@ -4294,6 +4296,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'Manual E2E queue izolasyon testi hazirligi.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
             'TEST-MANUAL-E2E-MODE-QUEUE',
         );

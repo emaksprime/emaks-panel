@@ -145,6 +145,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
             ])],
             'reason' => ['required', 'string', 'min:10', 'max:500'],
             'confirmation' => ['nullable', 'string', 'max:40'],
+            'expected_revision' => ['required', 'integer', 'min:1'],
         ]);
         if ($data['mode'] === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE
             && ($data['confirmation'] ?? null) !== 'CANLI MODU AÇ') {
@@ -167,6 +168,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
                 (string) $data['mode'],
                 (string) $data['reason'],
                 $actor,
+                (int) $data['expected_revision'],
                 isset($data['confirmation']) ? (string) $data['confirmation'] : null,
                 $correlationId,
             ),
@@ -243,10 +245,10 @@ class TechnicalServiceMessagingSettingsController extends Controller
 
     private function assertExecutionModePayloadKeys(Request $request): void
     {
-        $allowed = ['mode', 'reason', 'confirmation'];
+        $allowed = ['mode', 'reason', 'confirmation', 'expected_revision'];
         if (array_diff(array_keys($request->all()), $allowed) !== []) {
             throw ValidationException::withMessages([
-                'mode' => 'Çalışma modu payload yalnız mode, reason ve confirmation alanlarını kabul eder.',
+                'mode' => 'Çalışma modu payload yalnız mode, reason, confirmation ve expected_revision alanlarını kabul eder.',
             ]);
         }
     }

@@ -1388,6 +1388,8 @@ export default function TechnicalServiceAdmin({
     const [executionModeReason, setExecutionModeReason] = useState('');
     const [executionModeConfirmation, setExecutionModeConfirmation] =
         useState('');
+    const [executionModeExpectedRevision, setExecutionModeExpectedRevision] =
+        useState<number | null>(null);
     const [executionModeChecking, setExecutionModeChecking] = useState(false);
     const [executionModeSaving, setExecutionModeSaving] = useState(false);
     const executionModeBusyRef = useRef(false);
@@ -2517,12 +2519,25 @@ export default function TechnicalServiceAdmin({
         setExecutionModeTarget(target);
         setExecutionModeReason('');
         setExecutionModeConfirmation('');
+        setExecutionModeExpectedRevision(null);
         setExecutionModeDialogOpen(true);
-        await refreshExecutionModeReadiness();
+        const executionMode = await refreshExecutionModeReadiness();
+
+        if (executionMode !== null) {
+            setExecutionModeExpectedRevision(executionMode.revision);
+        }
     };
 
     const transitionExecutionMode = async () => {
         if (executionModeBusyRef.current) {
+            return;
+        }
+
+        if (executionModeExpectedRevision === null) {
+            setMessagingMessage(
+                'Çalışma modu revision bilgisi doğrulanamadı. Güncel durumu yeniden yükleyin.',
+            );
+
             return;
         }
 
@@ -2548,9 +2563,23 @@ export default function TechnicalServiceAdmin({
                             executionModeTarget === 'live'
                                 ? executionModeConfirmation
                                 : undefined,
+                        expected_revision: executionModeExpectedRevision,
                     }),
                 },
             );
+
+            if (response.status === 409) {
+                await refreshExecutionModeReadiness();
+                setExecutionModeDialogOpen(false);
+                setExecutionModeExpectedRevision(null);
+                setExecutionModeReason('');
+                setExecutionModeConfirmation('');
+                setMessagingMessage(
+                    'Çalışma modu başka bir yönetici tarafından değiştirildi. Güncel durumu yeniden yükleyip kararınızı tekrar verin.',
+                );
+
+                return;
+            }
 
             if (!response.ok) {
                 setMessagingMessage(
@@ -2569,6 +2598,7 @@ export default function TechnicalServiceAdmin({
                 true,
             );
             setExecutionModeDialogOpen(false);
+            setExecutionModeExpectedRevision(null);
             setExecutionModeReason('');
             setExecutionModeConfirmation('');
             setMessagingMessage(
@@ -9943,6 +9973,7 @@ export default function TechnicalServiceAdmin({
                                 data-testid="messaging-execution-mode-confirm"
                                 disabled={
                                     executionModeSaving ||
+                                    executionModeExpectedRevision === null ||
                                     executionModeReason.trim().length < 10 ||
                                     (executionModeTarget === 'live' &&
                                         (!messaging.execution_mode.readiness

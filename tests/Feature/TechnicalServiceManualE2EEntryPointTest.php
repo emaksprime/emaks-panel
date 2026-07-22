@@ -434,6 +434,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
             'OPS hedefi gecersiz senaryo ayari icin guvenli lokal gecis.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
         );
         $settings->update([
             'ops_whatsapp_enabled' => true,
@@ -496,6 +497,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
             'Lifecycle lock regresyonu icin guvenli lokal gecis.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
         );
         $lifecycleLock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 30);
         $this->assertTrue($lifecycleLock->get());
@@ -519,6 +521,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'Worker lock regresyonu icin Manual E2E live test profili.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
         );
 
@@ -569,6 +572,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
             'Ayar duzenleme regresyonu icin guvenli lokal gecis.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
         );
         $this->actingAs($admin)
             ->patchJson('/api/technical-service/messaging-settings', [
@@ -847,6 +851,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'Manual E2E entrypoint izolasyon testi hazirligi.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
             'TEST-MANUAL-E2E-MODE-ENTRYPOINT',
         );

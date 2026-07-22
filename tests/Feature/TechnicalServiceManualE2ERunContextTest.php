@@ -443,6 +443,7 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'Manual E2E run-context test fixture preparation.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
             'TEST-MANUAL-E2E-RUN-CONTEXT-MODE',
         );

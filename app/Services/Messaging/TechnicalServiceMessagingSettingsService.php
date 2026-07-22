@@ -623,6 +623,7 @@ class TechnicalServiceMessagingSettingsService
         string $mode,
         string $reason,
         User $actor,
+        int $expectedRevision,
         ?string $confirmation = null,
         ?string $correlationId = null,
     ): array {
@@ -649,11 +650,14 @@ class TechnicalServiceMessagingSettingsService
         $lock = $this->acquireLifecycleLock();
 
         try {
-            DB::transaction(function () use ($mode, $reason, $actor, $correlationId, &$activeRunId): void {
+            DB::transaction(function () use ($mode, $reason, $actor, $expectedRevision, $correlationId, &$activeRunId): void {
                 $locked = $this->lockedAuthoritativeSettings();
                 $current = $locked['settings'];
                 $previousMode = $this->executionMode($current);
                 $previousRevision = $this->executionModeRevision($current);
+                if ($expectedRevision !== $previousRevision) {
+                    throw new ConflictHttpException('Çalışma modu başka bir yönetici tarafından değiştirildi. Güncel durumu yeniden yükleyip kararınızı tekrar verin.');
+                }
                 $readiness = [
                     'eligible' => true,
                     'blockers' => [],

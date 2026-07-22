@@ -9974,6 +9974,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'B2B Manual E2E test fixture preparation.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
             'TEST-B2B-MANUAL-E2E-MODE',
         );

@@ -1567,6 +1567,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL,
                 'Appointment fixture settings are being refreshed safely.',
                 $admin,
+                (int) $settings->executionModePayload()['revision'],
             );
         }
 
@@ -1616,6 +1617,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'Appointment queue fixture guarded live mode.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
             'TEST-APPOINTMENT-LIVE-MODE',
         );
@@ -1694,6 +1696,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LIVE,
             'Appointment Manual E2E test fixture preparation.',
             $admin,
+            (int) $settings->executionModePayload()['revision'],
             'CANLI MODU AÇ',
             'TEST-APPOINTMENT-MANUAL-E2E-MODE',
         );
