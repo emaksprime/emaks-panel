@@ -66,6 +66,18 @@ Webhook/API/storage credentials are external and rotatable; signatures/tokens ne
 
 Webhook ingest, outbound calls and media access default off independently. Unverified events fail closed/quarantine.
 
+## Inherited Local/Live control-plane
+
+REL-11 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns:
+
+| Capability | Class | Activation | Readiness |
+| --- | --- | --- | --- |
+| `mail.incoming.health` | `EXTERNAL_READ` | `OPTIONAL` | Environment-bound mailbox health probe with no message mutation |
+| `voibot.call` | `OUTBOUND_COMMUNICATION` | `OPTIONAL` | Consent, scoped target, one intent/call identity and no blind retry |
+| `voibot.webhook` | `INBOUND_CALLBACK` | `OPTIONAL` | Signature/replay verification, durable journal, correlation and retention |
+
+`LOCAL` blocks new calls and external mail reads while allowing verified prior callbacks to journal/reconcile without downstream automation. `LIVE` rechecks epoch/revision/profile at claim and transport. Stale retries cannot duplicate calls. Disable closes call/mail/automation gates separately, preserves interaction truth and quarantines unknown or ambiguous callbacks.
+
 ## Queue/worker/scheduler/cron
 
 Ingest/media/follow-up jobs are idempotent, leased and bounded. Provider retries cannot duplicate calls or follow-ups.

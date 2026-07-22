@@ -68,6 +68,18 @@ Credentials are external, environment-specific and rotatable. Save is inert; onl
 
 Global and per-capability read/write states default `off`; `shadow` cannot mutate; `active` requires recorded all-pass activation.
 
+## Inherited Local/Live control-plane
+
+INT-MIKRO inherits the global contract in [MASTER_REL_ROADMAP.md](../MASTER_REL_ROADMAP.md); it owns adapter operations, while `FOUNDATION-CONTROL-PLANE` owns global mode/profile/revision primitives.
+
+| Capability | Class | Activation | Readiness |
+| --- | --- | --- | --- |
+| `erp.mikro.read` | `EXTERNAL_READ` | `REQUIRED` | Typed operation, environment tenant/period profile, health/license/capability and parity |
+| `erp.mikro.write` | `EXTERNAL_MUTATION` | `REQUIRED` | Typed operation, outbox/idempotency, controlled canary, ambiguity quarantine and exact reconcile |
+| `gateway.n8n.execute` | `EXTERNAL_MUTATION` | `OPTIONAL` | Registered non-ERP operation and fixed profile; ERP write fallback is forbidden |
+
+`LOCAL` may persist typed intent/projection audit but performs no external write and never points PROD to a local gateway. `LIVE` revalidates epoch, capability revision and profile fingerprint at enqueue, claim and transport. Stale retry/DLQ work remains quarantined. Callback/reconcile can journal prior effects without starting a new write. LIVE to LOCAL stops claims first, preserves ambiguity and reconciles Mikro truth before compensation.
+
 ## Queue/worker/scheduler/cron
 
 Outbox/reconcile/DLQ workers are capability-specific, leased, bounded and idempotent. Ambiguous write is no blind retry; no n8n write fallback.

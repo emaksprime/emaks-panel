@@ -66,6 +66,10 @@ ERP/provider secrets remain external; part files and PII follow storage/redactio
 
 ERP reserve/movement and completion transition default off/fail-closed independently.
 
+## Inherited Local/Live control-plane
+
+REL-12 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `parts.movement.intent` (`INTERNAL_ONLY`, `REQUIRED`); INT-MIKRO owns the external ERP adapter. Readiness requires domain authorization, exact quantities/warehouse, outbox identity and completion blocking. `LOCAL` may retain a suppressed intent but performs no ERP write. `LIVE` rechecks epoch/revision/profile before gateway handoff. Stale/retry/DLQ work remains blocked. Disable stops new movement claims and reconciles physical/Mikro truth before compensation.
+
 ## Queue/worker/scheduler/cron
 
 Outbox/reconcile jobs are operation-specific, idempotent, leased and ambiguity-safe. No automatic write fallback.

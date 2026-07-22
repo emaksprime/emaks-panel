@@ -66,6 +66,10 @@ Notification credentials stay external. Message body and PII are redacted in log
 
 Each A-E phase has an independent off-by-default flag; visibility defaults internal/deny.
 
+## Inherited Local/Live control-plane
+
+REL-8 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `mail.smtp.send` (`OUTBOUND_COMMUNICATION`, `OPTIONAL`). Readiness requires an environment-bound SMTP profile, current recipient authorization, template identity, dedupe and accepted-versus-delivered evidence. `LOCAL` preserves collaboration state and suppressed notification intent with external hit zero. `LIVE` rechecks epoch/revision/profile at claim and transport. Stale jobs cannot notify removed actors. Disable stops delivery but preserves comments, read state and audit.
+
 ## Queue/worker/scheduler/cron
 
 Notification jobs use event/idempotency keys, current authorization recheck and duplicate suppression. Stale jobs cannot notify removed actors.

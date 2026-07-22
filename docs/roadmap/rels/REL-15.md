@@ -66,6 +66,10 @@ Secrets are entered/rotated through external management. Mikro production creden
 
 Outbound messaging, invitations, payment creation, Voibot and Mikro start off. Each capability has an independent kill switch and named enable owner.
 
+## Inherited Local/Live control-plane
+
+REL-15 inherits [the global contract](../MASTER_REL_ROADMAP.md) and owns `release.cutover.execute` (`INTERNAL_ONLY`, `REQUIRED`). Readiness is the immutable artifact plus every applicable Production Definition of Done gate and named Go/No-Go owner. First deploy is global `LOCAL`: all external effects frozen and no production traffic redirected to localhost. Global LIVE is one atomic all-pass activation of the versioned REQUIRED manifest; OPTIONAL capabilities stay off. LIVE to LOCAL enters FREEZING, stops claims, reconciles in-flight/ambiguous effects and preserves audit. Rollback never blindly restores over provider or ERP truth.
+
 ## Queue/worker/scheduler/cron
 
 Document drain/stop/migrate/start order, worker version parity, lease health, pending limits and stale recovery. No old worker processes new schema.

@@ -13,7 +13,7 @@ Current PR #88 product chain, environment foundation, partner/technician identit
 ## Included scope
 
 - Preserve accepted copy/upload/job-card/assignment/appointment/payment/earning behavior.
-- Preserve the independently accepted claim/permit/HTTP/finalize guarantees at the current product head; PostgreSQL evidence is inherited only through exact unchanged lifecycle-critical blobs.
+- Preserve the independently accepted claim/permit/HTTP/finalize guarantees and guarded messaging execution-mode lineage at the current product head; current-head PostgreSQL/RBAC/browser acceptance remains a separate gate.
 - Run one separately authorized, allowlisted assignment-offer WhatsApp + SMS pair with exact reconciliation.
 - Complete current-head browser, clean-migration and staging acceptance before PR #88 readiness is decided.
 
@@ -27,7 +27,7 @@ Laravel Technical Service request/assignment/dispatch/settlement records are aut
 
 ## Entry criteria
 
-Exact remote product head `98fb1937fd2dc302870c992bf864108bc7acba7d` on open Draft PR #88; green exact-SHA quality and PHP 8.3/8.4/8.5 CI; lifecycle-critical blobs unchanged from the PostgreSQL-accepted `18ee8ce8ee92b3052d4156de115ee2c4a8d2db77` core; frozen runtime, no active worker/window, no provider delta, reachable public HTTPS, provider readiness, and separate explicit send authorization.
+Exact remote product head `29546a546bccf4575d3c9fd9c6c2587355c81aef` and tree `b2b140a3b40758ed519853eeb0d0db110ba2217e` on open Draft PR #88; guarded messaging implementation `63e8e9febe96dbfc64b666aa9c82adf054d36d1f`, fixture alignment `78a3a82a4d734875aec9ad85bd2bca0251b342f2`, deterministic repair at the current head; exact-SHA quality and PHP 8.3/8.4/8.5 CI green with 1681 tests, 15315 assertions and 18 skipped; external send zero. Current-head disposable PostgreSQL, targeted RBAC/browser, public HTTPS/provider readiness and separate send authorization remain gates.
 
 ## Exit/acceptance criteria
 
@@ -68,6 +68,17 @@ Provider credentials remain external to Git/evidence. Readiness may verify prese
 ## Feature flag and safe default
 
 Default is frozen: Manual E2E off, real send off, queue paused, OPS channels off, no active run/window/lease.
+
+## Inherited Local/Live control-plane
+
+REL-4E inherits the global contract in [MASTER_REL_ROADMAP.md](../MASTER_REL_ROADMAP.md); status remains only in the ledger.
+
+| Capability | Class | Activation | Readiness |
+| --- | --- | --- | --- |
+| `messaging.evolution.send` | `OUTBOUND_COMMUNICATION` | `REQUIRED` | Environment-bound Evo profile, queue/claim/permit, consent/allowlist, public URL and reconciliation |
+| `messaging.nac.send` | `OUTBOUND_COMMUNICATION` | `REQUIRED` | Environment-bound NAC profile, queue/claim/permit, consent/allowlist and reconciliation |
+
+`LOCAL` preserves suppressed intent/audit and produces provider HTTP zero, including in PROD; it never substitutes a localhost endpoint. `LIVE` requires the current global epoch, capability revision and profile fingerprint. Non-production provider access additionally requires the exact run/window/claim/one-time permit. Stale queue/retry/DLQ work stays blocked. Close/freeze preserves accepted or ambiguous provider truth and never blindly retries.
 
 ## Queue/worker/scheduler/cron
 

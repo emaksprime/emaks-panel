@@ -66,6 +66,10 @@ Source credentials remain external; search/log/evidence redact PII and identifie
 
 Projection and UI default read-only/off; stale source is shown as stale, never silently treated current.
 
+## Inherited Local/Live control-plane
+
+REL-13 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `crm.projection.refresh` (`BACKGROUND_AUTOMATION`, `REQUIRED`). Readiness requires source-labelled checkpoints, freshness thresholds, idempotency and dead-letter visibility. `LOCAL` permits internal projection only from already accepted sources and performs no hidden external read/write. `LIVE` rechecks source capability epoch/revision/profile before refresh. Stale jobs remain quarantined. Disable stops refresh/search workers while preserving authoritative source data and visible freshness.
+
 ## Queue/worker/scheduler/cron
 
 Projection workers consume accepted events/source checkpoints idempotently with lag/dead-letter monitoring.

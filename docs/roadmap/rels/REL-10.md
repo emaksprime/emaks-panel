@@ -66,6 +66,10 @@ No secrets or raw credentials enter event payloads. Structured redaction covers 
 
 Event enforcement can shadow-read initially, but critical mutation must fail closed once required. Audit export defaults off.
 
+## Inherited Local/Live control-plane
+
+REL-10A inherits [the global contract](../MASTER_REL_ROADMAP.md) and owns `audit.event.append` (`INTERNAL_ONLY`, `REQUIRED`). Readiness requires append-only schema, complete critical-event coverage, actor/correlation/reason and redaction. Audit remains active in LOCAL and LIVE; it cannot be disabled to conceal blocked or ambiguous external effects. Async projections snapshot epoch/revision and reject stale writes. Rollback disables UI/export/projection separately but never deletes accepted events.
+
 ## Queue/worker/scheduler/cron
 
 If async projection is used, source event commit is transactional/outbox-safe; projection retries are idempotent and lag is monitored.

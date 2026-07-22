@@ -66,6 +66,10 @@ Mikro/mail credentials remain external and disabled during implementation accept
 
 Exchange ERP write and completion transition default off. Ambiguous result fails closed.
 
+## Inherited Local/Live control-plane
+
+REL-4G inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `serial.exchange.apply` (`INTERNAL_ONLY`, `REQUIRED`); Mikro transport remains owned by INT-MIKRO. Readiness requires authoritative old/new serial, root MRN, quarantine and ERP-intent reconciliation. `LOCAL` records no external ERP effect. `LIVE` revalidates epoch/revision/profile before handing a typed intent to the gateway. Stale/retry/DLQ work stays blocked; disable stops new exchanges and reconciles ambiguous ERP truth before compensation.
+
 ## Queue/worker/scheduler/cron
 
 Outbox workers are bounded, idempotent and reconciliation-aware. Ambiguous writes never auto-retry without provider-safe identity.

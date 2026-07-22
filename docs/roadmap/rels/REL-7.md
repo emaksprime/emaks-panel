@@ -66,6 +66,10 @@ No domain secret. External escalation channels use separately managed provider c
 
 New transition engine defaults read-only/off until backfill and parity pass; unknown state/action fails closed.
 
+## Inherited Local/Live control-plane
+
+REL-7 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `state.sla.tick` (`BACKGROUND_AUTOMATION`, `REQUIRED`). Readiness requires versioned state/calendar definitions, deterministic clocks, leases, idempotency and current authorization. `LOCAL` can record internal state but emits no external notification. `LIVE` jobs snapshot epoch/revision and recheck before downstream intent. Stale retries/DLQ entries remain quarantined. Freeze stops new SLA claims and reconciles in-flight transitions without inventing provider success.
+
 ## Queue/worker/scheduler/cron
 
 SLA/escalation jobs are idempotent, leased and time-zone deterministic. Repeated jobs create no duplicate action/notification.

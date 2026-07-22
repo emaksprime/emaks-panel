@@ -66,6 +66,10 @@ No new secret is expected. Database credentials remain externally managed.
 
 New allocation remains off until schema/backfill/reconcile pass; legacy writes are frozen during cutover.
 
+## Inherited Local/Live control-plane
+
+REL-4H inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `identity.root_mrn.allocate` (`INTERNAL_ONLY`, `REQUIRED`). Readiness is schema/backfill/concurrency/non-reuse proof. `LOCAL` and `LIVE` never weaken uniqueness; the mode controls dependent external effects, not identity truth. Allocation jobs snapshot revision and reject stale work. Disable freezes new allocation without rolling sequences back; restore requires mapping reconciliation, not blind replay.
+
 ## Queue/worker/scheduler/cron
 
 Backfill jobs are bounded, idempotent, leased and restartable. No background job may allocate a duplicate or rewrite an issued MRN.

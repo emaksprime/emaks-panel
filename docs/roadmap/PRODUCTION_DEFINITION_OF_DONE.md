@@ -22,6 +22,32 @@ No REL, integration, or feature is production-ready because implementation or CI
 16. Data reconciliation proves no duplicate, orphan, collision, cross-tenant leak, missing event, or hidden ambiguous result.
 17. S0 and S1 blockers are zero; accepted S2 items have owners and dates.
 18. Go/No-Go owners sign exact artifact, environment, evidence, and rollback readiness.
+19. The inherited Local/Live control plane is implemented: immutable environment, unique capability ownership, default deny, atomic REQUIRED readiness, revision fencing, callback journal/reconcile and dedicated RBAC/audit all pass.
+
+## Mandatory Local/Live Control-Plane Gate
+
+- Global state is one of `LOCAL`, `ACTIVATING`, `LIVE`, `FREEZING` or `BLOCKED`; server environment is immutable `DEV`, `UAT` or `PROD`.
+- `PROD + LOCAL` means no external effect. It never means routing production traffic to localhost, a test profile or a null endpoint reported as success.
+- Every external effect has one stable capability key, one classification, one owner, `REQUIRED` or `OPTIONAL` activation class, an environment-bound profile and a versioned readiness contract.
+- Global LIVE activation is atomic for all `REQUIRED` capabilities. Unknown/new capabilities and unaccepted `OPTIONAL` capabilities remain off.
+- Intent, claim and transport revalidate global epoch, capability revision and environment/profile fingerprint; stale retry/replay/DLQ work stays quarantined.
+- Inbound callbacks may be verified, journaled and reconciled while LOCAL, but cannot start new outbound automation.
+- LIVE to LOCAL stops new claims first, reconciles in-flight/ambiguous work, closes providers/queues and preserves truthful audit.
+- Mode permission, actor, reason, correlation, before/after, revision and exact blockers are server-authoritative and visible without secrets.
+
+## CI Performance and Dependency Determinism Gate
+
+CI speed work cannot remove tests, PHP versions or release coverage.
+
+1. Preserve current cache, `coverage: none` and cancel-in-progress optimizations.
+2. Publish JUnit timing artifacts and measure test/class/seeder costs before sharding.
+3. Create two duration-balanced shards; require both shards on PHP 8.3, 8.4 and 8.5.
+4. Run fast control-plane/security contract smokes before the full shards.
+5. Run one monolithic full PHP matrix on the final exact release SHA.
+6. Use a path-aware lightweight docs gate only for docs-only diffs.
+7. Add reviewed `composer.lock` and `package-lock.json` in a separate dependency-stabilization PR; use locked Composer installation and `npm ci`.
+8. Do not enable ParaTest until isolation and shared/global state safety are proven.
+9. Preserve timing history and require exact dependency/runtime fingerprints in release evidence.
 
 ## REL-15 Execution Order
 
@@ -33,7 +59,7 @@ No REL, integration, or feature is production-ready because implementation or CI
 6. Match production PHP/runtime and pass CI, full tests, lint and build.
 7. Complete desktop/mobile browser UAT.
 8. Pass security, performance and capacity gates.
-9. Deploy with outbound messaging, payment-link creation, invitations and Mikro disabled.
+9. Deploy in global `LOCAL` with outbound messaging, payment-link creation, invitations, Voibot, n8n mutation and Mikro disabled; attest that PROD was not redirected to local endpoints.
 10. Stop queue/scheduler in the documented controlled order.
 11. Apply migration/backfill/cache/build and restart workers deterministically.
 12. Run no-send internal smoke.
@@ -41,7 +67,7 @@ No REL, integration, or feature is production-ready because implementation or CI
 14. Keep bulk invitation disabled.
 15. Run separately authorized messaging, Voibot and Iyzico canaries.
 16. Enter Mikro production credentials last.
-17. Run Mikro health/license/tenant/period/capability/parity/write/replay/reconcile checks and atomically activate only on all-pass.
+17. Run the versioned global readiness manifest, including Mikro health/license/tenant/period/capability/parity/write/replay/reconcile checks, and atomically activate all `REQUIRED` capabilities only on all-pass.
 18. Observe ERP-path n8n traffic at zero.
 19. Complete one new canonical customer + serial + root MRN end-to-end flow.
 20. Evaluate numeric alerts and issue Go/No-Go.

@@ -66,6 +66,10 @@ OTP/provider secrets are external, rotatable and absent from client responses/lo
 
 Public passport, OTP issue and self-service mutation default off independently.
 
+## Inherited Local/Live control-plane
+
+REL-6 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `otp.send` (`OUTBOUND_COMMUNICATION`, `REQUIRED`). Readiness requires an environment-bound sender, canonical HTTPS, one-time challenge, expiry/rate/attempt limits and delivery reconciliation. `LOCAL` may create no externally delivered OTP and reports suppression truthfully. `LIVE` rechecks epoch/revision/profile at issue, claim and transport. Stale/replayed challenges are denied. Disable revokes outstanding challenges and stops delivery while preserving service/audit state.
+
 ## Queue/worker/scheduler/cron
 
 OTP delivery is idempotent/bounded; expiry cleanup never resurrects consumed tokens. Self-service events use accepted queue safeguards.

@@ -66,6 +66,20 @@ Passwords, import credentials and Mikro secrets stay external. Password hashes a
 
 New customer merge, reveal/export and import apply default disabled until their acceptance gates pass.
 
+## Inherited Local/Live control-plane
+
+REL-5 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns:
+
+| Capability | Class | Activation | Readiness |
+| --- | --- | --- | --- |
+| `bulk.support.apply` | `BULK_APPLY_OR_INVITATION` | `REQUIRED` | Preview hash, approval, idempotent apply and rollback/deactivate |
+| `bulk.b2b.apply` | `BULK_APPLY_OR_INVITATION` | `REQUIRED` | Tenant/capability validation, approval and reconciliation |
+| `bulk.technician_locksmith.apply` | `BULK_APPLY_OR_INVITATION` | `REQUIRED` | Membership/technician isolation, approval and rollback/deactivate |
+| `invitation.send` | `BULK_APPLY_OR_INVITATION` | `OPTIONAL` | Separate recipient approval, delivery profile and dedupe |
+| `maps.google.geocode` | `EXTERNAL_READ` | `OPTIONAL` | Fixed environment profile, rate/timeout policy and review fallback |
+
+`LOCAL` permits preview and audited internal apply only where separately enabled; it performs no invitation or external geocode call. Import never implies send. `LIVE` revalidates epoch/revision/profile at job claim and adapter boundary. Stale batches/invitations remain blocked. Disable preserves memberships, batch lineage and audit; rollback is exact deactivate/reconcile, never broad deletion.
+
 ## Queue/worker/scheduler/cron
 
 Large import/backfill jobs use leases, stable batch keys and idempotent row processing. Invitation and outbound notification workers remain disabled during import.

@@ -66,6 +66,18 @@ Merchant keys are external, separate by environment, rotatable and never logged.
 
 Live creation/callback mutation/refund default off independently. Kill switch must stop new external actions without corrupting existing reconciliation.
 
+## Inherited Local/Live control-plane
+
+REL-9 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns:
+
+| Capability | Class | Activation | Readiness |
+| --- | --- | --- | --- |
+| `payment.iyzico.mutate` | `FINANCIAL_MUTATION` | `REQUIRED` | Merchant/profile, amount/currency/reference, idempotency and kill switch |
+| `payment.iyzico.reconcile` | `EXTERNAL_READ` | `REQUIRED` | Authoritative provider query, correlation and ambiguity handling |
+| `payment.iyzico.callback` | `INBOUND_CALLBACK` | `REQUIRED` | Signature/replay verification, durable journal and exact reconciliation |
+
+`LOCAL` creates no charge/refund and never fabricates payment; prior callbacks may be verified, journaled and reconciled without starting new automation. `LIVE` rechecks epoch/revision/profile at intent, claim and provider boundary. Ambiguous mutation is no blind retry. LIVE to LOCAL stops new financial claims, preserves provider truth and completes reconciliation before compensation.
+
 ## Queue/worker/scheduler/cron
 
 Reconcile/mail/message jobs are idempotent, leased and mode-aware. Ambiguous provider outcomes are not blindly retried.

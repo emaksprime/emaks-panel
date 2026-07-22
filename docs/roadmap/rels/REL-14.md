@@ -66,6 +66,10 @@ Call/message/survey credentials remain external. Survey free text and PII are re
 
 Happy Call task generation, survey send and KPI publication default off independently.
 
+## Inherited Local/Live control-plane
+
+REL-14 inherits [the global contract](../MASTER_REL_ROADMAP.md). It owns `survey.followup.plan` (`BACKGROUND_AUTOMATION`, `REQUIRED`); actual message/mail/call transport remains with its adapter owner. Readiness requires versioned eligibility, consent, dedupe, current authorization and accepted channel handoff. `LOCAL` may calculate internal eligibility but sends nothing. `LIVE` rechecks epoch/revision at planning and adapter claim. Stale retries cannot duplicate a survey. Disable stops generation/delivery, preserves answers/audit and labels retained KPI data with freshness.
+
 ## Queue/worker/scheduler/cron
 
 Eligibility/delay/retry/escalation jobs are idempotent and re-version on reopen. KPI refresh is versioned, checkpointed and monitored.

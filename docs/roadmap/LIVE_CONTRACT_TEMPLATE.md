@@ -66,6 +66,21 @@ Define external secret storage, rotation and activation separation.
 
 Every risky capability starts disabled and fails closed.
 
+## Inherited Local/Live control-plane
+
+Link to the global contract in `MASTER_REL_ROADMAP.md`; do not copy status from the ledger. List for this REL:
+
+- Stable capability key and classification
+- Sole owner and `REQUIRED`/`OPTIONAL` activation class
+- Capability-specific readiness and environment-bound provider profile
+- `LOCAL` behavior, including external-hit zero and truthful intent/audit
+- `LIVE` behavior and the authoritative server-side guard
+- Queue/retry/DLQ and stale epoch/revision behavior
+- Callback receive/verify/journal/reconcile/automation behavior, if applicable
+- Disable, rollback and ambiguous-result reconciliation
+
+Unknown capabilities and new providers/endpoints default `LOCAL/OFF`. A REL cannot exit without proving global epoch, capability revision and environment/profile fingerprint checks at every applicable enqueue, claim and transport boundary.
+
 ## Queue/worker/scheduler/cron
 
 Define processes, leases, retries, idempotency, drain/start order and stale recovery.
@@ -73,6 +88,10 @@ Define processes, leases, retries, idempotency, drain/start order and stale reco
 ## Build/restart/post-deploy command
 
 List deterministic commands and verification in exact order; do not say only "configure env".
+
+## CI and dependency determinism
+
+Name changed-file contract tests, shared invariant tests, any required disposable PostgreSQL/browser gate and exact-head CI. Preserve all applicable PHP versions and tests. Dependency lockfile changes require a separate reviewed stabilization scope; the final release SHA also requires the monolithic full matrix defined by the Production Definition of Done.
 
 ## External provider contract
 
