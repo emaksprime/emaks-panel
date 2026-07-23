@@ -1729,9 +1729,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsArray($item);
         $this->assertSame('Acceptance Akıllı Kapı Kilidi', $item['product_name']);
         $this->assertSame('Kapı Model', $item['product_model']);
-        $this->assertSame('Sentetik Sehir 021', $item['customer_city']);
+        $this->assertSame('İstanbul', $item['customer_city']);
         $this->assertSame('Kadıköy', $item['customer_district']);
-        $this->assertContains('Sentetik Sehir 021', collect($response->json('city_summary'))->pluck('city')->all());
+        $this->assertContains('İstanbul', collect($response->json('city_summary'))->pluck('city')->all());
         $this->assertNotContains('?stanbul', collect($response->json('city_summary'))->pluck('city')->all());
 
         $encoded = json_encode($item, JSON_UNESCAPED_UNICODE);

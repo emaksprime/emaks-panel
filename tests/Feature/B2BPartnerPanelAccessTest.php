@@ -2601,11 +2601,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('items.0.status', 'created')
-            ->assertJsonPath('items.0.default_user.username', 'bahat320')
+            ->assertJsonPath('items.0.default_user.username', 'sente004')
             ->assertJsonPath('items.0.default_user.default_password', '12345678');
 
         $partner = B2BPartner::query()->where('mikro_cari_kodu', 'SYNTH-CARI-004')->firstOrFail();
-        $user = User::query()->where('username', 'bahat320')->firstOrFail();
+        $user = User::query()->where('username', 'sente004')->firstOrFail();
 
         $this->assertTrue(Hash::check('12345678', $user->password_hash));
         $this->assertNotSame('12345678', $user->password_hash);
@@ -2664,7 +2664,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
-        User::factory()->create(['username' => 'bahat320']);
+        User::factory()->create(['username' => 'synth320']);
 
         $this->actingAs($admin)
             ->postJson('/api/b2b/cari-control/apply', [
@@ -2676,10 +2676,10 @@ class B2BPartnerPanelAccessTest extends TestCase
                 ]],
             ])
             ->assertOk()
-            ->assertJsonPath('items.0.default_user.username', 'bahat3202');
+            ->assertJsonPath('items.0.default_user.username', 'synth3202');
 
         $this->assertDatabaseMissing('b2b_partner_user_access', [
-            'user_id' => User::query()->where('username', 'bahat3202')->value('id'),
+            'user_id' => User::query()->where('username', 'synth3202')->value('id'),
             'access_scope' => 'technical_service',
         ]);
 
@@ -3369,11 +3369,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertCreated()
             ->assertJsonPath('created', true)
-            ->assertJsonPath('username', 'bahat320')
+            ->assertJsonPath('username', 'synth320')
             ->assertJsonPath('role_code', 'b2b_dealer')
             ->assertJsonPath('default_password', '12345678');
 
-        $user = User::query()->where('username', 'bahat320')->firstOrFail();
+        $user = User::query()->where('username', 'synth320')->firstOrFail();
         $this->assertSame('b2b_dealer', $user->role_code);
         $this->assertTrue(Hash::check('12345678', $user->password_hash));
         $this->assertNotSame('12345678', $user->password_hash);
@@ -3438,7 +3438,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
-        User::factory()->create(['username' => 'bahat320']);
+        User::factory()->create(['username' => 'synth320']);
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_DEALER,
             'capabilities' => [B2BPartner::TYPE_DEALER],
@@ -3449,13 +3449,13 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($admin)
             ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
             ->assertCreated()
-            ->assertJsonPath('username', 'bahat3202');
+            ->assertJsonPath('username', 'synth3202');
 
         $this->actingAs($admin)
             ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
             ->assertOk()
             ->assertJsonPath('status', 'already_linked')
-            ->assertJsonPath('username', 'bahat3202')
+            ->assertJsonPath('username', 'synth3202')
             ->assertJsonPath('default_password', null);
 
         $this->assertSame(1, B2BPartnerUserProfile::query()
@@ -4568,9 +4568,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
             ->assertOk()
             ->assertJsonPath('jobs.0.customer_name', 'Müşteri Smoke')
-            ->assertJsonPath('jobs.0.city', 'Sentetik Sehir 021')
+            ->assertJsonPath('jobs.0.city', 'İstanbul')
             ->assertJsonPath('jobs.0.district', 'Kadıköy')
-            ->assertJsonPath('jobs.0.address_summary', 'Sentetik Sehir 021 · Kadıköy')
+            ->assertJsonPath('jobs.0.address_summary', 'İstanbul · Kadıköy')
             ->assertJsonPath('jobs.0.status_label', 'Planlı')
             ->assertJsonPath('jobs.0.service_stage_label', 'Tamamlandı');
 
@@ -4631,9 +4631,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson('/api/technical-service/requests/'.$request->id)
             ->assertOk()
             ->assertJsonPath('request.customer_name', 'Müşteri Smoke')
-            ->assertJsonPath('request.customer_city', 'Sentetik Sehir 021')
+            ->assertJsonPath('request.customer_city', 'İstanbul')
             ->assertJsonPath('request.customer_district', 'Kadıköy')
-            ->assertJsonPath('request.service_address', 'Sentetik Sehir 021 · Kadıköy')
+            ->assertJsonPath('request.service_address', 'İstanbul · Kadıköy')
             ->assertJsonPath('request.status', 'Tamamlandı')
             ->assertJsonPath('request.workflow_status', 'Tamamlandı')
             ->assertJsonPath('request.technical_service_technician.name', 'SMOKE-SCOPE-20260606021857 Diğer Usta');

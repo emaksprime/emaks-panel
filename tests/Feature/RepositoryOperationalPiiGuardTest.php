@@ -2,9 +2,9 @@
 
 namespace Tests\Feature;
 
+use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Tests\Support\TechnicalServiceSyntheticDataFactory;
-use Tests\TestCase;
 
 class RepositoryOperationalPiiGuardTest extends TestCase
 {
@@ -18,7 +18,7 @@ class RepositoryOperationalPiiGuardTest extends TestCase
 
         foreach ($removedDatasets as $path) {
             $this->assertNotContains($path, $paths);
-            $this->assertFileDoesNotExist(base_path($path));
+            $this->assertFileDoesNotExist($this->repositoryPath($path));
         }
 
         $privateFiles = array_values(array_filter(
@@ -36,7 +36,7 @@ class RepositoryOperationalPiiGuardTest extends TestCase
             'tests/Feature/TechnicalServiceTechnicianImportApplyTest.php',
             'tests/Feature/TechnicalServiceWorkflowTest.php',
         ] as $path) {
-            $contents = (string) file_get_contents(base_path($path));
+            $contents = (string) file_get_contents($this->repositoryPath($path));
 
             $this->assertStringContainsString('TechnicalServiceSyntheticDataFactory', $contents, $path);
         }
@@ -60,7 +60,7 @@ class RepositoryOperationalPiiGuardTest extends TestCase
         ];
 
         foreach ($entrypoints as $path) {
-            $contents = (string) file_get_contents(base_path($path));
+            $contents = (string) file_get_contents($this->repositoryPath($path));
 
             foreach ($removedBasenames as $basename) {
                 $this->assertStringNotContainsString($basename, $contents, $path);
@@ -91,7 +91,10 @@ class RepositoryOperationalPiiGuardTest extends TestCase
      */
     private function prospectiveRepositoryPaths(): array
     {
-        $command = 'git -c core.quotepath=false ls-files --cached --others --exclude-standard -z';
+        $command = sprintf(
+            'git -C %s -c core.quotepath=false ls-files --cached --others --exclude-standard -z',
+            escapeshellarg($this->repositoryRoot()),
+        );
         $output = shell_exec($command);
 
         if (! is_string($output)) {
@@ -102,5 +105,15 @@ class RepositoryOperationalPiiGuardTest extends TestCase
             fn (string $path): string => str_replace('\\', '/', $path),
             explode("\0", $output),
         )));
+    }
+
+    private function repositoryPath(string $path): string
+    {
+        return $this->repositoryRoot().DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $path);
+    }
+
+    private function repositoryRoot(): string
+    {
+        return dirname(__DIR__, 2);
     }
 }
