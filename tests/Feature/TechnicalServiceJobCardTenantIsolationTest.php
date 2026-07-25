@@ -320,6 +320,7 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
     {
         $fixture = $this->tenantFixture();
         [$settings, $metadata] = $this->manualE2ELinkContext('905467647428');
+        config(['services.partner_portal.public_url' => 'http://10.0.28.64:8000']);
 
         $resolved = app(TechnicalServiceTechnicianPortalLinkResolver::class)->resolveForDispatch(
             $fixture['job'],
@@ -331,7 +332,7 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
 
         $this->assertTrue($resolved['ready']);
         $this->assertSame('manual_e2e_local', $resolved['mode']);
-        $this->assertSame('admin_manual_e2e_partner_portal_origin', $resolved['source']);
+        $this->assertSame('services.partner_portal.public_url', $resolved['source']);
         $this->assertSame('http://10.0.28.64:8000/pj/'.$fixture['job']->id, $resolved['short_url']);
         $this->assertStringContainsString('/partner/service-jobs?', $resolved['canonical_url']);
         $this->assertStringNotContainsString('ops-support', $resolved['short_url']);
@@ -415,7 +416,7 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
         }
     }
 
-    public function test_live_short_job_link_requires_public_https_origin(): void
+    public function test_local_short_job_link_accepts_private_lan_profile_without_enabling_provider_effects(): void
     {
         $fixture = $this->tenantFixture();
         config([
@@ -430,9 +431,10 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
             '905467647428',
         );
 
-        $this->assertFalse($resolved['ready']);
-        $this->assertSame('public_url_missing', $resolved['blocker_code']);
-        $this->assertNull($resolved['short_url']);
+        $this->assertTrue($resolved['ready']);
+        $this->assertSame('local_preview', $resolved['mode']);
+        $this->assertSame('services.partner_portal.public_url', $resolved['source']);
+        $this->assertSame('http://10.0.28.64:8000/pj/'.$fixture['job']->id, $resolved['short_url']);
     }
 
     public function test_job_deep_link_page_exposes_only_authorized_requested_job_id(): void

@@ -572,7 +572,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 data_get($dispatch->request_payload, 'context.technician_job_card_origin_mode'),
             );
             $this->assertSame(
-                'admin_manual_e2e_partner_portal_origin',
+                'services.partner_portal.public_url',
                 data_get($dispatch->request_payload, 'context.technician_job_card_origin_source'),
             );
         }
@@ -1055,7 +1055,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_final_control_activation_warranty_customer_message_is_single_queue_message(): void
+    public function test_final_control_activation_warranty_customer_message_does_not_invent_survey_route(): void
     {
         $actor = $this->admin();
         $this->configureGuardedLiveMessaging([
@@ -1076,8 +1076,8 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 'activation_code' => 'ACT-REL4E13',
                 'warranty_started_at_formatted' => '08.07.2026',
                 'warranty_ends_at_formatted' => '08.07.2028',
-                'survey_link' => 'https://portal.example.test/service-job-confirmation/token?survey=1',
-                'survey_link_sms' => 'https://e.ms/anket/13',
+                'survey_link' => null,
+                'survey_link_sms' => null,
             ],
             $actor,
         );
@@ -1104,10 +1104,13 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringContainsString('REL4E13-SERIAL', $body);
         $this->assertStringContainsString('08.07.2026', $body);
         $this->assertStringContainsString('08.07.2028', $body);
-        $this->assertStringContainsString('https://portal.example.test/service-job-confirmation/token?survey=1', $body);
+        $this->assertStringNotContainsString('survey=1', $body);
 
         $controllerSource = file_get_contents(app_path('Http/Controllers/Api/TechnicalServicePartnerPortalOpsController.php')) ?: '';
         $this->assertStringContainsString("'activation_warranty_customer' =>", $controllerSource);
+        $this->assertStringContainsString('$surveyLink = null;', $controllerSource);
+        $this->assertStringNotContainsString('completionSurveyLink', $controllerSource);
+        $this->assertStringNotContainsString('customer_completion_survey_link_logged', $controllerSource);
         $this->assertStringNotContainsString("'final_control_completed_customer' => $".'this->workflowMessages->queueWorkflowDispatches', $controllerSource);
         $this->assertStringNotContainsString("'activation_code_customer' => $".'this->workflowMessages->queueWorkflowDispatches', $controllerSource);
         $this->assertStringNotContainsString("'warranty_started_customer' => $".'this->workflowMessages->queueWorkflowDispatches', $controllerSource);

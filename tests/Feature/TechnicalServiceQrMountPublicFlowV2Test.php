@@ -10,6 +10,7 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\N8nPanelDataGateway;
 use App\Services\Payments\PaymentProviderGatewayClient;
@@ -19,6 +20,7 @@ use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -416,8 +418,9 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertSee('<svg', false);
     }
 
-    public function test_ops_qr_product_svg_endpoint_can_encode_public_base_url_override(): void
+    public function test_ops_qr_product_svg_endpoint_rejects_origin_outside_global_profile(): void
     {
+        config(['services.partner_portal.public_url' => 'http://10.0.0.50:8000']);
         $user = User::factory()->create(['role_code' => 'admin']);
         ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
             'serial_number' => 'QR-SVG-BASE-001',
@@ -432,61 +435,71 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->getContent();
 
         $overrideSvg = $this->actingAs($user)
-            ->get('/api/technical-service/qr-products/'.$link->id.'/svg?public_base_url='.rawurlencode('http://panel.test:8000'))
+            ->get('/api/technical-service/qr-products/'.$link->id.'/svg?public_base_url='.rawurlencode('http://10.0.0.50:8000'))
             ->assertOk()
             ->getContent();
 
-        $this->assertNotSame($defaultSvg, $overrideSvg);
+        $this->assertSame($defaultSvg, $overrideSvg);
+
+        $this->actingAs($user)
+            ->getJson('/api/technical-service/qr-products/'.$link->id.'/svg?public_base_url='.rawurlencode('http://10.0.0.51:8000'))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('public_base_url');
     }
 
-    public function test_qr_products_page_allows_simple_public_form_base_url_override(): void
+    public function test_qr_products_page_uses_read_only_global_public_profile(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service-qr-products.tsx'));
         $this->assertIsString($source);
 
         foreach ([
-            'Public form base URL',
+            'Public form profili',
+            'global Lokal/Canlı public-origin profilinden gelir',
+            'Salt okunur',
             'Bu QR şu linki açacak',
-            'Telefon bu URL’ye erişemez',
-            'technical-service-qr-public-form-base-url',
-            'public_base_url',
             'selectedPublicUrl',
-            'qrSvgUrlForLink',
-            'Telefon konumu test edilecekse HTTPS test URL’si girin',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $source);
         }
 
-        $forbiddenLanExample = implode('.', ['10', '0', '28', '64']);
-
-        $this->assertStringNotContainsString($forbiddenLanExample, $source);
+        $this->assertStringNotContainsString('technical-service-qr-public-form-base-url', $source);
+        $this->assertStringNotContainsString('public_base_url', $source);
+        $this->assertStringNotContainsString('localStorage', $source);
     }
 
-    public function test_public_qr_accepts_https_base_url_for_location_testing(): void
+    public function test_qr_products_page_uses_authoritative_link_and_svg_urls(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service-qr-products.tsx'));
         $this->assertIsString($source);
 
-        $this->assertStringContainsString("['http:', 'https:']", $source);
-        $this->assertStringContainsString('Telefon konumu test edilecekse HTTPS test URL’si girin', $source);
-        $this->assertStringContainsString('QR önizleme ve QR görseli bu HTTPS base ile üretilir.', $source);
+        $this->assertStringContainsString('selectedLink?.public_url', $source);
+        $this->assertStringContainsString('selectedLink?.qr_svg_url', $source);
+        $this->assertStringContainsString('src={link.qr_svg_url}', $source);
     }
 
-    public function test_qr_encoded_url_matches_https_public_base(): void
+    public function test_admin_readiness_exposes_public_origin_and_route_contracts(): void
     {
-        $source = file_get_contents(resource_path('js/pages/panel/technical-service-qr-products.tsx'));
+        $source = file_get_contents(resource_path('js/pages/panel/admin/AdminIndex.jsx'));
         $this->assertIsString($source);
 
-        $this->assertStringContainsString('const params = new URLSearchParams({ public_base_url: normalizedBase })', $source);
-        $this->assertStringContainsString('return `${link.qr_svg_url}?${params.toString()}`', $source);
-        $this->assertStringContainsString('{selectedPublicUrl}', $source);
+        foreach ([
+            'public-origin-readiness',
+            'Müşteri iş onayı',
+            'QR / montaj',
+            'Public ödeme',
+            'Usta kısa iş kartı',
+            'UAT HTTPS',
+            'Production HTTPS',
+            'GET read-only',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $source);
+        }
     }
 
-    public function test_live_qr_public_url_uses_public_qr_base_url(): void
+    public function test_qr_public_url_uses_global_local_profile_origin(): void
     {
         config([
-            'services.public_urls.qr_base_url' => 'https://qr.example.test',
-            'services.public_urls.app_url' => 'https://app.example.test',
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
             'app.url' => 'https://app-url.example.test',
         ]);
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
@@ -499,35 +512,41 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ])
             ->assertCreated();
 
-        $this->assertSame('https://qr.example.test'.$response->json('path'), $response->json('public_url'));
+        $this->assertSame('http://10.0.0.50:8000'.$response->json('path'), $response->json('public_url'));
     }
 
-    public function test_live_public_urls_use_dashboard_domain_when_configured(): void
+    public function test_public_url_builders_share_selected_environment_origin(): void
     {
         config([
-            'services.public_urls.app_url' => 'https://dashboard.emaksprime.com.tr',
-            'services.public_urls.qr_base_url' => 'https://dashboard.emaksprime.com.tr',
-            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
             'app.url' => 'https://fallback.example.test',
         ]);
 
         $this->assertSame(
-            'https://dashboard.emaksprime.com.tr/mount-request/live-token',
+            'http://10.0.0.50:8000/service-job-confirmation/customer-token',
+            PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => 'customer-token']),
+        );
+        $this->assertSame(
+            'http://10.0.0.50:8000/mount-request/live-token',
             PartnerPortalPublicUrl::qrUrl('/mount-request/live-token'),
         );
         $this->assertSame(
-            'https://dashboard.emaksprime.com.tr/mount-payment/live-token',
+            'http://10.0.0.50:8000/mount-payment/live-token',
             PartnerPortalPublicUrl::paymentUrl('/mount-payment/live-token'),
+        );
+        $this->assertSame(
+            'http://10.0.0.50:8000/pj/42',
+            PartnerPortalPublicUrl::route('partner.service-jobs.short', ['technicalServiceRequest' => 42]),
         );
     }
 
     public function test_production_qr_url_rejects_localhost(): void
     {
         $this->app->detectEnvironment(fn (): string => 'production');
-        config(['services.public_urls.qr_base_url' => 'http://127.0.0.1:8000']);
+        config(['services.public_urls.app_url' => 'http://127.0.0.1:8000']);
 
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Production QR public URL localhost veya özel ağ IP');
+        $this->expectExceptionMessage('PUBLIC_PRODUCTION_HTTPS_MISSING');
 
         PartnerPortalPublicUrl::qrUrl('/mount-request/local-token');
     }
@@ -535,10 +554,10 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
     public function test_production_payment_url_rejects_localhost(): void
     {
         $this->app->detectEnvironment(fn (): string => 'production');
-        config(['services.public_urls.payment_base_url' => 'http://localhost:8000']);
+        config(['services.public_urls.app_url' => 'http://localhost:8000']);
 
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Production payment public URL localhost veya özel ağ IP');
+        $this->expectExceptionMessage('PUBLIC_PRODUCTION_HTTPS_MISSING');
 
         PartnerPortalPublicUrl::paymentUrl('/mount-payment/local-token');
     }
@@ -546,10 +565,10 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
     public function test_production_public_url_rejects_private_lan_ip(): void
     {
         $this->app->detectEnvironment(fn (): string => 'production');
-        config(['services.public_urls.qr_base_url' => 'http://192.168.1.20:8000']);
+        config(['services.public_urls.app_url' => 'http://192.168.1.20:8000']);
 
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Production QR public URL localhost veya özel ağ IP');
+        $this->expectExceptionMessage('PUBLIC_PRODUCTION_HTTPS_MISSING');
 
         PartnerPortalPublicUrl::qrUrl('/mount-request/private-token');
     }
@@ -557,11 +576,117 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
     public function test_local_public_form_base_override_allowed_in_local_only(): void
     {
         $this->app->detectEnvironment(fn (): string => 'local');
+        config(['services.partner_portal.public_url' => 'http://10.0.0.50:8000']);
 
         $this->assertSame(
             'http://10.0.0.50:8000/mount-request/local-token',
             PartnerPortalPublicUrl::qrUrl('/mount-request/local-token', 'http://10.0.0.50:8000'),
         );
+    }
+
+    public function test_public_origin_profile_matrix_is_environment_bound_and_fail_closed(): void
+    {
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
+            'services.public_urls.app_url' => null,
+            'services.public_urls.qr_base_url' => null,
+            'services.public_urls.payment_base_url' => null,
+        ]);
+
+        $devLocal = PartnerPortalPublicUrl::resolveProfile('local', 'local', 'local');
+        $this->assertSame('DEV', $devLocal['environment']);
+        $this->assertSame('local_public', $devLocal['profile']);
+        $this->assertSame('http://10.0.0.50:8000', $devLocal['origin']);
+        $this->assertTrue($devLocal['ready']);
+        $this->assertFalse($devLocal['external_effects_allowed']);
+
+        $uatLocal = PartnerPortalPublicUrl::resolveProfile('staging', 'local', 'local');
+        $this->assertSame('UAT', $uatLocal['environment']);
+        $this->assertSame('local_public', $uatLocal['profile']);
+        $this->assertSame('http://10.0.0.50:8000', $uatLocal['origin']);
+
+        $uatLiveBlocked = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($uatLiveBlocked['ready']);
+        $this->assertSame('PUBLIC_UAT_HTTPS_MISSING', $uatLiveBlocked['blocker_code']);
+
+        config(['services.partner_portal.public_url' => 'https://uat-panel.example.test']);
+        $uatLive = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertTrue($uatLive['ready']);
+        $this->assertSame('uat_public', $uatLive['profile']);
+        $this->assertSame('https://uat-panel.example.test', $uatLive['origin']);
+
+        config(['services.public_urls.app_url' => 'https://panel.example.test']);
+        $prodLocal = PartnerPortalPublicUrl::resolveProfile('production', 'local', 'local');
+        $this->assertTrue($prodLocal['ready']);
+        $this->assertSame('production_public', $prodLocal['profile']);
+        $this->assertSame('https://panel.example.test', $prodLocal['origin']);
+        $this->assertFalse($prodLocal['external_effects_allowed']);
+        $this->assertFalse(PartnerPortalPublicUrl::isLocalUrl($prodLocal['origin']));
+
+        $prodLive = PartnerPortalPublicUrl::resolveProfile('production', 'live', 'live');
+        $this->assertTrue($prodLive['ready']);
+        $this->assertTrue($prodLive['external_effects_allowed']);
+        $this->assertSame('https://panel.example.test', $prodLive['origin']);
+
+        $unknown = PartnerPortalPublicUrl::resolveProfile('unrecognized', 'local', 'local');
+        $this->assertFalse($unknown['ready']);
+        $this->assertSame('PUBLIC_ENVIRONMENT_UNKNOWN', $unknown['blocker_code']);
+    }
+
+    public function test_global_readiness_fingerprint_tracks_public_origin_profile(): void
+    {
+        config(['services.partner_portal.public_url' => 'http://10.0.0.50:8000']);
+        $first = app(ExternalExecutionControlPlaneService::class)->payload();
+
+        config(['services.partner_portal.public_url' => 'http://10.0.0.51:8000']);
+        $second = app(ExternalExecutionControlPlaneService::class)->payload();
+
+        $this->assertNotSame(
+            data_get($first, 'readiness.profile_fingerprint'),
+            data_get($second, 'readiness.profile_fingerprint'),
+        );
+        $this->assertNotSame(
+            data_get($first, 'readiness.public_origin.profile_fingerprint'),
+            data_get($second, 'readiness.public_origin.profile_fingerprint'),
+        );
+    }
+
+    public function test_legacy_local_payment_url_is_rebased_without_mutating_stored_value(): void
+    {
+        config(['services.partner_portal.public_url' => 'http://10.0.0.50:8000']);
+        $stored = 'http://127.0.0.1:8000/mount-payment/fake/legacy-token?source=stored';
+        $payment = (new TechnicalServiceMountPayment)->forceFill([
+            'provider' => 'fake',
+            'provider_reference' => 'legacy-token',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'payment_url' => $stored,
+        ]);
+
+        $presented = TechnicalServicePaymentActionPresenter::forPayment($payment);
+
+        $this->assertSame('http://10.0.0.50:8000/mount-payment/fake/legacy-token?source=stored', $presented['copy_url']);
+        $this->assertNull($presented['public_url_blocker_code']);
+        $this->assertSame($stored, $payment->payment_url);
+        $this->assertSame(
+            'http://10.0.0.50:8000/service-job-confirmation/customer-token?source=stored',
+            PartnerPortalPublicUrl::rebaseLegacyUrl('https://stale-uat.example.test/service-job-confirmation/customer-token?source=stored'),
+        );
+
+        $this->app->detectEnvironment(fn (): string => 'production');
+        config(['services.public_urls.app_url' => 'https://panel.example.test']);
+        $production = TechnicalServicePaymentActionPresenter::forPayment($payment);
+        $this->assertSame('https://panel.example.test/mount-payment/fake/legacy-token?source=stored', $production['copy_url']);
+        $this->assertSame($stored, $payment->payment_url);
+
+        $payment->forceFill(['payment_url' => 'http://127.0.0.1:8000/not-a-public-route/token']);
+        $blocked = TechnicalServicePaymentActionPresenter::forPayment($payment);
+        $this->assertNull($blocked['copy_url']);
+        $this->assertSame('LEGACY_PUBLIC_URL_UNRESOLVABLE', $blocked['public_url_blocker_code']);
+
+        $payment->forceFill(['payment_url' => "http://127.0.0.1:8000/mount-payment/legacy-token\r\nunsafe"]);
+        $controlCharacterBlocked = TechnicalServicePaymentActionPresenter::forPayment($payment);
+        $this->assertNull($controlCharacterBlocked['copy_url']);
+        $this->assertSame('LEGACY_PUBLIC_URL_UNRESOLVABLE', $controlCharacterBlocked['public_url_blocker_code']);
     }
 
     public function test_public_mount_request_get_does_not_require_auth(): void
@@ -989,18 +1114,19 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('message', 'Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.'));
     }
 
-    public function test_public_mount_request_updates_qr_scan_metrics(): void
+    public function test_public_mount_request_get_is_repeatable_and_business_read_only(): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [$link, $token] = $this->qrLink();
-
-        $this->assertSame(0, $link->scan_count);
+        $before = $link->fresh()->getRawOriginal();
 
         $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token)->assertOk();
 
-        $link->refresh();
-        $this->assertSame(1, $link->scan_count);
-        $this->assertNotNull($link->last_scanned_at);
+        $after = $link->fresh()->getRawOriginal();
+        $this->assertSame($before, $after);
+        $this->assertSame(0, $link->fresh()->scan_count);
+        $this->assertNull($link->fresh()->last_scanned_at);
     }
 
     public function test_mount_payment_schema_has_v2_session_column(): void
@@ -1754,6 +1880,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         config([
             'payments.provider' => 'fake',
             'payments.enable_fake_approve' => true,
+            'services.public_urls.app_url' => 'https://panel.example.test',
         ]);
         $this->app->detectEnvironment(fn (): string => 'production');
 

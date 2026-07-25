@@ -376,22 +376,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $warrantyVersion = $warrantyStartedAt?->timestamp ?? 'missing';
             $warrantyStartedAtFormatted = $this->formatWarrantyDate($warranty['warranty_started_at'] ?? $warrantyStartedAt?->toDateString());
             $warrantyEndsAtFormatted = $this->formatWarrantyDate($warranty['warranty_ends_at'] ?? null);
-            $surveyLink = $this->completionSurveyLink($job->refresh());
-            if ($surveyLink !== null) {
-                $job->events()->create([
-                    'event_type' => 'customer_completion_survey_link_logged',
-                    'title' => 'Müşteri kapanış anket linki loglandı',
-                    'note' => null,
-                    'from_status' => $job->workflow_status,
-                    'to_status' => $job->workflow_status,
-                    'author_user_id' => $request->user()?->id,
-                    'metadata' => [
-                        'partner_job_action_id' => $partnerJobAction->id,
-                        'survey_link' => $surveyLink,
-                        'source' => 'activation_warranty_customer',
-                    ],
-                ]);
-            }
+            $surveyLink = null;
 
             $messageSummaries = [
                 'activation_warranty_customer' => $this->workflowMessages->queueWorkflowDispatches(
@@ -446,20 +431,6 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         } catch (Throwable) {
             return $text;
         }
-    }
-
-    private function completionSurveyLink(TechnicalServiceRequest $job): ?string
-    {
-        $confirmation = TechnicalServiceCustomerConfirmation::query()
-            ->where('technical_service_request_id', $job->id)
-            ->latest('id')
-            ->first();
-
-        if (! $confirmation instanceof TechnicalServiceCustomerConfirmation) {
-            return null;
-        }
-
-        return PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]).'?survey=1';
     }
 
     /**

@@ -189,6 +189,16 @@ export default function AdminIndex() {
     const executionState = executionControl?.state ?? 'local';
     const executionIsLive = executionControl?.mode === 'live';
     const transitionBlocked = ['activating', 'freezing', 'blocked'].includes(executionState);
+    const publicOrigin = executionControl?.public_origin ?? null;
+    const publicRoutes = publicOrigin?.routes ?? {};
+    const publicRouteLabels = {
+        customer_confirmation: 'Müşteri iş onayı',
+        qr_mount: 'QR / montaj',
+        payment: 'Public ödeme',
+        technician_job: 'Usta kısa iş kartı',
+        survey: 'Anket',
+        warranty: 'Garanti',
+    };
 
     return (
         <AdminFrame title="Yönetim Paneli">
@@ -244,6 +254,68 @@ export default function AdminIndex() {
                             </dd>
                         </div>
                     </dl>
+
+                    <div
+                        data-testid="public-origin-readiness"
+                        className="mt-4 border-t border-slate-200 pt-4"
+                    >
+                        <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                            <div>
+                                <p className="text-xs font-medium text-slate-500">Public profil</p>
+                                <p className="mt-1 font-semibold text-slate-900">
+                                    {publicOrigin?.profile ?? 'Doğrulanıyor'}
+                                </p>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium text-slate-500">Seçili origin</p>
+                                <code className="mt-1 block break-all text-xs font-semibold text-slate-800">
+                                    {publicOrigin?.origin ?? 'Tanımlı değil'}
+                                </code>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium text-slate-500">LAN / telefon</p>
+                                <p className="mt-1 font-semibold text-slate-900">
+                                    {publicOrigin?.phone_reachable ? 'Erişilebilir' : 'Hazır değil'}
+                                </p>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium text-slate-500">Eski local URL</p>
+                                <p className="mt-1 font-semibold text-slate-900">
+                                    {publicOrigin?.legacy_stale_url_count ?? 0}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="mt-3 grid gap-x-5 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+                            {Object.entries(publicRouteLabels).map(([key, label]) => {
+                                const route = publicRoutes[key] ?? {};
+
+                                return (
+                                    <div key={key} className="flex min-w-0 items-start justify-between gap-3 border-b border-slate-100 py-1.5 text-xs">
+                                        <span className="font-medium text-slate-700">{label}</span>
+                                        <span className={route.ready ? 'text-emerald-700' : 'text-amber-700'}>
+                                            {route.ready
+                                                ? (route.get_contract === 'read_only' ? 'GET read-only' : 'Hazır')
+                                                : (route.blocker_code ?? 'Bloke')}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                            <p className="text-slate-600">
+                                UAT HTTPS: <span className="font-semibold text-slate-800">
+                                    {publicOrigin?.profiles?.uat_public?.ready ? 'Hazır' : (publicOrigin?.profiles?.uat_public?.blocker_code ?? 'Hazır değil')}
+                                </span>
+                            </p>
+                            <p className="text-slate-600">
+                                Production HTTPS: <span className="font-semibold text-slate-800">
+                                    {publicOrigin?.profiles?.production_public?.ready ? 'Hazır' : (publicOrigin?.profiles?.production_public?.blocker_code ?? 'Hazır değil')}
+                                </span>
+                            </p>
+                        </div>
+                    </div>
 
                     {executionControlMessage ? (
                         <p className="mt-3 flex items-start gap-2 text-sm font-medium text-amber-800" role="status">

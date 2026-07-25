@@ -35,30 +35,26 @@ class TechnicalServiceTechnicianPortalLinkResolver
         }
 
         $global = (array) ($settings['global'] ?? []);
-        if ((bool) ($global['test_mode_enabled'] ?? false)) {
-            $origin = PartnerPortalPublicUrl::normalizeBaseUrl(PartnerPortalPublicUrl::baseUrl());
+        $profile = PartnerPortalPublicUrl::profile();
+        $origin = PartnerPortalPublicUrl::normalizeOrigin(is_string($profile['origin'] ?? null) ? $profile['origin'] : null);
+        if ((bool) ($profile['ready'] ?? false) && $origin !== null) {
+            $manualE2E = $this->manualE2ELanOverrideAllowed($global, $dispatchMetadata, $recipientRole, $targetPhone);
+            $mode = $manualE2E
+                ? 'manual_e2e_local'
+                : (PartnerPortalPublicUrl::isPublicHttpsUrl($origin) ? 'public_live' : 'local_preview');
 
-            return $origin !== null
-                ? $this->ready($scope, $origin, 'configured_test_portal_origin', 'test_preview')
-                : $this->blocked($scope, 'public_url_missing', 'Test önizleme için partner portal adresi bulunamadı.');
-        }
-
-        if ($this->manualE2ELanOverrideAllowed($global, $dispatchMetadata, $recipientRole, $targetPhone)) {
-            $origin = PartnerPortalPublicUrl::normalizeOrigin((string) ($global['manual_e2e_partner_portal_origin'] ?? ''));
-            if ($origin !== null && PartnerPortalPublicUrl::isPrivateLanOrigin($origin)) {
-                return $this->ready($scope, $origin, 'admin_manual_e2e_partner_portal_origin', 'manual_e2e_local');
-            }
-        }
-
-        $publicOrigin = PartnerPortalPublicUrl::baseUrl();
-        if (PartnerPortalPublicUrl::isPublicHttpsUrl($publicOrigin)) {
-            return $this->ready($scope, $publicOrigin, 'configured_partner_portal_public_url', 'public_live');
+            return $this->ready(
+                $scope,
+                $origin,
+                (string) ($profile['origin_source'] ?? 'public_origin_profile'),
+                $mode,
+            );
         }
 
         return $this->blocked(
             $scope,
-            'public_url_missing',
-            'Usta iş kartı için public HTTPS veya guarded Manual E2E LAN origin hazır değil.',
+            (string) ($profile['blocker_code'] ?? 'public_url_missing'),
+            (string) ($profile['blocker_message'] ?? 'Usta iş kartı için environment-bound public origin hazır değil.'),
         );
     }
 

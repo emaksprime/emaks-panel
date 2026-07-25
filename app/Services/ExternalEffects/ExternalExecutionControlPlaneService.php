@@ -4,8 +4,12 @@ namespace App\Services\ExternalEffects;
 
 use App\Models\AuditLog;
 use App\Models\PageConfig;
+use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -44,6 +48,8 @@ final class ExternalExecutionControlPlaneService
     {
         $state = $this->state();
         $readiness = $this->readiness($state);
+        $publicOrigin = $this->publicOriginProfile($state);
+        $publicOrigin['legacy_stale_url_count'] = $this->legacyStalePublicUrlCount();
         $changedById = is_numeric($state['changed_by'] ?? null) ? (int) $state['changed_by'] : null;
         $changedBy = $changedById === null ? null : User::query()->find($changedById);
 
@@ -67,6 +73,7 @@ final class ExternalExecutionControlPlaneService
             ],
             'reason' => $state['reason'],
             'correlation_id' => $state['correlation_id'],
+            'public_origin' => $publicOrigin,
             'readiness' => $readiness,
         ];
     }
@@ -203,11 +210,27 @@ final class ExternalExecutionControlPlaneService
     }
 
     /**
+     * @param  array<string, mixed>|null  $state
+     * @return array<string, mixed>
+     */
+    public function publicOriginProfile(?array $state = null): array
+    {
+        $state ??= $this->state();
+
+        return PartnerPortalPublicUrl::resolveProfile(
+            $this->runtimeEnvironment(),
+            (string) ($state['operator_mode'] ?? self::MODE_LOCAL),
+            (string) ($state['transition_state'] ?? self::STATE_LOCAL),
+        );
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function messagingSnapshot(?string $provider = null): array
     {
         $state = $this->state();
+        $publicOrigin = $this->publicOriginProfile($state);
         $capabilities = [];
         foreach ([ExternalEffectCapabilityRegistry::MESSAGING_EVOLUTION_SEND, ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND] as $code) {
             $capability = $this->capabilityStatus($code);
@@ -225,6 +248,7 @@ final class ExternalExecutionControlPlaneService
             'global_execution_revision' => $state['revision'],
             'global_runtime_environment' => $this->runtimeEnvironment(),
             'global_profile_fingerprint' => $state['profile_fingerprint'],
+            'global_public_origin_profile_fingerprint' => (string) ($publicOrigin['profile_fingerprint'] ?? ''),
             'global_execution_snapshot_at' => CarbonImmutable::now()->toIso8601String(),
             'external_capability_code' => $capabilityCode,
             'external_capability_revision' => $capabilityCode === null ? null : $capabilities[$capabilityCode]['revision'],
@@ -254,6 +278,11 @@ final class ExternalExecutionControlPlaneService
             return $this->blocked('global_execution_mode_local', 'Sistem çalışma modu Lokal; dış etki kapalı.');
         }
 
+        $publicOrigin = $this->publicOriginProfile($state);
+        if (! (bool) ($publicOrigin['ready'] ?? false)) {
+            return $this->blocked('public_origin_not_ready', 'Environment-bound public origin profile hazır değil.');
+        }
+
         $status = $this->capabilityStatus($capabilityCode);
         if (! (bool) $status['adapted'] || ! (bool) $status['ready']) {
             return $this->blocked('external_capability_not_ready', 'Capability adapter veya readiness geçerli değil.');
@@ -268,6 +297,7 @@ final class ExternalExecutionControlPlaneService
             || (int) ($metadata['global_execution_revision'] ?? 0) !== (int) $state['revision']
             || ($metadata['global_runtime_environment'] ?? null) !== $this->runtimeEnvironment()
             || ! hash_equals((string) $state['profile_fingerprint'], (string) ($metadata['global_profile_fingerprint'] ?? ''))
+            || ! hash_equals((string) ($publicOrigin['profile_fingerprint'] ?? ''), (string) ($metadata['global_public_origin_profile_fingerprint'] ?? ''))
             || (int) ($snapshot['revision'] ?? 0) !== (int) $status['capability_revision']
             || ! hash_equals((string) $status['profile_fingerprint'], (string) ($snapshot['profile_fingerprint'] ?? ''))) {
             return $this->blocked('global_execution_snapshot_stale', 'Dış etki snapshotı current epoch, revision veya environment profile ile eşleşmiyor.');
@@ -282,12 +312,15 @@ final class ExternalExecutionControlPlaneService
     public function messagingRunSnapshotIsCurrent(array $snapshot): bool
     {
         $state = $this->state();
+        $publicOrigin = $this->publicOriginProfile($state);
         if (($snapshot['global_execution_mode'] ?? null) !== self::MODE_LIVE
             || ($snapshot['global_execution_state'] ?? null) !== self::STATE_LIVE
             || (int) ($snapshot['global_execution_epoch'] ?? 0) !== (int) $state['epoch']
             || (int) ($snapshot['global_execution_revision'] ?? 0) !== (int) $state['revision']
             || ($snapshot['global_runtime_environment'] ?? null) !== $this->runtimeEnvironment()
-            || ! hash_equals((string) $state['profile_fingerprint'], (string) ($snapshot['global_profile_fingerprint'] ?? ''))) {
+            || ! hash_equals((string) $state['profile_fingerprint'], (string) ($snapshot['global_profile_fingerprint'] ?? ''))
+            || ! (bool) ($publicOrigin['ready'] ?? false)
+            || ! hash_equals((string) ($publicOrigin['profile_fingerprint'] ?? ''), (string) ($snapshot['global_public_origin_profile_fingerprint'] ?? ''))) {
             return false;
         }
 
@@ -369,7 +402,20 @@ final class ExternalExecutionControlPlaneService
             ];
         }
 
-        $profileFingerprint = $this->aggregateProfileFingerprint($capabilities);
+        $publicOrigin = PartnerPortalPublicUrl::resolveProfile(
+            $this->runtimeEnvironment(),
+            self::MODE_LIVE,
+            self::STATE_LIVE,
+        );
+        if (! (bool) ($publicOrigin['ready'] ?? false)) {
+            $requiredBlockers[] = [
+                'code' => 'public_origin_not_ready:'.($publicOrigin['blocker_code'] ?? 'unknown'),
+                'capability' => 'public.route.origin',
+                'message' => (string) ($publicOrigin['blocker_message'] ?? 'Public origin profile hazır değil.'),
+            ];
+        }
+
+        $profileFingerprint = $this->aggregateProfileFingerprint($capabilities, $publicOrigin);
 
         return [
             'eligible' => $requiredBlockers === [],
@@ -386,7 +432,39 @@ final class ExternalExecutionControlPlaneService
             'capabilities' => $capabilities,
             'current_mode' => $state['operator_mode'],
             'current_state' => $state['transition_state'],
+            'public_origin' => $publicOrigin,
         ];
+    }
+
+    private function legacyStalePublicUrlCount(): int
+    {
+        $count = TechnicalServiceMountPayment::query()
+            ->whereNotNull('payment_url')
+            ->pluck('payment_url')
+            ->filter(fn (mixed $value): bool => is_string($value) && PartnerPortalPublicUrl::isLocalUrl($value))
+            ->count();
+
+        foreach (TechnicalServicePartnerJobAction::query()->select(['id', 'payload'])->lazyById() as $action) {
+            $count += $this->legacyUrlOccurrences($action->payload);
+        }
+        foreach (TechnicalServiceMessageDispatch::query()->select(['id', 'request_payload', 'response_payload'])->lazyById() as $dispatch) {
+            $count += $this->legacyUrlOccurrences($dispatch->request_payload);
+            $count += $this->legacyUrlOccurrences($dispatch->response_payload);
+        }
+
+        return $count;
+    }
+
+    private function legacyUrlOccurrences(mixed $value): int
+    {
+        if (is_string($value)) {
+            return preg_match('#^https?://#i', $value) === 1 && PartnerPortalPublicUrl::isLocalUrl($value) ? 1 : 0;
+        }
+        if (! is_array($value)) {
+            return 0;
+        }
+
+        return array_sum(array_map(fn (mixed $item): int => $this->legacyUrlOccurrences($item), $value));
     }
 
     /**
@@ -443,8 +521,9 @@ final class ExternalExecutionControlPlaneService
 
     /**
      * @param  array<int, array<string, mixed>>  $capabilities
+     * @param  array<string, mixed>  $publicOrigin
      */
-    private function aggregateProfileFingerprint(array $capabilities): string
+    private function aggregateProfileFingerprint(array $capabilities, array $publicOrigin): string
     {
         $parts = collect($capabilities)
             ->map(fn (array $capability): string => implode(':', [
@@ -459,6 +538,7 @@ final class ExternalExecutionControlPlaneService
         return hash('sha256', implode('|', [
             $this->runtimeEnvironment(),
             'registry:'.ExternalEffectCapabilityRegistry::VERSION,
+            'public-origin:'.(string) ($publicOrigin['profile_fingerprint'] ?? ''),
             ...$parts,
         ]));
     }

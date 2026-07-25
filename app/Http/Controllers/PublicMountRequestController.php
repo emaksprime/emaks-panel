@@ -7,17 +7,18 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
+use App\Services\Payments\PaymentProviderManager;
+use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountFlowDecisionService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\MountSessionEnrichmentService;
-use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
-use App\Services\Payments\PaymentProviderManager;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
@@ -36,8 +37,6 @@ class PublicMountRequestController extends Controller
                 'csrfToken' => csrf_token(),
             ])->toResponse($request)->setStatusCode(404);
         }
-
-        $link->markScanned();
 
         return Inertia::render('public/mount-request-v2', [
             'viewState' => 'checking',
@@ -114,7 +113,6 @@ class PublicMountRequestController extends Controller
             ])->toResponse($request)->setStatusCode(404);
         }
 
-        $link->markScanned();
         $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
 
         $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
@@ -140,7 +138,6 @@ class PublicMountRequestController extends Controller
             ])->toResponse($request)->setStatusCode(404);
         }
 
-        $link->markScanned();
         $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
         $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
 
@@ -420,8 +417,7 @@ class PublicMountRequestController extends Controller
         Request $request,
         TechnicalServiceMountPayment $payment,
         TechnicalServicePaymentSettlementService $settlementService
-    ): RedirectResponse
-    {
+    ): RedirectResponse {
         abort_unless($this->fakePaymentEnabled(), 404);
         abort_unless($payment->provider === 'fake', 404);
         abort_unless($payment->status === TechnicalServiceMountPayment::STATUS_PENDING, 404);
@@ -597,7 +593,7 @@ class PublicMountRequestController extends Controller
     }
 
     /**
-     * @return array{first_name:string,last_name:string,customer_phone:string,city:string,district:string,address:string,multiple_products:bool,selected_invoice_serials:array<int,string>,location_latitude:?float,location_longitude:?float,location_place_id:?string,location_formatted_address:?string,location_map_url:?string,building_no:?string,apartment_no:?string,door_no:?string,floor_no:?string,site_name:?string,door_photos:array<string,\Illuminate\Http\UploadedFile|null>}
+     * @return array{first_name:string,last_name:string,customer_phone:string,city:string,district:string,address:string,multiple_products:bool,selected_invoice_serials:array<int,string>,location_latitude:?float,location_longitude:?float,location_place_id:?string,location_formatted_address:?string,location_map_url:?string,building_no:?string,apartment_no:?string,door_no:?string,floor_no:?string,site_name:?string,door_photos:array<string,UploadedFile|null>}
      */
     private function validatedSubmitPayload(Request $request): array
     {
@@ -692,7 +688,7 @@ class PublicMountRequestController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $validated
+     * @param  array<string, mixed>  $validated
      */
     private function composeServiceAddress(array $validated): ?string
     {
@@ -966,7 +962,7 @@ class PublicMountRequestController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $parameters
+     * @param  array<string, mixed>  $parameters
      */
     private function redirectToCurrentHost(Request $request, string $routeName, array $parameters): RedirectResponse
     {

@@ -134,69 +134,6 @@ const statusClasses: Record<string, string> = {
   expired: 'border-slate-200 bg-slate-100 text-slate-700',
 }
 
-const publicBaseStorageKey = 'technical-service-qr-public-form-base-url'
-
-const normalizePublicBaseUrl = (value: string) => {
-  const trimmed = value.trim()
-
-  if (!trimmed) {
-    return ''
-  }
-
-  try {
-    const parsed = new URL(trimmed)
-
-    if (!['http:', 'https:'].includes(parsed.protocol)) {
-      return ''
-    }
-
-    parsed.hash = ''
-    parsed.search = ''
-
-    return parsed.toString().replace(/\/$/, '')
-  } catch {
-    return ''
-  }
-}
-
-const isLocalDesktopBaseUrl = (value: string) => {
-  const normalized = normalizePublicBaseUrl(value)
-
-  if (!normalized) {
-    return false
-  }
-
-  try {
-    const { hostname } = new URL(normalized)
-
-    return ['localhost', '127.0.0.1', '::1'].includes(hostname)
-  } catch {
-    return false
-  }
-}
-
-const publicUrlForLink = (link: QrProductLink, publicBaseUrl: string) => {
-  const normalizedBase = normalizePublicBaseUrl(publicBaseUrl)
-
-  if (!normalizedBase) {
-    return link.public_url
-  }
-
-  return `${normalizedBase}/${link.path.replace(/^\/+/, '')}`
-}
-
-const qrSvgUrlForLink = (link: QrProductLink, publicBaseUrl: string) => {
-  const normalizedBase = normalizePublicBaseUrl(publicBaseUrl)
-
-  if (!normalizedBase) {
-    return link.qr_svg_url
-  }
-
-  const params = new URLSearchParams({ public_base_url: normalizedBase })
-
-  return `${link.qr_svg_url}?${params.toString()}`
-}
-
 function InfoTile({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -254,18 +191,7 @@ export default function TechnicalServiceQrProducts() {
   const [bulkResults, setBulkResults] = useState<BulkResponse | null>(null)
   const [message, setMessage] = useState<StatusMessageState>({ type: 'idle', text: '' })
   const [loading, setLoading] = useState(false)
-  const [publicFormBaseUrl, setPublicFormBaseUrl] = useState(() => (
-    typeof window === 'undefined' ? '' : window.localStorage.getItem(publicBaseStorageKey) ?? ''
-  ))
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-
-  const updatePublicFormBaseUrl = (value: string) => {
-    setPublicFormBaseUrl(value)
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(publicBaseStorageKey, value)
-    }
-  }
 
   const selectedPrintLinks = useMemo(() => {
     const checkedLinks = links.filter((link) => selectedIds.includes(link.id))
@@ -281,11 +207,8 @@ export default function TechnicalServiceQrProducts() {
     return []
   }, [links, selectedIds, selectedLink])
 
-  const selectedPublicUrl = selectedLink ? publicUrlForLink(selectedLink, publicFormBaseUrl) : ''
-  const selectedQrSvgUrl = selectedLink ? qrSvgUrlForLink(selectedLink, publicFormBaseUrl) : ''
-  const normalizedPublicBaseUrl = normalizePublicBaseUrl(publicFormBaseUrl)
-  const publicBaseUrlInvalid = publicFormBaseUrl.trim() !== '' && normalizedPublicBaseUrl === ''
-  const publicBaseUrlLocalDesktop = isLocalDesktopBaseUrl(publicFormBaseUrl)
+  const selectedPublicUrl = selectedLink?.public_url ?? ''
+  const selectedQrSvgUrl = selectedLink?.qr_svg_url ?? ''
 
   const loadLinks = useCallback(async (nextPage = page) => {
     setLoading(true)
@@ -542,36 +465,13 @@ export default function TechnicalServiceQrProducts() {
             <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-950">Public form linki</h2>
-                  <p className="mt-1 text-sm text-slate-500">Lokal telefon testi için QR linkinin açacağı base URL değerini buradan verin.</p>
+                  <h2 className="text-lg font-semibold text-slate-950">Public form profili</h2>
+                  <p className="mt-1 text-sm text-slate-500">QR linki global Lokal/Canlı public-origin profilinden gelir.</p>
                 </div>
-                <Badge variant="outline" className="w-fit border-slate-200 bg-slate-50 text-slate-700">Yerel önizleme</Badge>
+                <Badge variant="outline" className="w-fit border-slate-200 bg-slate-50 text-slate-700">Salt okunur</Badge>
               </div>
 
               <div className="grid gap-3">
-                <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                  Public form base URL
-                  <Input
-                    value={publicFormBaseUrl}
-                    onChange={(event) => updatePublicFormBaseUrl(event.target.value)}
-                    placeholder="http://LAN-IP:8000"
-                    inputMode="url"
-                  />
-                </label>
-                <p className="text-xs text-slate-500">
-                  Boş bırakılırsa mevcut public URL davranışı korunur. Canlı URL veya LAN IP kod içine yazılmaz; testte kullanılacak adresi burada siz verirsiniz.
-                  Telefon konumu test edilecekse HTTPS test URL’si girin; QR önizleme ve QR görseli bu HTTPS base ile üretilir.
-                </p>
-                {publicBaseUrlInvalid ? (
-                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-700">
-                    Public form base URL http veya https ile başlayan geçerli bir adres olmalı.
-                  </div>
-                ) : null}
-                {publicBaseUrlLocalDesktop ? (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
-                    Telefon bu URL’ye erişemez. Mobil test için sunucuyu 0.0.0.0 ile açıp LAN IP kullanın.
-                  </div>
-                ) : null}
                 {selectedLink ? (
                   <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Bu QR şu linki açacak</p>
@@ -963,7 +863,7 @@ export default function TechnicalServiceQrProducts() {
             <div key={link.id} className="break-inside-avoid rounded-xl border border-slate-300 p-4">
               <div className="grid gap-3">
                 <div className="flex items-start gap-4">
-                  <img src={qrSvgUrlForLink(link, publicFormBaseUrl)} alt={`${link.serial_number} QR`} className="size-36 shrink-0" />
+                  <img src={link.qr_svg_url} alt={`${link.serial_number} QR`} className="size-36 shrink-0" />
                   <div className="grid gap-1 text-sm">
                     <strong className="text-base">{link.product_name}</strong>
                     <span>Model: {link.product_model || '-'}</span>
@@ -972,7 +872,7 @@ export default function TechnicalServiceQrProducts() {
                   </div>
                 </div>
                 <p className="text-xs font-semibold text-slate-700">Montaj talebi için QR kodu okutun.</p>
-                <span className="break-all text-[10px] text-slate-500">{publicUrlForLink(link, publicFormBaseUrl)}</span>
+                <span className="break-all text-[10px] text-slate-500">{link.public_url}</span>
               </div>
             </div>
           ))}

@@ -3,6 +3,8 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceMountPayment;
+use App\Support\PartnerPortalPublicUrl;
+use InvalidArgumentException;
 
 class TechnicalServicePaymentActionPresenter
 {
@@ -16,6 +18,13 @@ class TechnicalServicePaymentActionPresenter
         $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
         $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
         $paymentUrl = trim((string) ($payment->payment_url ?? ''));
+        $publicUrlBlockerCode = null;
+        try {
+            $paymentUrl = PartnerPortalPublicUrl::rebaseLegacyUrl($paymentUrl) ?? '';
+        } catch (InvalidArgumentException) {
+            $paymentUrl = '';
+            $publicUrlBlockerCode = 'LEGACY_PUBLIC_URL_UNRESOLVABLE';
+        }
         $provider = strtolower((string) ($payment->provider ?? ''));
         $providerMode = strtolower((string) (
             $payload['provider_mode']
@@ -44,7 +53,9 @@ class TechnicalServicePaymentActionPresenter
         $actionKind = 'none';
         $actionLabel = null;
         $disabledReason = null;
-        $copyDisabledReason = $canCopy ? null : 'Kopyalanacak link yok.';
+        $copyDisabledReason = $canCopy
+            ? null
+            : ($publicUrlBlockerCode === null ? 'Kopyalanacak link yok.' : 'Kayıtlı ödeme linki güvenli biçimde çözümlenemedi.');
         $providerLabel = self::providerLabel($provider, $providerMode, $providerTransport);
 
         if ($canFakeComplete) {
@@ -58,7 +69,9 @@ class TechnicalServicePaymentActionPresenter
         } elseif ($isCancelled) {
             $disabledReason = 'Ödeme linki iptal edildi.';
         } elseif ($paymentUrl === '') {
-            $disabledReason = 'Ödeme linki henüz hazır değil.';
+            $disabledReason = $publicUrlBlockerCode === null
+                ? 'Ödeme linki henüz hazır değil.'
+                : 'Kayıtlı ödeme linki güvenli biçimde çözümlenemedi.';
         } elseif ($isFakeProvider) {
             $disabledReason = 'Fake ödeme simülasyonu bu ekranda kapalı.';
         }
@@ -95,6 +108,7 @@ class TechnicalServicePaymentActionPresenter
             'payment_action_label' => $actionLabel,
             'payment_action_disabled_reason' => $disabledReason,
             'copy_disabled_reason' => $copyDisabledReason,
+            'public_url_blocker_code' => $publicUrlBlockerCode,
             'fake_approve_url' => $canFakeComplete ? $fakeApproveUrl : null,
         ];
     }

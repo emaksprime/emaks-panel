@@ -185,7 +185,6 @@ class TechnicalServiceMessageTypeRegistry
                 'activation_code',
                 'warranty_started_at_formatted',
                 'warranty_ends_at_formatted',
-                'survey_link',
             ],
             'completion_submitted_ops' => [
                 'internal_job_reference',
@@ -568,8 +567,8 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\n{customer_reference_phrase} garanti başlangıcı: {warranty_started_at_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} için garanti başlangıç tarihi:\n\n{warranty_started_at_formatted}\n{warranty_ends_at_formatted}",
             'activation_warranty_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\n{customer_reference_phrase}\nAktivasyon: {activation_code}\nGaranti: {warranty_started_at_formatted} - {warranty_ends_at_formatted}\nAnket: {survey_link_sms}"
-                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz tamamlanmıştır.\n\nÜrün Bilgileri\nÜrün: {product_name}\nSeri No: {serial_no}\nAktivasyon Kodu: {activation_code}\n\nGaranti Bilgileri\nBaşlangıç: {warranty_started_at_formatted}\nBitiş: {warranty_ends_at_formatted}\n\nMemnuniyet anketi:\n{survey_link}",
+                ? "EMAKS Prime\n{customer_reference_phrase}\nAktivasyon: {activation_code}\nGaranti: {warranty_started_at_formatted} - {warranty_ends_at_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz tamamlanmıştır.\n\nÜrün Bilgileri\nÜrün: {product_name}\nSeri No: {serial_no}\nAktivasyon Kodu: {activation_code}\n\nGaranti Bilgileri\nBaşlangıç: {warranty_started_at_formatted}\nBitiş: {warranty_ends_at_formatted}",
             'completion_submitted_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nUsta işi tamamladı.\nİş: {internal_job_reference}\nUsta: {technician_name}\nTarih: {completed_at_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nUsta işi tamamladığını bildirdi.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nTamamlama Tarihi: {completed_at_formatted}\nSonraki Aksiyon: OPS son kontrol / müşteri onayı",
@@ -686,7 +685,6 @@ class TechnicalServiceMessageTypeRegistry
                 'activation_code',
                 'warranty_started_at_formatted',
                 'warranty_ends_at_formatted',
-                'survey_link_sms',
             ],
             default => $requiredVariables,
         };
