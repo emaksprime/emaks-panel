@@ -5887,7 +5887,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('Tamamlandı', $child->workflow_status);
         $this->assertSame('Tamamlandı', $job->workflow_status);
         $this->assertSame('SRV ile tamamlandı', $job->next_action);
-        $this->assertSame(0, TechnicalServiceEarning::query()
+        $this->assertSame(0, TechnicalServiceEarningItem::query()
             ->where('technical_service_request_id', $job->id)
             ->count());
         $this->actingAs($portalUser)
