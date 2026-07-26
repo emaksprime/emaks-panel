@@ -199,17 +199,30 @@ class B2BPartnerServiceJobScopeService
             'technician_id' => $technicianId,
             'job_id' => (int) $request->id,
         ]);
+        $canonicalPath = '/partner/service-jobs?'.$canonicalQuery;
+        $publicOriginProfile = PartnerPortalPublicUrl::profile();
+        $publicUrlReady = (bool) ($publicOriginProfile['ready'] ?? false);
+        $publicUrlBlockerCode = $publicUrlReady
+            ? null
+            : (is_string($publicOriginProfile['blocker_code'] ?? null)
+                ? $publicOriginProfile['blocker_code']
+                : 'PUBLIC_ORIGIN_MISSING_OR_INVALID');
+        $publicUrlBlockerMessage = $publicUrlReady
+            ? null
+            : (is_string($publicOriginProfile['blocker_message'] ?? null)
+                ? $publicOriginProfile['blocker_message']
+                : 'Seçili environment profile için geçerli public origin tanımlı değil.');
 
         return [
-            'ready' => true,
-            'blocker_code' => null,
-            'blocker_message' => null,
+            'ready' => $publicUrlReady,
+            'blocker_code' => $publicUrlBlockerCode,
+            'blocker_message' => $publicUrlBlockerMessage,
             'partner_id' => (int) $link->partner_id,
             'technician_id' => $technicianId,
             'partner_technician_link_id' => (int) $link->id,
-            'canonical_path' => '/partner/service-jobs?'.$canonicalQuery,
+            'canonical_path' => $canonicalPath,
             'short_path' => '/pj/'.(int) $request->id,
-            'canonical_url' => PartnerPortalPublicUrl::url('/partner/service-jobs?'.$canonicalQuery),
+            'canonical_url' => $publicUrlReady ? PartnerPortalPublicUrl::url($canonicalPath) : null,
             'ops_support_url' => '/technical-service/ops-support/service-jobs?'.$opsSupportQuery,
             'preview_url' => '/panel/b2b/partners/'.(int) $link->partner_id.'/portal-preview?'.http_build_query([
                 'view' => 'service-jobs',

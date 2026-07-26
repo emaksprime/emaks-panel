@@ -5206,6 +5206,9 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_spare_part_request_lifecycle_blocks_completion_and_creates_srv_child(): void
     {
+        $this->withoutConfiguredPublicOrigin();
+        Http::fake();
+
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
         $partner = $this->partner([
@@ -5294,7 +5297,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertStatus(422)
             ->assertJsonValidationErrors('part_request');
 
-        $this->actingAs($admin)
+        $approveResponse = $this->actingAs($admin)
             ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
                 'status' => TechnicalServicePartRequest::STATUS_APPROVED,
                 'note' => 'Parça onaylandı.',
@@ -5302,7 +5305,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_APPROVED)
-            ->assertJsonPath('request.active_part_request.status', TechnicalServicePartRequest::STATUS_APPROVED);
+            ->assertJsonPath('request.active_part_request.status', TechnicalServicePartRequest::STATUS_APPROVED)
+            ->assertJsonPath('request.technician_job_card.ready', false)
+            ->assertJsonPath('request.technician_job_card.canonical_url', null)
+            ->assertJsonPath('request.technician_job_card.blocker_code', 'PUBLIC_ORIGIN_MISSING_OR_INVALID');
+        $this->assertStringNotContainsString('http://localhost', $approveResponse->content());
+        $this->assertStringNotContainsString('http://127.0.0.1', $approveResponse->content());
 
         $this->actingAs($admin)
             ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
@@ -5409,7 +5417,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('request.display_action_label', 'Usta randevu önerecek')
             ->assertJsonPath('request.operational_state.action_label', 'Usta randevu önerecek')
-            ->assertJsonPath('request.next_action_payload.title', 'Usta randevu önerecek');
+            ->assertJsonPath('request.next_action_payload.title', 'Usta randevu önerecek')
+            ->assertJsonPath('request.technician_job_card.ready', false)
+            ->assertJsonPath('request.technician_job_card.canonical_url', null)
+            ->assertJsonPath('request.technician_job_card.blocker_code', 'PUBLIC_ORIGIN_MISSING_OR_INVALID');
+
+        Http::assertNothingSent();
     }
 
     public function test_partner_actions_keep_real_actor_and_ops_can_resolve_support_price_and_part_requests(): void
@@ -6016,6 +6029,67 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $job->refresh()->mount_payment_status);
     }
 
+    public function test_free_spare_part_decision_succeeds_when_optional_public_origin_is_missing(): void
+    {
+        $this->withoutConfiguredPublicOrigin();
+        Http::fake();
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Fail Soft Part Decision Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Fail Soft Part Decision Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-FAIL-SOFT');
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Fail soft warranty part',
+            'quantity' => 1,
+        ]);
+
+        $response = $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'free',
+                'note' => 'Public URL olmadan iç karar tamamlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_APPROVED)
+            ->assertJsonPath('part_request.charge_decision', 'free')
+            ->assertJsonPath('part_request.total_amount', 0)
+            ->assertJsonPath('request.technician_job_card.ready', false)
+            ->assertJsonPath('request.technician_job_card.canonical_url', null)
+            ->assertJsonPath('request.technician_job_card.blocker_code', 'PUBLIC_ORIGIN_MISSING_OR_INVALID')
+            ->assertJsonPath('request.technician_job_card.partner_id', $partner->id);
+
+        $this->assertStringStartsWith(
+            '/partner/service-jobs?',
+            (string) $response->json('request.technician_job_card.canonical_path'),
+        );
+        $this->assertStringNotContainsString('http://localhost', $response->content());
+        $this->assertStringNotContainsString('http://127.0.0.1', $response->content());
+        $this->assertDatabaseHas('technical_service_part_requests', [
+            'id' => $partRequest->id,
+            'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+        ]);
+        $persistedPartRequest = TechnicalServicePartRequest::query()->findOrFail($partRequest->id);
+        $this->assertSame('free', data_get($persistedPartRequest->metadata, 'charge_decision'));
+        $this->assertSame($job->id, $persistedPartRequest->technical_service_request_id);
+        $this->assertSame($job->id, $persistedPartRequest->root_request_id);
+        Http::assertNothingSent();
+    }
+
     public function test_chargeable_part_payment_records_amount_reference_and_paid_at_in_ops_payload_and_history(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -6442,6 +6516,9 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void
     {
+        $this->withoutConfiguredPublicOrigin();
+        Http::fake();
+
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
         $partner = $this->partner([
@@ -6540,7 +6617,10 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Tekrar ziyaret iÃ§in SRV aÃ§Ä±ldÄ±.',
             ])
             ->assertCreated()
-            ->assertJsonPath('status', 'created');
+            ->assertJsonPath('status', 'created')
+            ->assertJsonPath('request.technician_job_card.ready', false)
+            ->assertJsonPath('request.technician_job_card.canonical_url', null)
+            ->assertJsonPath('request.technician_job_card.blocker_code', 'PUBLIC_ORIGIN_MISSING_OR_INVALID');
 
         $childId = $createSrvResponse->json('child_request.id');
         $child = TechnicalServiceRequest::query()->findOrFail($childId);
@@ -6607,7 +6687,10 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'SRV tekrar ziyaret atamasÄ±.',
             ])
             ->assertOk()
-            ->assertJsonPath('request.kanban_column', 'assignment_pending');
+            ->assertJsonPath('request.kanban_column', 'assignment_pending')
+            ->assertJsonPath('request.technician_job_card.ready', false)
+            ->assertJsonPath('request.technician_job_card.canonical_url', null)
+            ->assertJsonPath('request.technician_job_card.blocker_code', 'PUBLIC_ORIGIN_MISSING_OR_INVALID');
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
@@ -6615,6 +6698,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.kanban_column', 'new_jobs')
             ->assertJsonPath('job.can_propose_appointment', true)
             ->assertJsonPath('job.can_submit_completion', false);
+
+        Http::assertNothingSent();
     }
 
     public function test_active_duplicate_filter_hides_parent_when_srv_child_is_active(): void
@@ -9491,6 +9576,9 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_locksmith_partner_completion_can_use_existing_safe_workflow_when_requirements_are_met(): void
     {
+        $this->withoutConfiguredPublicOrigin();
+        Http::fake();
+
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
         $partner = $this->partner([
@@ -9574,7 +9662,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('status', 'applied')
-            ->assertJsonPath('request.workflow_status', 'Tamamlandı');
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı')
+            ->assertJsonPath('request.technician_job_card.ready', false)
+            ->assertJsonPath('request.technician_job_card.canonical_url', null)
+            ->assertJsonPath('request.technician_job_card.blocker_code', 'PUBLIC_ORIGIN_MISSING_OR_INVALID');
+
+        Http::assertNothingSent();
     }
 
     public function test_completed_reopen_creates_unassigned_srv_hidden_from_old_partner_until_assignment(): void
@@ -10372,6 +10465,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             'path' => 'technical-service/test/'.$fieldCode.'.jpg',
             'mime' => 'image/jpeg',
             'size' => 128,
+        ]);
+    }
+
+    private function withoutConfiguredPublicOrigin(): void
+    {
+        config([
+            'app.url' => null,
+            'services.partner_portal.public_url' => null,
+            'services.public_urls.app_url' => null,
+            'services.public_urls.qr_base_url' => null,
+            'services.public_urls.payment_base_url' => null,
         ]);
     }
 
