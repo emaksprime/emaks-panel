@@ -476,6 +476,7 @@ class TechnicalServiceMessageDispatchQueue
                         'global_execution_revision' => (int) ($parentMetadata['global_execution_revision'] ?? 0),
                         'global_runtime_environment' => $parentMetadata['global_runtime_environment'] ?? 'unknown',
                         'global_profile_fingerprint' => $parentMetadata['global_profile_fingerprint'] ?? '',
+                        'global_public_origin_profile_fingerprint' => $parentMetadata['global_public_origin_profile_fingerprint'] ?? '',
                         'global_execution_snapshot_at' => $parentMetadata['global_execution_snapshot_at'] ?? $parent->created_at?->toIso8601String(),
                         'external_capability_code' => $capabilityCode,
                         'external_capability_revision' => (int) ($capabilitySnapshot['revision'] ?? 0),

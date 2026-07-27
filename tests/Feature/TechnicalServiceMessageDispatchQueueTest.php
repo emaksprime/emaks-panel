@@ -3937,7 +3937,17 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'message_type' => 'appointment_approved_customer',
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
         ]);
+        $parent = $dispatch->fresh();
         $fallback = TechnicalServiceMessageDispatch::query()->findOrFail($result['fallback_dispatch_id']);
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()->where('parent_dispatch_id', $parent->id)->count());
+        $this->assertSame('customer', $fallback->recipient_role);
+        $this->assertSame($parent->effective_target_phone_hash, $fallback->effective_target_phone_hash);
+        $this->assertSame($parent->effective_target_phone_mask, $fallback->effective_target_phone_mask);
+        $this->assertSame(0, $fallback->attempt_count);
+        $this->assertNull($fallback->last_error_code);
+        $this->assertNull($fallback->provider_message_id);
+        $this->assertNull($fallback->sent_at);
+        $this->assertFalse((bool) data_get($fallback->metadata, 'provider_send_attempted', false));
         $this->assertStringContainsString('13:00 - 19:00 arası', (string) data_get($fallback->request_payload, 'body'));
         $this->assertTrue((bool) data_get($fallback->metadata, 'test_smoke'));
         $this->assertSame('REL4E5', data_get($fallback->metadata, 'pr88_rel'));
@@ -3951,16 +3961,117 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             data_get($fallback->metadata, 'external_capability_code'),
         );
         $this->assertSame(
-            data_get($dispatch->metadata, 'global_execution_revision'),
+            data_get($parent->metadata, 'global_execution_revision'),
             data_get($fallback->metadata, 'global_execution_revision'),
         );
-        $capabilitySnapshots = (array) data_get($dispatch->metadata, 'external_capability_snapshots', []);
+        foreach ([
+            'global_execution_mode',
+            'global_execution_state',
+            'global_execution_epoch',
+            'global_runtime_environment',
+            'global_profile_fingerprint',
+            'global_public_origin_profile_fingerprint',
+            'outbound_execution_mode',
+            'outbound_mode_revision',
+            'runtime_environment',
+        ] as $snapshotField) {
+            $this->assertSame(
+                data_get($parent->metadata, $snapshotField),
+                data_get($fallback->metadata, $snapshotField),
+                "Fallback must preserve the persisted parent {$snapshotField}.",
+            );
+        }
+        $this->assertNotSame('', (string) data_get($parent->metadata, 'global_public_origin_profile_fingerprint'));
+        $this->assertSame($parent->id, data_get($fallback->metadata, 'outbound_snapshot_source_dispatch_id'));
+        $this->assertTrue(
+            app(TechnicalServiceMessagingSettingsService::class)
+                ->outboundSnapshotAuthorization('nac_sms', (array) $fallback->metadata)['allowed'],
+        );
+        $capabilitySnapshots = (array) data_get($parent->metadata, 'external_capability_snapshots', []);
         $this->assertSame(
             data_get($capabilitySnapshots[ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND] ?? [], 'revision'),
             data_get($fallback->metadata, 'external_capability_revision'),
         );
         $this->assertNotSame((string) data_get($dispatch->request_payload, 'body'), (string) data_get($fallback->request_payload, 'body'));
         Http::assertSentCount(1);
+    }
+
+    #[DataProvider('fallbackParentSnapshotCases')]
+    public function test_fallback_dispatch_inherits_the_persisted_parent_snapshot(
+        string $mutation,
+        string $expectedStatus,
+        ?string $expectedErrorCode,
+    ): void {
+        $this->activateProductionLiveQueueContext();
+        Http::fake();
+        $parent = $this->enqueueDispatch([
+            'event' => 'fallback_snapshot_parent_'.$mutation,
+            'message_type' => 'appointment_approved_customer',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'customer',
+            'channel_policy' => 'whatsapp_primary_sms_fallback',
+            'target_phone' => '05372081633',
+            'payload' => ['body' => 'Persisted parent snapshot'],
+        ]);
+        $currentMetadata = (array) $parent->metadata;
+        $currentFingerprint = (string) data_get($currentMetadata, 'global_public_origin_profile_fingerprint');
+        $this->assertNotSame('', $currentFingerprint);
+
+        $parentMetadata = $currentMetadata;
+        if ($mutation === 'missing_fingerprint') {
+            unset($parentMetadata['global_public_origin_profile_fingerprint']);
+        } elseif ($mutation === 'mismatched_fingerprint') {
+            $parentMetadata['global_public_origin_profile_fingerprint'] = 'persisted-parent-mismatch';
+        } elseif ($mutation === 'stale_revision') {
+            $parentMetadata['global_execution_revision'] = (int) $parentMetadata['global_execution_revision'] + 1;
+        } elseif ($mutation === 'stale_epoch') {
+            $parentMetadata['global_execution_epoch'] = (int) $parentMetadata['global_execution_epoch'] + 1;
+        }
+        $parent->forceFill(['metadata' => $parentMetadata])->saveQuietly();
+
+        $clientFingerprint = $mutation === 'matching'
+            ? 'client-controlled-fingerprint'
+            : $currentFingerprint;
+        $fallback = $this->enqueueDispatch([
+            'event' => 'fallback_snapshot_child_'.$mutation,
+            'message_type' => 'appointment_approved_customer',
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+            'recipient_role' => 'customer',
+            'parent_dispatch_id' => $parent->id,
+            'target_phone' => '05372081633',
+            'metadata' => [
+                'global_public_origin_profile_fingerprint' => $clientFingerprint,
+                'global_execution_revision' => $currentMetadata['global_execution_revision'],
+                'global_execution_epoch' => $currentMetadata['global_execution_epoch'],
+            ],
+            'payload' => ['body' => 'Fallback snapshot child'],
+        ]);
+
+        $expectedFingerprint = (string) ($parentMetadata['global_public_origin_profile_fingerprint'] ?? '');
+        $this->assertSame($expectedStatus, $fallback->status);
+        $this->assertSame($expectedErrorCode, $fallback->last_error_code);
+        $this->assertSame($parent->id, $fallback->parent_dispatch_id);
+        $this->assertSame($parent->id, data_get($fallback->metadata, 'outbound_snapshot_source_dispatch_id'));
+        $this->assertSame($expectedFingerprint, data_get($fallback->metadata, 'global_public_origin_profile_fingerprint'));
+        $this->assertSame($parentMetadata['global_execution_revision'], data_get($fallback->metadata, 'global_execution_revision'));
+        $this->assertSame($parentMetadata['global_execution_epoch'], data_get($fallback->metadata, 'global_execution_epoch'));
+        $this->assertSame(0, $fallback->attempt_count);
+        $this->assertNull($fallback->provider_message_id);
+        $this->assertNull($fallback->sent_at);
+        $this->assertFalse((bool) data_get($fallback->metadata, 'provider_send_attempted', false));
+
+        $authorization = app(TechnicalServiceMessagingSettingsService::class)
+            ->outboundSnapshotAuthorization('nac_sms', (array) $fallback->metadata);
+        if ($expectedStatus === TechnicalServiceMessageDispatch::STATUS_QUEUED) {
+            $this->assertTrue($authorization['allowed']);
+            $this->assertNotSame($clientFingerprint, data_get($fallback->metadata, 'global_public_origin_profile_fingerprint'));
+        } else {
+            $this->assertFalse($authorization['allowed']);
+            $this->assertSame('outbound_mode_revision_stale', $authorization['code']);
+        }
+        Http::assertNothingSent();
     }
 
     public function test_part_fee_payment_link_dispatch_if_action_exists_is_future_gated_and_labeled(): void
@@ -4217,6 +4328,20 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     }
 
     /**
+     * @return array<string, array{string, string, string|null}>
+     */
+    public static function fallbackParentSnapshotCases(): array
+    {
+        return [
+            'matching parent overrides child metadata' => ['matching', TechnicalServiceMessageDispatch::STATUS_QUEUED, null],
+            'missing parent fingerprint stays missing' => ['missing_fingerprint', TechnicalServiceMessageDispatch::STATUS_BLOCKED, 'outbound_mode_revision_stale'],
+            'mismatched parent fingerprint stays mismatched' => ['mismatched_fingerprint', TechnicalServiceMessageDispatch::STATUS_BLOCKED, 'outbound_mode_revision_stale'],
+            'stale parent revision stays stale' => ['stale_revision', TechnicalServiceMessageDispatch::STATUS_BLOCKED, 'outbound_mode_revision_stale'],
+            'stale parent epoch stays stale' => ['stale_epoch', TechnicalServiceMessageDispatch::STATUS_BLOCKED, 'outbound_mode_revision_stale'],
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $global
      * @return array<string, mixed>
      */
@@ -4361,6 +4486,12 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'app.release_sha' => '63e8e9febe96dbfc64b666aa9c82adf054d36d1f',
             'app.url' => 'https://queue-acceptance.example.test',
             'services.partner_portal.public_url' => 'https://queue-acceptance.example.test',
+            'services.public_urls.profiles.production_public' => [
+                'environment' => 'PROD',
+                'origin' => 'https://prod-public.example.test',
+                'active' => true,
+                'revision' => 1,
+            ],
             'services.evolution.allow_unit_test_http_fake' => true,
             'session.secure' => true,
             'session.domain' => 'queue-acceptance.example.test',
