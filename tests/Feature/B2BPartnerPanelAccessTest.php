@@ -49,6 +49,7 @@ use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
@@ -63,6 +64,19 @@ use Tests\TestCase;
 class B2BPartnerPanelAccessTest extends TestCase
 {
     use DatabaseMigrations, InteractsWithExternalExecutionControlPlane;
+
+    private const N8N_GATEWAY_TEST_URLS = [
+        'customers_list' => 'https://n8n-gateway.example.test/webhook/cari-control',
+        'customer_detail' => 'https://n8n-gateway.example.test/webhook/customer-detail',
+        'cari_bilgi_dashboard' => 'https://n8n-gateway.example.test/webhook/cari-bilgi-dashboard',
+    ];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+    }
 
     public function runDatabaseMigrations(): void
     {
@@ -1356,13 +1370,29 @@ class B2BPartnerPanelAccessTest extends TestCase
     public function test_cari_control_returns_error_when_gateway_source_is_unavailable_and_no_snapshot(): void
     {
         $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+        $this->fakeCariControlGateway(Http::failedConnection('Synthetic n8n connection failure.'));
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control')
             ->assertOk()
             ->assertJsonPath('status', 'error')
+            ->assertJsonPath('source_used', 'customers_list')
+            ->assertJsonPath('message', 'Cari adaylari gateway uzerinden alinamadi: n8n gateway baglantisi kurulamadi: Synthetic n8n connection failure.')
             ->assertJsonPath('actions_enabled', false)
             ->assertJsonCount(0, 'items');
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->url() === self::N8N_GATEWAY_TEST_URLS['customers_list']
+            && $request->method() === 'POST'
+            && $request->hasHeader('Accept', 'application/json')
+            && $request->hasHeader('Content-Type', 'application/json')
+            && ($request['source_code'] ?? null) === 'customers_list'
+            && ($request['scope_key'] ?? null) === 'all'
+            && ($request['limit'] ?? null) === 1000
+            && ($request['bypass_cache'] ?? null) === true
+            && ($request['params']['customer_scope_key'] ?? null) === 'bayi_proje'
+            && ($request['params']['page'] ?? null) === 1);
     }
 
     public function test_cari_control_uses_existing_customers_list_gateway_candidates(): void
@@ -1371,8 +1401,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->dataSource('customers_list');
         $this->technician(['mikro_cari_kodu' => '320.CLG.001']);
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1399,7 +1429,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?include_review_required=1')
@@ -1442,8 +1472,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1474,7 +1504,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?search=KONSINYE&include_review_required=1')
@@ -1519,8 +1549,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '120.00.99.00001.KONSINYE',
@@ -1528,7 +1558,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'grup' => 'BAYI',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?search=KONSINYE&include_review_required=1')
@@ -1545,8 +1575,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'cari_kod' => '120.ALIAS.001',
@@ -1559,7 +1589,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'cari_adres2' => 'Test Mahallesi',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?search=ALIAS&include_review_required=1')
@@ -1576,8 +1606,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '320.ÇLG.01.0001',
@@ -1590,7 +1620,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'address_source' => 'ilk adres kartı',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1606,8 +1636,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1626,7 +1656,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1643,15 +1673,15 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [
                     ['musteri_kodu' => '320.ÇLG.SAME.001', 'firma_unvani' => 'Aynı İsim', 'grup' => 'ÇİLİNGİR'],
                     ['musteri_kodu' => '320.ÇLG.SAME.002', 'firma_unvani' => 'Aynı İsim', 'grup' => 'ÇİLİNGİR'],
                 ],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1666,8 +1696,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '320.ÇLG.COMPLETE',
@@ -1679,7 +1709,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'address' => 'Mikro cari adresi',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1745,7 +1775,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->all();
 
-        Http::fake(function ($request) use (&$sent, $rows) {
+        $this->fakeCariControlGateway(function (Request $request) use (&$sent, $rows) {
             $sent[] = $request->data();
 
             return Http::response([
@@ -1805,8 +1835,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [
                     ['musteri_kodu' => '120.BAYI.101', 'firma_unvani' => 'Bayi Aday', 'grup' => 'BAYİ', 'toplam_cari_sayisi' => 3],
@@ -1815,7 +1845,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 ],
                 'meta' => ['total' => 3],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1831,15 +1861,15 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [
                     ['musteri_kodu' => '320.ÇLG.201', 'firma_unvani' => 'Türkçe Çilingir', 'grup' => 'ÇİLİNGİR'],
                     ['musteri_kodu' => '120.BAYI.201', 'firma_unvani' => 'Normal Bayi', 'grup' => 'BAYİ'],
                 ],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1870,8 +1900,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             'phone' => '+905551110001',
         ]);
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '320.CLG.PREVIEW',
@@ -1882,7 +1912,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'address' => 'Servis adresi',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1902,8 +1932,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $technicianCount = TechnicalServiceTechnician::query()->count();
         $linkCount = B2BPartnerTechnician::query()->count();
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '320.CLG.NO-WRITE',
@@ -1912,7 +1942,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'city' => 'Sentetik Sehir 021',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1930,8 +1960,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customers_list');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '320.CLG.SyntheticPerson009',
@@ -1940,7 +1970,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'city' => 'Sentetik Sehir 004 / SYNTHETIC',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1959,8 +1989,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             'phone' => '+905551234567',
         ]);
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'musteri_kodu' => '320.CLG.PHONE',
@@ -1970,7 +2000,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'city' => 'Sentetik Sehir 009',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
@@ -1985,8 +2015,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $admin = $this->userWithRole('admin', true);
         $this->dataSource('customer_detail');
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [[
                     'cari_kod' => '120.DETAIL.001',
@@ -2001,7 +2031,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'vergi_dairesi' => 'Cankaya VD',
                 ]],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->postJson('/api/b2b/cari-control/apply', [
@@ -2027,12 +2057,12 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('detail@example.test', $partner->metadata['invoice_profile']['email']);
         $this->assertSame('Detail Mahallesi', $partner->metadata['shipping_profile']['address']);
 
-        Http::fake([
-            'https://n8n.test/*' => Http::response([
+        $this->fakeCariControlGateway(
+            Http::response([
                 'ok' => true,
                 'rows' => [],
             ]),
-        ]);
+        );
 
         $this->actingAs($admin)
             ->postJson('/api/b2b/cari-control/apply', [
@@ -2061,6 +2091,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
 
         $this->actingAs($admin)
             ->postJson('/api/b2b/cari-control/apply', [
@@ -2106,6 +2137,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $partnerCount = B2BPartner::query()->count();
         $technicianCount = TechnicalServiceTechnician::query()->count();
         $linkCount = B2BPartnerTechnician::query()->count();
@@ -2143,6 +2175,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $payload = [
             'action' => 'import',
             'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
@@ -2190,6 +2223,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ], 200),
         ]);
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
 
         $this->actingAs($admin)
             ->postJson('/api/b2b/cari-control/apply', [
@@ -2224,6 +2258,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
 
         $this->actingAs($admin)
             ->postJson('/api/b2b/cari-control/apply', [
@@ -2265,6 +2300,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ], 200),
         ]);
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         TechnicalServiceTechnician::query()->create([
             'name' => 'Manuel Koordinatlı',
             'technician_type' => 'locksmith',
@@ -2309,6 +2345,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $partnerFixture = TechnicalServiceSyntheticDataFactory::locksmith(4);
         $existingFixture = TechnicalServiceSyntheticDataFactory::locksmith(27);
         $existingCoordinates = TechnicalServiceSyntheticDataFactory::coordinate(27);
@@ -2411,6 +2448,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     public function test_cari_control_existing_partner_preview_does_not_target_different_linked_technician(): void
     {
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $partnerFixture = TechnicalServiceSyntheticDataFactory::locksmith(4);
         $existingFixture = TechnicalServiceSyntheticDataFactory::locksmith(27);
         $partner = $this->partner([
@@ -2566,6 +2604,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $otherPartner = $this->partner(['mikro_cari_kodu' => 'CR-OTHER-001']);
 
         $this->actingAs($admin)
@@ -2664,6 +2703,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         User::factory()->create(['username' => 'synth320']);
 
         $this->actingAs($admin)
@@ -2732,6 +2772,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     public function test_cari_control_apply_create_partner_blocks_duplicate_active_mikro_cari(): void
     {
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_DEALER,
             'mikro_cari_kodu' => 'CR-DUP-001',
@@ -2756,6 +2797,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     public function test_cari_control_apply_updates_snapshot_adds_capability_and_marks_review(): void
     {
         $admin = $this->userWithRole('admin', true);
+        $this->fakeCariControlEnrichmentUnavailable();
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_DEALER,
             'mikro_cari_kodu' => 'CR-APPLY-001',
@@ -10396,6 +10438,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $statementKey = implode('_', ['query', 'template']);
         $allowedKey = implode('_', ['allowed', 'params']);
         $metaKey = implode('_', ['connection', 'meta']);
+        $endpointUrl = self::N8N_GATEWAY_TEST_URLS[$code]
+            ?? throw new \InvalidArgumentException("Unexpected test data source [{$code}].");
 
         return DataSource::query()->updateOrCreate(
             ['code' => $code],
@@ -10405,7 +10449,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 $statementKey => 'SELECT 1',
                 $allowedKey => ['search', 'scope_key', 'customer_scope_key', 'page', 'limit', 'bypass_cache'],
                 $metaKey => [
-                    'endpoint_url' => 'https://n8n.test/gateway',
+                    'endpoint_url' => $endpointUrl,
                     'response_rows_key' => 'rows',
                     'timeout_seconds' => 10,
                 ],
@@ -10413,6 +10457,59 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'active' => true,
             ],
         );
+    }
+
+    private function fakeCariControlGateway(
+        mixed $customersListResponse,
+        mixed $customerDetailResponse = null,
+        mixed $cariBilgiDashboardResponse = null,
+    ): void {
+        $customerDetailResponse ??= $customersListResponse;
+        $cariBilgiDashboardResponse ??= $customerDetailResponse;
+
+        $this->dataSource('customer_detail');
+        $this->dataSource('cari_bilgi_dashboard');
+
+        Http::preventStrayRequests();
+        Http::fake([
+            self::N8N_GATEWAY_TEST_URLS['customers_list'] => $this->validatedN8nGatewayResponse('customers_list', $customersListResponse),
+            self::N8N_GATEWAY_TEST_URLS['customer_detail'] => $this->validatedN8nGatewayResponse('customer_detail', $customerDetailResponse),
+            self::N8N_GATEWAY_TEST_URLS['cari_bilgi_dashboard'] => $this->validatedN8nGatewayResponse('cari_bilgi_dashboard', $cariBilgiDashboardResponse),
+        ]);
+    }
+
+    private function fakeCariControlEnrichmentUnavailable(): void
+    {
+        $emptyResponse = Http::response([
+            'ok' => true,
+            'rows' => [],
+        ]);
+
+        $this->dataSource('customer_detail');
+        $this->dataSource('cari_bilgi_dashboard');
+
+        Http::fake([
+            self::N8N_GATEWAY_TEST_URLS['customer_detail'] => $this->validatedN8nGatewayResponse('customer_detail', $emptyResponse),
+            self::N8N_GATEWAY_TEST_URLS['cari_bilgi_dashboard'] => $this->validatedN8nGatewayResponse('cari_bilgi_dashboard', $emptyResponse),
+        ]);
+    }
+
+    private function validatedN8nGatewayResponse(string $sourceCode, mixed $response): \Closure
+    {
+        return function (Request $request) use ($sourceCode, $response): mixed {
+            $this->assertSame(self::N8N_GATEWAY_TEST_URLS[$sourceCode], $request->url());
+            $this->assertSame('POST', $request->method());
+            $this->assertTrue($request->hasHeader('Accept', 'application/json'));
+            $this->assertTrue($request->hasHeader('Content-Type', 'application/json'));
+            $this->assertSame($sourceCode, $request['source_code'] ?? null);
+            $this->assertSame('all', $request['scope_key'] ?? null);
+            $this->assertSame('bayi_proje', $request['params']['customer_scope_key'] ?? null);
+            $this->assertSame($sourceCode === 'customers_list' ? 1000 : 10, $request['limit'] ?? null);
+            $this->assertSame(1, $request['params']['page'] ?? null);
+            $this->assertTrue((bool) ($request['bypass_cache'] ?? false));
+
+            return $response;
+        };
     }
 
     /**
