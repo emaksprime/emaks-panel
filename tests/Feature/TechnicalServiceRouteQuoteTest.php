@@ -21,11 +21,12 @@ use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class TechnicalServiceRouteQuoteTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     public function test_route_service_calculates_thresholds_and_fee_from_round_trip_distance(): void
     {
@@ -34,11 +35,11 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_fee_per_km' => 10,
         ]);
         $roundTripDistances = [29, 30, 30.1, 45];
-        Http::fake([
-            'https://routes.googleapis.com/*' => function () use (&$roundTripDistances) {
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => function () use (&$roundTripDistances) {
                 return Http::response($this->googleRoutesResponseForRoundTripKm((float) array_shift($roundTripDistances)), 200);
             },
-        ]);
+        ], expectedRequests: 4);
 
         $this->assertQuoteForRoundTripKm(29, false, 0.0, 0.0);
         $this->assertQuoteForRoundTripKm(30, false, 0.0, 0.0);
@@ -52,8 +53,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForOneWayMeters(87900), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForOneWayMeters(87900), 200),
         ]);
 
         $payload = app(TechnicalServiceRouteCostService::class)->quote(
@@ -76,9 +77,9 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        ], expectedRequests: 0);
 
         $request = $this->technicalServiceRequestWithLocation();
         $technician = $this->technicianWithLocation([
@@ -105,8 +106,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForOneWayMeters(6000), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForOneWayMeters(6000), 200),
         ]);
 
         $request = $this->technicalServiceRequestWithLocation();
@@ -131,8 +132,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => null,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
         ]);
 
         $payload = app(TechnicalServiceRouteCostService::class)->quote(
@@ -182,8 +183,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
         ]);
 
         $technician = $this->technicianWithLocation();
@@ -206,8 +207,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_fee_per_km' => 10,
         ]);
 
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
         ]);
 
         $request = $this->technicalServiceRequestWithLocation();
@@ -228,9 +229,9 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        ], expectedRequests: 2);
 
         $requestWithNullFee = $this->technicalServiceRequestWithLocation();
         $technicianWithNullFee = $this->technicianWithLocation();
@@ -273,8 +274,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
         ]);
 
         $user = $this->adminUser();
@@ -318,9 +319,9 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(80), 200),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(80), 200),
+        ], expectedRequests: 0);
 
         $user = $this->adminUser();
         $request = $this->technicalServiceRequestWithLocation();
@@ -357,8 +358,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'services.google.routes_api_key' => 'test-google-routes-key',
             'services.google.routes_fee_per_km' => 10,
         ]);
-        Http::fake([
-            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(60), 200),
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(60), 200),
         ]);
 
         $parent = $this->technicalServiceRequestWithLocation();

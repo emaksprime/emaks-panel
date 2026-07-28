@@ -14,11 +14,12 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class AdminLogsAuditArchiveTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -27,6 +28,7 @@ class AdminLogsAuditArchiveTest extends TestCase
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelDataSourcesSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
         Cache::flush();
     }
 
@@ -185,8 +187,8 @@ class AdminLogsAuditArchiveTest extends TestCase
     {
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            '*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['cari_kodu' => '120.00.001', 'cari_unvani' => 'Mehmet Test'],
@@ -227,8 +229,8 @@ class AdminLogsAuditArchiveTest extends TestCase
     {
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
         $user = User::factory()->create(['role_code' => 'admin', 'aktif' => true]);

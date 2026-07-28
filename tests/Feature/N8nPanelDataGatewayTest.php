@@ -9,16 +9,24 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class N8nPanelDataGatewayTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->useTestPanelDataSourceGateway();
+    }
 
     public function test_gateway_posts_datasource_metadata_to_configured_endpoint(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'rows' => [
                     ['stok_kodu' => 'STK-1', 'miktar' => 12],
                 ],
@@ -38,7 +46,7 @@ class N8nPanelDataGatewayTest extends TestCase
         $this->assertSame('STK-1', $result['rows'][0]['stok_kodu']);
 
         Http::assertSent(function (Request $request) {
-            return $request->url() === 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1'
+            return $request->url() === self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL
                 && $request['source_code'] === 'stock_dashboard'
                 && $request['query_template'] === 'SELECT 1 AS miktar'
                 && $request['data_source']['query_template_available'] === true
@@ -48,8 +56,8 @@ class N8nPanelDataGatewayTest extends TestCase
 
     public function test_gateway_does_not_send_placeholder_query_as_runnable_sql(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'rows' => [],
             ]),
         ]);
@@ -69,8 +77,8 @@ class N8nPanelDataGatewayTest extends TestCase
 
     public function test_gateway_continues_when_cache_schema_is_incomplete(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'ciro' => 1000],

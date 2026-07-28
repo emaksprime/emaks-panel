@@ -17,11 +17,12 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class TechnicalServiceQrMountSubmitV2Test extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -423,8 +424,8 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     public function test_manual_address_without_coordinates_is_geocoded_on_submit(): void
     {
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
-        Http::fake([
-            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_GEOCODING_PATTERN => Http::response([
                 'status' => 'OK',
                 'results' => [[
                     'formatted_address' => 'Kadıköy, İstanbul, Türkiye',
@@ -460,8 +461,8 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     public function test_manual_address_geocode_failure_does_not_block_submit_and_records_operation_warning(): void
     {
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
-        Http::fake([
-            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_GEOCODING_PATTERN => Http::response([
                 'status' => 'ZERO_RESULTS',
                 'results' => [],
             ], 200),

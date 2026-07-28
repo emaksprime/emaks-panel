@@ -16,11 +16,12 @@ use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class PanelPermissionVisibilityTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -29,6 +30,7 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelDataSourcesSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
     }
 
     public function test_navigation_payload_only_contains_exact_allowed_pages(): void
@@ -326,8 +328,8 @@ class PanelPermissionVisibilityTest extends TestCase
 
     public function test_exact_user_data_api_access_is_enforced_before_gateway_call(): void
     {
-        Http::fake([
-            '*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['stok_kodu' => 'STK-1', 'stok_adi' => 'Test Ürün', 'toplam_miktar' => 3],
