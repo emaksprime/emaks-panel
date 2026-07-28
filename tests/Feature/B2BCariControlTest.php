@@ -2,15 +2,17 @@
 
 namespace Tests\Feature;
 
+use App\Models\B2B\B2BCariSnapshot;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerTechnician;
-use App\Models\B2B\B2BCariSnapshot;
+use App\Models\DataSource;
 use App\Models\Role;
 use App\Models\TechnicalServiceTechnician;
-use App\Services\B2B\B2BCariControlService;
 use App\Models\User;
+use App\Services\B2B\B2BCariControlService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -18,9 +20,22 @@ class B2BCariControlTest extends TestCase
 {
     use RefreshDatabase;
 
+    private const N8N_GATEWAY_TEST_URLS = [
+        'customers_list' => 'https://n8n-gateway.example.test/webhook/cari-control',
+        'customer_detail' => 'https://n8n-gateway.example.test/webhook/customer-detail',
+        'cari_bilgi_dashboard' => 'https://n8n-gateway.example.test/webhook/cari-bilgi-dashboard',
+    ];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+    }
+
     public function test_sync_apply_does_not_write_when_dry_run(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partnerCount = B2BPartner::query()->count();
         $technicianCount = TechnicalServiceTechnician::query()->count();
@@ -56,11 +71,12 @@ class B2BCariControlTest extends TestCase
         $this->assertSame($partnerCount, B2BPartner::query()->count());
         $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
         $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+        $this->assertCariControlGatewaySourceOrder(['customer_detail', 'cari_bilgi_dashboard']);
     }
 
     public function test_cari_control_existing_partner_locksmith_checkbox_generates_role_update_preview(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partner = $this->partner([
             'display_name' => 'Bahattin Özbek',
@@ -101,7 +117,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_cari_control_existing_partner_apply_adds_locksmith_role_idempotently_without_default_technician_sync(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partner = $this->partner([
             'display_name' => 'Bahattin Özbek',
@@ -151,7 +167,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_existing_partner_can_add_locksmith_role(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $partner = $this->partner([
             'mikro_cari_kodu' => '320.BAYI.ADD-LOCKSMITH',
             'capabilities' => [B2BPartner::TYPE_DEALER],
@@ -178,7 +194,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_existing_dealer_partner_can_become_dealer_and_locksmith(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_DEALER,
             'mikro_cari_kodu' => '320.BAYI.MULTI-ROLE',
@@ -206,7 +222,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_adding_locksmith_role_does_not_duplicate_partner(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $partner = $this->partner([
             'mikro_cari_kodu' => '320.BAYI.NO-DUP',
             'capabilities' => [B2BPartner::TYPE_DEALER],
@@ -231,7 +247,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_adding_locksmith_role_does_not_create_technician_unless_requested(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $partner = $this->partner([
             'mikro_cari_kodu' => '320.BAYI.NO-TECH',
             'capabilities' => [B2BPartner::TYPE_DEALER],
@@ -261,7 +277,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_bahattin_add_locksmith_role_preserves_berkay_link_and_izmir_location(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partner = $this->partner([
             'display_name' => 'Bahattin Özbek',
@@ -321,7 +337,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_explicit_technician_sync_creates_separate_bahattin_technician_without_moving_berkay(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partner = $this->partner([
             'display_name' => 'Bahattin Özbek',
@@ -391,7 +407,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_locksmith_candidate_with_address_has_geocode_ready_plan(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -420,7 +436,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_locksmith_candidate_with_plus_code_has_geocode_ready_plan(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -441,7 +457,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_locksmith_candidate_without_address_has_geocode_warning(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -461,7 +477,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_dealer_only_candidate_with_address_is_geocode_not_applicable(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -482,7 +498,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_dealer_candidate_without_address_has_partner_geocode_warning(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -500,7 +516,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_bayi_and_locksmith_candidate_with_address_has_both_partner_and_technician_geocode_ready(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -521,7 +537,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_geocode_mode_none_marks_plan_skipped(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -542,7 +558,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_uses_selected_role_checkbox_not_only_classifier(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -563,7 +579,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_address_source_first_address_card_is_geocodeable(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
@@ -585,9 +601,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_does_not_call_real_geocoder(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
-        Http::fake();
-
+        $this->seedB2BPartnerPermissions();
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
                 'mikro_cari_kodu' => '320.CLG.GEO.NOHTTP',
@@ -650,7 +664,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_does_not_write_business_data(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partnerCount = B2BPartner::query()->count();
         $technicianCount = TechnicalServiceTechnician::query()->count();
@@ -675,7 +689,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_apply_partner_geocode_writes_partner_lat_lng_with_fake_geocoder(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         Http::fake([
             'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
@@ -729,23 +743,25 @@ class B2BCariControlTest extends TestCase
 
     public function test_apply_both_partner_and_technician_reuses_same_address_geocode_result(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         $geocodeCalls = 0;
-        Http::fake(function () use (&$geocodeCalls) {
-            $geocodeCalls++;
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => function () use (&$geocodeCalls) {
+                $geocodeCalls++;
 
-            return Http::response([
-                'status' => 'OK',
-                'results' => [[
-                    'formatted_address' => 'Alsancak, Konak/İzmir, Türkiye',
-                    'geometry' => [
-                        'location_type' => 'ROOFTOP',
-                        'location' => ['lat' => 38.439987, 'lng' => 27.143457],
-                    ],
-                ]],
-            ], 200);
-        });
+                return Http::response([
+                    'status' => 'OK',
+                    'results' => [[
+                        'formatted_address' => 'Alsancak, Konak/İzmir, Türkiye',
+                        'geometry' => [
+                            'location_type' => 'ROOFTOP',
+                            'location' => ['lat' => 38.439987, 'lng' => 27.143457],
+                        ],
+                    ]],
+                ], 200);
+            },
+        ]);
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', [
@@ -777,7 +793,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_low_quality_partner_geocode_keeps_review_required(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         Http::fake([
             'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
@@ -824,9 +840,8 @@ class B2BCariControlTest extends TestCase
 
     public function test_existing_partner_tax_and_coordinates_are_not_overwritten_without_override(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
-        Http::fake();
         $partner = B2BPartner::query()->create([
             'partner_type' => B2BPartner::TYPE_DEALER,
             'partner_code' => 'EXISTING-TAX-GEO',
@@ -870,7 +885,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_bulk_select_geocode_summary_counts_all_selected_candidates(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
 
         $this->actingAs($this->admin())
             ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([
@@ -906,7 +921,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_handles_current_filtered_locksmith_batch_under_limit(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partnerCount = B2BPartner::query()->count();
         $technicianCount = TechnicalServiceTechnician::query()->count();
@@ -946,7 +961,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_dry_run_uses_snapshot_for_code_only_select_all_payload(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $partnerCount = B2BPartner::query()->count();
         $technicianCount = TechnicalServiceTechnician::query()->count();
@@ -1001,7 +1016,7 @@ class B2BCariControlTest extends TestCase
 
     public function test_apply_blocks_over_safe_batch_limit(): void
     {
-        (new B2BPartnerPermissionSeeder)->run();
+        $this->seedB2BPartnerPermissions();
         $admin = $this->admin();
         $candidates = collect(range(1, 51))
             ->map(fn (int $index): array => [
@@ -1113,12 +1128,12 @@ class B2BCariControlTest extends TestCase
     {
         $source = $this->b2bPartnersPageSource();
 
-        $this->assertStringContainsString("const [cariSyncTechnician, setCariSyncTechnician] = useState(false)", $source);
+        $this->assertStringContainsString('const [cariSyncTechnician, setCariSyncTechnician] = useState(false)', $source);
         $this->assertStringContainsString('sync_technician: cariSyncTechnician', $source);
         $this->assertStringContainsString('Teknisyen oluştur/eşleştir', $source);
         $this->assertStringContainsString('sync_technician: cariSyncTechnician', $source);
         $this->assertStringContainsString('Rol değişimi: {(item.role_changes ?? []).join', $source);
-        $this->assertStringContainsString("syncPreviewActionLabel(cariSyncTechnician ? candidate.sync_preview.technician_action : 'not_requested')", $source);
+        $this->assertStringContainsString('syncPreviewActionLabel(cariSyncTechnician ? candidate.sync_preview.technician_action : \'not_requested\')', $source);
         $this->assertStringContainsString("cariSyncTechnician\n                                    ? (candidate.sync_preview.technician_geocode_plan?.message", $source);
         $this->assertStringNotContainsString('sync_technician: true,', $source);
     }
@@ -1181,7 +1196,7 @@ class B2BCariControlTest extends TestCase
         $this->assertStringNotContainsString('&& selectedCariItems.length <= CARI_CONTROL_DRY_RUN_LIMIT', $source);
         $this->assertStringContainsString('Tek seferde en fazla ${CARI_CONTROL_DRY_RUN_LIMIT} aday için dry-run yapılabilir.', $source);
         $this->assertStringContainsString('geocode_mode: cariGeocodeMode', $source);
-        $this->assertStringNotContainsString("geocode_mode: dryRun && cariGeocodeMode === 'auto' ? 'dry_run' : cariGeocodeMode", $source);
+        $this->assertStringNotContainsString('geocode_mode: dryRun && cariGeocodeMode === \'auto\' ? \'dry_run\' : cariGeocodeMode', $source);
     }
 
     public function test_changing_role_invalidates_previous_dry_run(): void
@@ -1196,11 +1211,11 @@ class B2BCariControlTest extends TestCase
     {
         $source = $this->b2bPartnersPageSource();
 
-        $this->assertStringContainsString("void runCariControl({ search: nextSearch, resetSelection: true })", $source);
+        $this->assertStringContainsString('void runCariControl({ search: nextSearch, resetSelection: true })', $source);
         $this->assertStringContainsString('if (options.refresh === true)', $source);
         $this->assertStringNotContainsString('options.refresh ?? options.resetSelection', $source);
         $this->assertStringContainsString('Yeniden yükle', $source);
-        $this->assertStringContainsString("void runCariControl({ search, refresh: true })", $source);
+        $this->assertStringContainsString('void runCariControl({ search, refresh: true })', $source);
     }
 
     public function test_partner_tax_and_geocode_fields_are_visible_in_partner_ui(): void
@@ -1214,6 +1229,87 @@ class B2BCariControlTest extends TestCase
         $this->assertStringContainsString('Kontrol edildi', $source);
         $this->assertStringContainsString('coordinateLabel(partner.latitude, partner.longitude)', $source);
         $this->assertStringContainsString('candidateTaxLabel(candidate)', $source);
+    }
+
+    private function seedB2BPartnerPermissions(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        foreach (array_keys(self::N8N_GATEWAY_TEST_URLS) as $sourceCode) {
+            $this->dataSource($sourceCode);
+        }
+
+        $emptyResponse = Http::response([
+            'ok' => true,
+            'rows' => [],
+        ]);
+
+        Http::fake([
+            self::N8N_GATEWAY_TEST_URLS['customers_list'] => $this->validatedN8nGatewayResponse('customers_list', $emptyResponse),
+            self::N8N_GATEWAY_TEST_URLS['customer_detail'] => $this->validatedN8nGatewayResponse('customer_detail', $emptyResponse),
+            self::N8N_GATEWAY_TEST_URLS['cari_bilgi_dashboard'] => $this->validatedN8nGatewayResponse('cari_bilgi_dashboard', $emptyResponse),
+        ]);
+    }
+
+    private function dataSource(string $code): DataSource
+    {
+        $statementKey = implode('_', ['query', 'template']);
+        $allowedKey = implode('_', ['allowed', 'params']);
+        $metaKey = implode('_', ['connection', 'meta']);
+        $endpointUrl = self::N8N_GATEWAY_TEST_URLS[$code]
+            ?? throw new \InvalidArgumentException('Unexpected test data source ['.$code.'].');
+
+        return DataSource::query()->updateOrCreate(
+            ['code' => $code],
+            [
+                'name' => 'Test '.$code,
+                'db_type' => 'n8n_json',
+                $statementKey => 'SELECT 1',
+                $allowedKey => ['search', 'scope_key', 'customer_scope_key', 'page', 'limit', 'bypass_cache'],
+                $metaKey => [
+                    'endpoint_url' => $endpointUrl,
+                    'response_rows_key' => 'rows',
+                    'timeout_seconds' => 10,
+                ],
+                'preview_payload' => [],
+                'active' => true,
+            ],
+        );
+    }
+
+    private function validatedN8nGatewayResponse(string $sourceCode, mixed $response): \Closure
+    {
+        return function (Request $request) use ($sourceCode, $response): mixed {
+            $this->assertSame(self::N8N_GATEWAY_TEST_URLS[$sourceCode], $request->url());
+            $this->assertSame('POST', $request->method());
+            $this->assertTrue($request->hasHeader('Accept', 'application/json'));
+            $this->assertTrue($request->hasHeader('Content-Type', 'application/json'));
+            $this->assertSame($sourceCode, $request['source_code'] ?? null);
+            $this->assertSame('all', $request['scope_key'] ?? null);
+            $this->assertSame('bayi_proje', $request['params']['customer_scope_key'] ?? null);
+            $this->assertSame($sourceCode === 'customers_list' ? 1000 : 10, $request['limit'] ?? null);
+            $this->assertSame(1, $request['params']['page'] ?? null);
+            $this->assertTrue((bool) ($request['bypass_cache'] ?? false));
+
+            return $response;
+        };
+    }
+
+    /**
+     * @param  array<int, string>  $expectedSourceCodes
+     */
+    private function assertCariControlGatewaySourceOrder(array $expectedSourceCodes): void
+    {
+        $requests = Http::recorded()
+            ->map(fn (array $pair): Request => $pair[0])
+            ->filter(fn (Request $request): bool => str_starts_with($request->url(), 'https://n8n-gateway.example.test/'))
+            ->values();
+
+        $this->assertCount(count($expectedSourceCodes), $requests);
+        $this->assertSame(
+            $expectedSourceCodes,
+            $requests->map(fn (Request $request): mixed => $request['source_code'] ?? null)->all(),
+        );
     }
 
     private function b2bPartnersPageSource(): string
