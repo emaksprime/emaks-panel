@@ -18,6 +18,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -73,4 +76,45 @@ jobs:
         run: npm run build
 
       - name: Tests
-        run: ./vendor/bin/phpunit
+        run: ./vendor/bin/phpunit --exclude-group=postgresql-isolation
+
+  postgresql-isolation:
+    name: postgresql-isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_pgsql
+          tools: composer:v2
+          coverage: none
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-php-8.4-${{ hashFiles('composer.lock', 'composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-php-8.4-
+
+      - name: Install Dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Copy Environment File
+        run: cp .env.example .env
+
+      - name: Generate Application Key
+        run: php artisan key:generate
+
+      - name: Pull PostgreSQL 16 image
+        run: docker pull postgres:16-alpine
+
+      - name: PostgreSQL isolation tests
+        shell: pwsh
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1

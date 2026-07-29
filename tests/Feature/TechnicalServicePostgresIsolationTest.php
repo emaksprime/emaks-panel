@@ -11,10 +11,12 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 use Tests\Support\IsolatedPostgreSqlEnvironment;
 
+#[Group('postgresql-isolation')]
 class TechnicalServicePostgresIsolationTest extends TestCase
 {
     protected function setUp(): void

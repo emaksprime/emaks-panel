@@ -17,13 +17,7 @@ $script:PhpBinary = $null
 $script:DockerBinary = $null
 $script:CleanupFailed = $false
 
-$projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$allowedPaths = @(
-    'scripts/testing/Run-Rel4gPostgres.ps1',
-    'tests/Support/IsolatedPostgreSqlEnvironment.php',
-    'tests/Support/TechnicalServiceDecisionRaceWorker.php',
-    'tests/Feature/TechnicalServicePostgresIsolationTest.php'
-)
+$projectRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
 $removedDatabaseVariables = @(
     'DB_URL',
     'DATABASE_URL',
@@ -145,7 +139,17 @@ function Get-CommandPath {
         throw 'command_path_unavailable'
     }
 
-    return [IO.Path]::GetFullPath($command.Source)
+    $path = [IO.Path]::GetFullPath($command.Source)
+
+    if (-not $IsWindows) {
+        $target = [IO.File]::ResolveLinkTarget($path, $true)
+
+        if ($target) {
+            return $target.FullName
+        }
+    }
+
+    return $path
 }
 
 function Assert-GitScope {
@@ -163,16 +167,9 @@ function Assert-GitScope {
     }
 
     $status = (Invoke-RequiredProcess -FilePath $script:GitBinary -ArgumentList @('-C', $projectRoot, 'status', '--porcelain=v1', '--untracked-files=all') -TimeoutSeconds 10).StdOut
-    $observed = @(
-        $status -split "`r?`n" |
-            Where-Object { $_ -ne '' } |
-            ForEach-Object { $_.Substring(3).Replace('\', '/') }
-    )
 
-    $unexpected = @($observed | Where-Object { $_ -notin $allowedPaths })
-
-    if ($unexpected.Count -ne 0 -or $observed.Count -ne 4) {
-        throw 'git_allowlist_changed'
+    if ($status -cne $script:InitialStatus) {
+        throw 'git_worktree_changed'
     }
 }
 
@@ -188,18 +185,28 @@ function New-SecureTemporaryDirectory {
     [void] (New-Item -ItemType Directory -Path $path)
     $script:TemporaryDirectory = [IO.Path]::GetFullPath($path)
 
-    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    $security = [Security.AccessControl.DirectorySecurity]::new()
-    $security.SetAccessRuleProtection($true, $false)
-    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-        $sid,
-        [Security.AccessControl.FileSystemRights]::FullControl,
-        [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-        [Security.AccessControl.PropagationFlags]::None,
-        [Security.AccessControl.AccessControlType]::Allow
-    )
-    $security.AddAccessRule($rule)
-    Set-Acl -LiteralPath $path -AclObject $security
+    if ($IsWindows) {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $security.AddAccessRule($rule)
+        Set-Acl -LiteralPath $path -AclObject $security
+    }
+    else {
+        $mode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute
+        [IO.File]::SetUnixFileMode($path, $mode)
+
+        if ([IO.File]::GetUnixFileMode($path) -ne $mode) {
+            throw 'temporary_directory_permissions_invalid'
+        }
+    }
 
     return [IO.Path]::GetFullPath($path)
 }
@@ -208,9 +215,11 @@ function Remove-ExactTemporaryDirectory {
     param([Parameter(Mandatory)][string] $Path)
 
     $fullPath = [IO.Path]::GetFullPath($Path)
-    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/') + $separator
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
 
-    if (-not $fullPath.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    if (-not $fullPath.StartsWith($temporaryRoot, $comparison) -or
         -not ([IO.Path]::GetFileName($fullPath)).StartsWith('emaks-pr92-rel4g-wp0a-', [StringComparison]::Ordinal)) {
         throw 'temporary_directory_scope_invalid'
     }
@@ -346,7 +355,7 @@ function Wait-HostPostgreSqlReady {
         [int] $Port
     )
 
-    $worker = Join-Path $projectRoot 'tests\Support\TechnicalServiceDecisionRaceWorker.php'
+    $worker = [IO.Path]::Combine($projectRoot, 'tests', 'Support', 'TechnicalServiceDecisionRaceWorker.php')
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     $lastClass = 'none'
     $lastCode = 'none'
@@ -706,12 +715,59 @@ function Assert-DockerObjectAbsent {
     }
 }
 
+function Get-ExactProcessSnapshot {
+    param([Parameter(Mandatory)][int] $Id)
+
+    if ($IsWindows) {
+        $lookupErrors = @()
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
+
+        if ($lookupErrors.Count -ne 0) {
+            throw 'worker_process_lookup_failed'
+        }
+
+        if (-not $process) {
+            return $null
+        }
+
+        return [pscustomobject]@{
+            ExecutablePath = if ($process.ExecutablePath) { [IO.Path]::GetFullPath($process.ExecutablePath) } else { '' }
+            CommandLine = [string] $process.CommandLine
+        }
+    }
+
+    $processRoot = Join-Path '/proc' ([string] $Id)
+    $commandLinePath = Join-Path $processRoot 'cmdline'
+    $executableLink = Join-Path $processRoot 'exe'
+
+    if (-not (Test-Path -LiteralPath $commandLinePath) -or -not (Test-Path -LiteralPath $executableLink)) {
+        return $null
+    }
+
+    try {
+        $target = [IO.File]::ResolveLinkTarget($executableLink, $true)
+        $commandLine = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($commandLinePath)).Replace([char] 0, [char] ' ')
+
+        return [pscustomobject]@{
+            ExecutablePath = if ($target) { $target.FullName } else { '' }
+            CommandLine = $commandLine
+        }
+    }
+    catch {
+        if (-not (Test-Path -LiteralPath $processRoot)) {
+            return $null
+        }
+
+        throw
+    }
+}
+
 function Stop-RecordedWorkers {
     if (-not $script:WorkerRegistry -or -not (Test-Path -LiteralPath $script:WorkerRegistry)) {
         return
     }
 
-    $workerPath = [IO.Path]::GetFullPath((Join-Path $projectRoot 'tests\Support\TechnicalServiceDecisionRaceWorker.php'))
+    $workerPath = [IO.Path]::GetFullPath([IO.Path]::Combine($projectRoot, 'tests', 'Support', 'TechnicalServiceDecisionRaceWorker.php'))
     $entries = @(Get-Content -LiteralPath $script:WorkerRegistry | Where-Object { $_ -ne '' } | Sort-Object -Unique)
 
     foreach ($entry in $entries) {
@@ -723,19 +779,13 @@ function Stop-RecordedWorkers {
         }
 
         $pidValue = [int] $parts[0]
-        $lookupErrors = @()
-        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
-
-        if ($lookupErrors.Count -ne 0) {
-            $script:CleanupFailed = $true
-            continue
-        }
+        $process = Get-ExactProcessSnapshot -Id $pidValue
 
         if (-not $process) {
             continue
         }
 
-        $executable = if ($process.ExecutablePath) { [IO.Path]::GetFullPath($process.ExecutablePath) } else { '' }
+        $executable = [string] $process.ExecutablePath
         $commandLine = [string] $process.CommandLine
 
         if ($executable -ne $script:PhpBinary -or
@@ -750,13 +800,7 @@ function Stop-RecordedWorkers {
         $deadline = [DateTime]::UtcNow.AddSeconds(5)
         do {
             Start-Sleep -Milliseconds 100
-            $lookupErrors = @()
-            $stillRunning = Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
-
-            if ($lookupErrors.Count -ne 0) {
-                $script:CleanupFailed = $true
-                break
-            }
+            $stillRunning = Get-ExactProcessSnapshot -Id $pidValue
         } while ($stillRunning -and [DateTime]::UtcNow -lt $deadline)
 
         if ($stillRunning) {
@@ -839,10 +883,11 @@ try {
     $script:PhpBinary = Get-CommandPath -Name 'php'
     $script:InitialHead = (Invoke-RequiredProcess -FilePath $script:GitBinary -ArgumentList @('-C', $projectRoot, 'rev-parse', 'HEAD') -TimeoutSeconds 10).StdOut.Trim()
     $script:InitialTree = (Invoke-RequiredProcess -FilePath $script:GitBinary -ArgumentList @('-C', $projectRoot, 'rev-parse', 'HEAD^{tree}') -TimeoutSeconds 10).StdOut.Trim()
+    $script:InitialStatus = (Invoke-RequiredProcess -FilePath $script:GitBinary -ArgumentList @('-C', $projectRoot, 'status', '--porcelain=v1', '--untracked-files=all') -TimeoutSeconds 10).StdOut
 
     Assert-GitScope
 
-    if (Test-Path -LiteralPath (Join-Path $projectRoot 'bootstrap\cache\config.php')) {
+    if (Test-Path -LiteralPath ([IO.Path]::Combine($projectRoot, 'bootstrap', 'cache', 'config.php'))) {
         Write-Output 'DECISION: RED_BLOCKED_REL4G_WP0A_CONFIG_CACHE_PRESENT'
         exit 2
     }
@@ -979,7 +1024,7 @@ try {
 
     $script:Stage = 'prebootstrap_guard'
     $preflight = Invoke-RequiredProcess -FilePath $script:PhpBinary -ArgumentList @(
-        (Join-Path $projectRoot 'tests\Support\TechnicalServiceDecisionRaceWorker.php'),
+        ([IO.Path]::Combine($projectRoot, 'tests', 'Support', 'TechnicalServiceDecisionRaceWorker.php')),
         'preflight',
         $script:Nonce
     ) -TimeoutSeconds 30 -Environment $childEnvironment -RemoveEnvironment $removedDatabaseVariables
