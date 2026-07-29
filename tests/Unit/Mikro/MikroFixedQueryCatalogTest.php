@@ -11,14 +11,14 @@ class MikroFixedQueryCatalogTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_catalog_contains_only_the_twenty_one_immutable_read_queries(): void
+    public function test_catalog_contains_only_the_twenty_documented_immutable_read_queries(): void
     {
         $catalog = app(MikroFixedQueryCatalog::class);
 
-        $this->assertCount(21, $catalog->queryIds());
+        $this->assertCount(20, $catalog->queryIds());
         $this->assertSame([
             'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.availability', 'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines',
@@ -30,6 +30,11 @@ class MikroFixedQueryCatalogTest extends TestCase
             $this->assertMatchesRegularExpression('/^SELECT\b/i', ltrim($definition['sql']));
             $this->assertStringNotContainsString(';', $definition['sql']);
             $this->assertDoesNotMatchRegularExpression('/--|\/\*|\b(INSERT|UPDATE|DELETE|MERGE|EXEC)\b/i', $definition['sql']);
+            $this->assertNotEmpty($definition['table_evidence']);
+            foreach ($definition['table_evidence'] as $evidence) {
+                $this->assertMatchesRegularExpression('/^https:\/\/www\.mikroelterminali\.com\/databasehelp17\//', $evidence['uri']);
+                $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $evidence['sha256']);
+            }
         }
     }
 

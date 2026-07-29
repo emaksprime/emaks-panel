@@ -317,8 +317,9 @@ class MikroApiClient
 
     private function requestPayload(array $operation, array $payload, array $context): array
     {
+        $apiKeyField = (string) ($operation['api_key_field'] ?? 'ApiKey');
         $auth = [
-            'ApiKey' => $context['api_key'],
+            $apiKeyField => $context['api_key'],
             'CalismaYili' => $context['working_year'],
             'FirmaKodu' => $context['firm_code'],
             'KullaniciKodu' => $context['user_code'],

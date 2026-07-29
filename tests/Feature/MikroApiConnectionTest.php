@@ -4,12 +4,15 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Services\Mikro\MikroApiClient;
+use App\Services\Mikro\MikroFixedQueryCatalog;
+use App\Services\Mikro\MikroOperationRegistry;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use ReflectionMethod;
 use Tests\TestCase;
 
 class MikroApiConnectionTest extends TestCase
@@ -41,7 +44,10 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
-            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 30)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 29)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
+            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 1)
+            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 37)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
@@ -93,91 +99,81 @@ class MikroApiConnectionTest extends TestCase
         }
     }
 
-    public function test_customer_and_stock_reads_use_daily_signature_and_exact_post_contracts(): void
+    public function test_customer_and_stock_request_contracts_are_typed_without_network_execution(): void
     {
-        $secrets = $this->configureLiveContract();
-        Http::fake([
-            'https://mikro-api.example.test/Api/APIMethods/CariListesiV3' => Http::response(['Result' => [['cari_kod' => 'TEST-CARI']]]),
-            'https://mikro-api.example.test/Api/APIMethods/StokListesiV2' => Http::response(['Result' => [['sto_kod' => 'TEST-STOK']]]),
-        ]);
-
+        $secrets = ['api_key' => 'MIKRO_TEST_API_KEY_ONLY', 'user_code' => 'MIKRO_TEST_USER_ONLY', 'password' => 'MIKRO_TEST_PASSWORD_ONLY'];
         $client = app(MikroApiClient::class);
-        $customers = $client->listCustomers('TEST-CARI', '', 2, '2026-01-01', '2026-01-31', '-cari_kod', 5, 0);
-        $stocks = $client->listStocks('TEST-STOK', 2, '2026-01-01', '2026-01-31', '-sto_kod', 5, 0);
+        $registry = app(MikroOperationRegistry::class);
+        $method = new ReflectionMethod($client, 'requestPayload');
+        $context = [
+            'api_key' => $secrets['api_key'],
+            'working_year' => '2026',
+            'firm_code' => 'TEST-FIRM',
+            'user_code' => $secrets['user_code'],
+            'password' => $secrets['password'],
+            'server_timezone' => 'Europe/Istanbul',
+        ];
+        $customers = $method->invoke($client, $registry->read('customer.list'), ['CariKod' => 'TEST-CARI', 'Size' => '5', 'Index' => 0], $context);
+        $stocks = $method->invoke($client, $registry->read('stock.list'), ['StokKod' => 'TEST-STOK'], $context);
         $signature = md5('2026-07-29 '.$secrets['password']);
 
-        $this->assertTrue($customers['success']);
-        $this->assertSame(1, $customers['result_count']);
-        $this->assertTrue($stocks['success']);
-        $this->assertSame(1, $stocks['result_count']);
-
-        Http::assertSentCount(2);
-        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
-            && $request->url() === 'https://mikro-api.example.test/Api/APIMethods/CariListesiV3'
-            && $request['Mikro'] === [
-                'ApiKey' => $secrets['api_key'],
-                'CalismaYili' => '2026',
-                'FirmaKodu' => 'TEST-FIRM',
-                'KullaniciKodu' => $secrets['user_code'],
-                'Sifre' => $signature,
-            ]
-            && $request['CariKod'] === 'TEST-CARI'
-            && $request['Size'] === '5'
-            && $request['Index'] === 0);
-        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/StokListesiV2'
-            && $request['Mikro']['Sifre'] === $signature
-            && $request['StokKod'] === 'TEST-STOK');
+        $this->assertSame(['ApiKey' => $secrets['api_key'], 'CalismaYili' => '2026', 'FirmaKodu' => 'TEST-FIRM', 'KullaniciKodu' => $secrets['user_code'], 'Sifre' => $signature], $customers['Mikro']);
+        $this->assertSame('TEST-CARI', $customers['CariKod']);
+        $this->assertSame('5', $customers['Size']);
+        $this->assertSame('TEST-STOK', $stocks['StokKod']);
+        $this->assertSame($signature, $stocks['Mikro']['Sifre']);
+        Http::assertNothingSent();
     }
 
-    public function test_all_verified_direct_endpoints_use_exact_paths_and_nested_payload_contracts(): void
+    public function test_documented_direct_endpoints_keep_exact_authority_and_nested_payload_contracts(): void
     {
-        $this->configureLiveContract();
-        Http::fake([
-            'https://mikro-api.example.test/Api/APIMethods/KullaniciParametreleriV2' => Http::response(['Result' => [['FirmaKodu' => 'TEST-FIRM']]]),
-            'https://mikro-api.example.test/Api/APIMethods/KullaniciListesiV2' => Http::response(['Result' => [['KullaniciKodu' => 'TEST']]]),
-            'https://mikro-api.example.test/Api/APIMethods/FaturaPdfV2' => Http::response(['Result' => [['ContentType' => 'application/pdf']]]),
-            'https://mikro-api.example.test/Api/APIMethods/EIrsaliyePdfV2' => Http::response(['Result' => [['ContentType' => 'application/pdf']]]),
-            'https://mikro-api.example.test/Api/APIMethods/EBelgeDurumSorgulamaV2' => Http::response(['Result' => [['Durum' => 'OK']]]),
-            'https://mikro-api.example.test/Api/APIMethods/EMukellefSorgulamaV2' => Http::response(['Result' => [['Mukellef' => true]]]),
-        ]);
+        $registry = app(MikroOperationRegistry::class);
+        foreach ([
+            'user.parameters' => '/Api/APIMethods/KullaniciParametreleriV2',
+            'user.list' => '/Api/APIMethods/KullaniciListesiV2',
+            'invoice.pdf' => '/API/APIMethods/FaturaPdfV2',
+            'dispatch.pdf' => '/API/APIMethods/EIrsaliyePdfV2',
+            'edocument.status' => '/API/APIMethods/EBelgeDurumSorgulamaV2',
+            'etaxpayer.check' => '/API/APIMethods/EMukellefSorgulamaV2',
+        ] as $operationKey => $path) {
+            $operation = $registry->read($operationKey);
+            $this->assertSame($path, $operation['endpoint']);
+            $this->assertSame('DOCUMENTED_SERVER_UNVERIFIED', $operation['evidence_status']);
+            $this->assertFalse($operation['runtime_eligible']);
+            $this->assertFalse($operation['runtime_enabled']);
+        }
+
         $guid = '123e4567-e89b-42d3-a456-426614174000';
         $client = app(MikroApiClient::class);
+        $method = new ReflectionMethod($client, 'requestPayload');
+        $context = ['api_key' => 'KEY', 'working_year' => '2026', 'firm_code' => 'FIRM', 'user_code' => 'USER', 'password' => 'PASS', 'server_timezone' => 'Europe/Istanbul'];
+        $dispatch = $method->invoke($client, $registry->read('dispatch.pdf'), ['EFaturaTipi' => 1, 'Id' => $guid], $context);
+        $status = $method->invoke($client, $registry->read('edocument.status'), ['EFaturaTipi' => 1, 'EBelgeTipi' => 2, 'UUID' => $guid], $context);
 
-        $this->assertTrue($client->userParameters()['success']);
-        $this->assertTrue($client->listUsers()['success']);
-        $this->assertTrue($client->invoicePdf($guid)['success']);
-        $this->assertTrue($client->dispatchPdf(1, $guid)['success']);
-        $this->assertTrue($client->eDocumentStatus(1, 2, $guid)['success']);
-        $this->assertTrue($client->eTaxpayerCheck('1234567890')['success']);
-
-        Http::assertSentCount(6);
-        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/FaturaPdfV2'
-            && $request['Mikro']['Fatura_Guid'] === $guid);
-        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/EIrsaliyePdfV2'
-            && $request['Mikro']['EFaturaTipi'] === 1
-            && $request['Mikro']['Id'] === $guid);
-        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/EBelgeDurumSorgulamaV2'
-            && $request['Mikro']['EBelge'] === ['EFaturaTipi' => 1, 'EBelgeTipi' => 2, 'UUID' => $guid]);
-        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/EMukellefSorgulamaV2'
-            && $request['Mikro']['EMukellef'] === ['VKN_TCKN' => '1234567890']);
+        $this->assertSame('KEY', $dispatch['Mikro']['Apikey']);
+        $this->assertArrayNotHasKey('ApiKey', $dispatch['Mikro']);
+        $this->assertSame(1, $dispatch['Mikro']['EFaturaTipi']);
+        $this->assertSame($guid, $dispatch['Mikro']['Id']);
+        $this->assertSame(['EFaturaTipi' => 1, 'EBelgeTipi' => 2, 'UUID' => $guid], $status['Mikro']['EBelge']);
+        Http::assertNothingSent();
     }
 
-    public function test_fixed_query_reads_use_only_server_rendered_sql_contract(): void
+    public function test_fixed_query_contracts_are_immutable_documented_and_server_unverified(): void
     {
-        $this->configureLiveContract();
-        Http::fake([
-            'https://mikro-api.example.test/Api/APIMethods/SqlVeriOkuV2' => Http::response(['Result' => [['ok' => true]]]),
-        ]);
         $guid = '123e4567-e89b-42d3-a456-426614174000';
-        $client = app(MikroApiClient::class);
+        $queries = app(MikroFixedQueryCatalog::class);
+        $registry = app(MikroOperationRegistry::class);
+        $orderSql = $queries->render('order.lines', ['order_guid' => $guid, 'limit' => 10]);
+        $serialSql = $queries->render('serial.history', ['serial_number' => 'SERIAL-001', 'limit' => 10]);
+        $operation = $registry->read('order.lines');
 
-        $this->assertTrue($client->orderLines($guid, 10)['success']);
-        $this->assertTrue($client->serialHistory('SERIAL-001', 10)['success']);
-
-        Http::assertSentCount(2);
-        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/SqlVeriOkuV2'
-            && str_contains((string) $request['SQLSorgu'], 'sth.sth_sip_uid = sip.sip_Guid'));
-        Http::assertSent(fn (Request $request): bool => str_contains((string) $request['SQLSorgu'], 'sth.sth_Guid = ch.ChHar_master_uid'));
+        $this->assertStringContainsString('sth.sth_sip_uid = sip.sip_Guid', $orderSql);
+        $this->assertStringContainsString('sth.sth_Guid = ch.ChHar_master_uid', $serialSql);
+        $this->assertSame('/Api/apiMethods/SqlVeriOkuV2', $operation['endpoint']);
+        $this->assertStringContainsString('SERVER_CANARY_PENDING', $operation['exact_path_casing']);
+        $this->assertFalse($operation['runtime_enabled']);
+        $this->assertNotEmpty($operation['v17_table_evidence']);
+        Http::assertNothingSent();
     }
 
     public function test_transient_read_retries_are_bounded_and_last_good_is_explicit(): void
@@ -197,8 +193,8 @@ class MikroApiConnectionTest extends TestCase
 
             return Http::response(['error' => 'temporary'], 503);
         });
-        $first = $client->listCustomers('TEST-CARI', '', 0, '', '', '-cari_kod', 5, 0);
-        $fallback = $client->listCustomers('TEST-CARI', '', 0, '', '', '-cari_kod', 5, 0);
+        $first = $client->healthCheck();
+        $fallback = $client->healthCheck();
 
         $this->assertTrue($first['success']);
         $this->assertTrue($fallback['success']);
@@ -229,31 +225,21 @@ class MikroApiConnectionTest extends TestCase
         Http::assertSentCount(4);
     }
 
-    public function test_auth_tls_and_http_500_fail_without_blind_retry_or_stale_fallback(): void
+    public function test_unverified_business_operations_fail_before_network_even_with_live_configuration(): void
     {
         $this->configureLiveContract();
-        $responses = [
-            Http::response(['error' => 'auth'], 401),
-            Http::response(['error' => 'server'], 500),
-            Http::failedConnection('TLS certificate verification failed'),
-        ];
-        Http::fake(function () use (&$responses) {
-            return array_shift($responses);
-        });
         $client = app(MikroApiClient::class);
 
         $auth = $client->listCustomers('TEST');
         $server = $client->listStocks('TEST');
-        $tls = $client->healthCheck();
+        $fixed = $client->orderLines('123e4567-e89b-42d3-a456-426614174000', 10);
 
-        $this->assertSame('MIKRO_AUTH_FAILED', $auth['error_code']);
-        $this->assertSame('MIKRO_SERVER_ERROR', $server['error_code']);
-        $this->assertSame('MIKRO_TLS_FAILED', $tls['error_code']);
-        foreach ([$auth, $server, $tls] as $result) {
-            $this->assertSame(1, $result['attempt_count']);
+        foreach ([$auth, $server, $fixed] as $result) {
+            $this->assertSame(MikroOperationRegistry::BLOCKED_SERVER_CANARY, $result['error_code']);
+            $this->assertSame(0, $result['attempt_count']);
             $this->assertFalse($result['fallback_used']);
         }
-        Http::assertSentCount(3);
+        Http::assertNothingSent();
     }
 
     public function test_unsafe_base_urls_fail_validation_before_network(): void

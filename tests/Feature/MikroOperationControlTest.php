@@ -22,7 +22,7 @@ class MikroOperationControlTest extends TestCase
         Http::preventStrayRequests();
     }
 
-    public function test_full_sanitized_catalog_is_visible_without_sql_or_secret_material(): void
+    public function test_full_sanitized_catalog_is_visible_without_sql_text_or_secret_material(): void
     {
         $payload = $this->actingAs($this->admin())
             ->getJson('/api/technical-service/messaging-settings')
@@ -30,12 +30,13 @@ class MikroOperationControlTest extends TestCase
             ->assertJsonCount(43, 'messaging_settings.mikro_api.operation_catalog.operations')
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->json('messaging_settings.mikro_api');
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
         $this->assertStringNotContainsString('SELECT TOP', $encoded);
-        $this->assertStringNotContainsString('SQLSorgu', $encoded);
+        $this->assertStringContainsString('SQLSorgu', $encoded);
         $this->assertStringNotContainsString('password_encrypted', $encoded);
         $this->assertStringNotContainsString('api_key_encrypted', $encoded);
     }
@@ -46,8 +47,8 @@ class MikroOperationControlTest extends TestCase
             ->patchJson('/api/technical-service/messaging-settings', [
                 'mikro_api' => [
                     'operation_controls' => [
-                        'customer.list' => ['runtime_enabled' => false, 'source_mode' => 'n8n'],
-                        'customer.save' => ['runtime_enabled' => false],
+                        'customer.list' => ['runtime_enabled' => true, 'source_mode' => 'n8n'],
+                        'customer.save' => ['runtime_enabled' => true],
                     ],
                 ],
             ])
@@ -56,6 +57,7 @@ class MikroOperationControlTest extends TestCase
             ->json();
 
         $this->assertFalse($payload['messaging_settings']['mikro_api']['operation_controls']['customer.list']['runtime_enabled']);
+        $this->assertFalse($payload['messaging_settings']['mikro_api']['operation_controls']['customer.save']['runtime_enabled']);
         $this->assertSame('n8n', $payload['messaging_settings']['mikro_api']['operation_controls']['customer.list']['source_mode']);
 
         $this->actingAs($this->admin())
@@ -90,7 +92,7 @@ class MikroOperationControlTest extends TestCase
             ->assertOk();
 
         $operationBlocked = $client->listCustomers('TEST');
-        $this->assertSame('MIKRO_OPERATION_DISABLED', $operationBlocked['error_code']);
+        $this->assertSame('MIKRO_OPERATION_SERVER_CANARY_REQUIRED', $operationBlocked['error_code']);
         Http::assertNothingSent();
     }
 

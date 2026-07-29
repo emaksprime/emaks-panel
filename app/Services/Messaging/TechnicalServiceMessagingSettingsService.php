@@ -13,12 +13,16 @@ use App\Services\Mikro\MikroOperationRegistry;
 use App\Services\Mikro\MikroRuntimeState;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
+use Closure;
+use DateTimeZone;
+use DomainException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
@@ -1809,7 +1813,7 @@ class TechnicalServiceMessagingSettingsService
         });
 
         if (DB::transactionLevel() !== 0) {
-            throw new \RuntimeException('Provider HTTP açık DB transaction içinde başlatılamaz.');
+            throw new RuntimeException('Provider HTTP açık DB transaction içinde başlatılamaz.');
         }
     }
 
@@ -4209,13 +4213,14 @@ class TechnicalServiceMessagingSettingsService
 
             try {
                 $operation = $this->mikroOperationRegistry->operation($operationKey);
-            } catch (\DomainException) {
+            } catch (DomainException) {
                 throw ValidationException::withMessages(["mikro_api.operation_controls.{$operationKey}" => 'Bilinmeyen Mikro operasyonu.']);
             }
 
             $control = (array) ($next[$operationKey] ?? []);
             if (array_key_exists('runtime_enabled', $values)) {
-                $control['runtime_enabled'] = (bool) $values['runtime_enabled'];
+                $control['runtime_enabled'] = (bool) ($operation['runtime_eligible'] ?? false)
+                    && (bool) $values['runtime_enabled'];
             }
 
             if (($operation['mode'] ?? null) === 'READ' && array_key_exists('source_mode', $values)) {
@@ -4229,9 +4234,7 @@ class TechnicalServiceMessagingSettingsService
             if (($operation['mode'] ?? null) === 'WRITE') {
                 $control['source_mode'] = 'disabled';
                 $control['approval_required'] = true;
-                if (($operation['contract_status'] ?? null) !== 'VERIFIED') {
-                    $control['runtime_enabled'] = false;
-                }
+                $control['runtime_enabled'] = false;
             }
 
             $next[$operationKey] = $control;
@@ -4306,8 +4309,8 @@ class TechnicalServiceMessagingSettingsService
         }
 
         try {
-            new \DateTimeZone((string) $settings['server_timezone']);
-        } catch (\Throwable) {
+            new DateTimeZone((string) $settings['server_timezone']);
+        } catch (Throwable) {
             throw ValidationException::withMessages(['mikro_api.server_timezone' => 'Mikro sunucu saat dilimi geçersiz.']);
         }
     }
@@ -4499,9 +4502,7 @@ class TechnicalServiceMessagingSettingsService
         }
         $catalog = $this->mikroOperationRegistry->summary($controls, $runtimeStates);
         $contractReady = $catalog['status'] === 'active'
-            && $catalog['read_count'] === 32
-            && $catalog['implemented_read_count'] === 30
-            && $catalog['write_count'] === 11;
+            && ($catalog['matrix_complete'] ?? false);
         $credentialsReady = $credential !== null
             && filled($credential->api_key_encrypted)
             && $credential->basicAuthReady();
@@ -4577,6 +4578,9 @@ class TechnicalServiceMessagingSettingsService
             'direct_endpoint_operation_count' => $catalog['direct_endpoint_count'],
             'fixed_query_operation_count' => $catalog['fixed_query_count'],
             'contract_blocked_operation_count' => $catalog['contract_blocked_count'],
+            'server_verified_read_operation_count' => $catalog['server_verified_read_count'],
+            'server_unverified_operation_count' => $catalog['server_unverified_count'],
+            'runtime_eligible_read_operation_count' => $catalog['runtime_eligible_read_count'],
             'contract_ready' => $contractReady,
             'live_configuration_ready' => $liveConfigurationReady,
             'readiness_status' => $readinessStatus,
@@ -4640,8 +4644,8 @@ class TechnicalServiceMessagingSettingsService
             $blocking[] = 'MIKRO_WORKING_YEAR_MISSING';
         }
         try {
-            new \DateTimeZone((string) ($mikro['server_timezone'] ?? ''));
-        } catch (\Throwable) {
+            new DateTimeZone((string) ($mikro['server_timezone'] ?? ''));
+        } catch (Throwable) {
             $blocking[] = 'MIKRO_SERVER_TIMEZONE_INVALID';
         }
         if ($credential === null || blank($credential->api_key_encrypted)) {
@@ -4845,8 +4849,8 @@ class TechnicalServiceMessagingSettingsService
         $locked['lifecycle_page']->forceFill(['layout_json' => $layout])->save();
     }
 
-    /** @return \Closure(): void */
-    private function acquireLifecycleLock(int $seconds = 15): \Closure
+    /** @return Closure(): void */
+    private function acquireLifecycleLock(int $seconds = 15): Closure
     {
         if (self::$lifecycleLockHeldInProcess) {
             throw new ConflictHttpException('Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.');
@@ -4876,7 +4880,7 @@ class TechnicalServiceMessagingSettingsService
                         [self::MANUAL_E2E_ADVISORY_LOCK_CLASS_ID, self::MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID],
                     );
                     if (! $this->databaseBoolean($result['released'] ?? false)) {
-                        throw new \RuntimeException('Manual E2E PostgreSQL advisory lock sahipliği kayboldu.');
+                        throw new RuntimeException('Manual E2E PostgreSQL advisory lock sahipliği kayboldu.');
                     }
                 } finally {
                     $released = true;

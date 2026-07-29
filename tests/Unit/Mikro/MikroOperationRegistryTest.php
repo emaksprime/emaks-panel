@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\Mikro;
 
+use App\Services\Mikro\MikroContractEvidenceCatalog;
 use App\Services\Mikro\MikroOperationRegistry;
 use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -18,13 +19,18 @@ class MikroOperationRegistryTest extends TestCase
 
         $this->assertSame('active', $summary['status']);
         $this->assertSame(32, $summary['read_count']);
-        $this->assertSame(30, $summary['implemented_read_count']);
-        $this->assertSame(30, $summary['enabled_read_count']);
+        $this->assertSame(29, $summary['implemented_read_count']);
+        $this->assertSame(1, $summary['enabled_read_count']);
         $this->assertSame(11, $summary['write_count']);
         $this->assertSame(0, $summary['enabled_write_count']);
         $this->assertSame(9, $summary['direct_endpoint_count']);
-        $this->assertSame(21, $summary['fixed_query_count']);
+        $this->assertSame(20, $summary['fixed_query_count']);
         $this->assertSame(5, $summary['contract_blocked_count']);
+        $this->assertSame(1, $summary['server_verified_read_count']);
+        $this->assertSame(37, $summary['server_unverified_count']);
+        $this->assertSame(1, $summary['runtime_eligible_read_count']);
+        $this->assertTrue($summary['matrix_complete']);
+        $this->assertSame(['health.check'], $summary['enabled_keys']);
 
         $keys = array_column($summary['operations'], 'operation_key');
         foreach ([
@@ -59,8 +65,10 @@ class MikroOperationRegistryTest extends TestCase
             $this->assertSame('POST', $operation['method']);
         }
 
-        $this->assertSame('/Api/APIMethods/SqlVeriOkuV2', $registry->read('order.list')['endpoint']);
+        $this->assertSame('/Api/apiMethods/SqlVeriOkuV2', $registry->read('order.list')['endpoint']);
         $this->assertSame('order.list', $registry->read('order.list')['fixed_query_id']);
+        $this->assertSame('DOCUMENTED_SERVER_UNVERIFIED', $registry->read('customer.list')['evidence_status']);
+        $this->assertFalse($registry->read('customer.list')['runtime_eligible']);
     }
 
     public function test_contract_blocked_unknown_and_generic_operations_fail_closed(): void
@@ -76,7 +84,7 @@ class MikroOperationRegistryTest extends TestCase
             }
         }
 
-        foreach (['proforma.list', 'proforma.detail'] as $operation) {
+        foreach (['stock.availability', 'proforma.list', 'proforma.detail'] as $operation) {
             try {
                 $registry->read($operation);
                 $this->fail("{$operation} should be contract-blocked.");
@@ -103,7 +111,7 @@ class MikroOperationRegistryTest extends TestCase
                 $registry->assertReadAllowed('customer.list', $settings);
                 $this->fail('Read gate should reject the operation.');
             } catch (DomainException $exception) {
-                $this->assertContains($exception->getMessage(), ['MIKRO_DISABLED', 'MIKRO_READ_SYNC_DISABLED', 'MIKRO_OPERATION_DISABLED']);
+                $this->assertContains($exception->getMessage(), ['MIKRO_DISABLED', 'MIKRO_READ_SYNC_DISABLED', MikroOperationRegistry::BLOCKED_SERVER_CANARY]);
             }
         }
 
@@ -111,7 +119,7 @@ class MikroOperationRegistryTest extends TestCase
             $registry->assertReadAllowed('order.lines', ['enabled' => true, 'read_sync_enabled' => true]);
             $this->fail('n8n source mode must not open the Mikro client.');
         } catch (DomainException $exception) {
-            $this->assertSame(MikroOperationRegistry::BLOCKED_DENIED, $exception->getMessage());
+            $this->assertSame(MikroOperationRegistry::BLOCKED_SERVER_CANARY, $exception->getMessage());
         }
     }
 
@@ -124,16 +132,33 @@ class MikroOperationRegistryTest extends TestCase
             'operation_controls' => ['customer.save' => ['runtime_enabled' => true]],
         ];
 
-        foreach ([[false, 'op-1', 'MIKRO_WRITE_APPROVAL_REQUIRED'], [true, null, 'MIKRO_RECONCILIATION_REQUIRED']] as [$approved, $idempotency, $message]) {
+        foreach ([[false, 'op-1'], [true, null], [true, 'op-1']] as [$approved, $idempotency]) {
             try {
                 $registry->assertWriteAllowed('customer.save', $settings, $approved, $idempotency);
-                $this->fail('Write gate should reject incomplete authorization.');
+                $this->fail('Write gate must remain physically disabled.');
             } catch (DomainException $exception) {
-                $this->assertSame($message, $exception->getMessage());
+                $this->assertSame('MIKRO_WRITE_DISABLED', $exception->getMessage());
             }
         }
+    }
 
-        $this->assertSame('customer.save', $registry->assertWriteAllowed('customer.save', $settings, true, 'op-1')['operation_key']);
+    public function test_every_operation_carries_deterministic_authority_fields(): void
+    {
+        $registry = app(MikroOperationRegistry::class);
+
+        foreach ($registry->catalog() as $operation) {
+            foreach (['operation_key', 'mode', 'official_doc_reference', 'official_method', 'exact_path', 'exact_path_casing', 'request_schema', 'response_schema', 'depot_evidence', 'installed_server_canary', 'v17_table_evidence', 'business_parity_source', 'evidence_status', 'runtime_enabled', 'blocker', 'evidence_hash'] as $field) {
+                $this->assertArrayHasKey($field, $operation, $operation['operation_key']." misses {$field}");
+            }
+            $this->assertContains($operation['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES);
+            $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $operation['evidence_hash']);
+            if (! $operation['runtime_eligible']) {
+                $this->assertFalse($operation['runtime_enabled']);
+            }
+            if ($operation['adapter_type'] === 'FIXED_QUERY') {
+                $this->assertNotEmpty($operation['v17_table_evidence']);
+            }
+        }
     }
 
     public function test_base_url_policy_accepts_test_and_private_origins_but_rejects_public_or_composed_urls(): void

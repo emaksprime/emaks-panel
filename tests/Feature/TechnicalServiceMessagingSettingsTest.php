@@ -510,16 +510,20 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
             ->assertJsonPath('messaging_settings.mikro_api.contract_ready', true)
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
-            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 30)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 29)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
+            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 1)
+            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 37)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.direct_endpoint_count', 9)
-            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.fixed_query_count', 21)
+            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.fixed_query_count', 20)
             ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.contract_blocked_count', 5)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
             ->json();
 
         $this->assertFalse($payload['messaging_settings']['mikro_api']['write_ready']);
+        $this->assertFalse($payload['messaging_settings']['mikro_api']['operation_controls']['customer.list']['runtime_enabled']);
 
         $payload = $this->actingAs($this->admin())
             ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials', [

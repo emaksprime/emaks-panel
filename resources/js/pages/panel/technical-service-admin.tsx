@@ -392,7 +392,9 @@ type MessagingMikroOperation = {
     mode: 'READ' | 'WRITE';
     capability_status: string;
     contract_status: string;
+    evidence_status: string;
     implementation_status: string;
+    runtime_eligible: boolean;
     runtime_enabled: boolean;
     adapter_type: 'DIRECT_ENDPOINT' | 'FIXED_QUERY' | 'CONTRACT_BLOCKED';
     endpoint: string | null;
@@ -408,6 +410,12 @@ type MessagingMikroOperation = {
     last_error_code: string | null;
     circuit_state: string;
     blocker: string | null;
+    official_doc_reference: string | null;
+    official_method: string | null;
+    exact_path: string | null;
+    exact_path_casing: string | null;
+    installed_server_canary: string;
+    evidence_hash: string;
 };
 
 type MessagingMikroApiSettings = {
@@ -438,6 +446,10 @@ type MessagingMikroApiSettings = {
         direct_endpoint_count: number;
         fixed_query_count: number;
         contract_blocked_count: number;
+        server_verified_read_count: number;
+        server_unverified_count: number;
+        runtime_eligible_read_count: number;
+        matrix_complete: boolean;
         enabled_keys: string[];
         operations: MessagingMikroOperation[];
     };
@@ -457,6 +469,9 @@ type MessagingMikroApiSettings = {
     direct_endpoint_operation_count: number;
     fixed_query_operation_count: number;
     contract_blocked_operation_count: number;
+    server_verified_read_operation_count: number;
+    server_unverified_operation_count: number;
+    runtime_eligible_read_operation_count: number;
     contract_ready: boolean;
     live_configuration_ready: boolean;
     readiness_status:
@@ -6503,6 +6518,22 @@ export default function TechnicalServiceAdmin({
                                                                             operation.implementation_status
                                                                         }
                                                                     </p>
+                                                                    <p className="mt-1 text-slate-500">
+                                                                        {
+                                                                            operation.evidence_status
+                                                                        }
+                                                                    </p>
+                                                                    <p className="mt-1 max-w-64 break-all text-slate-500">
+                                                                        {
+                                                                            operation.exact_path_casing
+                                                                        }
+                                                                    </p>
+                                                                    <p className="mt-1 text-slate-500">
+                                                                        Canary:{' '}
+                                                                        {
+                                                                            operation.installed_server_canary
+                                                                        }
+                                                                    </p>
                                                                     {operation.blocker ? (
                                                                         <p className="mt-1 max-w-64 text-amber-800">
                                                                             {
@@ -6519,8 +6550,7 @@ export default function TechnicalServiceAdmin({
                                                                             runtimeEnabled
                                                                         }
                                                                         disabled={
-                                                                            operation.contract_status !==
-                                                                            'VERIFIED'
+                                                                            !operation.runtime_eligible
                                                                         }
                                                                         onChange={(
                                                                             event,

@@ -12,6 +12,8 @@ class MikroOperationRegistry
 
     public const BLOCKED_DISABLED = 'MIKRO_OPERATION_DISABLED';
 
+    public const BLOCKED_SERVER_CANARY = 'MIKRO_OPERATION_SERVER_CANARY_REQUIRED';
+
     public const SOURCE_MODES = ['mikro', 'n8n', 'shadow_compare', 'disabled'];
 
     /** @var array<string, array<string, mixed>> */
@@ -24,7 +26,7 @@ class MikroOperationRegistry
         'customer.balance' => ['name' => 'Customer balance', 'category' => 'customer', 'adapter' => 'FIXED_QUERY', 'target' => 'customer.balance', 'request' => 'MikroCustomerBalanceQuery', 'response' => 'MikroCustomerBalanceResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['customer_code', 'balance']],
         'customer.document.timeline' => ['name' => 'Customer document timeline', 'category' => 'customer', 'adapter' => 'FIXED_QUERY', 'target' => 'customer.document.timeline', 'request' => 'MikroCustomerTimelineQuery', 'response' => 'MikroCustomerTimelineResult', 'source' => 'n8n', 'fallback' => true, 'parity' => ['document_guid', 'document_date', 'amount']],
         'stock.list' => ['name' => 'Stock list', 'category' => 'stock', 'adapter' => 'DIRECT_ENDPOINT', 'target' => '/Api/APIMethods/StokListesiV2', 'method' => 'POST', 'payload_style' => 'standard', 'request' => 'MikroStockListQuery', 'response' => 'MikroStockListResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['stock_code', 'stock_name']],
-        'stock.availability' => ['name' => 'Stock availability', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.availability', 'request' => 'MikroStockAvailabilityQuery', 'response' => 'MikroStockAvailabilityResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['stock_code', 'available_quantity']],
+        'stock.availability' => ['name' => 'Stock availability', 'category' => 'stock', 'adapter' => 'CONTRACT_BLOCKED', 'target' => null, 'request' => 'MikroStockAvailabilityQuery', 'response' => 'MikroStockAvailabilityResult', 'source' => 'disabled', 'fallback' => true, 'parity' => ['stock_code', 'available_quantity']],
         'stock.movement.list' => ['name' => 'Stock movements', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.movement.list', 'request' => 'MikroStockMovementQuery', 'response' => 'MikroStockMovementResult', 'source' => 'n8n', 'fallback' => true, 'parity' => ['movement_guid', 'movement_date', 'quantity']],
         'serial.lookup' => ['name' => 'Serial lookup', 'category' => 'serial', 'adapter' => 'FIXED_QUERY', 'target' => 'serial.lookup', 'request' => 'MikroSerialLookupQuery', 'response' => 'MikroSerialLookupResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['serial_number', 'stock_code', 'customer_code']],
         'serial.history' => ['name' => 'Serial history', 'category' => 'serial', 'adapter' => 'FIXED_QUERY', 'target' => 'serial.history', 'request' => 'MikroSerialHistoryQuery', 'response' => 'MikroSerialHistoryResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['serial_number', 'movement_date', 'movement_type']],
@@ -46,23 +48,23 @@ class MikroOperationRegistry
         'return.detail' => ['name' => 'Return detail', 'category' => 'return', 'adapter' => 'FIXED_QUERY', 'target' => 'return.detail', 'request' => 'MikroReturnDetailQuery', 'response' => 'MikroReturnDetailResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['return_guid', 'stock_code', 'quantity']],
         'exchange.status' => ['name' => 'Exchange status', 'category' => 'exchange', 'adapter' => 'FIXED_QUERY', 'target' => 'exchange.status', 'request' => 'MikroExchangeStatusQuery', 'response' => 'MikroExchangeStatusResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['serial_number', 'movement_type', 'is_return']],
         'replacement.serial.lookup' => ['name' => 'Replacement serial lookup', 'category' => 'exchange', 'adapter' => 'FIXED_QUERY', 'target' => 'replacement.serial.lookup', 'request' => 'MikroReplacementSerialQuery', 'response' => 'MikroReplacementSerialResult', 'source' => 'n8n', 'fallback' => true, 'parity' => ['serial_number', 'stock_code', 'replacement_context']],
-        'proforma.list' => ['name' => 'Proforma list', 'category' => 'proforma', 'adapter' => 'CONTRACT_BLOCKED', 'target' => null, 'request' => 'MikroProformaListQuery', 'response' => 'MikroProformaListResult', 'source' => 'disabled', 'fallback' => true, 'parity' => [], 'contract' => 'BLOCKED_CONTRACT_MISSING', 'implementation' => 'BLOCKED', 'runtime' => false, 'blocker' => 'Existing PrimeCRM proforma list is file-backed; no verified V17 endpoint or SQL contract exists.'],
-        'proforma.detail' => ['name' => 'Proforma detail', 'category' => 'proforma', 'adapter' => 'CONTRACT_BLOCKED', 'target' => null, 'request' => 'MikroProformaDetailQuery', 'response' => 'MikroProformaDetailResult', 'source' => 'disabled', 'fallback' => true, 'parity' => [], 'contract' => 'BLOCKED_CONTRACT_MISSING', 'implementation' => 'BLOCKED', 'runtime' => false, 'blocker' => 'Existing PrimeCRM proforma detail is file-backed; no verified V17 endpoint or SQL contract exists.'],
+        'proforma.list' => ['name' => 'Proforma list', 'category' => 'proforma', 'adapter' => 'CONTRACT_BLOCKED', 'target' => null, 'request' => 'MikroProformaListQuery', 'response' => 'MikroProformaListResult', 'source' => 'disabled', 'fallback' => true, 'parity' => [], 'contract' => 'CONTRACT_BLOCKED', 'implementation' => 'BLOCKED', 'runtime' => false],
+        'proforma.detail' => ['name' => 'Proforma detail', 'category' => 'proforma', 'adapter' => 'CONTRACT_BLOCKED', 'target' => null, 'request' => 'MikroProformaDetailQuery', 'response' => 'MikroProformaDetailResult', 'source' => 'disabled', 'fallback' => true, 'parity' => [], 'contract' => 'CONTRACT_BLOCKED', 'implementation' => 'BLOCKED', 'runtime' => false],
     ];
 
     /** @var array<string, array<string, mixed>> */
     private const WRITE_OPERATIONS = [
-        'customer.save' => ['name' => 'Save customer', 'category' => 'customer', 'method' => 'CariKaydetV2', 'contract' => 'VERIFIED'],
-        'order.save' => ['name' => 'Save order', 'category' => 'order', 'method' => 'SiparisKaydetV2', 'contract' => 'VERIFIED'],
-        'invoice.create' => ['name' => 'Create invoice', 'category' => 'invoice', 'method' => 'FaturaKaydetV3', 'contract' => 'VERIFIED'],
-        'dispatch.create' => ['name' => 'Create dispatch', 'category' => 'dispatch', 'method' => 'IrsaliyeKaydetV2', 'contract' => 'VERIFIED'],
-        'record.link.save' => ['name' => 'Save linked record', 'category' => 'record', 'method' => 'KayitKaydetV2', 'contract' => 'VERIFIED'],
-        'record.bulk.save' => ['name' => 'Save record batch', 'category' => 'record', 'method' => 'KayitKaydetTopluV2', 'contract' => 'VERIFIED'],
-        'stock.transfer.create' => ['name' => 'Create internal stock movement', 'category' => 'stock', 'method' => 'DahiliStokHareketKaydetV2', 'contract' => 'VERIFIED'],
-        'order.dispatch.legacy.create' => ['name' => 'Legacy order dispatch', 'category' => 'dispatch', 'method' => 'SiparistenIrsaliyeOlusturmaV2', 'contract' => 'VERIFIED_LEGACY', 'blocker' => 'Legacy method is isolated from the production dispatch flow.'],
-        'proforma.create' => ['name' => 'Create proforma', 'category' => 'proforma', 'method' => null, 'contract' => 'BLOCKED_CONTRACT_MISSING', 'blocker' => 'Exact V17 request contract is not verified.'],
-        'return.create' => ['name' => 'Create return', 'category' => 'return', 'method' => null, 'contract' => 'BLOCKED_CONTRACT_MISSING', 'blocker' => 'Exact V17 request contract is not verified.'],
-        'exchange.create' => ['name' => 'Create exchange', 'category' => 'exchange', 'method' => null, 'contract' => 'BLOCKED_CONTRACT_MISSING', 'blocker' => 'Exact V17 request contract is not verified.'],
+        'customer.save' => ['name' => 'Save customer', 'category' => 'customer', 'method' => 'CariKaydetV2', 'contract' => 'DOCUMENTED'],
+        'order.save' => ['name' => 'Save order', 'category' => 'order', 'method' => 'SiparisKaydetV2', 'contract' => 'DOCUMENTED'],
+        'invoice.create' => ['name' => 'Create invoice', 'category' => 'invoice', 'method' => 'FaturaKaydetV3', 'contract' => 'DOCUMENTED'],
+        'dispatch.create' => ['name' => 'Create dispatch', 'category' => 'dispatch', 'method' => 'IrsaliyeKaydetV2', 'contract' => 'DOCUMENTED'],
+        'record.link.save' => ['name' => 'Save linked record', 'category' => 'record', 'method' => 'KayitKaydetV2', 'contract' => 'DOCUMENTED'],
+        'record.bulk.save' => ['name' => 'Save record batch', 'category' => 'record', 'method' => 'KayitKaydetTopluV2', 'contract' => 'DOCUMENTED'],
+        'stock.transfer.create' => ['name' => 'Create internal stock movement', 'category' => 'stock', 'method' => 'DahiliStokHareketKaydetV2', 'contract' => 'DOCUMENTED'],
+        'order.dispatch.legacy.create' => ['name' => 'Legacy order dispatch', 'category' => 'dispatch', 'method' => 'SiparistenIrsaliyeOlusturmaV2', 'contract' => 'DOCUMENTED'],
+        'proforma.create' => ['name' => 'Create proforma', 'category' => 'proforma', 'method' => 'ProformaSiparisKaydetV2', 'contract' => 'DOCUMENTED'],
+        'return.create' => ['name' => 'Create return', 'category' => 'return', 'method' => null, 'contract' => 'CONTRACT_BLOCKED'],
+        'exchange.create' => ['name' => 'Create exchange', 'category' => 'exchange', 'method' => null, 'contract' => 'CONTRACT_BLOCKED'],
     ];
 
     private const DENIED_OPERATIONS = [
@@ -78,7 +80,7 @@ class MikroOperationRegistry
         if (($operation['mode'] ?? null) !== 'READ') {
             throw new DomainException(self::BLOCKED_DENIED);
         }
-        if (($operation['contract_status'] ?? null) !== 'VERIFIED' || ($operation['implementation_status'] ?? null) !== 'IMPLEMENTED') {
+        if (($operation['contract_status'] ?? null) === 'CONTRACT_BLOCKED' || ($operation['implementation_status'] ?? null) !== 'IMPLEMENTED') {
             throw new DomainException(self::BLOCKED_DISABLED);
         }
 
@@ -122,6 +124,9 @@ class MikroOperationRegistry
         if (! (bool) ($settings['read_sync_enabled'] ?? false)) {
             throw new DomainException('MIKRO_READ_SYNC_DISABLED');
         }
+        if (! ($operation['runtime_eligible'] ?? false)) {
+            throw new DomainException(self::BLOCKED_SERVER_CANARY);
+        }
         if (! ($operation['runtime_enabled'] ?? false) || ($operation['source_mode'] ?? null) === 'disabled') {
             throw new DomainException(self::BLOCKED_DISABLED);
         }
@@ -143,7 +148,7 @@ class MikroOperationRegistry
         if (! (bool) ($settings['enabled'] ?? false) || ! (bool) ($settings['write_enabled'] ?? false)) {
             throw new DomainException('MIKRO_WRITE_DISABLED');
         }
-        if (($operation['contract_status'] ?? null) !== 'VERIFIED' || ! ($operation['runtime_enabled'] ?? false)) {
+        if (! ($operation['runtime_eligible'] ?? false) || ! ($operation['runtime_enabled'] ?? false)) {
             throw new DomainException('MIKRO_WRITE_DISABLED');
         }
         if (($operation['approval_required'] ?? true) && ! $approved) {
@@ -186,7 +191,11 @@ class MikroOperationRegistry
             'enabled_write_count' => count(array_filter($writes, fn (array $row): bool => $row['runtime_enabled'])),
             'direct_endpoint_count' => count(array_filter($reads, fn (array $row): bool => $row['adapter_type'] === 'DIRECT_ENDPOINT')),
             'fixed_query_count' => count(array_filter($reads, fn (array $row): bool => $row['adapter_type'] === 'FIXED_QUERY')),
-            'contract_blocked_count' => count(array_filter($operations, fn (array $row): bool => $row['contract_status'] === 'BLOCKED_CONTRACT_MISSING')),
+            'contract_blocked_count' => count(array_filter($operations, fn (array $row): bool => $row['contract_status'] === 'CONTRACT_BLOCKED')),
+            'server_verified_read_count' => count(array_filter($reads, fn (array $row): bool => in_array($row['evidence_status'], ['OFFICIAL_AND_SERVER_VERIFIED', 'DEPOT_AND_SERVER_VERIFIED'], true))),
+            'server_unverified_count' => count(array_filter($operations, fn (array $row): bool => $row['evidence_status'] === 'DOCUMENTED_SERVER_UNVERIFIED')),
+            'runtime_eligible_read_count' => count(array_filter($reads, fn (array $row): bool => $row['runtime_eligible'])),
+            'matrix_complete' => count($operations) === 43 && count(array_filter($operations, fn (array $row): bool => in_array($row['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES, true) && preg_match('/^[a-f0-9]{64}$/', (string) $row['evidence_hash']) === 1)) === 43,
             'enabled_keys' => array_values(array_map(fn (array $row): string => $row['operation_key'], array_filter($reads, fn (array $row): bool => $row['runtime_enabled']))),
             'operations' => $operations,
         ];
@@ -238,20 +247,24 @@ class MikroOperationRegistry
     private function readDescriptor(string $key, array $definition): array
     {
         $adapter = $definition['adapter'];
+        $evidence = MikroContractEvidenceCatalog::for($key, 'READ', $adapter);
+
         return [
             'operation_key' => $key,
             'display_name' => $definition['name'],
             'category' => $definition['category'],
             'mode' => 'READ',
             'capability_status' => 'LICENSED',
-            'contract_status' => $definition['contract'] ?? 'VERIFIED',
-            'implementation_status' => $definition['implementation'] ?? 'IMPLEMENTED',
-            'runtime_enabled' => $definition['runtime'] ?? true,
-            'adapter_type' => $adapter,
-            'endpoint' => $adapter === 'DIRECT_ENDPOINT' ? $definition['target'] : ($adapter === 'FIXED_QUERY' ? '/Api/APIMethods/SqlVeriOkuV2' : null),
-            'method' => $definition['method'] ?? ($adapter === 'FIXED_QUERY' ? 'POST' : null),
+            'contract_status' => $evidence['contract_status'],
+            'evidence_status' => $evidence['evidence_status'],
+            'implementation_status' => $evidence['contract_status'] === 'CONTRACT_BLOCKED' ? 'BLOCKED' : ($definition['implementation'] ?? 'IMPLEMENTED'),
+            'runtime_eligible' => $evidence['runtime_eligible'],
+            'runtime_enabled' => $evidence['runtime_enabled'],
+            'adapter_type' => $evidence['contract_status'] === 'CONTRACT_BLOCKED' ? 'CONTRACT_BLOCKED' : $adapter,
+            'endpoint' => $evidence['exact_path'],
+            'method' => $evidence['exact_http_method'],
             'payload_style' => $definition['payload_style'] ?? ($adapter === 'FIXED_QUERY' ? 'fixed_query' : null),
-            'mikro_method' => $adapter === 'DIRECT_ENDPOINT' ? basename((string) $definition['target']) : null,
+            'mikro_method' => $evidence['exact_path'] === null ? null : basename((string) $evidence['exact_path']),
             'fixed_query_id' => $adapter === 'FIXED_QUERY' ? $definition['target'] : null,
             'api_version' => 'V17',
             'request_type' => $definition['request'],
@@ -265,27 +278,32 @@ class MikroOperationRegistry
             'n8n_fallback' => $definition['fallback'],
             'parity_fields' => $definition['parity'],
             'approval_required' => false,
-            'blocker' => $definition['blocker'] ?? null,
+            'blocker' => $evidence['blocker'] ?? $definition['blocker'] ?? null,
+            ...$this->evidenceFields($evidence),
         ];
     }
 
     /** @return array<string, mixed> */
     private function writeDescriptor(string $key, array $definition): array
     {
+        $evidence = MikroContractEvidenceCatalog::for($key, 'WRITE', $definition['method'] ? 'DIRECT_ENDPOINT' : 'CONTRACT_BLOCKED');
+
         return [
             'operation_key' => $key,
             'display_name' => $definition['name'],
             'category' => $definition['category'],
             'mode' => 'WRITE',
             'capability_status' => 'LICENSED',
-            'contract_status' => $definition['contract'],
-            'implementation_status' => $definition['contract'] === 'VERIFIED' ? 'CONTROL_PLANE_READY' : 'BLOCKED',
+            'contract_status' => $evidence['contract_status'],
+            'evidence_status' => $evidence['evidence_status'],
+            'implementation_status' => $evidence['contract_status'] === 'CONTRACT_BLOCKED' ? 'BLOCKED' : 'CONTROL_PLANE_READY',
+            'runtime_eligible' => false,
             'runtime_enabled' => false,
-            'adapter_type' => $definition['method'] ? 'DIRECT_ENDPOINT' : 'CONTRACT_BLOCKED',
-            'endpoint' => $definition['method'] ? '/Api/APIMethods/'.$definition['method'] : null,
-            'method' => $definition['method'] ? 'POST' : null,
+            'adapter_type' => $evidence['contract_status'] === 'CONTRACT_BLOCKED' ? 'CONTRACT_BLOCKED' : 'DIRECT_ENDPOINT',
+            'endpoint' => $evidence['exact_path'],
+            'method' => $evidence['exact_http_method'],
             'payload_style' => 'mikro',
-            'mikro_method' => $definition['method'],
+            'mikro_method' => $evidence['exact_path'] === null ? null : basename((string) $evidence['exact_path']),
             'fixed_query_id' => null,
             'api_version' => 'V17',
             'request_type' => 'Mikro'.str_replace(' ', '', ucwords(str_replace(['.', '-'], ' ', $key))).'Command',
@@ -299,7 +317,8 @@ class MikroOperationRegistry
             'n8n_fallback' => false,
             'parity_fields' => [],
             'approval_required' => true,
-            'blocker' => $definition['blocker'] ?? 'Live write execution is disabled for the pilot.',
+            'blocker' => $evidence['blocker'],
+            ...$this->evidenceFields($evidence),
         ];
     }
 
@@ -307,7 +326,8 @@ class MikroOperationRegistry
     private function applyControl(array $operation, array $control): array
     {
         if (array_key_exists('runtime_enabled', $control)) {
-            $operation['runtime_enabled'] = (bool) $control['runtime_enabled'];
+            $operation['runtime_enabled'] = (bool) ($operation['runtime_eligible'] ?? false)
+                && (bool) $control['runtime_enabled'];
         }
         if (($operation['mode'] ?? null) === 'READ' && isset($control['source_mode']) && $this->sourceModeAllowed((string) $control['source_mode'])) {
             $operation['source_mode'] = (string) $control['source_mode'];
@@ -315,12 +335,43 @@ class MikroOperationRegistry
         if (($operation['mode'] ?? null) === 'WRITE') {
             $operation['source_mode'] = 'disabled';
             $operation['approval_required'] = true;
-            if (($operation['contract_status'] ?? null) !== 'VERIFIED') {
-                $operation['runtime_enabled'] = false;
-            }
+            $operation['runtime_enabled'] = false;
         }
 
         return $operation;
+    }
+
+    /**
+     * @param  array<string, mixed>  $evidence
+     * @return array<string, mixed>
+     */
+    private function evidenceFields(array $evidence): array
+    {
+        return [
+            'official_doc_reference' => $evidence['official_api_page'],
+            'official_api_page' => $evidence['official_api_page'],
+            'official_changelog_reference' => $evidence['official_changelog_reference'],
+            'official_postman_item' => $evidence['official_postman_item'],
+            'local_postman_item' => $evidence['local_postman_item'],
+            'official_method' => $evidence['exact_http_method'],
+            'exact_path' => $evidence['exact_path'],
+            'exact_path_casing' => $evidence['exact_path_casing'],
+            'request_schema' => $evidence['request_root_keys'],
+            'response_schema' => $evidence['response_root_keys'],
+            'request_root_keys' => $evidence['request_root_keys'],
+            'response_root_keys' => $evidence['response_root_keys'],
+            'source_document' => $evidence['source_document'],
+            'source_documents' => $evidence['source_documents'],
+            'source_item_category' => $evidence['source_item_category'],
+            'depot_evidence' => $evidence['depot_source_file'],
+            'depot_source_file' => $evidence['depot_source_file'],
+            'depot_method' => $evidence['depot_method'],
+            'installed_server_canary' => $evidence['installed_server_canary'],
+            'v17_table_evidence' => array_values(array_filter($evidence['source_documents'], fn (array $source): bool => ($source['type'] ?? null) === 'fly_v17_table')),
+            'business_parity_source' => null,
+            'evidence_hash' => $evidence['evidence_hash'],
+            'api_key_field' => $evidence['api_key_field'],
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -344,6 +395,7 @@ class MikroOperationRegistry
     {
         if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
             $value = ip2long($host);
+
             return $value !== false && (($value >= ip2long('10.0.0.0') && $value <= ip2long('10.255.255.255')) || ($value >= ip2long('172.16.0.0') && $value <= ip2long('172.31.255.255')) || ($value >= ip2long('192.168.0.0') && $value <= ip2long('192.168.255.255')));
         }
         if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
