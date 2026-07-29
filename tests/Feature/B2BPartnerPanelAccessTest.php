@@ -71,6 +71,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         'cari_bilgi_dashboard' => 'https://n8n-gateway.example.test/webhook/cari-bilgi-dashboard',
     ];
 
+    private const PUBLIC_ORIGIN_TEST_URL = 'https://partner-portal.example.test';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -5635,6 +5637,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_technical_service_full_locksmith_part_return_journey(): void
     {
+        $this->configureAcceptedPublicProfileForCurrentTestContext();
         (new B2BPartnerPermissionSeeder)->run();
         Storage::fake('public');
         config([
@@ -5787,6 +5790,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('raw_payload->part_request_id', $partRequest->id)
             ->firstOrFail();
         $this->assertNotEmpty($chargeableResponse->json('customer_charge.payment_url'));
+        $this->assertStringStartsWith(
+            self::PUBLIC_ORIGIN_TEST_URL.'/mount-payment/',
+            (string) $chargeableResponse->json('customer_charge.payment_url'),
+        );
         app(TechnicalServicePaymentSettlementService::class)
             ->markPaid($customerCharge, ['fake_approved' => true]);
 
@@ -5961,6 +5968,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_spare_part_request_decision_supports_free_and_chargeable_amounts(): void
     {
+        $this->configureAcceptedPublicProfileForCurrentTestContext();
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'Part Decision Usta']);
         $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-DECISION', [
@@ -6044,6 +6052,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $paymentUrl = $chargeableResponse->json('customer_charge.payment_url');
         $this->assertNotEmpty($paymentUrl);
+        $this->assertStringStartsWith(self::PUBLIC_ORIGIN_TEST_URL.'/mount-payment/', (string) $paymentUrl);
         $this->assertSame(1, TechnicalServiceMountPayment::query()
             ->where('raw_payload->source', 'operation_customer_charge')
             ->count());
@@ -6134,6 +6143,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_chargeable_part_payment_records_amount_reference_and_paid_at_in_ops_payload_and_history(): void
     {
+        $this->configureAcceptedPublicProfileForCurrentTestContext();
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'Part Payment Usta']);
         $job = $this->serviceRequestForTechnician($technician, 'MRN-PART-PAYMENT-REF', [
@@ -6165,6 +6175,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $payment = TechnicalServiceMountPayment::query()
             ->where('raw_payload->part_request_id', $partRequest->id)
             ->firstOrFail();
+        $this->assertStringStartsWith(self::PUBLIC_ORIGIN_TEST_URL.'/mount-payment/', (string) $payment->payment_url);
         app(TechnicalServicePaymentSettlementService::class)
             ->markPaid($payment, ['receipt_no' => 'DEKONT-PART-55']);
         $child = $this->serviceRequestForTechnician($technician, 'SRV-PART-PAYMENT-REF-001', [
@@ -6207,6 +6218,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_ops_can_create_free_and_chargeable_part_request_from_srv_detail(): void
     {
+        $this->configureAcceptedPublicProfileForCurrentTestContext();
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'Ops Part Usta']);
         $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-PART-CREATE', [
@@ -6263,6 +6275,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('customer_charge.status', TechnicalServiceMountPayment::STATUS_PENDING);
 
         $this->assertNotEmpty($chargeableResponse->json('customer_charge.payment_url'));
+        $this->assertStringStartsWith(
+            self::PUBLIC_ORIGIN_TEST_URL.'/mount-payment/',
+            (string) $chargeableResponse->json('customer_charge.payment_url'),
+        );
         $this->assertSame(2, TechnicalServicePartRequest::query()
             ->where('technical_service_request_id', $job->id)
             ->where('metadata->source', 'ops_part_request')
@@ -9307,6 +9323,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_technical_service_assignment_creates_assignment_offer_job_card_link_for_portal(): void
     {
+        $this->configureAcceptedPublicProfileForCurrentTestContext();
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'Offer Usta']);
@@ -9394,6 +9411,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(3000.0, (float) $offer->total_amount);
         $this->assertIsArray($offer->metadata['message_payload'] ?? null);
         $this->assertTrue((bool) ($offer->metadata['confirmed_by_ops'] ?? false));
+        $this->assertStringStartsWith(
+            self::PUBLIC_ORIGIN_TEST_URL.'/partner/service-jobs?',
+            (string) ($offer->metadata['message_payload']['job_link'] ?? ''),
+        );
         $this->assertStringContainsString('/partner/service-jobs?', (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
         $this->assertStringContainsString('partner_id='.$partner->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
         $this->assertStringContainsString('job_id='.$job->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
@@ -10574,6 +10595,18 @@ class B2BPartnerPanelAccessTest extends TestCase
             'services.public_urls.qr_base_url' => null,
             'services.public_urls.payment_base_url' => null,
         ]);
+    }
+
+    private function configureAcceptedPublicProfileForCurrentTestContext(): void
+    {
+        $key = 'services.partner_portal.public_url';
+        $previousOrigin = config($key);
+
+        config()->set($key, self::PUBLIC_ORIGIN_TEST_URL);
+
+        $this->beforeApplicationDestroyed(function () use ($key, $previousOrigin): void {
+            config()->set($key, $previousOrigin);
+        });
     }
 
     /**

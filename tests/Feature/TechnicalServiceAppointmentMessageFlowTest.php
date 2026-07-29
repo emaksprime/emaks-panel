@@ -582,6 +582,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_payment_link_send_creates_customer_whatsapp_and_sms_dispatches_without_provider_call(): void
     {
         Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
         $actor = $this->admin();
         $this->configureGuardedLiveMessaging([
             'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
@@ -600,7 +601,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => 1250,
             'currency' => 'TRY',
-            'payment_url' => 'https://pay.example.test/mount/rel4e10',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e10',
             'raw_payload' => ['source' => 'rel4e10_test'],
         ]);
 
@@ -631,7 +632,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->firstOrFail()
             ->request_payload['body'];
 
-        $this->assertStringContainsString('https://pay.example.test/mount/rel4e10', $body);
+        $this->assertStringContainsString('https://pay.example.test/mount-payment/pay-rel4e10', $body);
         $this->assertStringContainsString('1.250,00 TL', $body);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $request->id,
@@ -643,6 +644,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_srv_payment_link_customer_uses_srv_reference_without_internal_mrn(): void
     {
         Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
         $actor = $this->admin();
         $this->configureGuardedLiveMessaging([
             'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
@@ -663,7 +665,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => 140,
             'currency' => 'TRY',
-            'payment_url' => 'https://pay.example.test/service/rel4e13b',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e13b',
             'raw_payload' => ['source' => 'rel4e13b_srv_payment_test'],
         ]);
 
@@ -697,6 +699,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_stale_blocked_payment_link_dispatch_does_not_turn_first_send_into_resend(): void
     {
         Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
         $actor = $this->admin();
         $this->configureGuardedLiveMessaging([
             'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
@@ -715,7 +718,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => 450,
             'currency' => 'TRY',
-            'payment_url' => 'https://pay.example.test/mount/rel4e16-stale',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e16-stale',
             'raw_payload' => ['source' => 'rel4e16_stale_payment_test'],
         ]);
         TechnicalServiceMessageDispatch::query()->create([
@@ -754,6 +757,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_legacy_sent_part_fee_dispatch_is_presented_as_resend_before_submit(): void
     {
         Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
         $actor = $this->admin();
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-REL4E16-LEGACY-PART-SEND',
@@ -771,7 +775,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => 700,
             'currency' => 'TRY',
-            'payment_url' => 'https://pay.example.test/service/rel4e16-legacy-part',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e16-legacy-part',
             'raw_payload' => [
                 'source' => 'operation_customer_charge',
                 'purpose' => 'part_payment',
@@ -812,6 +816,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_part_fee_payment_link_send_uses_part_fee_type_and_duplicate_guard(): void
     {
         Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
         $actor = $this->admin();
         $this->configureGuardedLiveMessaging([
             'part_fee_payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
@@ -832,7 +837,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => 700,
             'currency' => 'TRY',
-            'payment_url' => 'https://pay.example.test/service/rel4e13c-part',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e13c-part',
             'raw_payload' => [
                 'source' => 'operation_customer_charge',
                 'purpose' => 'part_payment',
@@ -860,7 +865,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
             $this->assertStringContainsString('SRV-REL4E13C-PART numaralı servis', $body);
             $this->assertStringContainsString('700,00 TL', $body);
-            $this->assertStringContainsString('https://pay.example.test/service/rel4e13c-part', $body);
+            $this->assertStringContainsString('https://pay.example.test/mount-payment/pay-rel4e13c-part', $body);
             $this->assertStringNotContainsString('MRN-REL4E13C-INTERNAL', $body);
             $this->assertSame($body, $dispatch->bodyForProvider());
         }
@@ -898,6 +903,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_payment_received_ops_trusted_paid_queues_ops_whatsapp_only(): void
     {
         Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
         $this->configureGuardedLiveMessaging([
             'payment_received_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ], [
@@ -921,7 +927,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => 140,
             'currency' => 'TRY',
-            'payment_url' => 'https://pay.example.test/service/rel4e13b-paid',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e13b-paid',
             'raw_payload' => ['source' => 'rel4e13b_payment_received_ops_test'],
         ]);
 

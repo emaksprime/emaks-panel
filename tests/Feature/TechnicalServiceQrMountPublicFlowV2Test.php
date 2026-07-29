@@ -26,7 +26,11 @@ use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -591,6 +595,18 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             'services.public_urls.app_url' => null,
             'services.public_urls.qr_base_url' => null,
             'services.public_urls.payment_base_url' => null,
+            'services.public_urls.profiles.uat_public' => [
+                'environment' => null,
+                'origin' => null,
+                'active' => false,
+                'revision' => 0,
+            ],
+            'services.public_urls.profiles.production_public' => [
+                'environment' => 'PROD',
+                'origin' => 'https://panel.example.test',
+                'active' => true,
+                'revision' => 4,
+            ],
         ]);
 
         $devLocal = PartnerPortalPublicUrl::resolveProfile('local', 'local', 'local');
@@ -609,13 +625,54 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertFalse($uatLiveBlocked['ready']);
         $this->assertSame('PUBLIC_UAT_HTTPS_MISSING', $uatLiveBlocked['blocker_code']);
 
-        config(['services.partner_portal.public_url' => 'https://uat-panel.example.test']);
+        config(['services.public_urls.profiles.uat_public' => [
+            'environment' => 'PROD',
+            'origin' => 'https://panel.example.test',
+            'active' => true,
+            'revision' => 4,
+        ]]);
+        $uatProductionMismatch = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($uatProductionMismatch['ready']);
+        $this->assertSame('PUBLIC_PROFILE_ENVIRONMENT_MISMATCH', $uatProductionMismatch['blocker_code']);
+
+        $this->configureAcceptedPublicProfile('uat_public', 'UAT', 'https://uat-panel.example.test', 7);
         $uatLive = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
         $this->assertTrue($uatLive['ready']);
         $this->assertSame('uat_public', $uatLive['profile']);
+        $this->assertSame('UAT', $uatLive['profile_environment']);
+        $this->assertSame(7, $uatLive['profile_revision']);
         $this->assertSame('https://uat-panel.example.test', $uatLive['origin']);
+        $uatFingerprint = $uatLive['profile_identity_fingerprint'];
 
-        config(['services.public_urls.app_url' => 'https://panel.example.test']);
+        $this->configureAcceptedPublicProfile('uat_public', 'UAT', 'https://uat-panel.example.test', 8);
+        $this->assertNotSame(
+            $uatFingerprint,
+            PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live')['profile_identity_fingerprint'],
+        );
+
+        config()->set('services.public_urls.profiles.uat_public', [
+            'environment' => 'UAT',
+            'origin' => 'https://uat-panel.example.test',
+            'active' => false,
+            'revision' => 8,
+        ]);
+        $inactiveUatProfile = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($inactiveUatProfile['ready']);
+        $this->assertSame('PUBLIC_PROFILE_INACTIVE', $inactiveUatProfile['blocker_code']);
+
+        $this->configureAcceptedPublicProfile('uat_public', 'UAT', 'https://uat-panel.example.test', 0);
+        $staleUatProfile = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($staleUatProfile['ready']);
+        $this->assertSame('PUBLIC_PROFILE_STALE', $staleUatProfile['blocker_code']);
+
+        $this->configureAcceptedPublicProfile('uat_public', 'UAT', 'https://uat-panel.example.test', 8);
+        $this->withServerVariables([
+            'HTTP_HOST' => 'evil.example.test',
+            'HTTP_X_FORWARDED_HOST' => 'evil.example.test',
+        ]);
+        $hostOverrideIgnored = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertSame('https://uat-panel.example.test', $hostOverrideIgnored['origin']);
+
         $prodLocal = PartnerPortalPublicUrl::resolveProfile('production', 'local', 'local');
         $this->assertTrue($prodLocal['ready']);
         $this->assertSame('production_public', $prodLocal['profile']);
@@ -653,8 +710,12 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_legacy_local_payment_url_is_rebased_without_mutating_stored_value(): void
     {
-        config(['services.partner_portal.public_url' => 'http://10.0.0.50:8000']);
-        $stored = 'http://127.0.0.1:8000/mount-payment/fake/legacy-token?source=stored';
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
+            'services.public_urls.qr_base_url' => 'http://10.0.0.40:8000',
+            'app.url' => 'http://127.0.0.1:8000',
+        ]);
+        $stored = 'http://127.0.0.1:8000/mount-payment/legacy-token';
         $payment = (new TechnicalServiceMountPayment)->forceFill([
             'provider' => 'fake',
             'provider_reference' => 'legacy-token',
@@ -664,29 +725,179 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
         $presented = TechnicalServicePaymentActionPresenter::forPayment($payment);
 
-        $this->assertSame('http://10.0.0.50:8000/mount-payment/fake/legacy-token?source=stored', $presented['copy_url']);
+        $this->assertSame('http://10.0.0.50:8000/mount-payment/legacy-token', $presented['copy_url']);
+        $this->assertSame($presented['copy_url'], $presented['payment_url']);
         $this->assertNull($presented['public_url_blocker_code']);
         $this->assertSame($stored, $payment->payment_url);
         $this->assertSame(
-            'http://10.0.0.50:8000/service-job-confirmation/customer-token?source=stored',
-            PartnerPortalPublicUrl::rebaseLegacyUrl('https://stale-uat.example.test/service-job-confirmation/customer-token?source=stored'),
+            'http://10.0.0.50:8000/service-job-confirmation/customer-token',
+            PartnerPortalPublicUrl::rebaseLegacyUrl('http://localhost:8000/service-job-confirmation/customer-token'),
+        );
+        $this->assertSame(
+            'http://10.0.0.50:8000/mount-request/qr-token',
+            PartnerPortalPublicUrl::rebaseLegacyUrl('http://10.0.0.40:8000/mount-request/qr-token'),
+        );
+        $this->assertSame(
+            'http://10.0.0.50:8000/pj/42',
+            PartnerPortalPublicUrl::rebaseLegacyUrl('http://127.0.0.1:8000/pj/42'),
         );
 
         $this->app->detectEnvironment(fn (): string => 'production');
-        config(['services.public_urls.app_url' => 'https://panel.example.test']);
+        $this->configureAcceptedPublicProfile('production_public', 'PROD', 'https://panel.example.test', 9);
+        $productionStored = 'https://panel.example.test/mount-payment/legacy-token';
+        $payment->forceFill(['payment_url' => $productionStored]);
         $production = TechnicalServicePaymentActionPresenter::forPayment($payment);
-        $this->assertSame('https://panel.example.test/mount-payment/fake/legacy-token?source=stored', $production['copy_url']);
-        $this->assertSame($stored, $payment->payment_url);
+        $this->assertSame('https://panel.example.test/mount-payment/legacy-token', $production['copy_url']);
+        $this->assertSame($productionStored, $payment->payment_url);
 
-        $payment->forceFill(['payment_url' => 'http://127.0.0.1:8000/not-a-public-route/token']);
+        $payment->forceFill(['payment_url' => 'http://127.0.0.1:8000/mount-payment/legacy-token']);
         $blocked = TechnicalServicePaymentActionPresenter::forPayment($payment);
         $this->assertNull($blocked['copy_url']);
-        $this->assertSame('LEGACY_PUBLIC_URL_UNRESOLVABLE', $blocked['public_url_blocker_code']);
+        $this->assertNull($blocked['payment_url']);
+        $this->assertSame('LEGACY_PUBLIC_URL_ORIGIN_NOT_ALLOWED', $blocked['public_url_blocker_code']);
+
+        $this->app->detectEnvironment(fn (): string => 'testing');
+        config(['services.partner_portal.public_url' => 'http://10.0.0.50:8000']);
+        $payment->forceFill(['payment_url' => 'http://127.0.0.1:8000/not-a-public-route/token']);
+        $routeBlocked = TechnicalServicePaymentActionPresenter::forPayment($payment);
+        $this->assertNull($routeBlocked['copy_url']);
+        $this->assertSame('LEGACY_PUBLIC_URL_ROUTE_NOT_ALLOWED', $routeBlocked['public_url_blocker_code']);
 
         $payment->forceFill(['payment_url' => "http://127.0.0.1:8000/mount-payment/legacy-token\r\nunsafe"]);
         $controlCharacterBlocked = TechnicalServicePaymentActionPresenter::forPayment($payment);
         $this->assertNull($controlCharacterBlocked['copy_url']);
         $this->assertSame('LEGACY_PUBLIC_URL_UNRESOLVABLE', $controlCharacterBlocked['public_url_blocker_code']);
+    }
+
+    public function test_legacy_public_url_attack_matrix_is_fail_closed_without_actions_or_effects(): void
+    {
+        Http::preventStrayRequests();
+        Queue::fake();
+        Bus::fake();
+        Mail::fake();
+        Notification::fake();
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
+            'app.url' => 'http://127.0.0.1:8000',
+            'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox-payment.iyzipay.com'],
+        ]);
+
+        $attacks = [
+            'external unknown route' => 'https://evil.example.test/not-accepted/token',
+            'external confirmation route' => 'https://evil.example.test/service-job-confirmation/customer-token',
+            'external payment route' => 'https://evil.example.test/mount-payment/payment-token',
+            'external job route' => 'https://evil.example.test/pj/123',
+            'javascript scheme' => 'javascript:alert(1)',
+            'data scheme' => 'data:text/html,unsafe',
+            'file scheme' => 'file:///etc/passwd',
+            'ftp scheme' => 'ftp://127.0.0.1:8000/mount-payment/payment-token',
+            'protocol relative' => '//evil.example.test/mount-payment/payment-token',
+            'credentials' => 'https://user:pass@evil.example.test/mount-payment/payment-token',
+            'fragment' => 'http://127.0.0.1:8000/mount-payment/payment-token#fragment',
+            'raw dot segment' => 'http://127.0.0.1:8000/mount-payment/../payment-token',
+            'encoded dot segment' => 'http://127.0.0.1:8000/mount-payment/%2e%2e/payment-token',
+            'double encoded dot segment' => 'http://127.0.0.1:8000/mount-payment/%252e%252e/payment-token',
+            'backslash' => 'http://127.0.0.1:8000/mount-payment\\payment-token',
+            'encoded backslash' => 'http://127.0.0.1:8000/mount-payment/%5cpayment-token',
+            'encoded CRLF' => 'http://127.0.0.1:8000/mount-payment/payment-token%0d%0aX-Test:1',
+            'encoded null' => 'http://127.0.0.1:8000/mount-payment/payment-token%00',
+            'unexpected query' => 'http://127.0.0.1:8000/mount-payment/payment-token?redirect=https://evil.example.test',
+            'duplicate query' => 'http://127.0.0.1:8000/mount-payment/payment-token?a=1&a=2',
+            'fake survey query' => 'http://127.0.0.1:8000/service-job-confirmation/customer-token?survey=1',
+            'malformed token' => 'http://127.0.0.1:8000/mount-payment/..',
+            'unknown route' => 'http://127.0.0.1:8000/not-a-public-route/token',
+            'encoded route manipulation' => 'http://127.0.0.1:8000/mount-%70ayment/payment-token',
+        ];
+
+        foreach ($attacks as $case => $url) {
+            $payment = (new TechnicalServiceMountPayment)->forceFill([
+                'provider' => 'fake',
+                'provider_reference' => 'security-token',
+                'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'amount' => 100,
+                'payment_url' => $url,
+            ]);
+            $presented = TechnicalServicePaymentActionPresenter::forPayment($payment);
+
+            $this->assertArrayHasKey('payment_url', $presented, $case);
+            $this->assertNull($presented['payment_url'], $case);
+            $this->assertNull($presented['copy_url'], $case);
+            $this->assertFalse($presented['can_open_payment_url'], $case);
+            $this->assertFalse($presented['can_copy_payment_url'], $case);
+            $this->assertSame('none', $presented['payment_action_kind'], $case);
+            $this->assertNotNull($presented['public_url_blocker_code'], $case);
+        }
+
+        $providerPayment = (new TechnicalServiceMountPayment)->forceFill([
+            'provider' => 'iyzico',
+            'provider_reference' => 'security-token',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 100,
+            'payment_url' => 'https://evil.example.test/pay/security-token',
+            'raw_payload' => [
+                'provider_mode' => 'sandbox',
+                'provider_transport' => 'direct_laravel',
+                'provider_gateway' => [
+                    'ok' => true,
+                    'dry_run' => false,
+                    'no_send' => false,
+                    'provider_token' => 'security-token',
+                    'payment_url' => 'https://evil.example.test/pay/security-token',
+                ],
+            ],
+        ]);
+        $providerPresented = TechnicalServicePaymentActionPresenter::forPayment($providerPayment);
+        $this->assertNull($providerPresented['payment_url']);
+        $this->assertFalse($providerPresented['can_open_payment_url']);
+
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+        Bus::assertNothingDispatched();
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+    }
+
+    public function test_malicious_stored_payment_url_cannot_be_queued_by_direct_api(): void
+    {
+        Http::preventStrayRequests();
+        Queue::fake();
+        Bus::fake();
+        Mail::fake();
+        Notification::fake();
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
+            'app.url' => 'http://127.0.0.1:8000',
+        ]);
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $request = $this->createRequestWithMrn('MRN-URL-GUARD-001');
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $mountToken] = $this->qrLink();
+        $this->get('/mount-request/'.$mountToken.'/form')->assertOk();
+        $session = TechnicalServiceMountSession::query()->firstOrFail();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'guard-token',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 100,
+            'currency' => 'TRY',
+            'payment_url' => 'https://evil.example.test/mount-payment/guard-token',
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['payment']);
+
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+        Bus::assertNothingDispatched();
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+        $this->assertSame('https://evil.example.test/mount-payment/guard-token', $payment->fresh()->payment_url);
     }
 
     public function test_public_mount_request_get_does_not_require_auth(): void
@@ -1223,6 +1434,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             'payments.provider_name' => 'iyzico',
             'payments.provider_transport' => 'direct_laravel',
             'payments.gateway.mode' => 'sandbox',
+            'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox-payment.iyzipay.com'],
         ]);
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_QR_SANDBOX_API_KEY', 'TEST_QR_SANDBOX_SECRET_KEY');
@@ -1308,6 +1520,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         config([
             'payments.provider' => 'fake',
             'payments.enable_fake_approve' => true,
+            'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox-payment.iyzipay.com'],
         ]);
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
@@ -2507,6 +2720,20 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ],
             ]],
         );
+    }
+
+    private function configureAcceptedPublicProfile(
+        string $profile,
+        string $environment,
+        string $origin,
+        int $revision,
+    ): void {
+        config()->set('services.public_urls.profiles.'.$profile, [
+            'environment' => $environment,
+            'origin' => $origin,
+            'active' => true,
+            'revision' => $revision,
+        ]);
     }
 
     /**

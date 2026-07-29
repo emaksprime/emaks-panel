@@ -1065,10 +1065,13 @@ class TechnicalServiceController extends Controller
                 ]);
             }
 
-            $paymentUrl = trim((string) ($lockedPayment->payment_url ?? ''));
+            $presentedPayment = TechnicalServicePaymentActionPresenter::forPayment($lockedPayment);
+            $paymentUrl = is_string($presentedPayment['copy_url'] ?? null)
+                ? trim($presentedPayment['copy_url'])
+                : '';
             if ($paymentUrl === '') {
                 throw ValidationException::withMessages([
-                    'payment' => 'Ödeme linki olmadan müşteriye mesaj kuyruğu oluşturulamaz.',
+                    'payment' => 'Ödeme linki güvenli public URL sözleşmesi doğrulanmadan müşteriye mesaj kuyruğu oluşturulamaz.',
                 ]);
             }
 

@@ -819,6 +819,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         string $channel,
     ): void {
         $this->withProductionRuntime(function () use ($provider, $channel): void {
+            $this->configureAcceptedProductionPublicProfile();
             $admin = $this->admin();
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'execution-mode-worker-owner';
@@ -889,12 +890,124 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         ];
     }
 
+    #[DataProvider('invalidProductionPublicProfileCases')]
+    public function test_production_live_messaging_rejects_unaccepted_public_origin_profiles(
+        array $profile,
+        string $expectedBlocker,
+        ?string $expectedDiagnosticOrigin,
+        bool $withRequestHostOverride = false,
+    ): void {
+        $this->withProductionRuntime(function () use ($profile, $expectedBlocker, $expectedDiagnosticOrigin, $withRequestHostOverride): void {
+            config()->set('services.public_urls.profiles.production_public', $profile);
+            if ($withRequestHostOverride) {
+                request()->server->set('HTTP_HOST', 'attacker.example.test');
+                request()->server->set('HTTP_X_FORWARDED_HOST', 'attacker.example.test');
+                request()->server->set('HTTP_X_FORWARDED_PROTO', 'https');
+            }
+
+            $admin = $this->admin();
+            $settings = $this->configureLiveReadiness($admin);
+            $owner = 'public-origin-negative-worker';
+            $settings->registerOutboundWorkerLease($owner, now()->toImmutable(), now()->addMinute()->toImmutable());
+            $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
+
+            $publicOrigin = app(ExternalExecutionControlPlaneService::class)->publicOriginProfile();
+            $this->assertFalse((bool) $publicOrigin['ready']);
+            $this->assertSame($expectedBlocker, $publicOrigin['blocker_code']);
+            $this->assertSame($expectedDiagnosticOrigin, $publicOrigin['origin']);
+            $this->assertFalse((bool) $publicOrigin['external_effects_allowed']);
+            $this->assertNotSame('https://attacker.example.test', $publicOrigin['origin']);
+
+            Http::fake();
+            $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->enqueue([
+                'event' => 'execution_mode_public_origin_negative',
+                'message_type' => 'assignment_offer_technician',
+                'provider_key' => 'evo_whatsapp',
+                'channel' => 'whatsapp',
+                'recipient_role' => 'technician',
+                'target_type' => 'technician',
+                'target_phone' => '905000000001',
+                'payload' => ['body' => 'Unaccepted public origin profile must block outbound.'],
+            ]);
+
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->status);
+            $this->assertNull($dispatch->queued_at);
+            $this->assertSame('execution_control_blocked', $dispatch->provider_status);
+            $this->assertSame('public_origin_not_ready', $dispatch->last_error_code);
+            $this->assertSame(0, $dispatch->attempt_count);
+            $this->assertNull($dispatch->sent_at);
+            $this->assertNull($dispatch->provider_message_id);
+            $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted', true));
+            $this->assertFalse((bool) data_get($dispatch->metadata, 'external_provider_call', true));
+
+            $transportPayload = json_encode([
+                'request_payload' => $dispatch->request_payload,
+                'metadata' => $dispatch->metadata,
+            ], JSON_THROW_ON_ERROR);
+            if ($expectedDiagnosticOrigin !== null) {
+                $this->assertStringNotContainsString($expectedDiagnosticOrigin, $transportPayload);
+            }
+            $this->assertStringNotContainsString('attacker.example.test', $transportPayload);
+
+            $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+                $dispatch->id,
+                options: ['outbound_worker_owner' => $owner],
+            );
+
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $result['status']);
+            $this->assertTrue((bool) ($result['skipped'] ?? false));
+            if (array_key_exists('blocked', $result)) {
+                $this->assertTrue((bool) $result['blocked']);
+            }
+
+            $persisted = $dispatch->fresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $persisted->status);
+            $this->assertSame('execution_control_blocked', $persisted->provider_status);
+            $this->assertSame('public_origin_not_ready', $persisted->last_error_code);
+            $this->assertSame(0, $persisted->attempt_count);
+            $this->assertNull($persisted->queued_at);
+            $this->assertNull($persisted->sent_at);
+            $this->assertNull($persisted->provider_message_id);
+            $this->assertNull(data_get($persisted->response_payload, 'pkgID'));
+            $this->assertFalse((bool) data_get($persisted->metadata, 'provider_send_attempted', true));
+            $this->assertFalse((bool) data_get($persisted->metadata, 'external_provider_call', true));
+            Http::assertNothingSent();
+        });
+    }
+
+    public static function invalidProductionPublicProfileCases(): array
+    {
+        return [
+            'missing profile' => [[], 'PUBLIC_PRODUCTION_HTTPS_MISSING', null, false],
+            'wrong environment profile' => [[
+                'environment' => 'UAT',
+                'origin' => 'https://uat-public.example.test',
+                'active' => true,
+                'revision' => 1,
+            ], 'PUBLIC_PROFILE_ENVIRONMENT_MISMATCH', 'https://uat-public.example.test', false],
+            'inactive profile' => [[
+                'environment' => 'PROD',
+                'origin' => 'https://prod-public.example.test',
+                'active' => false,
+                'revision' => 1,
+            ], 'PUBLIC_PROFILE_INACTIVE', 'https://prod-public.example.test', false],
+            'stale profile' => [[
+                'environment' => 'PROD',
+                'origin' => 'https://prod-public.example.test',
+                'active' => true,
+                'revision' => 0,
+            ], 'PUBLIC_PROFILE_STALE', 'https://prod-public.example.test', false],
+            'request host provenance only' => [[], 'PUBLIC_PRODUCTION_HTTPS_MISSING', null, true],
+        ];
+    }
+
     #[DataProvider('productionProviderCases')]
     public function test_production_live_final_boundary_requires_both_providers_to_remain_ready(
         string $provider,
         string $channel,
     ): void {
         $this->withProductionRuntime(function () use ($provider, $channel): void {
+            $this->configureAcceptedProductionPublicProfile();
             $admin = $this->admin();
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'all-or-nothing-worker-owner';
@@ -935,6 +1048,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         string $channel,
     ): void {
         $this->withProductionRuntime(function () use ($provider, $channel): void {
+            $this->configureAcceptedProductionPublicProfile();
             $admin = $this->admin();
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'redirect-worker-owner';
@@ -989,6 +1103,7 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
             $this->assertSame('local_no_send', $local->fresh()->provider_status);
             $this->assertSame(0, $local->fresh()->attempt_count);
 
+            $this->configureAcceptedProductionPublicProfile();
             $admin = $this->admin();
             $settings = $this->configureLiveReadiness($admin);
             $owner = 'outer-transaction-worker-owner';
@@ -1175,6 +1290,16 @@ class TechnicalServiceMessagingExecutionModeTest extends TestCase
         }
 
         return $settings;
+    }
+
+    private function configureAcceptedProductionPublicProfile(): void
+    {
+        config()->set('services.public_urls.profiles.production_public', [
+            'environment' => 'PROD',
+            'origin' => 'https://prod-public.example.test',
+            'active' => true,
+            'revision' => 1,
+        ]);
     }
 
     /**

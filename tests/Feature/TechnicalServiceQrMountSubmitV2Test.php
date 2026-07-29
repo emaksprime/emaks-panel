@@ -181,6 +181,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         config([
             'payments.provider' => 'fake',
             'payments.enable_fake_approve' => true,
+            'services.partner_portal.public_url' => 'https://partner-portal.example.test',
         ]);
 
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);

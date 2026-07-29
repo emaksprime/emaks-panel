@@ -12,6 +12,10 @@ use Illuminate\Support\Facades\DB;
 
 trait InteractsWithExternalExecutionControlPlane
 {
+    private const MANUAL_E2E_LOCAL_PUBLIC_ORIGIN = 'http://127.0.0.1:8000';
+
+    private bool $manualE2ELocalPublicProfileConfigured = false;
+
     /**
      * Establishes the parent precondition for messaging adapter contract tests.
      * Global transition/default-deny behavior is tested separately through its API.
@@ -21,7 +25,12 @@ trait InteractsWithExternalExecutionControlPlane
     protected function activateGlobalLiveForMessagingAdapterFixture(
         TechnicalServiceMessagingSettingsService $settings,
         ?User $actor = null,
+        bool $withLocalPublicProfile = true,
     ): array {
+        if ($withLocalPublicProfile) {
+            $this->configureAcceptedLocalPublicProfileFixture();
+        }
+
         $controlPlane = app(ExternalExecutionControlPlaneService::class);
         $current = $controlPlane->state();
         $profileFingerprint = (string) data_get(
@@ -72,5 +81,27 @@ trait InteractsWithExternalExecutionControlPlane
         });
 
         return $controlPlane->payload();
+    }
+
+    private function configureAcceptedLocalPublicProfileFixture(): void
+    {
+        if ($this->manualE2ELocalPublicProfileConfigured) {
+            return;
+        }
+
+        $key = 'services.partner_portal.public_url';
+        $previousOrigin = config($key);
+        $configuredOrigin = trim((string) $previousOrigin);
+
+        config()->set(
+            $key,
+            $configuredOrigin !== '' ? $configuredOrigin : self::MANUAL_E2E_LOCAL_PUBLIC_ORIGIN,
+        );
+        $this->manualE2ELocalPublicProfileConfigured = true;
+
+        $this->beforeApplicationDestroyed(function () use ($key, $previousOrigin): void {
+            config()->set($key, $previousOrigin);
+            $this->manualE2ELocalPublicProfileConfigured = false;
+        });
     }
 }

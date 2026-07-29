@@ -17,14 +17,6 @@ class TechnicalServicePaymentActionPresenter
         $providerDecision = is_array($payload['provider_decision'] ?? null) ? $payload['provider_decision'] : [];
         $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
         $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
-        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
-        $publicUrlBlockerCode = null;
-        try {
-            $paymentUrl = PartnerPortalPublicUrl::rebaseLegacyUrl($paymentUrl) ?? '';
-        } catch (InvalidArgumentException) {
-            $paymentUrl = '';
-            $publicUrlBlockerCode = 'LEGACY_PUBLIC_URL_UNRESOLVABLE';
-        }
         $provider = strtolower((string) ($payment->provider ?? ''));
         $providerMode = strtolower((string) (
             $payload['provider_mode']
@@ -36,13 +28,25 @@ class TechnicalServicePaymentActionPresenter
             ?? $providerDecision['provider_transport']
             ?? ($provider === 'fake' ? 'fake_local' : '')
         ));
+        $isFakeProvider = $provider === 'fake' || $providerTransport === 'fake_local';
+        $isIyzicoProvider = $provider === 'iyzico' || $providerTransport === 'direct_laravel';
+        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
+        $publicUrlBlockerCode = null;
+        try {
+            $paymentUrl = $isIyzicoProvider
+                ? (PartnerPortalPublicUrl::trustedPaymentProviderUrl($paymentUrl) ?? '')
+                : (PartnerPortalPublicUrl::rebaseLegacyUrl($paymentUrl) ?? '');
+        } catch (InvalidArgumentException $exception) {
+            $paymentUrl = '';
+            $publicUrlBlockerCode = preg_match('/^\[([A-Z0-9_]+)\]/', $exception->getMessage(), $matches) === 1
+                ? $matches[1]
+                : 'LEGACY_PUBLIC_URL_UNRESOLVABLE';
+        }
         $providerStatus = $providerGatewaySync['provider_status']
             ?? $providerGateway['provider_status']
             ?? $providerGatewaySync['raw_status']
             ?? $providerGateway['raw_status']
             ?? $payment->status;
-        $isFakeProvider = $provider === 'fake' || $providerTransport === 'fake_local';
-        $isIyzicoProvider = $provider === 'iyzico' || $providerTransport === 'direct_laravel';
         $isPending = $payment->status === TechnicalServiceMountPayment::STATUS_PENDING;
         $isPaid = $payment->status === TechnicalServiceMountPayment::STATUS_PAID;
         $isCancelled = $payment->status === TechnicalServiceMountPayment::STATUS_CANCELLED;
@@ -77,6 +81,7 @@ class TechnicalServicePaymentActionPresenter
         }
 
         return [
+            'payment_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'provider' => $provider !== '' ? $provider : null,
             'provider_mode' => $providerMode !== '' ? $providerMode : null,

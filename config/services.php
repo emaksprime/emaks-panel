@@ -37,10 +37,28 @@ return [
         'app_url' => env('PUBLIC_APP_URL'),
         'qr_base_url' => env('PUBLIC_QR_BASE_URL'),
         'payment_base_url' => env('PUBLIC_PAYMENT_BASE_URL'),
+        'profiles' => [
+            'uat_public' => [
+                'environment' => env('PUBLIC_UAT_PROFILE_ENVIRONMENT'),
+                'origin' => env('PUBLIC_UAT_PROFILE_ORIGIN'),
+                'active' => env('PUBLIC_UAT_PROFILE_ACTIVE', false),
+                'revision' => (int) env('PUBLIC_UAT_PROFILE_REVISION', 0),
+            ],
+            'production_public' => [
+                'environment' => env('PUBLIC_PRODUCTION_PROFILE_ENVIRONMENT'),
+                'origin' => env('PUBLIC_PRODUCTION_PROFILE_ORIGIN'),
+                'active' => env('PUBLIC_PRODUCTION_PROFILE_ACTIVE', false),
+                'revision' => (int) env('PUBLIC_PRODUCTION_PROFILE_REVISION', 0),
+            ],
+        ],
+        'trusted_payment_provider_origins' => array_values(array_filter(array_map(
+            static fn (string $origin): string => trim($origin),
+            explode(',', (string) env('PUBLIC_PAYMENT_PROVIDER_ORIGINS', '')),
+        ))),
     ],
 
     'partner_portal' => [
-        'public_url' => env('PARTNER_PORTAL_PUBLIC_URL', env('APP_URL')),
+        'public_url' => env('PARTNER_PORTAL_PUBLIC_URL', env('PUBLIC_APP_URL')),
     ],
 
     'evolution' => [

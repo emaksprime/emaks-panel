@@ -16,9 +16,11 @@ use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\InteractsWithTestHttpIsolation;
@@ -510,6 +512,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_extra_mount_fee_payment_link_creates_payment_for_mrn_and_serials(): void
     {
+        config(['services.partner_portal.public_url' => 'https://payments.example.test']);
+
         $user = $this->adminUser();
         [$request, $session, $serial] = $this->technicalServiceRequestWithSessionAndSerial();
         $technician = $this->technicianWithLocation();
@@ -564,6 +568,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_manual_mount_payment_link_binds_request_snapshot_without_technician(): void
     {
+        config(['services.partner_portal.public_url' => 'https://payments.example.test']);
+
         $user = $this->adminUser();
         [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
 
@@ -602,6 +608,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
     public function test_payment_public_extra_mount_fee_payment_link_uses_public_payment_base_url(): void
     {
         config([
+            'services.partner_portal.public_url' => 'https://payments.example.test',
             'services.public_urls.payment_base_url' => 'https://payments.example.test',
             'services.public_urls.app_url' => 'https://app.example.test',
             'app.url' => 'https://app-url.example.test',
@@ -628,6 +635,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_payment_create_returns_payment_url_and_copy_url_contract(): void
     {
+        config(['services.partner_portal.public_url' => 'https://payments.example.test']);
+
         $user = $this->adminUser();
         [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
         $technician = $this->technicianWithLocation();
@@ -682,7 +691,23 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'payments.gateway.dry_run' => false,
             'payments.gateway.no_send' => false,
             'payments.gateway.allow_provider_send' => true,
+            'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox-payment.example.test'],
+            'services.public_urls.profiles.uat_public' => [
+                'environment' => 'UAT',
+                'origin' => 'https://uat-public.example.test',
+                'active' => true,
+                'revision' => 3,
+            ],
+            'services.public_urls.profiles.production_public' => [
+                'environment' => 'PROD',
+                'origin' => 'https://prod-public.example.test',
+                'active' => true,
+                'revision' => 4,
+            ],
         ]);
+
+        $this->assertTrue(PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live')['ready']);
+        $this->assertTrue(PartnerPortalPublicUrl::resolveProfile('production', 'live', 'live')['ready']);
 
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY');
@@ -750,10 +775,38 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertTrue($client->called);
         $this->assertSame('create_link', $client->lastRequest?->operation());
         $this->assertSame($response->json('payment.payment_url'), TechnicalServiceMountPayment::query()->firstOrFail()->payment_url);
+
+        config()->set('services.public_urls.trusted_payment_provider_origins', []);
+        $gatewayProvenanceOnly = (new TechnicalServiceMountPayment)->forceFill([
+            'provider' => 'iyzico',
+            'provider_reference' => 'direct-copy-token',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 150,
+            'currency' => 'TRY',
+            'payment_url' => 'https://sandbox-payment.example.test/direct-copy-token',
+            'raw_payload' => [
+                'provider_mode' => 'sandbox',
+                'provider_transport' => 'direct_laravel',
+                'provider_gateway' => [
+                    'ok' => true,
+                    'dry_run' => false,
+                    'no_send' => false,
+                    'provider_token' => 'direct-copy-token',
+                    'payment_url' => 'https://sandbox-payment.example.test/direct-copy-token',
+                ],
+            ],
+        ]);
+        $blocked = TechnicalServicePaymentActionPresenter::forPayment($gatewayProvenanceOnly);
+        $this->assertNull($blocked['payment_url']);
+        $this->assertNull($blocked['copy_url']);
+        $this->assertFalse($blocked['can_open_payment_url']);
+        $this->assertSame('LEGACY_PUBLIC_URL_ORIGIN_NOT_ALLOWED', $blocked['public_url_blocker_code']);
     }
 
     public function test_extra_mount_fee_payment_link_reuses_existing_pending_session(): void
     {
+        config(['services.partner_portal.public_url' => 'https://payments.example.test']);
+
         $user = $this->adminUser();
         [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
         $technician = $this->technicianWithLocation();
@@ -791,6 +844,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_payment_status_endpoint_returns_fresh_request_and_next_action(): void
     {
+        config(['services.partner_portal.public_url' => 'https://payments.example.test']);
+
         PageConfig::query()->updateOrCreate(
             ['page_code' => 'technical_service_admin'],
             ['layout_json' => [

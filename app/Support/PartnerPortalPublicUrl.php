@@ -153,6 +153,10 @@ class PartnerPortalPublicUrl
                 $current['profile'],
                 $current['origin'],
                 $current['origin_source'],
+                $current['profile_environment'],
+                $current['profile_active'],
+                $current['profile_revision'],
+                $current['profile_identity_fingerprint'],
                 $current['ready'],
                 $current['blocker_code'],
                 $routes,
@@ -162,36 +166,56 @@ class PartnerPortalPublicUrl
 
     public static function rebaseLegacyUrl(?string $storedUrl): ?string
     {
-        $storedUrl = trim((string) $storedUrl);
-        if ($storedUrl === '') {
+        $rawUrl = (string) $storedUrl;
+        if ($rawUrl === '') {
             return null;
         }
-        if (preg_match('/[\x00-\x1f\x7f]/', $storedUrl) === 1) {
-            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Legacy public URL kontrol karakteri içeriyor.');
+
+        $parts = self::strictAbsoluteUrlParts($rawUrl);
+        if (array_key_exists('query', $parts)) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Legacy public URL beklenmeyen query parametresi içeriyor.');
         }
 
-        $parts = parse_url($storedUrl);
-        if ($parts === false
-            || isset($parts['user'])
-            || isset($parts['pass'])
-            || isset($parts['fragment'])
-        ) {
-            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Legacy public URL güvenli biçimde ayrıştırılamadı.');
-        }
-
-        $path = '/'.ltrim((string) ($parts['path'] ?? ''), '/');
+        $path = (string) $parts['path'];
         if (! self::trustedPublicPath($path)) {
-            if (isset($parts['scheme']) && ! self::isLocalUrl($storedUrl)) {
-                return $storedUrl;
-            }
-
-            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Legacy public URL canonical public route taşımıyor.');
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_ROUTE_NOT_ALLOWED] Legacy public URL izinli public route taşımıyor.');
         }
 
-        $rebased = self::join(self::selectedOrigin('legacy public URL'), $path);
-        $query = trim((string) ($parts['query'] ?? ''));
+        self::assertLegacyOriginAllowed(self::originFromParts($parts));
 
-        return $query === '' ? $rebased : $rebased.'?'.$query;
+        return self::join(self::selectedOrigin('legacy public URL'), $path);
+    }
+
+    public static function trustedPaymentProviderUrl(?string $storedUrl): ?string
+    {
+        $rawUrl = (string) $storedUrl;
+        if ($rawUrl === '') {
+            return null;
+        }
+
+        $parts = self::strictAbsoluteUrlParts($rawUrl);
+        $origin = self::originFromParts($parts);
+        $path = (string) $parts['path'];
+        if (strtolower((string) $parts['scheme']) !== 'https'
+            || ! self::isPublicHttpsUrl($origin)
+            || array_key_exists('query', $parts)
+            || preg_match('#^/(?:pay/)?[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$#', $path) !== 1
+        ) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Ödeme sağlayıcısı URL sözleşmesi doğrulanamadı.');
+        }
+
+        $configuredOrigins = collect((array) config('services.public_urls.trusted_payment_provider_origins', []))
+            ->filter(fn (mixed $value): bool => is_string($value))
+            ->map(fn (string $value): ?string => self::normalizeOrigin($value))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+        if (! in_array($origin, $configuredOrigins, true)) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_ORIGIN_NOT_ALLOWED] Ödeme sağlayıcısı origini server-side allowlist ile doğrulanamadı.');
+        }
+
+        return $rawUrl;
     }
 
     public static function localRequestBaseUrl(?Request $request = null): ?string
@@ -379,10 +403,135 @@ class PartnerPortalPublicUrl
 
     private static function trustedPublicPath(string $path): bool
     {
-        return preg_match('#^/service-job-confirmation/[A-Za-z0-9._~-]+(?:/(?:approve|reject))?$#', $path) === 1
-            || preg_match('#^/mount-request/[A-Za-z0-9._~-]+(?:/(?:check|form|payment|multi-product|multi-products|invoice-serials/check|submit))?$#', $path) === 1
-            || preg_match('#^/mount-payment/(?:fake/)?[A-Za-z0-9._~-]+(?:/(?:approve|fake-approve))?$#', $path) === 1
+        $token = '[A-Za-z0-9][A-Za-z0-9_-]{0,127}';
+
+        return preg_match('#^/service-job-confirmation/'.$token.'$#', $path) === 1
+            || preg_match('#^/mount-request/'.$token.'(?:/(?:form|payment|multi-products))?$#', $path) === 1
+            || preg_match('#^/mount-payment/'.$token.'$#', $path) === 1
             || preg_match('#^/pj/[1-9][0-9]*$#', $path) === 1;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function strictAbsoluteUrlParts(string $url): array
+    {
+        if ($url === ''
+            || ! hash_equals($url, trim($url))
+            || preg_match('/[\x00-\x20\x7f]/', $url) === 1
+            || str_contains($url, '\\')
+            || str_contains($url, '%')
+            || preg_match('#^https?://#i', $url) !== 1
+        ) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Public URL canonical absolute URL biçiminde değil.');
+        }
+
+        try {
+            $parts = parse_url($url);
+        } catch (\ValueError) {
+            $parts = false;
+        }
+        if (! is_array($parts)
+            || ! isset($parts['scheme'], $parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['fragment'])
+        ) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Public URL güvenli biçimde ayrıştırılamadı.');
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+        $host = strtolower((string) $parts['host']);
+        $validHost = $host === 'localhost'
+            || filter_var($host, FILTER_VALIDATE_IP) !== false
+            || filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
+        if (! in_array($scheme, ['http', 'https'], true)
+            || ! $validHost
+            || str_ends_with($host, '.')
+            || str_contains($host, '..')
+        ) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Public URL şema veya host doğrulamasını geçemedi.');
+        }
+
+        if (isset($parts['port'])) {
+            $port = (int) $parts['port'];
+            if ($port < 1 || $port > 65535) {
+                throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Public URL portu geçersiz.');
+            }
+        }
+
+        $path = (string) ($parts['path'] ?? '/');
+        $segments = explode('/', $path);
+        if (! str_starts_with($path, '/')
+            || str_contains($path, '//')
+            || in_array('.', $segments, true)
+            || in_array('..', $segments, true)
+        ) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Public URL path canonical değil.');
+        }
+
+        $parts['scheme'] = $scheme;
+        $parts['host'] = $host;
+        $parts['path'] = $path;
+
+        return $parts;
+    }
+
+    /**
+     * @param  array<string, mixed>  $parts
+     */
+    private static function originFromParts(array $parts): string
+    {
+        $origin = strtolower((string) $parts['scheme']).'://'.strtolower((string) $parts['host']);
+        if (isset($parts['port'])) {
+            $origin .= ':'.(int) $parts['port'];
+        }
+
+        $normalized = self::normalizeOrigin($origin);
+        if ($normalized === null) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_UNRESOLVABLE] Public URL origini doğrulanamadı.');
+        }
+
+        return $normalized;
+    }
+
+    private static function assertLegacyOriginAllowed(string $legacyOrigin): void
+    {
+        $profile = self::profile();
+        $currentOrigin = self::selectedOrigin('legacy public URL');
+        $allowedOrigins = [$currentOrigin];
+
+        if (($profile['profile'] ?? null) === self::PROFILE_LOCAL) {
+            $configuredOrigins = collect([
+                config('services.partner_portal.public_url'),
+                config('services.public_urls.qr_base_url'),
+                config('services.public_urls.payment_base_url'),
+                config('services.public_urls.app_url'),
+                config('app.url'),
+            ])->filter(fn (mixed $value): bool => is_string($value) && trim($value) !== '')
+                ->map(fn (string $value): ?string => self::normalizeOrigin($value))
+                ->filter()
+                ->values();
+
+            foreach ($configuredOrigins as $configuredOrigin) {
+                $allowedOrigins[] = $configuredOrigin;
+                if (! self::isLocalUrl($configuredOrigin)) {
+                    continue;
+                }
+
+                $scheme = strtolower((string) parse_url($configuredOrigin, PHP_URL_SCHEME));
+                $port = parse_url($configuredOrigin, PHP_URL_PORT);
+                $port = is_int($port) ? $port : ($scheme === 'https' ? 443 : 80);
+                $suffix = $port === 80 ? '' : ':'.$port;
+                $allowedOrigins[] = 'http://127.0.0.1'.$suffix;
+                $allowedOrigins[] = 'http://localhost'.$suffix;
+            }
+        }
+
+        $allowedOrigins = array_values(array_unique(array_filter($allowedOrigins)));
+        if (! in_array($legacyOrigin, $allowedOrigins, true)) {
+            throw new InvalidArgumentException('[LEGACY_PUBLIC_URL_ORIGIN_NOT_ALLOWED] Legacy public URL origini seçili environment profile için izinli değil.');
+        }
     }
 
     /**
@@ -399,8 +548,21 @@ class PartnerPortalPublicUrl
             default => null,
         };
         $httpsRequired = in_array($profile, [self::PROFILE_UAT, self::PROFILE_PRODUCTION], true);
-        $candidate = self::originCandidate($profile);
+        $candidate = self::originCandidate($profile, $environment, $operatorMode);
         $origin = self::normalizeOrigin($candidate['value']);
+        $profileEnvironment = is_string($candidate['environment'] ?? null)
+            ? strtoupper(trim((string) $candidate['environment']))
+            : null;
+        $profileActive = (bool) ($candidate['active'] ?? false);
+        $profileRevision = max(0, (int) ($candidate['revision'] ?? 0));
+        $profileIdentityFingerprint = hash('sha256', json_encode([
+            $profile,
+            $profileEnvironment,
+            $origin,
+            $profileActive,
+            $profileRevision,
+            $candidate['source'],
+        ], JSON_THROW_ON_ERROR));
         $privateLan = $origin !== null && self::isPrivateLanOrigin($origin);
         $loopback = $origin !== null && self::isLoopbackOrigin($origin);
         $publicHttps = $origin !== null && self::isPublicHttpsUrl($origin);
@@ -411,6 +573,9 @@ class PartnerPortalPublicUrl
             $profile,
             $origin,
             $publicHttps,
+            $profileEnvironment,
+            $profileActive,
+            $profileRevision,
         );
 
         return [
@@ -421,6 +586,10 @@ class PartnerPortalPublicUrl
             'profile' => $profile,
             'origin' => $origin,
             'origin_source' => $candidate['source'],
+            'profile_environment' => $profileEnvironment,
+            'profile_active' => $profileActive,
+            'profile_revision' => $profileRevision,
+            'profile_identity_fingerprint' => $profileIdentityFingerprint,
             'ready' => $blocker === null,
             'blocker_code' => $blocker['code'] ?? null,
             'blocker_message' => $blocker['message'] ?? null,
@@ -429,32 +598,36 @@ class PartnerPortalPublicUrl
             'loopback' => $loopback,
             'lan_reachable' => $profile === self::PROFILE_LOCAL ? $privateLan : null,
             'phone_reachable' => $profile === self::PROFILE_LOCAL ? ($privateLan || $publicHttps) : $publicHttps,
-            'external_effects_allowed' => $operatorMode === ExternalExecutionControlPlaneService::MODE_LIVE
+            'external_effects_allowed' => $blocker === null
+                && $operatorMode === ExternalExecutionControlPlaneService::MODE_LIVE
                 && $transitionState === ExternalExecutionControlPlaneService::STATE_LIVE,
         ];
     }
 
     /**
-     * @return array{source:?string,value:?string}
+     * @return array{source:?string,value:?string,environment:?string,active:bool,revision:int}
      */
-    private static function originCandidate(?string $profile): array
+    private static function originCandidate(?string $profile, string $environment, string $operatorMode): array
     {
+        if (in_array($profile, [self::PROFILE_UAT, self::PROFILE_PRODUCTION], true)) {
+            $source = 'services.public_urls.profiles.'.$profile;
+            $configured = config($source, []);
+            $configured = is_array($configured) ? $configured : [];
+
+            return [
+                'source' => $source,
+                'value' => is_string($configured['origin'] ?? null) ? $configured['origin'] : null,
+                'environment' => is_string($configured['environment'] ?? null) ? $configured['environment'] : null,
+                'active' => ($configured['active'] ?? false) === true,
+                'revision' => max(0, (int) ($configured['revision'] ?? 0)),
+            ];
+        }
+
         $keys = match ($profile) {
             self::PROFILE_LOCAL => [
                 'services.partner_portal.public_url',
                 'services.public_urls.qr_base_url',
                 'services.public_urls.payment_base_url',
-                'services.public_urls.app_url',
-                'app.url',
-            ],
-            self::PROFILE_UAT => [
-                'services.partner_portal.public_url',
-                'services.public_urls.app_url',
-            ],
-            self::PROFILE_PRODUCTION => [
-                'services.public_urls.app_url',
-                'services.partner_portal.public_url',
-                'app.url',
             ],
             default => [],
         };
@@ -462,11 +635,23 @@ class PartnerPortalPublicUrl
         foreach ($keys as $key) {
             $value = trim((string) config($key, ''));
             if ($value !== '') {
-                return ['source' => $key, 'value' => $value];
+                return [
+                    'source' => $key,
+                    'value' => $value,
+                    'environment' => $environment,
+                    'active' => true,
+                    'revision' => 1,
+                ];
             }
         }
 
-        return ['source' => null, 'value' => null];
+        return [
+            'source' => null,
+            'value' => null,
+            'environment' => $environment,
+            'active' => true,
+            'revision' => 1,
+        ];
     }
 
     /**
@@ -479,6 +664,9 @@ class PartnerPortalPublicUrl
         ?string $profile,
         ?string $origin,
         bool $publicHttps,
+        ?string $profileEnvironment,
+        bool $profileActive,
+        int $profileRevision,
     ): ?array {
         if (! in_array($environment, [self::ENV_DEV, self::ENV_UAT, self::ENV_PROD], true) || $profile === null) {
             return self::blocked('PUBLIC_ENVIRONMENT_UNKNOWN', 'Public origin ortam kimliği DEV, UAT veya PROD olarak doğrulanamadı.');
@@ -518,7 +706,23 @@ class PartnerPortalPublicUrl
             };
         }
 
+        if ($profileEnvironment !== $environment) {
+            return self::blocked('PUBLIC_PROFILE_ENVIRONMENT_MISMATCH', 'Public origin profili immutable runtime environment ile eşleşmiyor.');
+        }
+
+        if (! $profileActive) {
+            return self::blocked('PUBLIC_PROFILE_INACTIVE', 'Public origin profili aktif değil.');
+        }
+
+        if ($profileRevision < 1) {
+            return self::blocked('PUBLIC_PROFILE_STALE', 'Public origin profili current revision ile kabul edilmiş değil.');
+        }
+
         if ($profile === self::PROFILE_LOCAL) {
+            if ($environment === self::ENV_PROD) {
+                return self::blocked('PUBLIC_PROFILE_ENVIRONMENT_MISMATCH', 'Production ortamında local public origin profili kullanılamaz.');
+            }
+
             $scheme = strtolower((string) parse_url($origin, PHP_URL_SCHEME));
             if ($scheme === 'http' && ! self::isLocalUrl($origin)) {
                 return self::blocked('LOCAL_PUBLIC_HTTP_NOT_PRIVATE', 'HTTP local public origin yalnız loopback veya private LAN üzerinde kullanılabilir.');

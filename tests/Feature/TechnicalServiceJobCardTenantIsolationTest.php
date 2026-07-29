@@ -18,6 +18,7 @@ use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceTechnicianPortalLinkResolver;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -33,7 +34,21 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
         parent::setUp();
 
         (new B2BPartnerPermissionSeeder)->run();
-        config()->set('services.partner_portal.public_url', 'https://portal.example.test');
+        config([
+            'services.partner_portal.public_url' => 'https://portal.example.test',
+            'services.public_urls.profiles.uat_public' => [
+                'environment' => 'UAT',
+                'origin' => 'https://uat-public.example.test',
+                'active' => true,
+                'revision' => 3,
+            ],
+            'services.public_urls.profiles.production_public' => [
+                'environment' => 'PROD',
+                'origin' => 'https://prod-public.example.test',
+                'active' => true,
+                'revision' => 4,
+            ],
+        ]);
     }
 
     public function test_assigned_technician_can_open_own_job_card_link_tenant_isolation(): void
@@ -388,7 +403,7 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
                 $metadata,
             );
             $this->assertSame('public_live', $resolved['mode']);
-            $this->assertStringStartsWith('https://portal.example.test/', $resolved['short_url']);
+            $this->assertStringStartsWith('https://prod-public.example.test/', $resolved['short_url']);
         } finally {
             app()->detectEnvironment(fn (): string => $previousEnvironment);
         }
@@ -414,6 +429,67 @@ class TechnicalServiceJobCardTenantIsolationTest extends TestCase
         } finally {
             app()->detectEnvironment(fn (): string => $previousEnvironment);
         }
+    }
+
+    public function test_public_origin_profiles_are_environment_bound_and_ignore_request_provenance(): void
+    {
+        $production = PartnerPortalPublicUrl::resolveProfile('production', 'local', 'local');
+        $this->assertTrue($production['ready']);
+        $this->assertSame('PROD', $production['profile_environment']);
+        $this->assertSame('https://prod-public.example.test', $production['origin']);
+        $this->assertNotEmpty($production['profile_identity_fingerprint']);
+
+        config()->set('services.public_urls.profiles.production_public.environment', 'UAT');
+        $productionMismatch = PartnerPortalPublicUrl::resolveProfile('production', 'live', 'live');
+        $this->assertFalse($productionMismatch['ready']);
+        $this->assertSame('PUBLIC_PROFILE_ENVIRONMENT_MISMATCH', $productionMismatch['blocker_code']);
+
+        config()->set('services.public_urls.profiles.uat_public', [
+            'environment' => 'PROD',
+            'origin' => 'https://prod-public.example.test',
+            'active' => true,
+            'revision' => 4,
+        ]);
+        $uatMismatch = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($uatMismatch['ready']);
+        $this->assertSame('PUBLIC_PROFILE_ENVIRONMENT_MISMATCH', $uatMismatch['blocker_code']);
+
+        config()->set('services.public_urls.profiles.uat_public', [
+            'environment' => 'UAT',
+            'origin' => 'https://uat-public.example.test',
+            'active' => false,
+            'revision' => 3,
+        ]);
+        $inactive = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($inactive['ready']);
+        $this->assertSame('PUBLIC_PROFILE_INACTIVE', $inactive['blocker_code']);
+
+        config()->set('services.public_urls.profiles.uat_public', [
+            'environment' => 'UAT',
+            'origin' => 'https://uat-public.example.test',
+            'active' => true,
+            'revision' => 0,
+        ]);
+        $stale = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($stale['ready']);
+        $this->assertSame('PUBLIC_PROFILE_STALE', $stale['blocker_code']);
+
+        config([
+            'services.public_urls.profiles.uat_public' => [],
+            'services.public_urls.app_url' => 'https://arbitrary.example.test',
+            'app.url' => 'https://arbitrary.example.test',
+            'payments.gateway.url' => 'https://arbitrary.example.test',
+        ]);
+        $this->withServerVariables([
+            'HTTP_HOST' => 'arbitrary.example.test',
+            'HTTP_X_FORWARDED_HOST' => 'arbitrary.example.test',
+            'HTTP_X_FORWARDED_PROTO' => 'https',
+        ]);
+        $provenanceOnly = PartnerPortalPublicUrl::resolveProfile('staging', 'live', 'live');
+        $this->assertFalse($provenanceOnly['ready']);
+        $this->assertNull($provenanceOnly['origin']);
+        $this->assertSame('PUBLIC_UAT_HTTPS_MISSING', $provenanceOnly['blocker_code']);
+        $this->assertSame('services.public_urls.profiles.uat_public', $provenanceOnly['origin_source']);
     }
 
     public function test_local_short_job_link_accepts_private_lan_profile_without_enabling_provider_effects(): void
