@@ -409,7 +409,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("@ScopeKey = N'online_perakende'", $query);
         $this->assertStringContainsString("@ScopeKey = N'bayi_proje'", $query);
         $this->assertStringContainsString("ISNULL(cari.cari_grup_kodu, N'') IN", $query);
-        $this->assertStringContainsString("cari.cari_grup_kodu NOT IN", $query);
+        $this->assertStringContainsString('cari.cari_grup_kodu NOT IN', $query);
         $this->assertStringContainsString('cari.cari_kod LIKE', $query);
         $this->assertStringContainsString('cari.cari_unvan1 LIKE', $query);
         $this->assertStringContainsString('grp.crg_isim', $query);
@@ -688,7 +688,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
             self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
-        $repUser = User::factory()->create(['role_code' => 'sales', 'aktif' => true, 'temsilci_kodu' => '0024']);
+        $repUser = User::factory()->create(['role_code' => 'sales', 'aktif' => true, 'temsilci_kodu' => '0039']);
         foreach ([
             'sales_main' => true,
             'sales_main_all' => false,
@@ -711,10 +711,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
             $payload = $request->data();
 
             return ($payload['source_code'] ?? null) === 'sales_customer_search'
-                && ($payload['scope_key'] ?? null) === 'salih'
-                && ($payload['params']['scope_key'] ?? null) === 'salih'
-                && ($payload['rep_code'] ?? null) === '0024'
-                && ($payload['params']['rep_code'] ?? null) === '0024';
+                && ($payload['scope_key'] ?? null) === 'mehmet_can'
+                && ($payload['params']['scope_key'] ?? null) === 'mehmet_can'
+                && ($payload['rep_code'] ?? null) === '0039'
+                && ($payload['params']['rep_code'] ?? null) === '0039';
         });
 
         $this->fakeIsolatedHttp([
@@ -2019,68 +2019,94 @@ class PanelModuleDataUiHotfixTest extends TestCase
     public function test_sales_representative_scopes_follow_own_rep_explicit_allow_and_deny_rules(): void
     {
         $service = app(SalesMainPageService::class);
-        $salih = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0024']);
+        $umit = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0003']);
 
-        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+        $keys = collect($service->config($umit, 'sales_main')['managementScopes'])->pluck('key')->all();
 
-        $this->assertContains('salih', $keys);
+        $this->assertContains('umit', $keys);
         $this->assertNotContains('all', $keys);
-        $this->assertNotContains('umit', $keys);
         $this->assertNotContains('bulent_saglam', $keys);
+        $this->assertNotContains('mehmet_can', $keys);
+        $this->assertNotContains('orkun_genc', $keys);
 
         $bulent = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0035']);
         $keys = collect($service->config($bulent, 'sales_main')['managementScopes'])->pluck('key')->all();
 
         $this->assertContains('bulent_saglam', $keys);
-        $this->assertNotContains('salih', $keys);
         $this->assertNotContains('all', $keys);
+        $this->assertNotContains('mehmet_can', $keys);
+        $this->assertNotContains('orkun_genc', $keys);
+
+        $mehmet = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0039']);
+        $keys = collect($service->config($mehmet, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('mehmet_can', $keys);
+        $this->assertNotContains('all', $keys);
+        $this->assertNotContains('umit', $keys);
+        $this->assertNotContains('bulent_saglam', $keys);
+        $this->assertNotContains('orkun_genc', $keys);
+
+        $orkun = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0040']);
+        $keys = collect($service->config($orkun, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('orkun_genc', $keys);
+        $this->assertNotContains('all', $keys);
+        $this->assertNotContains('umit', $keys);
+        $this->assertNotContains('bulent_saglam', $keys);
+        $this->assertNotContains('mehmet_can', $keys);
 
         UserAccess::query()->create([
-            'user_id' => $salih->id,
+            'user_id' => $mehmet->id,
             'resource_code' => 'sales_rep_umit_yildiz',
             'can_view' => true,
         ]);
 
-        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+        $keys = collect($service->config($mehmet, 'sales_main')['managementScopes'])->pluck('key')->all();
 
-        $this->assertContains('salih', $keys);
         $this->assertContains('umit', $keys);
+        $this->assertContains('mehmet_can', $keys);
         $this->assertNotContains('bulent_saglam', $keys);
+        $this->assertNotContains('orkun_genc', $keys);
         $this->assertNotContains('all', $keys);
 
         UserAccess::query()->create([
-            'user_id' => $salih->id,
+            'user_id' => $mehmet->id,
             'resource_code' => 'sales_rep_bulent_saglam',
             'can_view' => true,
         ]);
 
-        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+        $keys = collect($service->config($mehmet, 'sales_main')['managementScopes'])->pluck('key')->all();
 
-        $this->assertContains('salih', $keys);
         $this->assertContains('umit', $keys);
         $this->assertContains('bulent_saglam', $keys);
+        $this->assertContains('mehmet_can', $keys);
+        $this->assertNotContains('orkun_genc', $keys);
         $this->assertNotContains('all', $keys);
 
         UserAccess::query()->create([
-            'user_id' => $salih->id,
+            'user_id' => $mehmet->id,
             'resource_code' => 'sales_main_all',
             'can_view' => true,
         ]);
 
-        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+        $keys = collect($service->config($mehmet, 'sales_main')['managementScopes'])->pluck('key')->all();
 
         $this->assertContains('all', $keys);
+        $this->assertContains('umit', $keys);
+        $this->assertContains('bulent_saglam', $keys);
+        $this->assertContains('mehmet_can', $keys);
+        $this->assertContains('orkun_genc', $keys);
 
-        $deniedSalih = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0024']);
+        $deniedMehmet = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0039']);
         UserAccess::query()->create([
-            'user_id' => $deniedSalih->id,
-            'resource_code' => 'sales_rep_salih_cakir',
+            'user_id' => $deniedMehmet->id,
+            'resource_code' => 'sales_rep_mehmet_can',
             'can_view' => false,
         ]);
 
-        $keys = collect($service->config($deniedSalih, 'sales_main')['managementScopes'])->pluck('key')->all();
+        $keys = collect($service->config($deniedMehmet, 'sales_main')['managementScopes'])->pluck('key')->all();
 
-        $this->assertNotContains('salih', $keys);
+        $this->assertNotContains('mehmet_can', $keys);
     }
 
     public function test_explicit_representative_scope_uses_scope_rep_code_in_gateway_payload(): void
@@ -2100,14 +2126,14 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ]),
         ]);
 
-        $salih = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0024']);
+        $mehmet = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0039']);
         UserAccess::query()->create([
-            'user_id' => $salih->id,
+            'user_id' => $mehmet->id,
             'resource_code' => 'sales_rep_umit_yildiz',
             'can_view' => true,
         ]);
 
-        $payload = app(SalesMainPageService::class)->dataset($salih, [
+        $payload = app(SalesMainPageService::class)->dataset($mehmet, [
             'scope_key' => 'umit',
             'detail_type' => 'cari',
             'grain' => 'week',
@@ -2128,6 +2154,46 @@ class PanelModuleDataUiHotfixTest extends TestCase
         });
     }
 
+    public function test_own_representative_scope_cannot_be_forced_to_another_representative(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Mehmet Grup',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $mehmet = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0039']);
+
+        $payload = app(SalesMainPageService::class)->dataset($mehmet, [
+            'scope_key' => 'orkun_genc',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('mehmet_can', $payload['scope']['key']);
+        $this->assertSame('0039', $payload['scope']['effectiveRepresentativeCode']);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['scope_key'] ?? null) === 'mehmet_can'
+                && ($payload['rep_code'] ?? null) === '0039';
+        });
+    }
+
     public function test_explicit_representative_scope_works_without_user_representative_code(): void
     {
         $this->fakeIsolatedHttp([
@@ -2137,7 +2203,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     [
                         'satir_tipi' => 'GRUP',
                         'siralama_1' => 1,
-                        'cari_grup_adi' => 'Salih Grup',
+                        'cari_grup_adi' => 'Orkun Grup',
                         'adet' => 1,
                         'ciro' => 100,
                     ],
@@ -2147,7 +2213,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $user = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
 
-        foreach (['sales_main', 'sales_rep_salih_cakir'] as $resourceCode) {
+        foreach (['sales_main', 'sales_rep_orkun_genc'] as $resourceCode) {
             UserAccess::query()->create([
                 'user_id' => $user->id,
                 'resource_code' => $resourceCode,
@@ -2158,11 +2224,11 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $service = app(SalesMainPageService::class);
         $keys = collect($service->config($user, 'sales_main')['managementScopes'])->pluck('key')->all();
 
-        $this->assertContains('salih', $keys);
+        $this->assertContains('orkun_genc', $keys);
         $this->assertNotContains('all', $keys);
 
         $payload = $service->dataset($user, [
-            'scope_key' => 'salih',
+            'scope_key' => 'orkun_genc',
             'detail_type' => 'cari',
             'grain' => 'week',
             'date_from' => '2026-04-01',
@@ -2170,15 +2236,15 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertSame('salih', $payload['scope']['key']);
-        $this->assertSame('0024', $payload['scope']['effectiveRepresentativeCode']);
+        $this->assertSame('orkun_genc', $payload['scope']['key']);
+        $this->assertSame('0040', $payload['scope']['effectiveRepresentativeCode']);
 
         Http::assertSent(function ($request): bool {
             $payload = json_decode($request->body(), true) ?: [];
 
             return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
-                && ($payload['scope_key'] ?? null) === 'salih'
-                && ($payload['rep_code'] ?? null) === '0024';
+                && ($payload['scope_key'] ?? null) === 'orkun_genc'
+                && ($payload['rep_code'] ?? null) === '0040';
         });
     }
 
@@ -2201,7 +2267,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $user = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
 
-        foreach (['sales_main', 'sales_rep_salih_cakir', 'sales_rep_umit_yildiz'] as $resourceCode) {
+        foreach (['sales_main', 'sales_rep_mehmet_can', 'sales_rep_umit_yildiz'] as $resourceCode) {
             UserAccess::query()->create([
                 'user_id' => $user->id,
                 'resource_code' => $resourceCode,
@@ -2212,7 +2278,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $service = app(SalesMainPageService::class);
         $keys = collect($service->config($user, 'sales_main')['managementScopes'])->pluck('key')->all();
 
-        $this->assertSame(['umit', 'salih'], $keys);
+        $this->assertSame(['umit', 'mehmet_can'], $keys);
         $this->assertNotContains('all', $keys);
 
         $payload = $service->dataset($user, [
@@ -2235,19 +2301,33 @@ class PanelModuleDataUiHotfixTest extends TestCase
         });
     }
 
-    public function test_super_admin_sees_all_sales_scopes(): void
+    public function test_admin_manager_and_all_sales_users_see_all_active_sales_scopes(): void
     {
-        $keys = collect(app(SalesMainPageService::class)
-            ->config(User::factory()->create(['role_code' => 'admin']), 'sales_main')['managementScopes'])
-            ->pluck('key')
-            ->all();
+        $service = app(SalesMainPageService::class);
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $manager = User::factory()->create(['role_code' => 'manager']);
+        $allSales = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0039']);
 
-        $this->assertContains('all', $keys);
-        $this->assertContains('salih', $keys);
-        $this->assertContains('umit', $keys);
-        $this->assertContains('bulent_saglam', $keys);
-        $this->assertContains('online_perakende', $keys);
-        $this->assertContains('bayi_proje', $keys);
+        UserAccess::query()->create([
+            'user_id' => $allSales->id,
+            'resource_code' => 'sales_main_all',
+            'can_view' => true,
+        ]);
+
+        foreach ([$admin, $manager, $allSales] as $user) {
+            $keys = collect($service->config($user, 'sales_main')['managementScopes'])
+                ->pluck('key')
+                ->all();
+
+            $this->assertContains('all', $keys);
+            $this->assertContains('umit', $keys);
+            $this->assertContains('bulent_saglam', $keys);
+            $this->assertContains('mehmet_can', $keys);
+            $this->assertContains('orkun_genc', $keys);
+            $this->assertNotContains('salih', $keys);
+            $this->assertContains('online_perakende', $keys);
+            $this->assertContains('bayi_proje', $keys);
+        }
     }
 
     public function test_sales_customer_breakdown_keeps_customer_rows_under_groups(): void

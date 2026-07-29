@@ -68,9 +68,10 @@ const salesScopeResourceCodes = new Set([
     'sales_main_all',
     'sales_online',
     'sales_bayi',
-    'sales_rep_salih_cakir',
     'sales_rep_umit_yildiz',
     'sales_rep_bulent_saglam',
+    'sales_rep_mehmet_can',
+    'sales_rep_orkun_genc',
 ]);
 
 const capabilityLabels = {

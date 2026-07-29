@@ -519,18 +519,26 @@ class AdminUserManagementTest extends TestCase
         $this->assertSame('0024', $salih->refresh()->temsilci_kodu);
     }
 
-    public function test_bulent_sales_scope_hardcodes_use_0035_and_salih_stays_0024(): void
+    public function test_sales_representative_scopes_use_current_codes_and_remove_salih_scope(): void
     {
         $service = file_get_contents(app_path('Services/SalesMainPageService.php')) ?: '';
         $seeder = file_get_contents(database_path('seeders/PanelMetadataSeeder.php')) ?: '';
 
+        $this->assertStringContainsString("'0003' => 'sales_rep_umit_yildiz'", $service);
         $this->assertStringContainsString("'0035' => 'sales_rep_bulent_saglam'", $service);
-        $this->assertStringContainsString("'0024' => 'sales_rep_salih_cakir'", $service);
+        $this->assertStringContainsString("'0039' => 'sales_rep_mehmet_can'", $service);
+        $this->assertStringContainsString("'0040' => 'sales_rep_orkun_genc'", $service);
+        $this->assertStringNotContainsString("'0024' => 'sales_rep_salih_cakir'", $service);
+        $this->assertStringNotContainsString("'salih' => 'sales_rep_salih_cakir'", $service);
         $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'bulent_saglam'[\\s\\S]{0,300}'repCode'\\s*=>\\s*'0035'/", $service);
+        $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'mehmet_can'[\\s\\S]{0,300}'repCode'\\s*=>\\s*'0039'/", $service);
+        $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'orkun_genc'[\\s\\S]{0,300}'repCode'\\s*=>\\s*'0040'/", $service);
         $this->assertDoesNotMatchRegularExpression("/'key'\\s*=>\\s*'bulent_saglam'[\\s\\S]{0,300}'repCode'\\s*=>\\s*'0024'/", $service);
 
-        $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'salih'[\\s\\S]{0,220}'repCode'\\s*=>\\s*'0024'/", $seeder);
+        $this->assertDoesNotMatchRegularExpression("/'key'\\s*=>\\s*'salih'[\\s\\S]{0,220}'repCode'\\s*=>\\s*'0024'/", $seeder);
         $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'bulent_saglam'[\\s\\S]{0,260}'repCode'\\s*=>\\s*'0035'/", $seeder);
+        $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'mehmet_can'[\\s\\S]{0,260}'repCode'\\s*=>\\s*'0039'/", $seeder);
+        $this->assertMatchesRegularExpression("/'key'\\s*=>\\s*'orkun_genc'[\\s\\S]{0,260}'repCode'\\s*=>\\s*'0040'/", $seeder);
         $this->assertDoesNotMatchRegularExpression("/'key'\\s*=>\\s*'bulent_saglam'[\\s\\S]{0,260}'repCode'\\s*=>\\s*'0024'/", $seeder);
     }
 

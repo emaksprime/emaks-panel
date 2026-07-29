@@ -456,7 +456,9 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString("'sales_main_all'", $component);
         $this->assertStringContainsString("'sales_online'", $component);
         $this->assertStringContainsString("'sales_bayi'", $component);
-        $this->assertStringContainsString("'sales_rep_salih_cakir'", $component);
+        $this->assertStringContainsString("'sales_rep_mehmet_can'", $component);
+        $this->assertStringContainsString("'sales_rep_orkun_genc'", $component);
+        $this->assertStringNotContainsString("'sales_rep_salih_cakir'", $component);
         $this->assertStringContainsString("groupName !== 'Satış Yönetimi'", $component);
     }
 

@@ -41,9 +41,10 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'sales_online', 'name' => 'Online / Perakende', 'type' => 'page'],
             ['code' => 'sales_bayi', 'name' => 'Bayi / Proje', 'type' => 'page'],
             ['code' => 'sales_representatives', 'name' => 'Satış Temsilcisi Görünümü', 'type' => 'page'],
-            ['code' => 'sales_rep_salih_cakir', 'name' => 'Salih Satış Kapsamı', 'type' => 'scope'],
-            ['code' => 'sales_rep_umit_yildiz', 'name' => 'Ümit Yıldız Satış Kapsamı', 'type' => 'scope'],
-            ['code' => 'sales_rep_bulent_saglam', 'name' => 'Bülent Sağlam Satış Kapsamı', 'type' => 'scope'],
+            ['code' => 'sales_rep_umit_yildiz', 'name' => 'Ümit Yıldız Satış Kapsamı', 'type' => 'scope', 'active' => true],
+            ['code' => 'sales_rep_bulent_saglam', 'name' => 'Bülent Sağlam Satış Kapsamı', 'type' => 'scope', 'active' => true],
+            ['code' => 'sales_rep_mehmet_can', 'name' => 'Mehmet CAN Satış Kapsamı', 'type' => 'scope', 'active' => true],
+            ['code' => 'sales_rep_orkun_genc', 'name' => 'Orkun GENC Satış Kapsamı', 'type' => 'scope', 'active' => true],
             ['code' => 'stock', 'name' => 'Stok Listesi', 'type' => 'page'],
             ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'type' => 'page'],
             ['code' => 'stock_all', 'name' => 'Tüm Stok Görünümü', 'type' => 'scope'],
@@ -114,6 +115,10 @@ class PanelMetadataSeeder extends Seeder
         ])->mapWithKeys(fn (array $resource) => [
             $resource['code'] => Resource::query()->updateOrCreate(['code' => $resource['code']], $resource),
         ]);
+
+        Resource::query()
+            ->where('code', 'sales_rep_salih_cakir')
+            ->update(['active' => false]);
 
         $groups = collect([
             ['code' => 'executive', 'name' => 'Yönetim', 'icon' => 'layout-grid', 'menu_order' => 10, 'active' => true],
@@ -325,7 +330,9 @@ SQL,
                     'moduleTabs' => [
                         ['label' => 'Tümü', 'href' => '/sales/main'],
                         ['label' => 'Ümit Yıldız', 'href' => '/sales/main'],
-                        ['label' => 'Salih İmal', 'href' => '/sales/main'],
+                        ['label' => 'Bülent Sağlam', 'href' => '/sales/main'],
+                        ['label' => 'Mehmet CAN', 'href' => '/sales/main'],
+                        ['label' => 'Orkun GENC', 'href' => '/sales/main'],
                         ['label' => 'Online / Perakende', 'href' => '/sales/online'],
                         ['label' => 'Bayi / Proje', 'href' => '/sales/bayi'],
                     ],
@@ -352,8 +359,9 @@ SQL,
                     'managementScopes' => [
                         ['key' => 'all', 'label' => 'Tümü', 'repCode' => null, 'allowAll' => true, 'salesView' => 'tumu', 'note' => 'Tüm satışlar', 'resourceCode' => 'sales_main_all'],
                         ['key' => 'umit', 'label' => 'Ümit Yıldız', 'repCode' => '0003', 'allowAll' => false, 'salesView' => 'kendi', 'note' => 'Temsilci kodu 0003', 'resourceCode' => 'sales_rep_umit_yildiz'],
-                        ['key' => 'salih', 'label' => 'Salih İmal', 'repCode' => '0024', 'allowAll' => false, 'salesView' => 'kendi', 'note' => 'Temsilci kodu 0024', 'resourceCode' => 'sales_rep_salih_cakir'],
                         ['key' => 'bulent_saglam', 'label' => 'Bülent Sağlam', 'repCode' => '0035', 'allowAll' => false, 'salesView' => 'temsilci', 'note' => 'Temsilci kodu 0035', 'navigateTo' => null, 'resourceCode' => 'sales_rep_bulent_saglam'],
+                        ['key' => 'mehmet_can', 'label' => 'Mehmet CAN', 'repCode' => '0039', 'allowAll' => false, 'salesView' => 'temsilci', 'note' => 'Temsilci kodu 0039', 'navigateTo' => null, 'resourceCode' => 'sales_rep_mehmet_can'],
+                        ['key' => 'orkun_genc', 'label' => 'Orkun GENC', 'repCode' => '0040', 'allowAll' => false, 'salesView' => 'temsilci', 'note' => 'Temsilci kodu 0040', 'navigateTo' => null, 'resourceCode' => 'sales_rep_orkun_genc'],
                         ['key' => 'online-perakende', 'label' => 'Online / Perakende', 'repCode' => null, 'allowAll' => false, 'salesView' => 'kendi', 'navigateTo' => '/sales/online', 'note' => 'Online satış workflow görünümü', 'resourceCode' => 'sales_online'],
                         ['key' => 'bayi-proje', 'label' => 'Bayi / Proje', 'repCode' => null, 'allowAll' => false, 'salesView' => 'kendi', 'navigateTo' => '/sales/bayi', 'note' => 'Bayi satış workflow görünümü', 'resourceCode' => 'sales_bayi'],
                     ],
@@ -500,7 +508,9 @@ SQL,
             'sales' => [
                 ['label' => 'Tümü', 'href' => '/sales/main'],
                 ['label' => 'Ümit Yıldız', 'href' => '/sales/main'],
-                ['label' => 'Salih İmal', 'href' => '/sales/main'],
+                ['label' => 'Bülent Sağlam', 'href' => '/sales/main'],
+                ['label' => 'Mehmet CAN', 'href' => '/sales/main'],
+                ['label' => 'Orkun GENC', 'href' => '/sales/main'],
                 ['label' => 'Online / Perakende', 'href' => '/sales/online'],
                 ['label' => 'Bayi / Proje', 'href' => '/sales/bayi'],
             ],
