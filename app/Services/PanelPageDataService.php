@@ -6,6 +6,7 @@ use App\Models\DataSource;
 use App\Models\Page;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Carbon\WeekDay;
 use RuntimeException;
 
 class PanelPageDataService
@@ -13,8 +14,7 @@ class PanelPageDataService
     public function __construct(
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     /**
      * @param  array<string, mixed>  $input
@@ -249,8 +249,9 @@ class PanelPageDataService
     {
         return [
             'umit' => '0003',
-            'salih' => '0024',
             'bulent_saglam' => '0035',
+            'mehmet_can' => '0039',
+            'orkun_genc' => '0040',
         ];
     }
 
@@ -261,8 +262,9 @@ class PanelPageDataService
     {
         return [
             'umit' => 'sales_rep_umit_yildiz',
-            'salih' => 'sales_rep_salih_cakir',
             'bulent_saglam' => 'sales_rep_bulent_saglam',
+            'mehmet_can' => 'sales_rep_mehmet_can',
+            'orkun_genc' => 'sales_rep_orkun_genc',
         ];
     }
 
@@ -270,8 +272,9 @@ class PanelPageDataService
     {
         return match (trim((string) ($user->temsilci_kodu ?? ''))) {
             '0003' => 'umit',
-            '0024' => 'salih',
             '0035' => 'bulent_saglam',
+            '0039' => 'mehmet_can',
+            '0040' => 'orkun_genc',
             default => null,
         };
     }
@@ -579,7 +582,7 @@ class PanelPageDataService
             'day' => $today->format('Y-m-d'),
             'month' => ($isStart ? $today->startOfMonth() : $today)->format('Y-m-d'),
             'year' => ($isStart ? $today->startOfYear() : $today)->format('Y-m-d'),
-            default => ($isStart ? $today->startOfWeek(\Carbon\WeekDay::Monday) : $today)->format('Y-m-d'),
+            default => ($isStart ? $today->startOfWeek(WeekDay::Monday) : $today)->format('Y-m-d'),
         };
     }
 
