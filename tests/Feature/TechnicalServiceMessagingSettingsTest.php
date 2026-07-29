@@ -492,11 +492,16 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                     'application_name' => 'EMAKS Panel',
                     'company_code' => 'TEST-FIRM',
                     'fiscal_year' => '2026',
+                    'server_timezone' => 'Europe/Istanbul',
                     'timeout_seconds' => 15,
                     'read_sync_enabled' => true,
-                    'write_enabled' => true,
+                    'write_enabled' => false,
                     'write_approval_required' => true,
                     'operation_catalog_status' => 'missing',
+                    'operation_controls' => [
+                        'customer.list' => ['runtime_enabled' => true, 'source_mode' => 'shadow_compare'],
+                        'customer.save' => ['runtime_enabled' => false],
+                    ],
                 ],
             ])
             ->assertOk()
@@ -504,8 +509,13 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.write_approval_required', true)
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
             ->assertJsonPath('messaging_settings.mikro_api.contract_ready', true)
-            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 3)
-            ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 0)
+            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 30)
+            ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
+            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.direct_endpoint_count', 9)
+            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.fixed_query_count', 21)
+            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.contract_blocked_count', 5)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
             ->json();
 

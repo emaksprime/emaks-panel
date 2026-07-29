@@ -8,6 +8,7 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use App\Services\Mikro\MikroApiClient;
 use App\Services\Mikro\MikroOperationRegistry;
+use App\Services\Mikro\MikroRuntimeState;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -118,12 +119,14 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'mikro_api.workstation_code' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.fiscal_year' => ['sometimes', 'nullable', 'string', 'max:20'],
             'mikro_api.timeout_seconds' => ['sometimes', 'required', 'integer', 'min:3', 'max:120'],
+            'mikro_api.server_timezone' => ['sometimes', 'required', 'timezone'],
             'mikro_api.license_status' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.app_customer_license_status' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.read_sync_enabled' => ['sometimes', 'boolean'],
             'mikro_api.write_enabled' => ['sometimes', 'boolean'],
             'mikro_api.write_approval_required' => ['sometimes', 'boolean'],
             'mikro_api.operation_catalog_status' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'mikro_api.operation_controls' => ['sometimes', 'array'],
         ], [
             'nac_sms.validity.min' => 'Single SMS geçerlilik süresi 60-1440 aralığında olmalıdır.',
             'nac_sms.validity.max' => 'Single SMS geçerlilik süresi 60-1440 aralığında olmalıdır.',
@@ -431,6 +434,38 @@ class TechnicalServiceMessagingSettingsController extends Controller
                 ? 'Mikro HealthCheck başarılı.'
                 : 'Mikro HealthCheck güvenli biçimde tamamlanamadı.',
         ], $result['success'] ? 200 : 503);
+    }
+
+    public function resetMikroApiCircuit(
+        string $operationKey,
+        TechnicalServiceMessagingSettingsService $settings,
+        MikroOperationRegistry $registry,
+        MikroRuntimeState $runtimeState,
+    ): JsonResponse {
+        try {
+            $registry->read($operationKey);
+        } catch (\DomainException $exception) {
+            return response()->json([
+                'message' => 'Mikro operasyonu circuit reset için uygun değil.',
+                'error_code' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $origin = trim((string) ($settings->mikroApiConnectionContext()['base_url'] ?? ''));
+        if ($origin === '') {
+            return response()->json([
+                'message' => 'Mikro base URL eksik.',
+                'error_code' => 'MIKRO_CONFIGURATION_MISSING',
+            ], 409);
+        }
+
+        $runtimeState->resetCircuit($origin, $operationKey);
+
+        return response()->json([
+            'message' => 'Mikro circuit kontrollü biçimde sıfırlandı.',
+            'operation_key' => $operationKey,
+            'circuit_state' => 'CLOSED',
+        ]);
     }
 
     private function maskPhone(?string $phone): ?string

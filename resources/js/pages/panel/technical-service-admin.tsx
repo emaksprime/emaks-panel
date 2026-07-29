@@ -385,6 +385,31 @@ type MessagingNacSmsSettings = {
     blocking_reasons: string[];
 };
 
+type MessagingMikroOperation = {
+    operation_key: string;
+    display_name: string;
+    category: string;
+    mode: 'READ' | 'WRITE';
+    capability_status: string;
+    contract_status: string;
+    implementation_status: string;
+    runtime_enabled: boolean;
+    adapter_type: 'DIRECT_ENDPOINT' | 'FIXED_QUERY' | 'CONTRACT_BLOCKED';
+    endpoint: string | null;
+    method: string | null;
+    mikro_method: string | null;
+    fixed_query_id: string | null;
+    request_type: string;
+    response_type: string;
+    source_mode: 'mikro' | 'n8n' | 'shadow_compare' | 'disabled';
+    approval_required: boolean;
+    parity_status: string;
+    last_success_at: string | null;
+    last_error_code: string | null;
+    circuit_state: string;
+    blocker: string | null;
+};
+
 type MessagingMikroApiSettings = {
     enabled: boolean;
     base_url: string | null;
@@ -396,6 +421,7 @@ type MessagingMikroApiSettings = {
     workstation_code: string | null;
     fiscal_year: string | null;
     timeout_seconds: number;
+    server_timezone: string;
     license_status: string | null;
     app_customer_license_status: string | null;
     read_sync_enabled: boolean;
@@ -406,10 +432,31 @@ type MessagingMikroApiSettings = {
         status: string;
         read_count: number;
         write_count: number;
+        implemented_read_count: number;
+        enabled_read_count: number;
+        enabled_write_count: number;
+        direct_endpoint_count: number;
+        fixed_query_count: number;
+        contract_blocked_count: number;
         enabled_keys: string[];
+        operations: MessagingMikroOperation[];
     };
+    operation_controls: Record<
+        string,
+        {
+            runtime_enabled?: boolean;
+            source_mode?: 'mikro' | 'n8n' | 'shadow_compare' | 'disabled';
+            approval_required?: boolean;
+        }
+    >;
     read_operation_count: number;
     write_operation_count: number;
+    implemented_read_operation_count: number;
+    enabled_read_operation_count: number;
+    enabled_write_operation_count: number;
+    direct_endpoint_operation_count: number;
+    fixed_query_operation_count: number;
+    contract_blocked_operation_count: number;
     contract_ready: boolean;
     live_configuration_ready: boolean;
     readiness_status:
@@ -1179,6 +1226,8 @@ function mikroApiInputsFromSettings(settings: MessagingSettings) {
         workstation_code: settings.mikro_api.workstation_code ?? '',
         fiscal_year: settings.mikro_api.fiscal_year ?? '',
         timeout_seconds: String(settings.mikro_api.timeout_seconds),
+        server_timezone:
+            settings.mikro_api.server_timezone ?? 'Europe/Istanbul',
         license_status: settings.mikro_api.license_status ?? 'unknown',
         app_customer_license_status:
             settings.mikro_api.app_customer_license_status ?? 'unknown',
@@ -1187,6 +1236,7 @@ function mikroApiInputsFromSettings(settings: MessagingSettings) {
         write_approval_required: settings.mikro_api.write_approval_required,
         operation_catalog_status:
             settings.mikro_api.operation_catalog_status ?? 'missing',
+        operation_controls: settings.mikro_api.operation_controls ?? {},
     };
 }
 
@@ -1408,6 +1458,9 @@ export default function TechnicalServiceAdmin({
     const [integrationCredentialSaving, setIntegrationCredentialSaving] =
         useState(false);
     const [mikroConnectionTesting, setMikroConnectionTesting] = useState(false);
+    const [mikroCircuitResetting, setMikroCircuitResetting] = useState<
+        string | null
+    >(null);
     const [activeAdminSection, setActiveAdminSection] =
         useState<AdminSectionKey>('overview');
     const [activeMessagingSection, setActiveMessagingSection] =
@@ -2386,6 +2439,7 @@ export default function TechnicalServiceAdmin({
                             timeout_seconds: Number(
                                 mikroApiInputs.timeout_seconds,
                             ),
+                            server_timezone: mikroApiInputs.server_timezone,
                             license_status: mikroApiInputs.license_status,
                             app_customer_license_status:
                                 mikroApiInputs.app_customer_license_status,
@@ -2395,6 +2449,8 @@ export default function TechnicalServiceAdmin({
                                 mikroApiInputs.write_approval_required,
                             operation_catalog_status:
                                 mikroApiInputs.operation_catalog_status,
+                            operation_controls:
+                                mikroApiInputs.operation_controls,
                         },
                         message_types: messageTypeInputs,
                     }),
@@ -3089,6 +3145,37 @@ export default function TechnicalServiceAdmin({
             );
         } finally {
             setMikroConnectionTesting(false);
+        }
+    };
+
+    const resetMikroOperationCircuit = async (operationKey: string) => {
+        setMikroCircuitResetting(operationKey);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                `/api/technical-service/messaging-settings/mikro-api/operations/${encodeURIComponent(operationKey)}/circuit/reset`,
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                },
+            );
+            const payload = await response.json();
+            setMessagingMessage(
+                payload.message ??
+                    (response.ok
+                        ? 'Mikro circuit sıfırlandı.'
+                        : 'Mikro circuit sıfırlanamadı.'),
+            );
+        } catch {
+            setMessagingMessage('Mikro circuit sıfırlanamadı.');
+        } finally {
+            setMikroCircuitResetting(null);
         }
     };
 
@@ -6289,6 +6376,327 @@ export default function TechnicalServiceAdmin({
                                         </div>
                                     </div>
                                 </div>
+                                <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 xl:col-span-2">
+                                    <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                                        <div>
+                                            <p className="text-sm font-bold text-slate-950">
+                                                ERP operasyon kontrolü
+                                            </p>
+                                            <p className="mt-1 text-sm leading-6 text-slate-600">
+                                                {
+                                                    messaging.mikro_api
+                                                        .implemented_read_operation_count
+                                                }{' '}
+                                                read adapter hazır,{' '}
+                                                {
+                                                    messaging.mikro_api
+                                                        .contract_blocked_operation_count
+                                                }{' '}
+                                                contract satırı bloklu. Write
+                                                executor kapalıdır.
+                                            </p>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2 text-xs font-bold">
+                                            <span className="rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1 text-emerald-900">
+                                                READ enabled:{' '}
+                                                {
+                                                    messaging.mikro_api
+                                                        .enabled_read_operation_count
+                                                }
+                                            </span>
+                                            <span className="rounded-lg border border-red-100 bg-red-50 px-2 py-1 text-red-900">
+                                                WRITE enabled:{' '}
+                                                {
+                                                    messaging.mikro_api
+                                                        .enabled_write_operation_count
+                                                }
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-4 max-h-[34rem] overflow-auto border-y border-slate-200">
+                                        <table className="w-full min-w-[1120px] border-collapse text-left text-xs">
+                                            <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700">
+                                                <tr>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        Operasyon
+                                                    </th>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        Mod / adapter
+                                                    </th>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        Contract
+                                                    </th>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        Runtime
+                                                    </th>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        Source
+                                                    </th>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        Parity / circuit
+                                                    </th>
+                                                    <th className="px-3 py-2 font-bold">
+                                                        İşlem
+                                                    </th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {messaging.mikro_api.operation_catalog.operations.map(
+                                                    (operation) => {
+                                                        const control =
+                                                            mikroApiInputs
+                                                                .operation_controls[
+                                                                operation
+                                                                    .operation_key
+                                                            ] ?? {};
+                                                        const runtimeEnabled =
+                                                            control.runtime_enabled ??
+                                                            operation.runtime_enabled;
+                                                        const sourceMode =
+                                                            control.source_mode ??
+                                                            operation.source_mode;
+
+                                                        return (
+                                                            <tr
+                                                                key={
+                                                                    operation.operation_key
+                                                                }
+                                                                className="align-top text-slate-700"
+                                                            >
+                                                                <td className="px-3 py-3">
+                                                                    <p className="font-bold text-slate-950">
+                                                                        {
+                                                                            operation.operation_key
+                                                                        }
+                                                                    </p>
+                                                                    <p className="mt-1 text-slate-500">
+                                                                        {
+                                                                            operation.display_name
+                                                                        }{' '}
+                                                                        ·{' '}
+                                                                        {
+                                                                            operation.category
+                                                                        }
+                                                                    </p>
+                                                                </td>
+                                                                <td className="px-3 py-3">
+                                                                    <span className="font-bold">
+                                                                        {
+                                                                            operation.mode
+                                                                        }
+                                                                    </span>
+                                                                    <p className="mt-1 text-slate-500">
+                                                                        {
+                                                                            operation.adapter_type
+                                                                        }
+                                                                    </p>
+                                                                </td>
+                                                                <td className="px-3 py-3">
+                                                                    <p className="font-semibold">
+                                                                        {
+                                                                            operation.contract_status
+                                                                        }
+                                                                    </p>
+                                                                    <p className="mt-1 text-slate-500">
+                                                                        {
+                                                                            operation.implementation_status
+                                                                        }
+                                                                    </p>
+                                                                    {operation.blocker ? (
+                                                                        <p className="mt-1 max-w-64 text-amber-800">
+                                                                            {
+                                                                                operation.blocker
+                                                                            }
+                                                                        </p>
+                                                                    ) : null}
+                                                                </td>
+                                                                <td className="px-3 py-3">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        aria-label={`${operation.operation_key} runtime`}
+                                                                        checked={
+                                                                            runtimeEnabled
+                                                                        }
+                                                                        disabled={
+                                                                            operation.contract_status !==
+                                                                            'VERIFIED'
+                                                                        }
+                                                                        onChange={(
+                                                                            event,
+                                                                        ) =>
+                                                                            setMikroApiInputs(
+                                                                                {
+                                                                                    ...mikroApiInputs,
+                                                                                    operation_controls:
+                                                                                        {
+                                                                                            ...mikroApiInputs.operation_controls,
+                                                                                            [operation.operation_key]:
+                                                                                                {
+                                                                                                    ...control,
+                                                                                                    runtime_enabled:
+                                                                                                        event
+                                                                                                            .target
+                                                                                                            .checked,
+                                                                                                },
+                                                                                        },
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                        className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                                                                    />
+                                                                    {operation.mode ===
+                                                                    'WRITE' ? (
+                                                                        <p className="mt-1 text-red-700">
+                                                                            Onay zorunlu
+                                                                        </p>
+                                                                    ) : null}
+                                                                </td>
+                                                                <td className="px-3 py-3">
+                                                                    <select
+                                                                        value={
+                                                                            sourceMode
+                                                                        }
+                                                                        disabled={
+                                                                            operation.mode ===
+                                                                            'WRITE'
+                                                                        }
+                                                                        onChange={(
+                                                                            event,
+                                                                        ) =>
+                                                                            setMikroApiInputs(
+                                                                                {
+                                                                                    ...mikroApiInputs,
+                                                                                    operation_controls:
+                                                                                        {
+                                                                                            ...mikroApiInputs.operation_controls,
+                                                                                            [operation.operation_key]:
+                                                                                                {
+                                                                                                    ...control,
+                                                                                                    source_mode:
+                                                                                                        event
+                                                                                                            .target
+                                                                                                            .value as MessagingMikroOperation['source_mode'],
+                                                                                                },
+                                                                                        },
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                        className="rounded border border-slate-300 bg-white px-2 py-1 font-semibold"
+                                                                    >
+                                                                        {[
+                                                                            'mikro',
+                                                                            'n8n',
+                                                                            'shadow_compare',
+                                                                            'disabled',
+                                                                        ].map(
+                                                                            (
+                                                                                mode,
+                                                                            ) => (
+                                                                                <option
+                                                                                    key={
+                                                                                        mode
+                                                                                    }
+                                                                                    value={
+                                                                                        mode
+                                                                                    }
+                                                                                >
+                                                                                    {
+                                                                                        mode
+                                                                                    }
+                                                                                </option>
+                                                                            ),
+                                                                        )}
+                                                                    </select>
+                                                                </td>
+                                                                <td className="px-3 py-3">
+                                                                    <p>
+                                                                        {
+                                                                            operation.parity_status
+                                                                        }
+                                                                    </p>
+                                                                    <p className="mt-1 font-semibold">
+                                                                        {
+                                                                            operation.circuit_state
+                                                                        }
+                                                                    </p>
+                                                                    {operation.last_error_code ? (
+                                                                        <p className="mt-1 text-red-700">
+                                                                            {
+                                                                                operation.last_error_code
+                                                                            }
+                                                                        </p>
+                                                                    ) : null}
+                                                                </td>
+                                                                <td className="px-3 py-3">
+                                                                    <div className="flex flex-wrap gap-2">
+                                                                        {operation.operation_key ===
+                                                                        'health.check' ? (
+                                                                            <button
+                                                                                type="button"
+                                                                                disabled={
+                                                                                    mikroConnectionTesting
+                                                                                }
+                                                                                onClick={() =>
+                                                                                    void testMikroApiConnection()
+                                                                                }
+                                                                                className="rounded border border-sky-200 bg-sky-50 px-2 py-1 font-semibold text-sky-900 disabled:opacity-60"
+                                                                            >
+                                                                                Test
+                                                                            </button>
+                                                                        ) : null}
+                                                                        {operation.mode ===
+                                                                        'READ' ? (
+                                                                            <button
+                                                                                type="button"
+                                                                                disabled={
+                                                                                    mikroCircuitResetting ===
+                                                                                    operation.operation_key
+                                                                                }
+                                                                                onClick={() =>
+                                                                                    void resetMikroOperationCircuit(
+                                                                                        operation.operation_key,
+                                                                                    )
+                                                                                }
+                                                                                className="rounded border border-slate-300 bg-white px-2 py-1 font-semibold text-slate-800 disabled:opacity-60"
+                                                                            >
+                                                                                Reset
+                                                                            </button>
+                                                                        ) : null}
+                                                                    </div>
+                                                                    <details className="mt-2">
+                                                                        <summary className="cursor-pointer font-semibold text-slate-700">
+                                                                            Contract
+                                                                        </summary>
+                                                                        <div className="mt-1 max-w-72 break-words text-slate-500">
+                                                                            <p>
+                                                                                {operation.method ??
+                                                                                    'N/A'}{' '}
+                                                                                {operation.endpoint ??
+                                                                                    operation.fixed_query_id ??
+                                                                                    'BLOCKED'}
+                                                                            </p>
+                                                                            <p>
+                                                                                {
+                                                                                    operation.request_type
+                                                                                }
+                                                                            </p>
+                                                                            <p>
+                                                                                {
+                                                                                    operation.response_type
+                                                                                }
+                                                                            </p>
+                                                                        </div>
+                                                                    </details>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    },
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         ) : null}
 
@@ -6643,10 +7051,11 @@ export default function TechnicalServiceAdmin({
                                                 Mikro API
                                             </p>
                                             <p className="mt-1 text-sm leading-6 text-slate-600">
-                                                Mikro read-only sözleşmesi
-                                                panelden yönetilir. Pilot
-                                                kapsamında yazma operasyonu
-                                                kayıtlı değildir.
+                                                Mikro ERP operasyon sözleşmesi
+                                                bu panelden yönetilir. Write
+                                                capability satırları kayıtlıdır;
+                                                canlı executor ve tüm write
+                                                anahtarları kapalıdır.
                                             </p>
                                         </div>
                                         <span
@@ -6682,12 +7091,12 @@ export default function TechnicalServiceAdmin({
                                               : 'Canlı bağlantı bilgileri bekleniyor.'}
                                     </p>
                                     <p className="mt-1 text-xs text-slate-500">
-                                        Aktif read operasyonu:{' '}
+                                        Read kataloğu:{' '}
                                         {
                                             messaging.mikro_api
                                                 .read_operation_count
                                         }{' '}
-                                        / write operasyonu:{' '}
+                                        / write capability:{' '}
                                         {
                                             messaging.mikro_api
                                                 .write_operation_count
@@ -6718,9 +7127,6 @@ export default function TechnicalServiceAdmin({
                                                     checked={Boolean(
                                                         mikroApiInputs[key],
                                                     )}
-                                                    disabled={
-                                                        key === 'write_enabled'
-                                                    }
                                                     onChange={(event) =>
                                                         setMikroApiInputs({
                                                             ...mikroApiInputs,
@@ -6755,6 +7161,10 @@ export default function TechnicalServiceAdmin({
                                                 [
                                                     'timeout_seconds',
                                                     'Timeout saniye',
+                                                ],
+                                                [
+                                                    'server_timezone',
+                                                    'Mikro saat dilimi',
                                                 ],
                                                 [
                                                     'operation_catalog_status',

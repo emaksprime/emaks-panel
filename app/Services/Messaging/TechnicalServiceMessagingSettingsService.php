@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Mikro\MikroOperationRegistry;
+use App\Services\Mikro\MikroRuntimeState;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
@@ -25,6 +26,7 @@ class TechnicalServiceMessagingSettingsService
 {
     public function __construct(
         private readonly MikroOperationRegistry $mikroOperationRegistry,
+        private readonly MikroRuntimeState $mikroRuntimeState,
     ) {}
 
     public const PAGE_CODE = 'technical_service_admin';
@@ -2624,6 +2626,12 @@ class TechnicalServiceMessagingSettingsService
             'terminal_code' => $mikro['workstation_code'],
             'working_year' => $mikro['fiscal_year'],
             'timeout_seconds' => (int) $mikro['timeout_seconds'],
+            'server_timezone' => $mikro['server_timezone'],
+            'enabled' => (bool) $mikro['enabled'],
+            'read_sync_enabled' => (bool) $mikro['read_sync_enabled'],
+            'write_enabled' => (bool) $mikro['write_enabled'],
+            'write_approval_required' => (bool) $mikro['write_approval_required'],
+            'operation_controls' => (array) ($mikro['operation_controls'] ?? []),
             'api_key' => $credential?->api_key_encrypted,
             'token' => $credential?->token_encrypted,
             'user_code' => $credential?->username_encrypted,
@@ -2858,12 +2866,14 @@ class TechnicalServiceMessagingSettingsService
                 'workstation_code' => null,
                 'fiscal_year' => null,
                 'timeout_seconds' => 15,
+                'server_timezone' => (string) config('services.mikro_api.server_timezone', 'Europe/Istanbul'),
                 'license_status' => 'unknown',
                 'app_customer_license_status' => 'unknown',
                 'read_sync_enabled' => false,
                 'write_enabled' => false,
                 'write_approval_required' => true,
                 'operation_catalog_status' => 'active',
+                'operation_controls' => [],
                 'last_health_check_status' => null,
                 'last_error_redacted' => null,
             ],
@@ -4140,6 +4150,7 @@ class TechnicalServiceMessagingSettingsService
         foreach ([
             'enabled',
             'read_sync_enabled',
+            'write_enabled',
             'write_approval_required',
         ] as $field) {
             if (array_key_exists($field, $updates)) {
@@ -4156,6 +4167,7 @@ class TechnicalServiceMessagingSettingsService
             'branch_code',
             'workstation_code',
             'fiscal_year',
+            'server_timezone',
             'license_status',
             'app_customer_license_status',
         ] as $field) {
@@ -4169,8 +4181,63 @@ class TechnicalServiceMessagingSettingsService
             $next['timeout_seconds'] = (int) $updates['timeout_seconds'];
         }
 
-        $next['write_enabled'] = false;
+        if (array_key_exists('operation_controls', $updates)) {
+            $next['operation_controls'] = $this->mergeMikroOperationControls(
+                (array) ($current['operation_controls'] ?? []),
+                (array) $updates['operation_controls'],
+            );
+        }
+
         $next['operation_catalog_status'] = 'active';
+
+        return $next;
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $current
+     * @param  array<string, array<string, mixed>>  $updates
+     * @return array<string, array<string, mixed>>
+     */
+    private function mergeMikroOperationControls(array $current, array $updates): array
+    {
+        $next = $current;
+
+        foreach ($updates as $operationKey => $values) {
+            if (! is_string($operationKey) || ! is_array($values)) {
+                throw ValidationException::withMessages(['mikro_api.operation_controls' => 'Mikro operasyon kontrolü geçersiz.']);
+            }
+
+            try {
+                $operation = $this->mikroOperationRegistry->operation($operationKey);
+            } catch (\DomainException) {
+                throw ValidationException::withMessages(["mikro_api.operation_controls.{$operationKey}" => 'Bilinmeyen Mikro operasyonu.']);
+            }
+
+            $control = (array) ($next[$operationKey] ?? []);
+            if (array_key_exists('runtime_enabled', $values)) {
+                $control['runtime_enabled'] = (bool) $values['runtime_enabled'];
+            }
+
+            if (($operation['mode'] ?? null) === 'READ' && array_key_exists('source_mode', $values)) {
+                $sourceMode = strtolower(trim((string) $values['source_mode']));
+                if (! $this->mikroOperationRegistry->sourceModeAllowed($sourceMode)) {
+                    throw ValidationException::withMessages(["mikro_api.operation_controls.{$operationKey}.source_mode" => 'Mikro source mode geçersiz.']);
+                }
+                $control['source_mode'] = $sourceMode;
+            }
+
+            if (($operation['mode'] ?? null) === 'WRITE') {
+                $control['source_mode'] = 'disabled';
+                $control['approval_required'] = true;
+                if (($operation['contract_status'] ?? null) !== 'VERIFIED') {
+                    $control['runtime_enabled'] = false;
+                }
+            }
+
+            $next[$operationKey] = $control;
+        }
+
+        ksort($next);
 
         return $next;
     }
@@ -4236,6 +4303,12 @@ class TechnicalServiceMessagingSettingsService
 
         if ((bool) $settings['write_enabled'] && ! (bool) $settings['write_approval_required']) {
             throw ValidationException::withMessages(['mikro_api.write_approval_required' => 'Mikro yazma işlemleri onaysız açılamaz.']);
+        }
+
+        try {
+            new \DateTimeZone((string) $settings['server_timezone']);
+        } catch (\Throwable) {
+            throw ValidationException::withMessages(['mikro_api.server_timezone' => 'Mikro sunucu saat dilimi geçersiz.']);
         }
     }
 
@@ -4415,10 +4488,20 @@ class TechnicalServiceMessagingSettingsService
     {
         $mikro = $settings['mikro_api'];
         $credential = $this->credential('mikro_api');
-        $catalog = $this->mikroOperationRegistry->summary();
+        $controls = (array) ($mikro['operation_controls'] ?? []);
+        $catalog = $this->mikroOperationRegistry->summary($controls);
+        $runtimeStates = [];
+        $origin = trim((string) ($mikro['base_url'] ?? ''));
+        foreach ($catalog['operations'] as $operation) {
+            if (($operation['mode'] ?? null) === 'READ' && $origin !== '') {
+                $runtimeStates[$operation['operation_key']] = $this->mikroRuntimeState->circuit($origin, $operation['operation_key']);
+            }
+        }
+        $catalog = $this->mikroOperationRegistry->summary($controls, $runtimeStates);
         $contractReady = $catalog['status'] === 'active'
-            && $catalog['read_count'] === 3
-            && $catalog['write_count'] === 0;
+            && $catalog['read_count'] === 32
+            && $catalog['implemented_read_count'] === 30
+            && $catalog['write_count'] === 11;
         $credentialsReady = $credential !== null
             && filled($credential->api_key_encrypted)
             && $credential->basicAuthReady();
@@ -4460,6 +4543,7 @@ class TechnicalServiceMessagingSettingsService
                 'MIKRO_PASSWORD_MISSING' => 'Mikro parola secret bilgisi eksik.',
                 'MIKRO_FIRM_CODE_MISSING' => 'Mikro firma kodu eksik.',
                 'MIKRO_WORKING_YEAR_MISSING' => 'Mikro çalışma yılı eksik.',
+                'MIKRO_SERVER_TIMEZONE_INVALID' => 'Mikro sunucu saat dilimi eksik veya geçersiz.',
                 'MIKRO_API_VERSION_UNSUPPORTED' => 'Yalnız Mikro V17 contractı desteklenir.',
                 default => 'Mikro private base URL güvenlik sözleşmesini geçmiyor.',
             };
@@ -4476,15 +4560,23 @@ class TechnicalServiceMessagingSettingsService
             'workstation_code' => $mikro['workstation_code'],
             'fiscal_year' => $mikro['fiscal_year'],
             'timeout_seconds' => (int) $mikro['timeout_seconds'],
+            'server_timezone' => $mikro['server_timezone'],
             'license_status' => $mikro['license_status'],
             'app_customer_license_status' => $mikro['app_customer_license_status'],
             'read_sync_enabled' => (bool) $mikro['read_sync_enabled'],
-            'write_enabled' => false,
+            'write_enabled' => (bool) $mikro['write_enabled'],
             'write_approval_required' => $writeApprovalRequired,
+            'operation_controls' => (array) ($mikro['operation_controls'] ?? []),
             'operation_catalog_status' => $catalog['status'],
             'operation_catalog' => $catalog,
             'read_operation_count' => $catalog['read_count'],
             'write_operation_count' => $catalog['write_count'],
+            'implemented_read_operation_count' => $catalog['implemented_read_count'],
+            'enabled_read_operation_count' => $catalog['enabled_read_count'],
+            'enabled_write_operation_count' => $catalog['enabled_write_count'],
+            'direct_endpoint_operation_count' => $catalog['direct_endpoint_count'],
+            'fixed_query_operation_count' => $catalog['fixed_query_count'],
+            'contract_blocked_operation_count' => $catalog['contract_blocked_count'],
             'contract_ready' => $contractReady,
             'live_configuration_ready' => $liveConfigurationReady,
             'readiness_status' => $readinessStatus,
@@ -4546,6 +4638,11 @@ class TechnicalServiceMessagingSettingsService
         }
         if (blank($mikro['fiscal_year'] ?? null)) {
             $blocking[] = 'MIKRO_WORKING_YEAR_MISSING';
+        }
+        try {
+            new \DateTimeZone((string) ($mikro['server_timezone'] ?? ''));
+        } catch (\Throwable) {
+            $blocking[] = 'MIKRO_SERVER_TIMEZONE_INVALID';
         }
         if ($credential === null || blank($credential->api_key_encrypted)) {
             $blocking[] = 'MIKRO_API_KEY_MISSING';

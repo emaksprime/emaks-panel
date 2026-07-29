@@ -33,6 +33,14 @@ return [
         'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'gateway'),
     ],
 
+    'mikro_api' => [
+        'server_timezone' => env('MIKRO_SERVER_TIMEZONE', 'Europe/Istanbul'),
+        'allowed_hosts' => array_values(array_filter(array_map(
+            static fn (string $host): string => strtolower(trim($host)),
+            explode(',', (string) env('MIKRO_ALLOWED_PRIVATE_HOSTS', '')),
+        ))),
+    ],
+
     'public_urls' => [
         'app_url' => env('PUBLIC_APP_URL'),
         'qr_base_url' => env('PUBLIC_QR_BASE_URL'),
