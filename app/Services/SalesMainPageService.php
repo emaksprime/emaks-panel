@@ -7,6 +7,7 @@ use App\Models\Page;
 use App\Models\PageConfig;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Carbon\WeekDay;
 use Illuminate\Support\Collection;
 
 class SalesMainPageService
@@ -16,8 +17,7 @@ class SalesMainPageService
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
         private readonly N8nPanelDataGateway $n8nGateway,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -435,8 +435,9 @@ class SalesMainPageService
             'online_perakende' => 'sales_online',
             'bayi_proje' => 'sales_bayi',
             'umit' => 'sales_rep_umit_yildiz',
-            'salih' => 'sales_rep_salih_cakir',
             'bulent_saglam' => 'sales_rep_bulent_saglam',
+            'mehmet_can' => 'sales_rep_mehmet_can',
+            'orkun_genc' => 'sales_rep_orkun_genc',
             default => null,
         };
     }
@@ -454,30 +455,69 @@ class SalesMainPageService
     {
         return match ($repCode) {
             '0003' => 'sales_rep_umit_yildiz',
-            '0024' => 'sales_rep_salih_cakir',
             '0035' => 'sales_rep_bulent_saglam',
+            '0039' => 'sales_rep_mehmet_can',
+            '0040' => 'sales_rep_orkun_genc',
             default => null,
         };
     }
 
     private function configuredManagementScopes(array $filters): Collection
     {
-        $scopes = collect($filters['managementScopes'] ?? []);
+        $scopes = collect($filters['managementScopes'] ?? [])
+            ->filter(fn (array $scope): bool => ! $this->isRetiredSalesRepresentativeScope($scope))
+            ->unique(fn (array $scope): string => $this->normalizeScopeKey((string) ($scope['key'] ?? '')))
+            ->values();
 
-        if ($scopes->contains(fn (array $scope): bool => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === 'bulent_saglam')) {
-            return $scopes;
+        $scopesByKey = $scopes->keyBy(fn (array $scope): string => $this->normalizeScopeKey((string) ($scope['key'] ?? '')));
+
+        foreach ($this->requiredSalesRepresentativeScopes() as $scope) {
+            $key = $this->normalizeScopeKey($scope['key']);
+
+            if (! $scopesByKey->has($key)) {
+                $scopes->push($scope);
+                $scopesByKey->put($key, $scope);
+            }
         }
 
-        return $scopes->push([
-            'key' => 'bulent_saglam',
-            'label' => 'Bülent Sağlam',
-            'repCode' => '0035',
-            'allowAll' => false,
-            'salesView' => 'temsilci',
-            'note' => 'Bülent Sağlam temsilci kapsamı',
-            'navigateTo' => null,
-            'resourceCode' => 'sales_rep_bulent_saglam',
-        ]);
+        $representativeKeys = collect(['umit', 'bulent_saglam', 'mehmet_can', 'orkun_genc']);
+        $allScopes = $scopes->filter(fn (array $scope): bool => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === 'all')->values();
+        $representativeScopes = $representativeKeys
+            ->map(fn (string $key): ?array => $scopesByKey->get($key))
+            ->filter()
+            ->values();
+        $otherScopes = $scopes
+            ->reject(function (array $scope) use ($representativeKeys): bool {
+                $key = $this->normalizeScopeKey((string) ($scope['key'] ?? ''));
+
+                return $key === 'all' || $representativeKeys->contains($key);
+            })
+            ->values();
+
+        return $allScopes
+            ->concat($representativeScopes)
+            ->concat($otherScopes)
+            ->values();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function requiredSalesRepresentativeScopes(): array
+    {
+        return [
+            ['key' => 'umit', 'label' => 'Ümit Yıldız', 'repCode' => '0003', 'allowAll' => false, 'salesView' => 'kendi', 'note' => 'Temsilci kodu 0003', 'resourceCode' => 'sales_rep_umit_yildiz'],
+            ['key' => 'bulent_saglam', 'label' => 'Bülent Sağlam', 'repCode' => '0035', 'allowAll' => false, 'salesView' => 'temsilci', 'note' => 'Temsilci kodu 0035', 'navigateTo' => null, 'resourceCode' => 'sales_rep_bulent_saglam'],
+            ['key' => 'mehmet_can', 'label' => 'Mehmet CAN', 'repCode' => '0039', 'allowAll' => false, 'salesView' => 'temsilci', 'note' => 'Temsilci kodu 0039', 'navigateTo' => null, 'resourceCode' => 'sales_rep_mehmet_can'],
+            ['key' => 'orkun_genc', 'label' => 'Orkun GENC', 'repCode' => '0040', 'allowAll' => false, 'salesView' => 'temsilci', 'note' => 'Temsilci kodu 0040', 'navigateTo' => null, 'resourceCode' => 'sales_rep_orkun_genc'],
+        ];
+    }
+
+    private function isRetiredSalesRepresentativeScope(array $scope): bool
+    {
+        return $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === 'salih'
+            || trim((string) ($scope['repCode'] ?? '')) === '0024'
+            || trim((string) ($scope['resourceCode'] ?? '')) === 'sales_rep_salih_cakir';
     }
 
     private function effectiveRepresentativeCode(?User $user, array $scope): ?string
@@ -591,7 +631,7 @@ class SalesMainPageService
             'day' => $today->format('Y-m-d'),
             'month' => ($isStart ? $today->startOfMonth() : $today)->format('Y-m-d'),
             'year' => ($isStart ? $today->startOfYear() : $today)->format('Y-m-d'),
-            default => ($isStart ? $today->startOfWeek(\Carbon\WeekDay::Monday) : $today)->format('Y-m-d'),
+            default => ($isStart ? $today->startOfWeek(WeekDay::Monday) : $today)->format('Y-m-d'),
         };
     }
 

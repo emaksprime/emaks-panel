@@ -21,8 +21,7 @@ class PageDataController extends Controller
         PanelPageDataService $pageData,
         PanelAccessService $access,
         AuditLogger $auditLogger,
-    ): JsonResponse
-    {
+    ): JsonResponse {
         $user = $request->user();
 
         abort_if($user === null, 403);
@@ -226,8 +225,9 @@ class PageDataController extends Controller
     {
         return [
             'umit' => 'sales_rep_umit_yildiz',
-            'salih' => 'sales_rep_salih_cakir',
             'bulent_saglam' => 'sales_rep_bulent_saglam',
+            'mehmet_can' => 'sales_rep_mehmet_can',
+            'orkun_genc' => 'sales_rep_orkun_genc',
         ];
     }
 
@@ -235,8 +235,9 @@ class PageDataController extends Controller
     {
         return match (trim((string) ($user?->temsilci_kodu ?? ''))) {
             '0003' => 'umit',
-            '0024' => 'salih',
             '0035' => 'bulent_saglam',
+            '0039' => 'mehmet_can',
+            '0040' => 'orkun_genc',
             default => null,
         };
     }
