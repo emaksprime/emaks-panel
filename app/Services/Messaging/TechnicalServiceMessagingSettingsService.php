@@ -9,6 +9,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
+use App\Services\Mikro\MikroOperationRegistry;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
@@ -22,6 +23,10 @@ use Throwable;
 
 class TechnicalServiceMessagingSettingsService
 {
+    public function __construct(
+        private readonly MikroOperationRegistry $mikroOperationRegistry,
+    ) {}
+
     public const PAGE_CODE = 'technical_service_admin';
 
     public const ROOT_KEY = 'technical_service.messaging';
@@ -303,15 +308,15 @@ class TechnicalServiceMessagingSettingsService
         'mikro_api' => [
             'label' => 'Mikro API',
             'channel' => 'erp',
-            'description' => 'Mikro read/write entegrasyon sağlayıcısı; yazma işlemleri ayrı onay ve audit olmadan açılmaz.',
+            'description' => 'Mikro read-only contract entegrasyonu; yazma ve generic operasyon yüzeyi kapalıdır.',
             'status_label' => 'ERP API hazırlığı',
             'default_enabled' => false,
-            'contract_confirmed' => false,
+            'contract_confirmed' => true,
             'current_practical' => false,
-            'disabled_reason' => 'Mikro API lisans/sözleşme, operasyon kataloğu ve yazma onayı doğrulanmadı.',
+            'disabled_reason' => 'Canlı private endpoint ve Panel uygulama credential bilgileri bekleniyor.',
             'capabilities' => [
                 'supports_read' => true,
-                'supports_write' => true,
+                'supports_write' => false,
                 'requires_approval' => true,
             ],
         ],
@@ -2471,10 +2476,12 @@ class TechnicalServiceMessagingSettingsService
     {
         $apiKey = trim((string) ($values['api_key'] ?? ''));
         $token = trim((string) ($values['token'] ?? ''));
+        $userCode = trim((string) ($values['user_code'] ?? ''));
+        $password = trim((string) ($values['password'] ?? ''));
 
-        if ($apiKey === '' && $token === '') {
+        if ($apiKey === '' || $userCode === '' || $password === '') {
             throw ValidationException::withMessages([
-                'api_key' => 'Mikro API key veya token zorunlu.',
+                'credentials' => 'Mikro API key, kullanıcı kodu ve parola zorunlu.',
             ]);
         }
 
@@ -2486,14 +2493,20 @@ class TechnicalServiceMessagingSettingsService
                 'mode' => IntegrationProviderCredential::MODE_LIVE,
             ],
             [
-                'api_key_encrypted' => $apiKey === '' ? null : $apiKey,
+                'username_encrypted' => $userCode,
+                'password_encrypted' => $password,
+                'api_key_encrypted' => $apiKey,
                 'token_encrypted' => $token === '' ? null : $token,
-                'api_key_mask' => $apiKey === '' ? null : $this->maskValue($apiKey),
+                'username_mask' => $this->maskValue($userCode),
+                'api_key_mask' => $this->maskValue($apiKey),
                 'token_mask' => $token === '' ? null : $this->maskValue($token),
                 'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
                 'created_by' => Auth::id(),
                 'updated_by' => Auth::id(),
-                'metadata' => ['auth' => $token === '' ? 'api_key' : 'token'],
+                'metadata' => [
+                    'auth' => $token === '' ? 'api_key_basic' : 'api_key_basic_token',
+                    'password_transform' => 'none_by_panel',
+                ],
             ],
         );
 
@@ -2590,6 +2603,34 @@ class TechnicalServiceMessagingSettingsService
             ->delete();
 
         return $this->payload();
+    }
+
+    /**
+     * Secrets from this context must only be consumed while constructing a Mikro request.
+     *
+     * @return array<string, mixed>
+     */
+    public function mikroApiConnectionContext(): array
+    {
+        $mikro = $this->settings()['mikro_api'];
+        $credential = $this->credential('mikro_api');
+
+        return [
+            'base_url' => $mikro['base_url'],
+            'api_version' => $mikro['api_version'],
+            'application_code' => $mikro['application_code'],
+            'firm_code' => $mikro['company_code'],
+            'branch_code' => $mikro['branch_code'],
+            'terminal_code' => $mikro['workstation_code'],
+            'working_year' => $mikro['fiscal_year'],
+            'timeout_seconds' => (int) $mikro['timeout_seconds'],
+            'api_key' => $credential?->api_key_encrypted,
+            'token' => $credential?->token_encrypted,
+            'user_code' => $credential?->username_encrypted,
+            'password' => $credential?->password_encrypted,
+            'live_configuration_ready' => $this->mikroLiveConfigurationReady($mikro, $credential),
+            'blocker_codes' => $this->mikroConfigurationBlockerCodes($mikro, $credential),
+        ];
     }
 
     public function testModeEnabled(): bool
@@ -2822,7 +2863,7 @@ class TechnicalServiceMessagingSettingsService
                 'read_sync_enabled' => false,
                 'write_enabled' => false,
                 'write_approval_required' => true,
-                'operation_catalog_status' => 'missing',
+                'operation_catalog_status' => 'active',
                 'last_health_check_status' => null,
                 'last_error_redacted' => null,
             ],
@@ -4099,7 +4140,6 @@ class TechnicalServiceMessagingSettingsService
         foreach ([
             'enabled',
             'read_sync_enabled',
-            'write_enabled',
             'write_approval_required',
         ] as $field) {
             if (array_key_exists($field, $updates)) {
@@ -4118,7 +4158,6 @@ class TechnicalServiceMessagingSettingsService
             'fiscal_year',
             'license_status',
             'app_customer_license_status',
-            'operation_catalog_status',
         ] as $field) {
             if (array_key_exists($field, $updates)) {
                 $value = trim((string) $updates[$field]);
@@ -4129,6 +4168,9 @@ class TechnicalServiceMessagingSettingsService
         if (array_key_exists('timeout_seconds', $updates)) {
             $next['timeout_seconds'] = (int) $updates['timeout_seconds'];
         }
+
+        $next['write_enabled'] = false;
+        $next['operation_catalog_status'] = 'active';
 
         return $next;
     }
@@ -4373,26 +4415,54 @@ class TechnicalServiceMessagingSettingsService
     {
         $mikro = $settings['mikro_api'];
         $credential = $this->credential('mikro_api');
-        $credentialsReady = $credential?->apiKeyReady() ?? false;
-        $baseReady = filled($mikro['base_url'] ?? null);
+        $catalog = $this->mikroOperationRegistry->summary();
+        $contractReady = $catalog['status'] === 'active'
+            && $catalog['read_count'] === 3
+            && $catalog['write_count'] === 0;
+        $credentialsReady = $credential !== null
+            && filled($credential->api_key_encrypted)
+            && $credential->basicAuthReady();
+        $liveConfigurationReady = $this->mikroLiveConfigurationReady($mikro, $credential);
+        $healthReady = in_array(
+            strtolower(trim((string) ($mikro['last_health_check_status'] ?? ''))),
+            ['ok', 'pass', 'success', 'up'],
+            true,
+        );
         $writeApprovalRequired = (bool) $mikro['write_approval_required'];
-        $writeReady = (bool) $mikro['write_enabled'] && $writeApprovalRequired && $credentialsReady && $baseReady;
+        $readReady = (bool) $mikro['enabled']
+            && (bool) $mikro['read_sync_enabled']
+            && $liveConfigurationReady
+            && $healthReady;
+        $readinessStatus = match (true) {
+            ! $contractReady => 'BLOCKED',
+            ! $liveConfigurationReady => 'CONTRACT_READY',
+            ! $healthReady => 'LIVE_CONNECTIVITY_PENDING',
+            $readReady => 'READY',
+            default => 'BLOCKED',
+        };
 
         $blocking = [];
         if (! (bool) $mikro['enabled']) {
             $blocking[] = 'Mikro API kapalı.';
         }
-        if (! $baseReady) {
-            $blocking[] = 'Mikro API base URL eksik.';
-        }
-        if (! $credentialsReady) {
-            $blocking[] = 'Mikro API key/token eksik.';
+        if (! (bool) $mikro['read_sync_enabled']) {
+            $blocking[] = 'Mikro read sync kapalı.';
         }
         if (! $writeApprovalRequired) {
             $blocking[] = 'Mikro yazma onayı zorunlu olmalı.';
         }
-        if ($mikro['operation_catalog_status'] !== 'active') {
-            $blocking[] = 'Mikro operasyon kataloğu aktif değil.';
+        foreach ($this->mikroConfigurationBlockerCodes($mikro, $credential) as $blockerCode) {
+            $blocking[] = match ($blockerCode) {
+                'MIKRO_BASE_URL_MISSING' => 'Mikro API base URL eksik.',
+                'MIKRO_APPLICATION_CODE_MISSING' => 'Panel Mikro uygulama kodu eksik.',
+                'MIKRO_API_KEY_MISSING' => 'Panel Mikro API key eksik.',
+                'MIKRO_USER_CODE_MISSING' => 'Mikro kullanıcı kodu eksik.',
+                'MIKRO_PASSWORD_MISSING' => 'Mikro parola secret bilgisi eksik.',
+                'MIKRO_FIRM_CODE_MISSING' => 'Mikro firma kodu eksik.',
+                'MIKRO_WORKING_YEAR_MISSING' => 'Mikro çalışma yılı eksik.',
+                'MIKRO_API_VERSION_UNSUPPORTED' => 'Yalnız Mikro V17 contractı desteklenir.',
+                default => 'Mikro private base URL güvenlik sözleşmesini geçmiyor.',
+            };
         }
 
         return [
@@ -4409,18 +4479,85 @@ class TechnicalServiceMessagingSettingsService
             'license_status' => $mikro['license_status'],
             'app_customer_license_status' => $mikro['app_customer_license_status'],
             'read_sync_enabled' => (bool) $mikro['read_sync_enabled'],
-            'write_enabled' => (bool) $mikro['write_enabled'],
+            'write_enabled' => false,
             'write_approval_required' => $writeApprovalRequired,
-            'operation_catalog_status' => $mikro['operation_catalog_status'],
+            'operation_catalog_status' => $catalog['status'],
+            'operation_catalog' => $catalog,
+            'read_operation_count' => $catalog['read_count'],
+            'write_operation_count' => $catalog['write_count'],
+            'contract_ready' => $contractReady,
+            'live_configuration_ready' => $liveConfigurationReady,
+            'readiness_status' => $readinessStatus,
+            'live_activation_status' => $liveConfigurationReady
+                ? ($healthReady ? 'READY' : 'LIVE_CONNECTIVITY_PENDING')
+                : 'LIVE_CONFIGURATION_MISSING',
+            'live_activation_blocker' => $liveConfigurationReady
+                ? ($healthReady ? null : 'MIKRO_LIVE_CONNECTIVITY_PENDING')
+                : 'MIKRO_LIVE_CONFIGURATION_MISSING',
+            'connection_test_allowed' => $liveConfigurationReady,
             'credentials_ready' => $credentialsReady,
+            'user_code_mask' => $credential?->username_mask,
+            'password_mask' => $credentialsReady ? '********' : null,
             'api_key_mask' => $credential?->api_key_mask,
             'token_mask' => $credential?->token_mask,
-            'read_ready' => (bool) $mikro['enabled'] && $credentialsReady && $baseReady,
-            'write_ready' => $writeReady,
+            'read_ready' => $readReady,
+            'write_ready' => false,
             'last_health_check_status' => $mikro['last_health_check_status'],
             'last_error_redacted' => $mikro['last_error_redacted'],
+            'blocker_codes' => $this->mikroConfigurationBlockerCodes($mikro, $credential),
             'blocking_reasons' => array_values(array_unique($blocking)),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $mikro
+     */
+    private function mikroLiveConfigurationReady(
+        array $mikro,
+        ?IntegrationProviderCredential $credential,
+    ): bool {
+        return $this->mikroConfigurationBlockerCodes($mikro, $credential) === [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $mikro
+     * @return array<int, string>
+     */
+    private function mikroConfigurationBlockerCodes(
+        array $mikro,
+        ?IntegrationProviderCredential $credential,
+    ): array {
+        $blocking = [];
+        $baseUrl = trim((string) ($mikro['base_url'] ?? ''));
+
+        if ($baseUrl === '') {
+            $blocking[] = 'MIKRO_BASE_URL_MISSING';
+        } elseif ($baseUrlBlocker = $this->mikroOperationRegistry->baseUrlBlocker($baseUrl)) {
+            $blocking[] = $baseUrlBlocker;
+        }
+        if (strtoupper(trim((string) ($mikro['api_version'] ?? ''))) !== 'V17') {
+            $blocking[] = 'MIKRO_API_VERSION_UNSUPPORTED';
+        }
+        if (blank($mikro['application_code'] ?? null)) {
+            $blocking[] = 'MIKRO_APPLICATION_CODE_MISSING';
+        }
+        if (blank($mikro['company_code'] ?? null)) {
+            $blocking[] = 'MIKRO_FIRM_CODE_MISSING';
+        }
+        if (blank($mikro['fiscal_year'] ?? null)) {
+            $blocking[] = 'MIKRO_WORKING_YEAR_MISSING';
+        }
+        if ($credential === null || blank($credential->api_key_encrypted)) {
+            $blocking[] = 'MIKRO_API_KEY_MISSING';
+        }
+        if ($credential === null || blank($credential->username_encrypted)) {
+            $blocking[] = 'MIKRO_USER_CODE_MISSING';
+        }
+        if ($credential === null || blank($credential->password_encrypted)) {
+            $blocking[] = 'MIKRO_PASSWORD_MISSING';
+        }
+
+        return $blocking;
     }
 
     /**

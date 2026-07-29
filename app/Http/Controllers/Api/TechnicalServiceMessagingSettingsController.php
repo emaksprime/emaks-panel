@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
+use App\Services\Mikro\MikroApiClient;
+use App\Services\Mikro\MikroOperationRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -22,8 +24,11 @@ class TechnicalServiceMessagingSettingsController extends Controller
         ]);
     }
 
-    public function update(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
-    {
+    public function update(
+        Request $request,
+        TechnicalServiceMessagingSettingsService $settings,
+        MikroOperationRegistry $mikroOperationRegistry,
+    ): JsonResponse {
         $settings->assertGenericUpdateAllowed($request->all());
 
         $providerKeys = array_keys(TechnicalServiceMessagingSettingsService::PROVIDERS);
@@ -94,8 +99,18 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'evo_whatsapp.link_preview' => ['sometimes', 'boolean'],
             'mikro_api' => ['sometimes', 'array'],
             'mikro_api.enabled' => ['sometimes', 'boolean'],
-            'mikro_api.base_url' => ['sometimes', 'nullable', 'string', 'max:500'],
-            'mikro_api.api_version' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'mikro_api.base_url' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:500',
+                static function (string $attribute, mixed $value, \Closure $fail) use ($mikroOperationRegistry): void {
+                    if ($blocker = $mikroOperationRegistry->baseUrlBlocker((string) $value)) {
+                        $fail($blocker);
+                    }
+                },
+            ],
+            'mikro_api.api_version' => ['sometimes', 'nullable', 'string', Rule::in(['V17'])],
             'mikro_api.application_code' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.application_name' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.company_code' => ['sometimes', 'nullable', 'string', 'max:120'],
@@ -364,8 +379,10 @@ class TechnicalServiceMessagingSettingsController extends Controller
     public function saveMikroApiCredentials(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
         $data = $request->validate([
-            'api_key' => ['nullable', 'string', 'max:2000', 'required_without:token'],
-            'token' => ['nullable', 'string', 'max:2000', 'required_without:api_key'],
+            'api_key' => ['required', 'string', 'max:2000'],
+            'user_code' => ['required', 'string', 'max:255'],
+            'password' => ['required', 'string', 'max:2000'],
+            'token' => ['nullable', 'string', 'max:2000'],
         ]);
 
         return response()->json([
@@ -380,6 +397,40 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'messaging_settings' => $settings->clearProviderCredentials('mikro_api'),
             'message' => 'Mikro API credential bilgileri temizlendi.',
         ]);
+    }
+
+    public function testMikroApiConnection(
+        TechnicalServiceMessagingSettingsService $settings,
+        MikroApiClient $client,
+    ): JsonResponse {
+        $readiness = $settings->payload()['mikro_api'];
+
+        if (! ($readiness['live_configuration_ready'] ?? false)) {
+            return response()->json([
+                'mikro_connection' => [
+                    'status' => null,
+                    'success' => false,
+                    'error_code' => 'MIKRO_LIVE_CONFIGURATION_MISSING',
+                    'duration_ms' => 0,
+                    'result_count' => 0,
+                    'normalized_data' => [],
+                    'source' => 'mikro_api',
+                    'freshness_at' => now()->toIso8601String(),
+                    'correlation_id' => null,
+                ],
+                'blocker_codes' => $readiness['blocker_codes'] ?? [],
+                'message' => 'Sözleşme hazır. Canlı Mikro bağlantı bilgileri bekleniyor.',
+            ], 409);
+        }
+
+        $result = $client->healthCheck();
+
+        return response()->json([
+            'mikro_connection' => $result,
+            'message' => $result['success']
+                ? 'Mikro HealthCheck başarılı.'
+                : 'Mikro HealthCheck güvenli biçimde tamamlanamadı.',
+        ], $result['success'] ? 200 : 503);
     }
 
     private function maskPhone(?string $phone): ?string
