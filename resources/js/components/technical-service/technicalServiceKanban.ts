@@ -39,6 +39,9 @@ const requestSignalText = (request: ServiceRequest) => normalizeTechnicalService
   ...(request.auditLogs ?? []).flatMap((log) => [log.action_type, log.note]),
 ].filter(Boolean).join(' '))
 
+const latestOpsReviewPartnerAction = (request: ServiceRequest) =>
+  (request.partnerPortalActions ?? []).find((action) => action.status === 'ops_review') ?? null
+
 export const hasTechnicalServiceTechnician = (request: ServiceRequest) =>
   Boolean(request.technicianId || (request.technician && normalizeTechnicalServiceText(request.technician) !== 'atanmadi'))
 
@@ -124,12 +127,30 @@ const hasPlanningSignal = (request: ServiceRequest, workflowText: string) => {
 }
 
 export function getTechnicalServiceKanbanColumn(request: ServiceRequest): TechnicalServiceKanbanColumnId {
+  const canonicalColumn = request.kanbanColumn ?? request.operationalState?.ops_column ?? null
+
+  if (canonicalColumn && TECHNICAL_SERVICE_KANBAN_COLUMNS.some((column) => column.id === canonicalColumn)) {
+    return canonicalColumn as TechnicalServiceKanbanColumnId
+  }
+
   const statusText = normalizeTechnicalServiceText(request.status)
   const workflowText = requestSignalText(request)
   const combinedText = [statusText, workflowText].filter(Boolean).join(' ')
   const hasTechnician = hasTechnicalServiceTechnician(request)
   const technicianApproved = isTechnicalServiceTechnicianApproved(request)
-  const customerApproved = isTechnicalServiceCustomerApproved(request)
+  const partnerAction = latestOpsReviewPartnerAction(request)
+
+  if (partnerAction?.action === 'completion_submitted') {
+    return 'final_check'
+  }
+
+  if (partnerAction?.action === 'appointment_proposed') {
+    return 'assignment_pending'
+  }
+
+  if (['job_rejected', 'appointment_change_requested', 'support_requested', 'revisit_requested'].includes(partnerAction?.action ?? '')) {
+    return 'review'
+  }
 
   if (includesAny(combinedText, ['iptal'])) {
     return 'cancelled'
@@ -161,11 +182,11 @@ export function getTechnicalServiceKanbanColumn(request: ServiceRequest): Techni
     return 'final_check'
   }
 
-  if (includesAny(combinedText, ['inceleniyor', 'eksik', 'parça', 'parca', 'beklemede', 'revizyon', 'ikinci ziyaret'])) {
+  if (includesAny(combinedText, ['inceleniyor', 'parça', 'parca', 'beklemede', 'revizyon', 'ikinci ziyaret'])) {
     return 'review'
   }
 
-  if (hasTechnician && technicianApproved && customerApproved) {
+  if (hasTechnician && technicianApproved) {
     return 'assigned'
   }
 

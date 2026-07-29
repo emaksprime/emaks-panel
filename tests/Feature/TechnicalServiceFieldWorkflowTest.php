@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
@@ -102,6 +103,47 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
         $this->assertSame('eksik', $request->photo_status);
     }
 
+    public function test_ops_can_review_canonical_field_completion_documents(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'workflow_status' => 'Son Kontrol',
+            'field_status' => 'son_kontrol',
+        ]);
+        $upload = TechnicalServiceRequestUpload::query()->create([
+            'technical_service_request_id' => $request->id,
+            'field_code' => 'before_photo',
+            'category' => TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+            'original_name' => 'before.jpg',
+            'path' => 'technical-service/test/before.jpg',
+            'mime' => 'image/jpeg',
+            'size' => 123,
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->patchJson("/api/technical-service/requests/{$request->id}/field-documents/{$upload->id}/review", [
+                'status' => 'rejected',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('note');
+
+        $payload = $this->actingAs($this->adminUser())
+            ->patchJson("/api/technical-service/requests/{$request->id}/field-documents/{$upload->id}/review", [
+                'status' => 'accepted',
+            ])
+            ->assertOk()
+            ->json();
+
+        $this->assertSame('accepted', $payload['request']['field_completion_documents'][0]['review_status'] ?? null);
+        $this->assertDatabaseHas('technical_service_request_uploads', [
+            'id' => $upload->id,
+            'review_status' => 'accepted',
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'field_document_reviewed',
+        ]);
+    }
+
     public function test_customer_closure_approval_is_required_for_completion(): void
     {
         $request = $this->technicalServiceRequest([
@@ -145,6 +187,27 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
         $request->refresh();
 
         $this->assertSame('otp', $request->customer_closure_approval_method);
+    }
+
+    public function test_ops_field_documents_ui_exposes_clear_review_and_final_completion_controls(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
+
+        $this->assertStringContainsString('backendControlComplete', $source);
+        $this->assertStringContainsString('finalCheckActionChecklistComplete', $source);
+        $this->assertStringContainsString('getOpsDefaultOpenSections', $source);
+        $this->assertStringContainsString("return new Set(['fieldCompletion'])", $source);
+        $this->assertStringContainsString('Atanan Usta', $source);
+        $this->assertStringContainsString("defaultOpenOpsSections.has('operation')", $source);
+        $this->assertStringContainsString('Saha belgeleri uygun', $source);
+        $this->assertStringContainsString('Saha belgeleri uygun değil', $source);
+        $this->assertStringContainsString('Kararı değiştir', $source);
+        $this->assertStringContainsString('Son kontrolü tamamla', $source);
+        $this->assertStringContainsString('Saha belgeleri uygunluk kararı bekliyor', $source);
+        $this->assertStringContainsString('assignmentOfferStatusLabel', $source);
+        $this->assertMatchesRegularExpression('/assignmentOfferStatusLabel\(assignmentOffer\.status,?\)/', $compactSource);
+        $this->assertStringNotContainsString('value={assignmentOffer.status}', $source);
     }
 
     public function test_request_can_complete_when_checklist_photos_and_customer_closure_are_ready(): void
@@ -305,7 +368,7 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicalServiceRequest(array $overrides = []): TechnicalServiceRequest
     {

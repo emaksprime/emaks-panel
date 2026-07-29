@@ -19,6 +19,7 @@ class UpdateTechnicalServiceScheduleRequest extends FormRequest
         return [
             'scheduled_date' => ['required', 'date'],
             'scheduled_time' => ['required', 'date_format:H:i'],
+            'scheduled_time_end' => ['nullable', 'date_format:H:i', 'after:scheduled_time'],
             'note' => ['nullable', 'string', 'max:2000'],
             'requires_reschedule' => ['nullable', 'boolean'],
             'reschedule_reason' => ['nullable', 'string', 'max:2000'],

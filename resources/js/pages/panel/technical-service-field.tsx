@@ -50,9 +50,9 @@ type FieldRequest = {
 const statusTone = (status: string) => {
   switch (status) {
     case 'Sahada':
-      return 'border-emerald-200 bg-emerald-50 text-emerald-700'
     case 'Yolda':
-      return 'border-blue-200 bg-blue-50 text-blue-700'
+    case 'Planlı':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700'
     case 'Parça Bekleniyor':
     case 'Beklemede':
       return 'border-amber-200 bg-amber-50 text-amber-800'
@@ -64,6 +64,31 @@ const statusTone = (status: string) => {
     default:
       return 'border-slate-200 bg-slate-100 text-slate-700'
   }
+}
+
+const operationStatusLabel = (status: string) => {
+  if (['Planlı', 'Yolda', 'Sahada'].includes(status)) {
+    return 'Randevu onaylandı'
+  }
+
+  return status
+}
+
+const operationActionLabel = (value: string) => {
+  const normalized = value.toLocaleLowerCase('tr-TR')
+
+  if (
+    normalized.includes('saha süreci')
+    || normalized.includes('sahaya')
+    || normalized.includes('sahada')
+    || normalized.includes('yolda')
+    || normalized.includes('yola çık')
+    || normalized.includes('yola cik')
+  ) {
+    return 'Randevu onaylandı'
+  }
+
+  return value
 }
 
 const slaTone = (status: string) => {
@@ -139,7 +164,6 @@ export default function TechnicalServiceFieldPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [submittingAction, setSubmittingAction] = useState<string | null>(null)
 
   const loadRequests = useCallback(async () => {
     setLoading(true)
@@ -150,7 +174,7 @@ export default function TechnicalServiceFieldPage() {
       const items = Array.isArray(response.items) ? response.items : []
       setRequests(items.map((item: FieldApiRequest) => mapRequest(item)))
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Saha işleri alınamadı.')
+      setError(caught instanceof Error ? caught.message : 'Usta işleri alınamadı.')
     } finally {
       setLoading(false)
     }
@@ -180,44 +204,26 @@ export default function TechnicalServiceFieldPage() {
     [openAssignedRequests],
   )
 
-  const submitFieldAction = useCallback(async (requestId: string, actionPath: 'start-travel' | 'arrive' | 'start-work') => {
-    setSubmittingAction(`${requestId}:${actionPath}`)
-    setError(null)
-
-    try {
-      await apiRequest(`/api/technical-service/requests/${requestId}/field/${actionPath}`, {
-        method: 'PATCH',
-        body: JSON.stringify({}),
-      })
-
-      await loadRequests()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Saha aksiyonu kaydedilemedi.')
-    } finally {
-      setSubmittingAction(null)
-    }
-  }, [loadRequests])
-
   return (
     <>
-      <Head title="Usta Saha İşleri" />
+      <Head title="Usta İşleri" />
 
       <div className="min-h-screen bg-[#eaf1f8]">
         <div className="w-full max-w-none space-y-6 px-4 py-6 md:px-6 xl:px-8 2xl:px-10">
           <section className="overflow-hidden rounded-[28px] border border-white/80 bg-white/92 px-5 py-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ring-slate-200/70 backdrop-blur sm:px-6 sm:py-6">
             <div className="flex flex-col gap-4">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">SAHA PWA</p>
-                <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Usta Saha İşleri</h1>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">USTA PORTALI</p>
+                <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Usta İşleri</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                  Atanmış işleri mobil odaklı akışla takip edin. Yola çıkış, sahaya varış ve iş başlangıcı bu ekrandan hızlıca işlenebilir.
+                  Atanmış işleri, randevuları ve kapanış aksiyonlarını sade şekilde takip edin.
                 </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 {[
                   ['Bugünkü İşler', todayRequests.length],
                   ['Atanmış İşler', openAssignedRequests.length],
-                  ['Planlı / Saha', plannedRequests.length],
+                  ['Randevulu işler', plannedRequests.length],
                   ['Geciken İşler', overdueRequests.length],
                 ].map(([label, value]) => (
                   <article key={String(label)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -236,10 +242,10 @@ export default function TechnicalServiceFieldPage() {
           ) : null}
 
           {loading ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500">Saha işleri yükleniyor...</div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500">Usta işleri yükleniyor...</div>
           ) : openAssignedRequests.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500">
-              Atanmış açık saha işi bulunamadı.
+              Atanmış açık iş bulunamadı.
             </div>
           ) : (
             <section className="grid gap-4">
@@ -257,7 +263,7 @@ export default function TechnicalServiceFieldPage() {
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white">{request.mrn}</span>
                             <span className={['rounded-full border px-3 py-1 text-xs font-semibold', statusTone(request.workflowStatus)].join(' ')}>
-                              {request.workflowStatus}
+                              {operationStatusLabel(request.workflowStatus)}
                             </span>
                             <span className={['rounded-full border px-3 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')}>
                               SLA: {request.slaStatus}
@@ -283,10 +289,10 @@ export default function TechnicalServiceFieldPage() {
                         </div>
                         <div className="flex items-start gap-2">
                           <Clock3 className="mt-0.5 h-4 w-4 text-slate-400" />
-                          <span>{request.fieldStatus !== '-' ? `Saha durumu: ${request.fieldStatus}` : request.workflowStatus}</span>
+                          <span>Randevu: {formatTime(request)}</span>
                         </div>
                         <div className="text-slate-700">
-                          <span className="font-medium">Sıradaki aksiyon:</span> {request.nextAction || '-'}
+                          <span className="font-medium">Sıradaki aksiyon:</span> {operationActionLabel(request.nextAction || '-')}
                         </div>
                       </div>
 
@@ -294,44 +300,17 @@ export default function TechnicalServiceFieldPage() {
                         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                           <p><span className="font-medium">Telefon:</span> {request.phone || '-'}</p>
                           <p className="mt-2"><span className="font-medium">Planlanan tarih:</span> {request.scheduledDate || '-'}</p>
-                          <p className="mt-2"><span className="font-medium">İş durumu:</span> {request.workflowStatus}</p>
-                          <p className="mt-2"><span className="font-medium">Saha aksiyonu:</span> {request.nextAction || '-'}</p>
+                          <p className="mt-2"><span className="font-medium">İş durumu:</span> {operationStatusLabel(request.workflowStatus)}</p>
+                          <p className="mt-2"><span className="font-medium">Aksiyon:</span> {operationActionLabel(request.nextAction || '-')}</p>
                         </div>
                       ) : null}
 
-                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                         <Button asChild variant="outline" className="h-10">
                           <a href={phoneHref}><Phone className="mr-2 h-4 w-4" />Ara</a>
                         </Button>
                         <Button asChild variant="secondary" className="h-10">
                           <a href={whatsappHref} target="_blank" rel="noreferrer"><MessageCircle className="mr-2 h-4 w-4" />WhatsApp</a>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-10"
-                          disabled={!['Planlı'].includes(request.workflowStatus) || submittingAction !== null}
-                          onClick={() => void submitFieldAction(request.id, 'start-travel')}
-                        >
-                          {submittingAction === `${request.id}:start-travel` ? 'Kaydediliyor...' : 'Yola Çıktı'}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-10"
-                          disabled={!['Planlı', 'Yolda'].includes(request.workflowStatus) || submittingAction !== null}
-                          onClick={() => void submitFieldAction(request.id, 'arrive')}
-                        >
-                          {submittingAction === `${request.id}:arrive` ? 'Kaydediliyor...' : 'Sahaya Vardı'}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-10"
-                          disabled={!['Yolda', 'Sahada'].includes(request.workflowStatus) || submittingAction !== null}
-                          onClick={() => void submitFieldAction(request.id, 'start-work')}
-                        >
-                          {submittingAction === `${request.id}:start-work` ? 'Kaydediliyor...' : 'İşe Başladı'}
                         </Button>
                         <Button type="button" variant="outline" className="h-10" onClick={() => setActiveId(active ? null : request.id)}>
                           Detay Aç

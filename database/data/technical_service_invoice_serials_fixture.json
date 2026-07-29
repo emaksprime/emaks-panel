@@ -1,0 +1,94 @@
+{
+  "invoice_groups": [
+    {
+      "invoice_series": "TSF",
+      "invoice_number": "2026-LOCAL-001",
+      "aliases": [
+        "W720FWS03E241227A00997",
+        "W720CWS05E250918A00705"
+      ],
+      "rows": [
+        {
+          "Aranan Seri No": "TEST-SERIAL-001",
+          "Faturadaki Seri No": "TEST-SERIAL-001",
+          "Satış Tarihi": "2026-05-18",
+          "Satış Evrak Seri": "TSF",
+          "Satış Evrak Sıra": "2026-LOCAL-001",
+          "Satış Cari Kodu": "120.01.0001",
+          "Satış Cari Adı": "Local Test Müşteri",
+          "Stok Kodu": "FIX-001",
+          "Stok Adı": "Fixture Ana Kilit",
+          "Sorumluluk Kodu": "PERAKENDE SATIŞ",
+          "Bu Fatura Bu Seri İçin Son Satış mı": "Evet"
+        },
+        {
+          "Aranan Seri No": "TEST-SERIAL-001",
+          "Faturadaki Seri No": "TEST-SERIAL-002",
+          "Satış Tarihi": "2026-05-18",
+          "Satış Evrak Seri": "TSF",
+          "Satış Evrak Sıra": "2026-LOCAL-001",
+          "Satış Cari Kodu": "120.01.0001",
+          "Satış Cari Adı": "Local Test Müşteri",
+          "Stok Kodu": "FIX-002",
+          "Stok Adı": "Fixture İkinci Kilit",
+          "Sorumluluk Kodu": "ONLINE",
+          "Bu Fatura Bu Seri İçin Son Satış mı": "Evet"
+        },
+        {
+          "Aranan Seri No": "TEST-SERIAL-001",
+          "Faturadaki Seri No": "TEST-SERIAL-003",
+          "Satış Tarihi": "2026-05-18",
+          "Satış Evrak Seri": "TSF",
+          "Satış Evrak Sıra": "2026-LOCAL-001",
+          "Satış Cari Kodu": "120.01.0001",
+          "Satış Cari Adı": "Local Test Müşteri",
+          "Stok Kodu": "FIX-003",
+          "Stok Adı": "Fixture İade Kilit",
+          "Sorumluluk Kodu": "PERAKENDE SATIŞ",
+          "İade Notu": "İade alındı",
+          "İade Tarihi": "2026-05-18",
+          "Bu Fatura Bu Seri İçin Son Satış mı": "Evet"
+        },
+        {
+          "Aranan Seri No": "TEST-SERIAL-001",
+          "Faturadaki Seri No": "TEST-SERIAL-004",
+          "Satış Tarihi": "2026-05-18",
+          "Satış Evrak Seri": "TSF",
+          "Satış Evrak Sıra": "2026-LOCAL-001",
+          "Satış Cari Kodu": "320.01.0001",
+          "Satış Cari Adı": "Local Bayi Cari",
+          "Stok Kodu": "FIX-004",
+          "Stok Adı": "Fixture Bayi Kilit",
+          "Sorumluluk Kodu": "BAYİ SATIŞ",
+          "Bu Fatura Bu Seri İçin Son Satış mı": "Evet"
+        },
+        {
+          "Aranan Seri No": "TEST-SERIAL-001",
+          "Faturadaki Seri No": "TEST-SERIAL-005",
+          "Satış Tarihi": "2026-05-18",
+          "Satış Evrak Seri": "TSF",
+          "Satış Evrak Sıra": "2026-LOCAL-001",
+          "Satış Cari Kodu": "320.01.0002",
+          "Satış Cari Adı": "Local Proje Cari",
+          "Stok Kodu": "FIX-005",
+          "Stok Adı": "Fixture Proje Kilit",
+          "Sorumluluk Kodu": "PROJE",
+          "Bu Fatura Bu Seri İçin Son Satış mı": "Evet"
+        },
+        {
+          "Aranan Seri No": "TEST-SERIAL-001",
+          "Faturadaki Seri No": "TEST-SERIAL-006",
+          "Satış Tarihi": "2026-05-18",
+          "Satış Evrak Seri": "TSF",
+          "Satış Evrak Sıra": "2026-LOCAL-001",
+          "Satış Cari Kodu": "320.01.0003",
+          "Satış Cari Adı": "Local GR Cari",
+          "Stok Kodu": "FIX-006",
+          "Stok Adı": "Fixture GR Kilit",
+          "Sorumluluk Kodu": "GR",
+          "Bu Fatura Bu Seri İçin Son Satış mı": "Evet"
+        }
+      ]
+    }
+  ]
+}

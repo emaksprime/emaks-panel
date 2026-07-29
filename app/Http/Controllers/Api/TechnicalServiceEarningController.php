@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\TechnicalServiceEarning;
+use App\Services\TechnicalService\TechnicalServiceEarningPaymentService;
 use App\Services\TechnicalService\TechnicalServiceEarningService;
+use App\Services\TechnicalService\TechnicalServiceSettlementReviewService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -13,6 +15,8 @@ class TechnicalServiceEarningController extends Controller
 {
     public function __construct(
         private readonly TechnicalServiceEarningService $earnings,
+        private readonly TechnicalServiceEarningPaymentService $earningPayments,
+        private readonly TechnicalServiceSettlementReviewService $settlementReviews,
     ) {
     }
 
@@ -37,7 +41,7 @@ class TechnicalServiceEarningController extends Controller
             'year' => ['required', 'integer', 'min:2020', 'max:2100'],
             'month' => ['required', 'integer', 'min:1', 'max:12'],
             'technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
-            'status' => ['nullable', 'string', Rule::in(TechnicalServiceEarningService::EARNING_STATUSES)],
+            'status' => ['nullable', 'string', Rule::in(TechnicalServiceEarningService::EARNING_STATUS_FILTERS)],
         ]);
 
         return response()->json($this->earnings->listPeriodEarnings(
@@ -72,10 +76,53 @@ class TechnicalServiceEarningController extends Controller
         ]);
     }
 
-    public function markPaid(TechnicalServiceEarning $earning): JsonResponse
+    public function markPaid(Request $request, TechnicalServiceEarning $earning): JsonResponse
     {
+        $payload = $request->validate([
+            'amount' => ['required', 'numeric', 'gt:0'],
+            'reason' => ['nullable', 'string', 'max:1000'],
+            'reference' => ['nullable', 'string', 'max:160'],
+        ]);
+
+        $result = $this->earningPayments->recordCompanyPayoutForEarning(
+            $earning->id,
+            (float) $payload['amount'],
+            $payload['reason'] ?? null,
+            $payload['reference'] ?? null,
+            $request->user(),
+        );
+
         return response()->json([
-            'earning' => $this->earnings->markPaid($earning->id),
+            'earning' => $result['earning'],
+            'payments' => $result['payments'],
+            'summary' => $result['summary'],
+        ]);
+    }
+
+    public function review(Request $request, TechnicalServiceEarning $earning): JsonResponse
+    {
+        $payload = $request->validate([
+            'settlement_id' => ['required', 'integer', 'exists:technical_service_settlements,id'],
+            'decision' => ['required', 'string', Rule::in([
+                TechnicalServiceSettlementReviewService::DECISION_APPROVE_DIFFERENCE,
+                TechnicalServiceSettlementReviewService::DECISION_CORRECT_DIRECT_AMOUNT,
+                TechnicalServiceSettlementReviewService::DECISION_EXCLUDE,
+            ])],
+            'reason' => ['nullable', 'string', 'max:2000'],
+            'customer_direct_to_technician_amount' => ['nullable', 'numeric', 'min:0'],
+        ]);
+
+        $settlement = $this->settlementReviews->resolveForEarning(
+            $earning,
+            (int) $payload['settlement_id'],
+            (string) $payload['decision'],
+            $payload,
+            $request->user(),
+        );
+
+        return response()->json([
+            'settlement' => $settlement,
+            'earning' => $this->earnings->getEarningDetail($earning->id),
         ]);
     }
 

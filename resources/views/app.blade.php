@@ -6,7 +6,7 @@
         <meta name="csrf-token" content="{{ csrf_token() }}">
         @php
             $assetVersion = '20260511';
-            $panelPublicUrl = rtrim((string) (config('panel.public_url') ?: config('app.url')), '/');
+            $panelPublicUrl = \App\Support\PartnerPortalPublicUrl::panelBaseUrl(request());
             $ogImageUrl = "{$panelPublicUrl}/og-emaks-prime.png?v={$assetVersion}";
         @endphp
         <meta name="description" content="Emaks Prime operasyon ve yönetim paneli">
