@@ -32,12 +32,6 @@ class PanelPostDeployRefresh extends Command
             '--no-interaction' => true,
         ]));
 
-        $this->runStep('PanelKnownWorkflowDataSourcesSeeder', fn () => $this->call('db:seed', [
-            '--class' => PanelKnownWorkflowDataSourcesSeeder::class,
-            '--force' => true,
-            '--no-interaction' => true,
-        ]));
-
         $this->runStep('optimize:clear', fn () => $this->call('optimize:clear', ['--no-interaction' => true]));
         $this->runStep('cache:clear', fn () => $this->call('cache:clear', ['--no-interaction' => true]));
         $this->runStep('route:clear', fn () => $this->call('route:clear', ['--no-interaction' => true]));
@@ -51,8 +45,12 @@ class PanelPostDeployRefresh extends Command
 
     private function handleSourceRefresh(string $sourceCode): int
     {
-        $this->runStep("PanelKnownWorkflowDataSourcesSeeder source [{$sourceCode}]", function () use ($sourceCode): void {
-            $refreshed = app(PanelKnownWorkflowDataSourcesSeeder::class)->refreshSource($sourceCode);
+        $this->runStep("Panel datasource source [{$sourceCode}]", function () use ($sourceCode): void {
+            $refreshed = app(PanelDataSourcesSeeder::class)->refreshSource($sourceCode);
+
+            if (! $refreshed) {
+                $refreshed = app(PanelKnownWorkflowDataSourcesSeeder::class)->refreshSource($sourceCode);
+            }
 
             if (! $refreshed) {
                 throw new RuntimeException("Unsupported datasource source [{$sourceCode}].");

@@ -11,182 +11,9 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
 
     public function run(): void
     {
-        $salesTemplate = (string) DataSource::query()
-            ->where('code', 'sales_main_dashboard')
-            ->value('query_template');
-
-        if ($salesTemplate !== '') {
-            $this->upsert(
-                'sales_online_perakende_detail',
-                'Online / Perakende Detay',
-                $this->salesTemplateWithCustomerGroupScope($salesTemplate, true),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
-                'SALES_ONLINE_PERAKENDE_DETAY_V1 kapsamı: online/perakende cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
-                'SALES_ONLINE_PERAKENDE_DETAY_V1.json'
-            );
-
-            $this->upsert(
-                'sales_bayi_proje_detail',
-                'Bayi / Proje Detay',
-                $this->salesTemplateWithCustomerGroupScope($salesTemplate, false),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
-                'SALES_BAYI_PROJE_DETAY_V1 kapsamı: online/perakende dışı cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
-                'SALES_BAYI_PROJE_DETAY_V1.json'
-            );
-        }
-
-        $this->upsert(
-            'sales_customer_search',
-            'Satış Müşteri Arama',
-            <<<'SQL_SALES_CUSTOMER_SEARCH'
-DECLARE @Search NVARCHAR(255) = N'[[search]]';
-DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
-DECLARE @ScopeKey NVARCHAR(80) = REPLACE(N'[[scope_key]]', N'-', N'_');
-DECLARE @date_from DATE = '[[date_from]]';
-DECLARE @date_to DATE = '[[date_to]]';
-DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
-DECLARE @CanViewAll bit = CASE
-    WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1
-    ELSE 0
-END;
-
-;WITH cube AS
-(
-    SELECT
-        LTRIM(RTRIM(ISNULL(msg_S_1032, N''))) AS cari_kodu,
-        LTRIM(RTRIM(ISNULL(msg_S_0201, N''))) AS cari_adi_raw,
-        LTRIM(RTRIM(ISNULL(msg_S_2663, N''))) AS stok_kodu_raw,
-        LTRIM(RTRIM(ISNULL(msg_S_2664, N''))) AS urun_adi_raw,
-        LTRIM(RTRIM(ISNULL(msg_S_0059, N''))) AS model_adi_raw,
-        UPPER(LTRIM(RTRIM(ISNULL(msg_S_0118, N'')))) AS belge_tipi,
-        UPPER(LTRIM(RTRIM(ISNULL(msg_S_2663, N'')))) AS stok_kodu_u,
-        UPPER(LTRIM(RTRIM(ISNULL(msg_S_2664, N'')))) AS urun_adi_u,
-        UPPER(LTRIM(RTRIM(ISNULL(msg_S_0059, N'')))) AS model_adi_u,
-        CAST(ISNULL(msg_S_0165, 0) AS decimal(18,2)) AS adet,
-        CAST(ISNULL(msg_S_0535, 0) AS decimal(18,2)) AS net_tutar
-    FROM dbo.fn_Stok_Masraf_Musteri_Grup_Hareket_Kubu(
-        CONVERT(char(8), @date_from, 112),
-        CONVERT(char(8), @date_to, 112),
-        1,
-        1
-    )
-    WHERE ISNULL(LTRIM(RTRIM(msg_S_1032)), N'') <> N''
-),
-filtered AS
-(
-    SELECT
-        c.cari_kodu,
-        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, c.cari_adi_raw))) AS cari_unvani,
-        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS cari_grubu,
-        CASE
-            WHEN c.belge_tipi LIKE N'%İADE%'
-              OR c.belge_tipi LIKE N'%IADE%'
-            THEN -ABS(c.adet)
-            ELSE c.adet
-        END AS adet,
-        CASE
-            WHEN c.belge_tipi LIKE N'%İADE%'
-              OR c.belge_tipi LIKE N'%IADE%'
-            THEN -ABS(c.net_tutar)
-            ELSE c.net_tutar
-        END AS net_tutar
-    FROM cube c
-    INNER JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK)
-        ON cari.cari_kod = c.cari_kodu
-    INNER JOIN dbo.STOKLAR sto WITH (NOLOCK)
-        ON sto.sto_kod = c.stok_kodu_raw
-    LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
-        ON grp.crg_kod = cari.cari_grup_kodu
-    WHERE
-        ABS(c.net_tutar) > 1
-        AND NOT (
-            c.belge_tipi IN (N'DEĞİŞİM', N'PROJE İÇİN NUMUNE ÜRÜN')
-            AND ABS(c.net_tutar) < 10
-        )
-        AND LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
-        AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
-        AND (
-            @ScopeKey NOT IN (N'online_perakende', N'bayi_proje')
-            OR (
-                @ScopeKey = N'online_perakende'
-                AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
-            )
-            OR (
-                @ScopeKey = N'bayi_proje'
-                AND (
-                    NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL
-                    OR cari.cari_grup_kodu NOT IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
-                )
-            )
-        )
-        AND (
-            @Search = N''
-            OR cari.cari_kod LIKE N'%' + @Search + N'%'
-            OR cari.cari_unvan1 LIKE N'%' + @Search + N'%'
-            OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%'
-        )
-        AND NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N'') IS NOT NULL
-        AND c.stok_kodu_u NOT LIKE 'W-%'
-        AND c.stok_kodu_u NOT LIKE N'%HİZMET%'
-        AND c.stok_kodu_u NOT LIKE N'%HIZMET%'
-        AND c.stok_kodu_u NOT LIKE N'%SERVİS%'
-        AND c.stok_kodu_u NOT LIKE N'%SERVIS%'
-        AND c.stok_kodu_u NOT LIKE N'%MONTAJ%'
-        AND c.stok_kodu_u NOT LIKE N'%YOL%'
-        AND c.stok_kodu_u NOT LIKE N'%KEŞİF%'
-        AND c.stok_kodu_u NOT LIKE N'%KESIF%'
-        AND c.urun_adi_u NOT LIKE N'%HİZMET%'
-        AND c.urun_adi_u NOT LIKE N'%HIZMET%'
-        AND c.urun_adi_u NOT LIKE N'%SERVİS%'
-        AND c.urun_adi_u NOT LIKE N'%SERVIS%'
-        AND c.urun_adi_u NOT LIKE N'%MONTAJ%'
-        AND c.urun_adi_u NOT LIKE N'%YOL%'
-        AND c.urun_adi_u NOT LIKE N'%KEŞİF%'
-        AND c.urun_adi_u NOT LIKE N'%KESIF%'
-        AND c.model_adi_u NOT LIKE N'%HİZMET%'
-        AND c.model_adi_u NOT LIKE N'%HIZMET%'
-        AND c.model_adi_u NOT LIKE N'%SERVİS%'
-        AND c.model_adi_u NOT LIKE N'%SERVIS%'
-        AND c.model_adi_u NOT LIKE N'%MONTAJ%'
-        AND c.model_adi_u NOT LIKE N'%YOL%'
-        AND c.model_adi_u NOT LIKE N'%KEŞİF%'
-        AND c.model_adi_u NOT LIKE N'%KESIF%'
-),
-customers AS
-(
-    SELECT
-        cari_kodu,
-        cari_unvani,
-        cari_grubu,
-        SUM(ABS(adet)) AS toplam_adet,
-        SUM(ABS(net_tutar)) AS toplam_ciro
-    FROM filtered
-    GROUP BY cari_kodu, cari_unvani, cari_grubu
-)
-SELECT TOP 80
-    cari_kodu,
-    cari_unvani,
-    cari_grubu,
-    CASE
-        WHEN NULLIF(cari_grubu, N'') IS NULL
-            THEN CONCAT(cari_unvani, N' | ', cari_kodu)
-        ELSE CONCAT(cari_unvani, N' | ', cari_kodu, N' | ', cari_grubu)
-    END AS display_text
-FROM customers
-ORDER BY
-    CASE WHEN cari_kodu = @Search THEN 0
-         WHEN cari_unvani = @Search THEN 1
-         WHEN cari_kodu LIKE @Search + N'%' THEN 2
-         WHEN cari_unvani LIKE @Search + N'%' THEN 3
-         ELSE 9 END,
-    toplam_ciro DESC,
-    cari_unvani ASC,
-    cari_kodu ASC;
-SQL_SALES_CUSTOMER_SEARCH,
-            ['search', 'scope_key', 'date_from', 'date_to', 'grain', 'detail_type', 'rep_code', 'limit', 'bypass_cache'],
-            'PrimeCRM SalesService.GetCustomerOptionsAsync arama mantığı aktif satış hareketi datasıyla sınırlandırılır.',
-            'SalesService.cs'
-        );
+        $this->upsertSalesOnlinePerakendeDetail();
+        $this->upsertSalesBayiProjeDetail();
+        $this->upsertSalesCustomerSearch();
 
         $this->upsert(
             'technical_service_serial_check',
@@ -1509,15 +1336,252 @@ SQL_PROFORMA_DISCOUNT_DEFS,
         );
     }
 
-    public function refreshSource(string $sourceCode): bool
+    private function salesMainDashboardTemplate(): string
     {
-        if ($sourceCode !== self::ACCOUNTING_FINANCE_RESMI_STOK_KONTROL) {
-            return false;
+        return (string) DataSource::query()
+            ->where('code', 'sales_main_dashboard')
+            ->value('query_template');
+    }
+
+    private function upsertSalesOnlinePerakendeDetail(): void
+    {
+        $salesTemplate = $this->salesMainDashboardTemplate();
+
+        if ($salesTemplate === '') {
+            return;
         }
 
-        $this->upsertAccountingFinanceResmiStokKontrol();
+        $this->upsert(
+            'sales_online_perakende_detail',
+            'Online / Perakende Detay',
+            $this->salesTemplateWithCustomerGroupScope($salesTemplate, true),
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+            'SALES_ONLINE_PERAKENDE_DETAY_V1 kapsamı: online/perakende cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
+            'SALES_ONLINE_PERAKENDE_DETAY_V1.json'
+        );
+    }
 
-        return true;
+    private function upsertSalesBayiProjeDetail(): void
+    {
+        $salesTemplate = $this->salesMainDashboardTemplate();
+
+        if ($salesTemplate === '') {
+            return;
+        }
+
+        $this->upsert(
+            'sales_bayi_proje_detail',
+            'Bayi / Proje Detay',
+            $this->salesTemplateWithCustomerGroupScope($salesTemplate, false),
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+            'SALES_BAYI_PROJE_DETAY_V1 kapsamı: online/perakende dışı cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
+            'SALES_BAYI_PROJE_DETAY_V1.json'
+        );
+    }
+
+    private function upsertSalesCustomerSearch(): void
+    {
+        $this->upsert(
+            'sales_customer_search',
+            'Satış Müşteri Arama',
+            <<<'SQL_SALES_CUSTOMER_SEARCH'
+DECLARE @Search NVARCHAR(255) = N'[[search]]';
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @ScopeKey NVARCHAR(80) = REPLACE(N'[[scope_key]]', N'-', N'_');
+DECLARE @allowed_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[allowed_cari_group_codes]]'));
+DECLARE @denied_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[denied_cari_group_codes]]'));
+DECLARE @date_from DATE = '[[date_from]]';
+DECLARE @date_to DATE = '[[date_to]]';
+DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
+DECLARE @CanViewAll bit = CASE
+    WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1
+    ELSE 0
+END;
+
+;WITH cube AS
+(
+    SELECT
+        LTRIM(RTRIM(ISNULL(msg_S_1032, N''))) AS cari_kodu,
+        LTRIM(RTRIM(ISNULL(msg_S_0201, N''))) AS cari_adi_raw,
+        LTRIM(RTRIM(ISNULL(msg_S_2663, N''))) AS stok_kodu_raw,
+        LTRIM(RTRIM(ISNULL(msg_S_2664, N''))) AS urun_adi_raw,
+        LTRIM(RTRIM(ISNULL(msg_S_0059, N''))) AS model_adi_raw,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_0118, N'')))) AS belge_tipi,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_2663, N'')))) AS stok_kodu_u,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_2664, N'')))) AS urun_adi_u,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_0059, N'')))) AS model_adi_u,
+        CAST(ISNULL(msg_S_0165, 0) AS decimal(18,2)) AS adet,
+        CAST(ISNULL(msg_S_0535, 0) AS decimal(18,2)) AS net_tutar
+    FROM dbo.fn_Stok_Masraf_Musteri_Grup_Hareket_Kubu(
+        CONVERT(char(8), @date_from, 112),
+        CONVERT(char(8), @date_to, 112),
+        1,
+        1
+    )
+    WHERE ISNULL(LTRIM(RTRIM(msg_S_1032)), N'') <> N''
+),
+filtered AS
+(
+    SELECT
+        c.cari_kodu,
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, c.cari_adi_raw))) AS cari_unvani,
+        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS cari_grubu,
+        CASE
+            WHEN c.belge_tipi LIKE N'%İADE%'
+              OR c.belge_tipi LIKE N'%IADE%'
+            THEN -ABS(c.adet)
+            ELSE c.adet
+        END AS adet,
+        CASE
+            WHEN c.belge_tipi LIKE N'%İADE%'
+              OR c.belge_tipi LIKE N'%IADE%'
+            THEN -ABS(c.net_tutar)
+            ELSE c.net_tutar
+        END AS net_tutar
+    FROM cube c
+    INNER JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+        ON cari.cari_kod = c.cari_kodu
+    INNER JOIN dbo.STOKLAR sto WITH (NOLOCK)
+        ON sto.sto_kod = c.stok_kodu_raw
+    LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
+        ON grp.crg_kod = cari.cari_grup_kodu
+    WHERE
+        ABS(c.net_tutar) > 1
+        AND NOT (
+            c.belge_tipi IN (N'DEĞİŞİM', N'PROJE İÇİN NUMUNE ÜRÜN')
+            AND ABS(c.net_tutar) < 10
+        )
+        AND LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
+        AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (
+            @ScopeKey NOT IN (N'online_perakende', N'bayi_proje')
+            OR (
+                @ScopeKey = N'online_perakende'
+                AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+            )
+            OR (
+                @ScopeKey = N'bayi_proje'
+                AND (
+                    NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL
+                    OR cari.cari_grup_kodu NOT IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+                )
+            )
+        )
+        AND (
+            NULLIF(@allowed_cari_group_codes, N'') IS NULL
+            OR ISNULL(cari.cari_grup_kodu, N'') IN
+            (
+                SELECT LTRIM(RTRIM(value))
+                FROM STRING_SPLIT(@allowed_cari_group_codes, N',')
+                WHERE LTRIM(RTRIM(value)) <> N''
+            )
+        )
+        AND (
+            NULLIF(@denied_cari_group_codes, N'') IS NULL
+            OR ISNULL(cari.cari_grup_kodu, N'') NOT IN
+            (
+                SELECT LTRIM(RTRIM(value))
+                FROM STRING_SPLIT(@denied_cari_group_codes, N',')
+                WHERE LTRIM(RTRIM(value)) <> N''
+            )
+        )
+        AND (
+            @Search = N''
+            OR cari.cari_kod LIKE N'%' + @Search + N'%'
+            OR cari.cari_unvan1 LIKE N'%' + @Search + N'%'
+            OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%'
+        )
+        AND NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N'') IS NOT NULL
+        AND c.stok_kodu_u NOT LIKE 'W-%'
+        AND c.stok_kodu_u NOT LIKE N'%HİZMET%'
+        AND c.stok_kodu_u NOT LIKE N'%HIZMET%'
+        AND c.stok_kodu_u NOT LIKE N'%SERVİS%'
+        AND c.stok_kodu_u NOT LIKE N'%SERVIS%'
+        AND c.stok_kodu_u NOT LIKE N'%MONTAJ%'
+        AND c.stok_kodu_u NOT LIKE N'%YOL%'
+        AND c.stok_kodu_u NOT LIKE N'%KEŞİF%'
+        AND c.stok_kodu_u NOT LIKE N'%KESIF%'
+        AND c.urun_adi_u NOT LIKE N'%HİZMET%'
+        AND c.urun_adi_u NOT LIKE N'%HIZMET%'
+        AND c.urun_adi_u NOT LIKE N'%SERVİS%'
+        AND c.urun_adi_u NOT LIKE N'%SERVIS%'
+        AND c.urun_adi_u NOT LIKE N'%MONTAJ%'
+        AND c.urun_adi_u NOT LIKE N'%YOL%'
+        AND c.urun_adi_u NOT LIKE N'%KEŞİF%'
+        AND c.urun_adi_u NOT LIKE N'%KESIF%'
+        AND c.model_adi_u NOT LIKE N'%HİZMET%'
+        AND c.model_adi_u NOT LIKE N'%HIZMET%'
+        AND c.model_adi_u NOT LIKE N'%SERVİS%'
+        AND c.model_adi_u NOT LIKE N'%SERVIS%'
+        AND c.model_adi_u NOT LIKE N'%MONTAJ%'
+        AND c.model_adi_u NOT LIKE N'%YOL%'
+        AND c.model_adi_u NOT LIKE N'%KEŞİF%'
+        AND c.model_adi_u NOT LIKE N'%KESIF%'
+),
+customers AS
+(
+    SELECT
+        cari_kodu,
+        cari_unvani,
+        cari_grubu,
+        SUM(ABS(adet)) AS toplam_adet,
+        SUM(ABS(net_tutar)) AS toplam_ciro
+    FROM filtered
+    GROUP BY cari_kodu, cari_unvani, cari_grubu
+)
+SELECT TOP 80
+    cari_kodu,
+    cari_unvani,
+    cari_grubu,
+    CASE
+        WHEN NULLIF(cari_grubu, N'') IS NULL
+            THEN CONCAT(cari_unvani, N' | ', cari_kodu)
+        ELSE CONCAT(cari_unvani, N' | ', cari_kodu, N' | ', cari_grubu)
+    END AS display_text
+FROM customers
+ORDER BY
+    CASE WHEN cari_kodu = @Search THEN 0
+         WHEN cari_unvani = @Search THEN 1
+         WHEN cari_kodu LIKE @Search + N'%' THEN 2
+         WHEN cari_unvani LIKE @Search + N'%' THEN 3
+         ELSE 9 END,
+    toplam_ciro DESC,
+    cari_unvani ASC,
+    cari_kodu ASC;
+SQL_SALES_CUSTOMER_SEARCH,
+            ['search', 'scope_key', 'date_from', 'date_to', 'grain', 'detail_type', 'rep_code', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'limit', 'bypass_cache'],
+            'PrimeCRM SalesService.GetCustomerOptionsAsync arama mantığı aktif satış hareketi datasıyla sınırlandırılır.',
+            'SalesService.cs'
+        );
+    }
+
+    public function refreshSource(string $sourceCode): bool
+    {
+        if ($sourceCode === 'sales_online_perakende_detail') {
+            $this->upsertSalesOnlinePerakendeDetail();
+
+            return true;
+        }
+
+        if ($sourceCode === 'sales_bayi_proje_detail') {
+            $this->upsertSalesBayiProjeDetail();
+
+            return true;
+        }
+
+        if ($sourceCode === 'sales_customer_search') {
+            $this->upsertSalesCustomerSearch();
+
+            return true;
+        }
+
+        if ($sourceCode === self::ACCOUNTING_FINANCE_RESMI_STOK_KONTROL) {
+            $this->upsertAccountingFinanceResmiStokKontrol();
+
+            return true;
+        }
+
+        return false;
     }
 
     /**

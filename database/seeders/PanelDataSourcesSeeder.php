@@ -9,14 +9,53 @@ class PanelDataSourcesSeeder extends Seeder
 {
     public function run(): void
     {
-        $connectionMeta = [
-            'driver' => 'n8n_json',
-            'method' => 'POST',
-            'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
-            'response_rows_key' => 'rows',
-            'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
-            'sql_policy' => 'unchanged',
-        ];
+        $connectionMeta = $this->connectionMeta();
+
+        $this->seedSalesMainDashboardWithoutQueryOverwrite();
+
+        foreach ($this->metadataOnlySources() as $index => $source) {
+            $this->seedMetadataOnlySourceWithoutQueryOverwrite($source, $index, $connectionMeta);
+        }
+    }
+
+    public function refreshSource(string $sourceCode): bool
+    {
+        if ($sourceCode !== 'sales_main_dashboard') {
+            return false;
+        }
+
+        $this->upsertSalesMainDashboard();
+
+        return true;
+    }
+
+    private function seedSalesMainDashboardWithoutQueryOverwrite(): void
+    {
+        $source = DataSource::query()->where('code', 'sales_main_dashboard')->first();
+
+        if (! $source) {
+            $this->upsertSalesMainDashboard();
+
+            return;
+        }
+
+        if ($this->isMissingQueryTemplate($source->query_template)) {
+            $this->upsertSalesMainDashboard();
+
+            return;
+        }
+
+        $source->forceFill([
+            'allowed_params' => $this->mergeAllowedParams($source->allowed_params ?? [], [
+                'allowed_cari_group_codes',
+                'denied_cari_group_codes',
+            ]),
+        ])->save();
+    }
+
+    private function upsertSalesMainDashboard(): void
+    {
+        $connectionMeta = $this->connectionMeta();
 
         DataSource::query()->updateOrCreate(
             ['code' => 'sales_main_dashboard'],
@@ -29,6 +68,8 @@ DECLARE @date_to   DATE = '[[date_to]]';
 DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
 DECLARE @rep_code NVARCHAR(20) = N'[[rep_code]]';
 DECLARE @cari_filter NVARCHAR(MAX) = N'[[cari_filter]]';
+DECLARE @allowed_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[allowed_cari_group_codes]]'));
+DECLARE @denied_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[denied_cari_group_codes]]'));
 DECLARE @brand_filter NVARCHAR(50) = LOWER(REPLACE(LTRIM(RTRIM(N'[[brand_filter]]')), N'-', N'_'));
 DECLARE @category_filter NVARCHAR(50) = UPPER(LTRIM(RTRIM(N'[[category_filter]]')));
 DECLARE @product_filter NVARCHAR(255) = LTRIM(RTRIM(N'[[product_filter]]'));
@@ -223,6 +264,24 @@ WHERE
         OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%' + UPPER(@product_filter) + N'%'
     )
     AND (@rep_code = N'' OR LTRIM(RTRIM(ISNULL(ch.cari_temsilci_kodu, N''))) = @rep_code)
+    AND (
+        NULLIF(@allowed_cari_group_codes, N'') IS NULL
+        OR ISNULL(ch.cari_grup_kodu, N'') IN
+        (
+            SELECT LTRIM(RTRIM(value))
+            FROM STRING_SPLIT(@allowed_cari_group_codes, N',')
+            WHERE LTRIM(RTRIM(value)) <> N''
+        )
+    )
+    AND (
+        NULLIF(@denied_cari_group_codes, N'') IS NULL
+        OR ISNULL(ch.cari_grup_kodu, N'') NOT IN
+        (
+            SELECT LTRIM(RTRIM(value))
+            FROM STRING_SPLIT(@denied_cari_group_codes, N',')
+            WHERE LTRIM(RTRIM(value)) <> N''
+        )
+    )
     AND (
         @cari_filter = N''
         OR (
@@ -504,7 +563,7 @@ BEGIN
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'CARI' THEN 1 WHEN N'URUN' THEN 2 ELSE 3 END ASC, siralama_2 ASC;
 END
 SQL_SALES_MAIN_DASHBOARD,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'connection_meta' => $connectionMeta,
                 'preview_payload' => [],
                 'active' => true,
@@ -512,30 +571,77 @@ SQL_SALES_MAIN_DASHBOARD,
                 'description' => 'Ana satış yönetimi için eski çalışan Sales TEST sorgusu.',
             ],
         );
+    }
 
-        foreach ($this->metadataOnlySources() as $index => $source) {
-            DataSource::query()->updateOrCreate(
-                ['code' => $source['code']],
-                [
-                    'name' => $source['name'],
-                    'db_type' => 'n8n_json',
-                    'query_template' => '',
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
-                    'connection_meta' => [
-                        ...$connectionMeta,
-                        'query_status' => 'missing',
-                        'reference' => $source['reference'],
-                    ],
-                    'preview_payload' => [
-                        'mode' => 'query_missing',
-                        'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
-                    ],
-                    'active' => true,
-                    'sort_order' => 30 + $index,
-                    'description' => $source['description'],
-                ],
-            );
+    /**
+     * @return array<string, mixed>
+     */
+    private function connectionMeta(): array
+    {
+        return [
+            'driver' => 'n8n_json',
+            'method' => 'POST',
+            'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
+            'response_rows_key' => 'rows',
+            'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
+            'sql_policy' => 'unchanged',
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $source
+     * @param  array<string, mixed>  $connectionMeta
+     */
+    private function seedMetadataOnlySourceWithoutQueryOverwrite(array $source, int $index, array $connectionMeta): void
+    {
+        $existing = DataSource::query()->where('code', $source['code'])->first();
+
+        if ($existing) {
+            return;
         }
+
+        DataSource::query()->updateOrCreate(
+            ['code' => $source['code']],
+            [
+                'name' => $source['name'],
+                'db_type' => 'n8n_json',
+                'query_template' => '',
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                'connection_meta' => [
+                    ...$connectionMeta,
+                    'query_status' => 'missing',
+                    'reference' => $source['reference'],
+                ],
+                'preview_payload' => [
+                    'mode' => 'query_missing',
+                    'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
+                ],
+                'active' => true,
+                'sort_order' => 30 + $index,
+                'description' => $source['description'],
+            ],
+        );
+    }
+
+    private function isMissingQueryTemplate(?string $queryTemplate): bool
+    {
+        $queryTemplate = trim((string) $queryTemplate);
+
+        return $queryTemplate === ''
+            || str_contains($queryTemplate, 'Query template metadata panel.data_sources');
+    }
+
+    /**
+     * @param  array<int, string>  $currentParams
+     * @param  array<int, string>  $requiredParams
+     * @return array<int, string>
+     */
+    private function mergeAllowedParams(array $currentParams, array $requiredParams): array
+    {
+        return array_values(array_unique([
+            ...$currentParams,
+            ...$requiredParams,
+        ]));
     }
 
     /**

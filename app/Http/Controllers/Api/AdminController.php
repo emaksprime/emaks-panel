@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
 use App\Models\Button;
 use App\Models\DataSource;
 use App\Models\MenuGroup;
@@ -12,19 +13,21 @@ use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
-use App\Models\AuditLog;
 use App\Models\User;
 use App\Models\UserAccess;
+use App\Models\UserCariGroupPermission;
 use App\Services\AuditLogger;
 use App\Services\PanelAccessService;
 use App\Services\PanelDataSourceManager;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class AdminController extends Controller
@@ -33,8 +36,7 @@ class AdminController extends Controller
         private readonly AuditLogger $auditLogger,
         private readonly PanelDataSourceManager $dataSourceManager,
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     public function overview(): JsonResponse
     {
@@ -72,6 +74,20 @@ class AdminController extends Controller
                     'force_password_change' => (bool) ($user->force_password_change ?? false),
                     'access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', true)->pluck('resource_code')->unique()->values(),
                     'denied_access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', false)->pluck('resource_code')->unique()->values(),
+                    'allowed_cari_groups' => UserCariGroupPermission::query()
+                        ->where('user_id', $user->id)
+                        ->where('mode', UserCariGroupPermission::MODE_ALLOW)
+                        ->orderBy('cari_group_code')
+                        ->pluck('cari_group_code')
+                        ->unique()
+                        ->values(),
+                    'denied_cari_groups' => UserCariGroupPermission::query()
+                        ->where('user_id', $user->id)
+                        ->where('mode', UserCariGroupPermission::MODE_DENY)
+                        ->orderBy('cari_group_code')
+                        ->pluck('cari_group_code')
+                        ->unique()
+                        ->values(),
                 ]),
             'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description', 'is_super_admin']),
             'resources' => Resource::query()
@@ -117,8 +133,15 @@ class AdminController extends Controller
             'access.*' => ['string', Rule::exists(Resource::class, 'code')],
             'denied_access' => ['array'],
             'denied_access.*' => ['string', Rule::exists(Resource::class, 'code')],
+            'allowed_cari_groups' => ['nullable'],
+            'denied_cari_groups' => ['nullable'],
             'strict_access' => ['boolean'],
         ]);
+
+        $deniedCariGroups = $this->normalizeCariGroupCodes($data['denied_cari_groups'] ?? [], 'denied_cari_groups');
+        $allowedCariGroups = $this->normalizeCariGroupCodes($data['allowed_cari_groups'] ?? [], 'allowed_cari_groups')
+            ->diff($deniedCariGroups)
+            ->values();
 
         $payload = [
             'username' => $data['username'],
@@ -180,6 +203,8 @@ class AdminController extends Controller
             ]);
         }
 
+        $this->syncUserCariGroupPermissions($user, $allowedCariGroups, $deniedCariGroups);
+
         $this->auditLogger->log($request->user(), 'admin.user.save', ['target_user_id' => $user->id], $request);
 
         return $this->users();
@@ -226,7 +251,7 @@ class AdminController extends Controller
     }
 
     /**
-     * @return array{0: \Illuminate\Support\Collection<int, string>, 1: \Illuminate\Support\Collection<int, string>}
+     * @return array{0: Collection<int, string>, 1: Collection<int, string>}
      */
     private function strictAccessSnapshotForClone(User $source): array
     {
@@ -255,7 +280,7 @@ class AdminController extends Controller
     }
 
     /**
-     * @return array{0: \Illuminate\Support\Collection<int, string>, 1: \Illuminate\Support\Collection<int, string>}
+     * @return array{0: Collection<int, string>, 1: Collection<int, string>}
      */
     private function explicitAccessSnapshotForClone(User $source): array
     {
@@ -281,8 +306,8 @@ class AdminController extends Controller
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, string>  $allowed
-     * @param  \Illuminate\Support\Collection<int, string>  $denied
+     * @param  Collection<int, string>  $allowed
+     * @param  Collection<int, string>  $denied
      */
     private function syncUserAccess(User $user, $allowed, $denied): void
     {
@@ -311,6 +336,63 @@ class AdminController extends Controller
                 'resource_code' => $resourceCode,
                 'can_view' => false,
             ]);
+        }
+    }
+
+    /**
+     * @return Collection<int, string>
+     */
+    private function normalizeCariGroupCodes(mixed $value, string $field): Collection
+    {
+        $codes = collect(is_array($value) ? $value : explode(',', (string) $value))
+            ->flatMap(fn (mixed $item): array => is_array($item) ? $item : explode(',', (string) $item))
+            ->map(fn (mixed $item): string => trim((string) $item))
+            ->filter(fn (string $item): bool => $item !== '')
+            ->unique()
+            ->values();
+
+        $invalid = $codes->first(
+            fn (string $code): bool => preg_match('/^[0-9A-Za-zÇĞİÖŞÜçğıöşü_.-]+$/u', $code) !== 1
+        );
+
+        if ($invalid !== null) {
+            throw ValidationException::withMessages([
+                $field => "Gecersiz cari grup kodu: {$invalid}",
+            ]);
+        }
+
+        return $codes;
+    }
+
+    /**
+     * @param  Collection<int, string>  $allowed
+     * @param  Collection<int, string>  $denied
+     */
+    private function syncUserCariGroupPermissions(User $user, $allowed, $denied): void
+    {
+        $now = now();
+        $rows = $allowed
+            ->map(fn (string $code): array => [
+                'user_id' => $user->id,
+                'cari_group_code' => $code,
+                'mode' => UserCariGroupPermission::MODE_ALLOW,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ])
+            ->concat($denied->map(fn (string $code): array => [
+                'user_id' => $user->id,
+                'cari_group_code' => $code,
+                'mode' => UserCariGroupPermission::MODE_DENY,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]))
+            ->values()
+            ->all();
+
+        UserCariGroupPermission::query()->where('user_id', $user->id)->delete();
+
+        if ($rows !== []) {
+            UserCariGroupPermission::query()->insert($rows);
         }
     }
 

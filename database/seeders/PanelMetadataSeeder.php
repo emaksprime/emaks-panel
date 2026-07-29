@@ -275,7 +275,7 @@ DECLARE @cari_filter NVARCHAR(MAX) = '{{cari_filter}}';
 -- Query template metadata panel.data_sources uzerinden okunur.
 -- Gerçek MSSQL executor bilerek bağlanmamıştır.
 SQL,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'connection_meta' => [
                     'driver' => 'n8n_json',
                     'method' => 'POST',
@@ -481,9 +481,21 @@ SQL,
                     ? $existingQueryTemplate
                     : $placeholderQueryTemplate
             );
+            $salesDetailAllowedParams = ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'];
+            $defaultAllowedParams = in_array($sourceDefinition['code'], ['sales_online_perakende_detail', 'sales_bayi_proje_detail'], true)
+                ? $salesDetailAllowedParams
+                : ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'];
             $allowedParams = $existingHasRealQueryTemplate && is_array($existingDataSource?->allowed_params)
                 ? $existingDataSource->allowed_params
-                : ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'];
+                : $defaultAllowedParams;
+
+            if (in_array($sourceDefinition['code'], ['sales_online_perakende_detail', 'sales_bayi_proje_detail'], true)) {
+                $allowedParams = collect($allowedParams)
+                    ->merge(['allowed_cari_group_codes', 'denied_cari_group_codes'])
+                    ->unique()
+                    ->values()
+                    ->all();
+            }
 
             DataSource::query()->updateOrCreate(
                 ['code' => $sourceDefinition['code']],

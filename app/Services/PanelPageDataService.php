@@ -5,12 +5,20 @@ namespace App\Services;
 use App\Models\DataSource;
 use App\Models\Page;
 use App\Models\User;
+use App\Models\UserCariGroupPermission;
 use Carbon\CarbonImmutable;
 use Carbon\WeekDay;
 use RuntimeException;
 
 class PanelPageDataService
 {
+    private const SALES_DATA_SOURCE_CODES = [
+        'sales_main_dashboard',
+        'sales_online_perakende_detail',
+        'sales_bayi_proje_detail',
+        'sales_customer_search',
+    ];
+
     public function __construct(
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
@@ -325,6 +333,13 @@ class PanelPageDataService
             'bypass_cache' => (bool) ($filters['bypass_cache'] ?? false),
         ];
 
+        if ($this->isSalesDataSource($source->code)) {
+            $payload = [
+                ...$payload,
+                ...$this->salesCariGroupFiltersFor($user),
+            ];
+        }
+
         $allowed = $source->allowed_params ?? [];
 
         if ($allowed === []) {
@@ -387,6 +402,54 @@ class PanelPageDataService
     {
         return str_starts_with($sourceCode, 'customer_')
             || str_starts_with($sourceCode, 'customers_');
+    }
+
+    private function isSalesDataSource(string $sourceCode): bool
+    {
+        return in_array($sourceCode, self::SALES_DATA_SOURCE_CODES, true);
+    }
+
+    /**
+     * @return array{allowed_cari_group_codes: string, denied_cari_group_codes: string}
+     */
+    private function salesCariGroupFiltersFor(User $user): array
+    {
+        $permissions = UserCariGroupPermission::query()
+            ->where('user_id', $user->id)
+            ->orderBy('cari_group_code')
+            ->get(['cari_group_code', 'mode']);
+
+        $denied = $this->safeCariGroupCodes(
+            $permissions
+                ->where('mode', UserCariGroupPermission::MODE_DENY)
+                ->pluck('cari_group_code')
+                ->all()
+        );
+        $allowed = array_values(array_diff($this->safeCariGroupCodes(
+            $permissions
+                ->where('mode', UserCariGroupPermission::MODE_ALLOW)
+                ->pluck('cari_group_code')
+                ->all()
+        ), $denied));
+
+        return [
+            'allowed_cari_group_codes' => implode(',', $allowed),
+            'denied_cari_group_codes' => implode(',', $denied),
+        ];
+    }
+
+    /**
+     * @param  iterable<int, mixed>  $codes
+     * @return array<int, string>
+     */
+    private function safeCariGroupCodes(iterable $codes): array
+    {
+        return collect($codes)
+            ->map(fn (mixed $code): string => trim((string) $code))
+            ->filter(fn (string $code): bool => $code !== '' && preg_match('/^[0-9A-Za-zÇĞİÖŞÜçğıöşü_.-]+$/u', $code) === 1)
+            ->unique()
+            ->values()
+            ->all();
     }
 
     /**
