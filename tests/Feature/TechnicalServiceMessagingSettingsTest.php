@@ -513,12 +513,12 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 29)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
             ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 37)
+            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.direct_endpoint_count', 9)
             ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.fixed_query_count', 20)
-            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.contract_blocked_count', 5)
+            ->assertJsonPath('messaging_settings.mikro_api.operation_catalog.contract_blocked_count', 14)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
             ->json();
 

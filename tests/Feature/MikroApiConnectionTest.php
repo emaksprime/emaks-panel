@@ -6,9 +6,14 @@ use App\Models\User;
 use App\Services\Mikro\MikroApiClient;
 use App\Services\Mikro\MikroFixedQueryCatalog;
 use App\Services\Mikro\MikroOperationRegistry;
+use App\Services\Mikro\MikroResponseSchemaCatalog;
+use App\Services\Mikro\MikroRuntimeState;
 use Carbon\CarbonImmutable;
+use DomainException;
+use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Http\Client\Response as ClientResponse;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -47,7 +52,7 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 29)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
             ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 37)
+            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
@@ -234,11 +239,92 @@ class MikroApiConnectionTest extends TestCase
         $server = $client->listStocks('TEST');
         $fixed = $client->orderLines('123e4567-e89b-42d3-a456-426614174000', 10);
 
-        foreach ([$auth, $server, $fixed] as $result) {
-            $this->assertSame(MikroOperationRegistry::BLOCKED_SERVER_CANARY, $result['error_code']);
+        foreach ([$auth, $server] as $result) {
+            $this->assertSame(MikroOperationRegistry::BLOCKED_RESPONSE_SCHEMA, $result['error_code']);
             $this->assertSame(0, $result['attempt_count']);
             $this->assertFalse($result['fallback_used']);
         }
+        $this->assertSame(MikroOperationRegistry::BLOCKED_SERVER_CANARY, $fixed['error_code']);
+        $this->assertSame(0, $fixed['attempt_count']);
+        $this->assertFalse($fixed['fallback_used']);
+        Http::assertNothingSent();
+    }
+
+    public function test_operation_schemas_drop_unknown_fields_and_re_sanitize_last_good_snapshots(): void
+    {
+        $schemas = app(MikroResponseSchemaCatalog::class);
+        $runtime = app(MikroRuntimeState::class);
+        $raw = [[
+            'invoice_guid' => '123e4567-e89b-42d3-a456-426614174000',
+            'amount' => 125.50,
+            'customer_phone' => '+905551112233',
+            'tax_number' => '1111111111',
+            'email' => 'secret@example.test',
+            'address' => 'secret-address',
+            'api_key' => 'SECRET-API-KEY',
+            'password' => 'SECRET-PASSWORD',
+            'token' => 'SECRET-TOKEN',
+            'internal_note' => 'secret-note',
+            'unexpected_nested' => ['secret' => 'nested-secret'],
+        ]];
+
+        $normalized = $schemas->normalize('invoice.list', $raw);
+        $this->assertSame([[
+            'invoice_guid' => '123e4567-e89b-42d3-a456-426614174000',
+            'amount' => 125.50,
+        ]], $normalized);
+
+        $runtime->storeLastGood(
+            'invoice.list',
+            ['date_from' => '2026-07-01', 'date_to' => '2026-07-31'],
+            $raw,
+            'mikro',
+            '2026-07-29T14:00:00+03:00',
+            '123e4567-e89b-42d3-a456-426614174000',
+        );
+        $snapshot = $runtime->lastGood('invoice.list', ['date_to' => '2026-07-31', 'date_from' => '2026-07-01']);
+        $this->assertSame($normalized, $snapshot['data']);
+
+        $encoded = json_encode([$normalized, $snapshot], JSON_THROW_ON_ERROR);
+        foreach (['customer_phone', 'tax_number', 'email', 'address', 'api_key', 'password', 'token', 'internal_note', 'unexpected_nested', 'nested-secret'] as $forbidden) {
+            $this->assertStringNotContainsString($forbidden, $encoded);
+        }
+
+        $this->assertSame(
+            [['service_status' => 'UP']],
+            $schemas->normalize('health.check', [['service_status' => 'UP', 'api_key' => 'SECRET']]),
+        );
+
+        try {
+            $schemas->normalize('customer.list', [['cari_kod' => 'TEST', 'unexpected' => 'SECRET']]);
+            $this->fail('An unverified direct response schema must not normalize data.');
+        } catch (DomainException $exception) {
+            $this->assertSame(MikroOperationRegistry::BLOCKED_RESPONSE_SCHEMA, $exception->getMessage());
+        }
+        try {
+            $schemas->normalize('invoice.list', [['api_key' => 'SECRET', 'unexpected_nested' => ['secret' => 'VALUE']]]);
+            $this->fail('A response with no allowlisted fields must be invalid.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_INVALID_RESPONSE', $exception->getMessage());
+        }
+
+        $response = new ClientResponse(new Psr7Response(
+            200,
+            ['Content-Type' => 'application/json'],
+            json_encode(['Result' => ['not-a-record']], JSON_THROW_ON_ERROR),
+        ));
+        $successResult = new ReflectionMethod(app(MikroApiClient::class), 'successResult');
+        $result = $successResult->invoke(
+            app(MikroApiClient::class),
+            'invoice.list',
+            $response,
+            '123e4567-e89b-42d3-a456-426614174000',
+            microtime(true),
+            1,
+            'CLOSED',
+        );
+        $this->assertFalse($result['success']);
+        $this->assertSame('MIKRO_INVALID_RESPONSE', $result['error_code']);
         Http::assertNothingSent();
     }
 

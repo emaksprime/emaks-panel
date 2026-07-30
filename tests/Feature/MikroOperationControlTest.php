@@ -92,7 +92,7 @@ class MikroOperationControlTest extends TestCase
             ->assertOk();
 
         $operationBlocked = $client->listCustomers('TEST');
-        $this->assertSame('MIKRO_OPERATION_SERVER_CANARY_REQUIRED', $operationBlocked['error_code']);
+        $this->assertSame('MIKRO_RESPONSE_SCHEMA_UNVERIFIED', $operationBlocked['error_code']);
         Http::assertNothingSent();
     }
 

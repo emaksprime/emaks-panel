@@ -17,6 +17,7 @@ class MikroApiClient
     public function __construct(
         private readonly MikroOperationRegistry $registry,
         private readonly MikroFixedQueryCatalog $queries,
+        private readonly MikroResponseSchemaCatalog $responseSchemas,
         private readonly MikroDailyPasswordSigner $passwordSigner,
         private readonly MikroRuntimeState $runtimeState,
         private readonly TechnicalServiceMessagingSettingsService $settings,
@@ -281,7 +282,7 @@ class MikroApiClient
                 $result = $this->successResult($operationKey, $response, $correlationId, $startedAt, $attempt, $circuit['circuit_state']);
                 if ($result['success']) {
                     $this->runtimeState->recordSuccess($origin, $operationKey);
-                    $this->runtimeState->storeLastGood($operationKey, $snapshotFilters, (array) $result['data'], (string) $result['source'], (string) $result['freshness_at']);
+                    $this->runtimeState->storeLastGood($operationKey, $snapshotFilters, (array) $result['data'], (string) $result['source'], (string) $result['freshness_at'], $correlationId);
 
                     return $result;
                 }
@@ -338,7 +339,7 @@ class MikroApiClient
     private function successResult(string $operationKey, Response $response, string $correlationId, float $startedAt, int $attempt, string $circuitState): array
     {
         if ($operationKey === 'health.check') {
-            $data = [['service_status' => 'UP']];
+            $rows = [['service_status' => 'UP']];
         } else {
             $json = $response->json();
             if (! is_array($json)) {
@@ -347,7 +348,20 @@ class MikroApiClient
             if (($json['success'] ?? true) === false || ($json['Success'] ?? true) === false) {
                 return $this->failureResult($operationKey, 'MIKRO_BUSINESS_ERROR', $correlationId, $response->status(), $attempt);
             }
-            $data = array_map(fn (array $row): array => $this->normalizeRow($row), $this->rows($json));
+            $rows = $this->rows($json);
+            if ($rows === null) {
+                return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $response->status(), $attempt);
+            }
+        }
+
+        try {
+            $data = $this->responseSchemas->normalize($operationKey, $rows);
+        } catch (DomainException $exception) {
+            $errorCode = $exception->getMessage() === MikroOperationRegistry::BLOCKED_RESPONSE_SCHEMA
+                ? MikroOperationRegistry::BLOCKED_RESPONSE_SCHEMA
+                : 'MIKRO_INVALID_RESPONSE';
+
+            return $this->failureResult($operationKey, $errorCode, $correlationId, $response->status(), $attempt);
         }
 
         $freshness = now()->toIso8601String();
@@ -430,25 +444,21 @@ class MikroApiClient
         return $errorCode === 'MIKRO_SERVER_ERROR' && in_array($status, [502, 503, 504], true);
     }
 
-    private function rows(array $json): array
+    private function rows(array $json): ?array
     {
         foreach (['data', 'Data', 'result', 'Result', 'rows', 'Rows'] as $key) {
             if (is_array($json[$key] ?? null)) {
-                return array_values(array_filter($json[$key], 'is_array'));
+                $rows = array_values($json[$key]);
+
+                return count(array_filter($rows, 'is_array')) === count($rows) ? $rows : null;
             }
         }
 
-        return array_is_list($json) ? array_values(array_filter($json, 'is_array')) : [];
-    }
-
-    private function normalizeRow(array $row): array
-    {
-        $normalized = [];
-        foreach ($row as $key => $value) {
-            $normalized[Str::of((string) $key)->ascii()->snake()->value()] = $value;
+        if (! array_is_list($json)) {
+            return null;
         }
 
-        return $normalized;
+        return count(array_filter($json, 'is_array')) === count($json) ? array_values($json) : null;
     }
 
     private function assertPage(int $size, int $index): void

@@ -14,6 +14,8 @@ class MikroOperationRegistry
 
     public const BLOCKED_SERVER_CANARY = 'MIKRO_OPERATION_SERVER_CANARY_REQUIRED';
 
+    public const BLOCKED_RESPONSE_SCHEMA = 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED';
+
     public const SOURCE_MODES = ['mikro', 'n8n', 'shadow_compare', 'disabled'];
 
     /** @var array<string, array<string, mixed>> */
@@ -73,6 +75,10 @@ class MikroOperationRegistry
         'order.create', 'order.update', 'order.delete',
     ];
 
+    public function __construct(
+        private readonly MikroResponseSchemaCatalog $responseSchemas,
+    ) {}
+
     /** @return array<string, mixed> */
     public function read(string $operationKey): array
     {
@@ -123,6 +129,9 @@ class MikroOperationRegistry
         }
         if (! (bool) ($settings['read_sync_enabled'] ?? false)) {
             throw new DomainException('MIKRO_READ_SYNC_DISABLED');
+        }
+        if (($operation['response_schema_status'] ?? null) !== MikroResponseSchemaCatalog::VERIFIED) {
+            throw new DomainException(self::BLOCKED_RESPONSE_SCHEMA);
         }
         if (! ($operation['runtime_eligible'] ?? false)) {
             throw new DomainException(self::BLOCKED_SERVER_CANARY);
@@ -195,7 +204,13 @@ class MikroOperationRegistry
             'server_verified_read_count' => count(array_filter($reads, fn (array $row): bool => in_array($row['evidence_status'], ['OFFICIAL_AND_SERVER_VERIFIED', 'DEPOT_AND_SERVER_VERIFIED'], true))),
             'server_unverified_count' => count(array_filter($operations, fn (array $row): bool => $row['evidence_status'] === 'DOCUMENTED_SERVER_UNVERIFIED')),
             'runtime_eligible_read_count' => count(array_filter($reads, fn (array $row): bool => $row['runtime_eligible'])),
-            'matrix_complete' => count($operations) === 43 && count(array_filter($operations, fn (array $row): bool => in_array($row['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES, true) && preg_match('/^[a-f0-9]{64}$/', (string) $row['evidence_hash']) === 1)) === 43,
+            'response_schema_verified_count' => count(array_filter($reads, fn (array $row): bool => $row['response_schema_status'] === MikroResponseSchemaCatalog::VERIFIED)),
+            'response_schema_missing_count' => count(array_filter($reads, fn (array $row): bool => $row['response_schema_status'] === MikroResponseSchemaCatalog::MISSING)),
+            'parity_status_counts' => array_count_values(array_map(fn (array $row): string => (string) $row['business_parity_source']['status'], $operations)),
+            'matrix_complete' => count($operations) === 43 && count(array_filter($operations, fn (array $row): bool => in_array($row['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES, true)
+                && preg_match('/^[a-f0-9]{64}$/', (string) $row['evidence_hash']) === 1
+                && is_array($row['business_parity_source'])
+                && in_array($row['business_parity_source']['status'] ?? null, MikroContractEvidenceCatalog::PARITY_STATUSES, true))) === 43,
             'enabled_keys' => array_values(array_map(fn (array $row): string => $row['operation_key'], array_filter($reads, fn (array $row): bool => $row['runtime_enabled']))),
             'operations' => $operations,
         ];
@@ -248,6 +263,9 @@ class MikroOperationRegistry
     {
         $adapter = $definition['adapter'];
         $evidence = MikroContractEvidenceCatalog::for($key, 'READ', $adapter);
+        $schema = $this->responseSchemas->descriptor($key);
+        $runtimeEligible = (bool) $evidence['runtime_eligible']
+            && $schema['schema_status'] === MikroResponseSchemaCatalog::VERIFIED;
 
         return [
             'operation_key' => $key,
@@ -258,8 +276,8 @@ class MikroOperationRegistry
             'contract_status' => $evidence['contract_status'],
             'evidence_status' => $evidence['evidence_status'],
             'implementation_status' => $evidence['contract_status'] === 'CONTRACT_BLOCKED' ? 'BLOCKED' : ($definition['implementation'] ?? 'IMPLEMENTED'),
-            'runtime_eligible' => $evidence['runtime_eligible'],
-            'runtime_enabled' => $evidence['runtime_enabled'],
+            'runtime_eligible' => $runtimeEligible,
+            'runtime_enabled' => $runtimeEligible && (bool) $evidence['runtime_enabled'],
             'adapter_type' => $evidence['contract_status'] === 'CONTRACT_BLOCKED' ? 'CONTRACT_BLOCKED' : $adapter,
             'endpoint' => $evidence['exact_path'],
             'method' => $evidence['exact_http_method'],
@@ -277,8 +295,14 @@ class MikroOperationRegistry
             'source_mode' => $definition['source'],
             'n8n_fallback' => $definition['fallback'],
             'parity_fields' => $definition['parity'],
+            'response_schema_status' => $schema['schema_status'],
+            'normalizer_id' => $schema['normalizer_id'],
+            'allowed_response_fields' => $schema['allowed_record_fields'],
+            'snapshot_allowed' => $schema['snapshot_allowed'],
             'approval_required' => false,
-            'blocker' => $evidence['blocker'] ?? $definition['blocker'] ?? null,
+            'blocker' => $schema['blocker'] ?? $evidence['blocker'] ?? $definition['blocker'] ?? null,
+            'evidence_blocker' => $evidence['blocker'] ?? null,
+            'response_schema_blocker' => $schema['blocker'],
             ...$this->evidenceFields($evidence),
         ];
     }
@@ -316,6 +340,10 @@ class MikroOperationRegistry
             'source_mode' => 'disabled',
             'n8n_fallback' => false,
             'parity_fields' => [],
+            'response_schema_status' => MikroResponseSchemaCatalog::MISSING,
+            'normalizer_id' => null,
+            'allowed_response_fields' => [],
+            'snapshot_allowed' => false,
             'approval_required' => true,
             'blocker' => $evidence['blocker'],
             ...$this->evidenceFields($evidence),
@@ -368,7 +396,7 @@ class MikroOperationRegistry
             'depot_method' => $evidence['depot_method'],
             'installed_server_canary' => $evidence['installed_server_canary'],
             'v17_table_evidence' => array_values(array_filter($evidence['source_documents'], fn (array $source): bool => ($source['type'] ?? null) === 'fly_v17_table')),
-            'business_parity_source' => null,
+            'business_parity_source' => $evidence['business_parity_source'],
             'evidence_hash' => $evidence['evidence_hash'],
             'api_key_field' => $evidence['api_key_field'],
         ];

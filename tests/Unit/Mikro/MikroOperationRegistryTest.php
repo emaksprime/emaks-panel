@@ -3,6 +3,7 @@
 namespace Tests\Unit\Mikro;
 
 use App\Services\Mikro\MikroContractEvidenceCatalog;
+use App\Services\Mikro\MikroFixedQueryCatalog;
 use App\Services\Mikro\MikroOperationRegistry;
 use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -25,10 +26,17 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame(0, $summary['enabled_write_count']);
         $this->assertSame(9, $summary['direct_endpoint_count']);
         $this->assertSame(20, $summary['fixed_query_count']);
-        $this->assertSame(5, $summary['contract_blocked_count']);
+        $this->assertSame(14, $summary['contract_blocked_count']);
         $this->assertSame(1, $summary['server_verified_read_count']);
-        $this->assertSame(37, $summary['server_unverified_count']);
+        $this->assertSame(28, $summary['server_unverified_count']);
         $this->assertSame(1, $summary['runtime_eligible_read_count']);
+        $this->assertSame(21, $summary['response_schema_verified_count']);
+        $this->assertSame(11, $summary['response_schema_missing_count']);
+        $this->assertSame(20, $summary['parity_status_counts']['VERIFIED_SOURCE']);
+        $this->assertSame(8, $summary['parity_status_counts']['PENDING_SOURCE']);
+        $this->assertSame(1, $summary['parity_status_counts']['NOT_APPLICABLE_SYSTEM']);
+        $this->assertSame(11, $summary['parity_status_counts']['WRITE_REQUIRES_READBACK_CONTRACT']);
+        $this->assertSame(3, $summary['parity_status_counts']['CONTRACT_BLOCKED']);
         $this->assertTrue($summary['matrix_complete']);
         $this->assertSame(['health.check'], $summary['enabled_keys']);
 
@@ -51,7 +59,9 @@ class MikroOperationRegistryTest extends TestCase
             'order.dispatch.legacy.create', 'proforma.create', 'return.create', 'exchange.create',
         ] as $key) {
             $this->assertContains($key, $keys);
-            $this->assertFalse($registry->writeCapability($key)['runtime_enabled']);
+            $write = $registry->writeCapability($key);
+            $this->assertSame('CONTRACT_BLOCKED', $write['contract_status']);
+            $this->assertFalse($write['runtime_enabled']);
         }
     }
 
@@ -69,6 +79,21 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame('order.list', $registry->read('order.list')['fixed_query_id']);
         $this->assertSame('DOCUMENTED_SERVER_UNVERIFIED', $registry->read('customer.list')['evidence_status']);
         $this->assertFalse($registry->read('customer.list')['runtime_eligible']);
+
+        $queries = app(MikroFixedQueryCatalog::class);
+        $definition = $queries->definition('invoice.list');
+        $invoiceSql = $queries->render('invoice.list', [
+            'date_from' => '2026-01-01',
+            'date_to' => '2026-01-31',
+            'limit' => 50,
+        ]);
+        $this->assertSame('ALL_INVOICES', $definition['business_scope']);
+        $this->assertStringContainsString('cha.cha_cinsi IN (6, 7, 13)', $invoiceSql);
+        $this->assertStringNotContainsString('cha.cha_evrak_tip IN (6, 7, 13)', $invoiceSql);
+        $this->assertStringNotContainsString('cha.cha_evrak_tip =', $invoiceSql);
+        $this->assertStringNotContainsString('cha.cha_normal_Iade', $invoiceSql);
+        $this->assertStringContainsString('TOP (50)', $invoiceSql);
+        $this->assertMatchesRegularExpression('/^SELECT\b/i', ltrim($invoiceSql));
     }
 
     public function test_contract_blocked_unknown_and_generic_operations_fail_closed(): void
@@ -111,7 +136,7 @@ class MikroOperationRegistryTest extends TestCase
                 $registry->assertReadAllowed('customer.list', $settings);
                 $this->fail('Read gate should reject the operation.');
             } catch (DomainException $exception) {
-                $this->assertContains($exception->getMessage(), ['MIKRO_DISABLED', 'MIKRO_READ_SYNC_DISABLED', MikroOperationRegistry::BLOCKED_SERVER_CANARY]);
+                $this->assertContains($exception->getMessage(), ['MIKRO_DISABLED', 'MIKRO_READ_SYNC_DISABLED', MikroOperationRegistry::BLOCKED_RESPONSE_SCHEMA]);
             }
         }
 
@@ -145,6 +170,7 @@ class MikroOperationRegistryTest extends TestCase
     public function test_every_operation_carries_deterministic_authority_fields(): void
     {
         $registry = app(MikroOperationRegistry::class);
+        $queries = app(MikroFixedQueryCatalog::class);
 
         foreach ($registry->catalog() as $operation) {
             foreach (['operation_key', 'mode', 'official_doc_reference', 'official_method', 'exact_path', 'exact_path_casing', 'request_schema', 'response_schema', 'depot_evidence', 'installed_server_canary', 'v17_table_evidence', 'business_parity_source', 'evidence_status', 'runtime_enabled', 'blocker', 'evidence_hash'] as $field) {
@@ -152,12 +178,40 @@ class MikroOperationRegistryTest extends TestCase
             }
             $this->assertContains($operation['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES);
             $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $operation['evidence_hash']);
+            $this->assertIsArray($operation['business_parity_source']);
+            $this->assertContains($operation['business_parity_source']['status'], MikroContractEvidenceCatalog::PARITY_STATUSES);
             if (! $operation['runtime_eligible']) {
                 $this->assertFalse($operation['runtime_enabled']);
             }
             if ($operation['adapter_type'] === 'FIXED_QUERY') {
                 $this->assertNotEmpty($operation['v17_table_evidence']);
+                $sql = $queries->definition($operation['fixed_query_id'])['sql'];
+                foreach ($operation['allowed_response_fields'] as $field) {
+                    $this->assertMatchesRegularExpression('/\bAS\s+'.preg_quote($field, '/').'\b/i', $sql);
+                }
             }
+        }
+    }
+
+    public function test_offline_only_write_contracts_are_blocked_without_promoted_evidence(): void
+    {
+        $registry = app(MikroOperationRegistry::class);
+
+        foreach ([
+            'customer.save', 'order.save', 'invoice.create', 'dispatch.create',
+            'record.link.save', 'record.bulk.save', 'stock.transfer.create',
+            'order.dispatch.legacy.create', 'proforma.create',
+        ] as $operationKey) {
+            $operation = $registry->writeCapability($operationKey);
+            $this->assertSame('CONTRACT_BLOCKED', $operation['contract_status']);
+            $this->assertSame('CONTRACT_BLOCKED', $operation['evidence_status']);
+            $this->assertSame('OFFICIAL_OR_DEPOT_CONTRACT_NOT_VERIFIED', $operation['blocker']);
+            $this->assertNull($operation['endpoint']);
+            $this->assertNull($operation['method']);
+            $this->assertNotNull($operation['local_postman_item']);
+            $this->assertFalse($operation['runtime_eligible']);
+            $this->assertFalse($operation['runtime_enabled']);
+            $this->assertSame('WRITE_REQUIRES_READBACK_CONTRACT', $operation['business_parity_source']['status']);
         }
     }
 

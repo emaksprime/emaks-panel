@@ -16,6 +16,14 @@ final class MikroContractEvidenceCatalog
         'CONTRACT_BLOCKED',
     ];
 
+    public const PARITY_STATUSES = [
+        'VERIFIED_SOURCE',
+        'PENDING_SOURCE',
+        'NOT_APPLICABLE_SYSTEM',
+        'WRITE_REQUIRES_READBACK_CONTRACT',
+        'CONTRACT_BLOCKED',
+    ];
+
     private const LOCAL_POSTMAN = 'C:\\dev\\datas\\MikroAPI.postman_collection_V17.json';
 
     private const LOCAL_POSTMAN_HASH = '2c58c76c6f34758108612f43a292ceda7ebc4c89edc5479d21934e0509301e73';
@@ -210,6 +218,9 @@ final class MikroContractEvidenceCatalog
         $status = $entry['status'] ?? 'DOCUMENTED_SERVER_UNVERIFIED';
 
         return self::descriptor([
+            'operation_key' => $operationKey,
+            'mode' => 'READ',
+            'adapter_type' => 'DIRECT_ENDPOINT',
             'contract_status' => 'DOCUMENTED',
             'evidence_status' => $status,
             'runtime_eligible' => $status === 'OFFICIAL_AND_SERVER_VERIFIED',
@@ -249,6 +260,9 @@ final class MikroContractEvidenceCatalog
         }
 
         return self::descriptor([
+            'operation_key' => $operationKey,
+            'mode' => 'READ',
+            'adapter_type' => 'FIXED_QUERY',
             'contract_status' => 'DOCUMENTED',
             'evidence_status' => 'DOCUMENTED_SERVER_UNVERIFIED',
             'runtime_eligible' => false,
@@ -275,23 +289,26 @@ final class MikroContractEvidenceCatalog
         $entry = self::WRITES[$operationKey];
 
         return self::descriptor([
-            'contract_status' => 'DOCUMENTED',
-            'evidence_status' => 'DOCUMENTED_SERVER_UNVERIFIED',
+            'operation_key' => $operationKey,
+            'mode' => 'WRITE',
+            'adapter_type' => 'CONTRACT_BLOCKED',
+            'contract_status' => 'CONTRACT_BLOCKED',
+            'evidence_status' => 'CONTRACT_BLOCKED',
             'runtime_eligible' => false,
-            'installed_server_canary' => 'NOT_RUN_PANEL_CREDENTIALS_MISSING',
+            'installed_server_canary' => 'NOT_RUN_CONTRACT_BLOCKED',
             'official_api_page' => null,
             'official_postman_item' => null,
             'local_postman_item' => $entry['item'],
-            'exact_http_method' => 'POST',
-            'exact_path' => $entry['path'],
-            'exact_path_casing' => $entry['path'],
-            'request_root_keys' => $entry['request'],
-            'response_root_keys' => ['UNSPECIFIED_IN_SOURCE'],
+            'exact_http_method' => null,
+            'exact_path' => null,
+            'exact_path_casing' => null,
+            'request_root_keys' => [],
+            'response_root_keys' => [],
             'source_documents' => [self::localPostmanSource()],
-            'source_item_category' => $entry['item'],
+            'source_item_category' => 'LOCAL_SNAPSHOT_CROSSCHECK / '.$entry['item'],
             'evidence_hash' => $entry['evidence_hash'],
-            'api_key_field' => 'ApiKey',
-            'blocker' => 'Runtime write is disabled; no live write, outbox, reconciliation, or installed-server canary is authorized.',
+            'api_key_field' => null,
+            'blocker' => 'OFFICIAL_OR_DEPOT_CONTRACT_NOT_VERIFIED',
         ]);
     }
 
@@ -314,6 +331,9 @@ final class MikroContractEvidenceCatalog
         }
 
         return self::descriptor([
+            'operation_key' => $operationKey,
+            'mode' => $mode,
+            'adapter_type' => 'CONTRACT_BLOCKED',
             'contract_status' => 'CONTRACT_BLOCKED',
             'evidence_status' => 'CONTRACT_BLOCKED',
             'runtime_eligible' => false,
@@ -357,10 +377,67 @@ final class MikroContractEvidenceCatalog
             'response_schema' => $values['response_root_keys'],
             'depot_evidence' => null,
             'v17_table_evidence' => $tableEvidence,
-            'business_parity_source' => null,
+            'business_parity_source' => self::businessParity(
+                (string) $values['operation_key'],
+                (string) $values['mode'],
+                (string) $values['adapter_type'],
+                (string) $values['contract_status'],
+            ),
             'official_changelog_reference' => null,
             'depot_source_file' => null,
             'depot_method' => null,
+        ];
+    }
+
+    /** @return array{status:string,source_type:?string,source_id:?string,evidence_reference:?string,blocker:?string} */
+    private static function businessParity(string $operationKey, string $mode, string $adapterType, string $contractStatus): array
+    {
+        if ($mode === 'WRITE') {
+            return [
+                'status' => 'WRITE_REQUIRES_READBACK_CONTRACT',
+                'source_type' => null,
+                'source_id' => null,
+                'evidence_reference' => null,
+                'blocker' => 'READBACK_CONTRACT_NOT_VERIFIED',
+            ];
+        }
+
+        if ($operationKey === 'health.check') {
+            return [
+                'status' => 'NOT_APPLICABLE_SYSTEM',
+                'source_type' => null,
+                'source_id' => null,
+                'evidence_reference' => null,
+                'blocker' => null,
+            ];
+        }
+
+        if ($contractStatus === 'CONTRACT_BLOCKED') {
+            return [
+                'status' => 'CONTRACT_BLOCKED',
+                'source_type' => null,
+                'source_id' => null,
+                'evidence_reference' => null,
+                'blocker' => 'PARITY_SOURCE_UNAVAILABLE_FOR_BLOCKED_CONTRACT',
+            ];
+        }
+
+        if ($adapterType === 'FIXED_QUERY') {
+            return [
+                'status' => 'VERIFIED_SOURCE',
+                'source_type' => 'FIXED_QUERY_AND_V17_TABLE_CONTRACT',
+                'source_id' => $operationKey,
+                'evidence_reference' => self::FIXED_QUERY_HASHES[$operationKey],
+                'blocker' => null,
+            ];
+        }
+
+        return [
+            'status' => 'PENDING_SOURCE',
+            'source_type' => null,
+            'source_id' => null,
+            'evidence_reference' => null,
+            'blocker' => 'PARITY_SOURCE_MISSING',
         ];
     }
 

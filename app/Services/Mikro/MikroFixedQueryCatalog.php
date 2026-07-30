@@ -90,9 +90,10 @@ class MikroFixedQueryCatalog
             'tables' => ['SIPARISLER'],
         ],
         'invoice.list' => [
-            'sql' => 'SELECT TOP ([[limit]]) cha.cha_Guid AS invoice_guid, cha.cha_tarihi AS invoice_date, cha.cha_kod AS customer_code, cha.cha_evrakno_seri AS document_series, cha.cha_evrakno_sira AS document_number, cha.cha_meblag AS amount FROM dbo.CARI_HESAP_HAREKETLERI AS cha WITH (NOLOCK) WHERE cha.cha_evrak_tip IN (6, 7, 13) AND CAST(cha.cha_tarihi AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY cha.cha_tarihi DESC, cha.cha_Guid DESC',
+            'sql' => 'SELECT TOP ([[limit]]) cha.cha_Guid AS invoice_guid, cha.cha_tarihi AS invoice_date, cha.cha_kod AS customer_code, cha.cha_evrakno_seri AS document_series, cha.cha_evrakno_sira AS document_number, cha.cha_meblag AS amount FROM dbo.CARI_HESAP_HAREKETLERI AS cha WITH (NOLOCK) WHERE cha.cha_cinsi IN (6, 7, 13) AND CAST(cha.cha_tarihi AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY cha.cha_tarihi DESC, cha.cha_Guid DESC',
             'parameters' => ['date_from' => 'date', 'date_to' => 'date', 'limit' => 'limit'],
             'tables' => ['CARI_HESAP_HAREKETLERI'],
+            'business_scope' => 'ALL_INVOICES',
         ],
         'invoice.detail' => [
             'sql' => 'SELECT TOP 1 cha.cha_Guid AS invoice_guid, cha.cha_tarihi AS invoice_date, cha.cha_kod AS customer_code, cha.cha_evrakno_seri AS document_series, cha.cha_evrakno_sira AS document_number, cha.cha_aciklama AS description, cha.cha_meblag AS amount FROM dbo.CARI_HESAP_HAREKETLERI AS cha WITH (NOLOCK) WHERE cha.cha_Guid = [[invoice_guid]]',

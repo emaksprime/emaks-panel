@@ -12,6 +12,10 @@ class MikroRuntimeState
 
     private const SNAPSHOT_TTL_SECONDS = 86400;
 
+    public function __construct(
+        private readonly MikroResponseSchemaCatalog $responseSchemas,
+    ) {}
+
     /**
      * @return array{allowed:bool,circuit_state:string}
      */
@@ -97,13 +101,16 @@ class MikroRuntimeState
         array $data,
         string $source,
         string $freshnessAt,
+        ?string $correlationId = null,
     ): void {
+        $sanitized = $this->responseSchemas->sanitizeSnapshot($operationKey, $data);
         Cache::put($this->snapshotKey($operationKey, $filters), [
             'operation_key' => $operationKey,
             'filter_fingerprint' => $this->filterFingerprint($filters),
-            'data' => $data,
-            'source' => $source,
-            'freshness_at' => $freshnessAt,
+            'data' => $sanitized,
+            'source' => in_array($source, ['mikro', 'n8n', 'shadow_compare'], true) ? $source : 'unknown',
+            'freshness_at' => $this->safeFreshness($freshnessAt),
+            'correlation_id' => $this->safeCorrelationId($correlationId),
         ], self::SNAPSHOT_TTL_SECONDS);
     }
 
@@ -114,7 +121,29 @@ class MikroRuntimeState
     {
         $snapshot = Cache::get($this->snapshotKey($operationKey, $filters));
 
-        return is_array($snapshot) ? $snapshot : null;
+        if (! is_array($snapshot) || ! is_array($snapshot['data'] ?? null)) {
+            return null;
+        }
+
+        try {
+            $snapshot['data'] = $this->responseSchemas->sanitizeSnapshot($operationKey, $snapshot['data']);
+        } catch (\DomainException) {
+            return null;
+        }
+        $snapshot['source'] = in_array($snapshot['source'] ?? null, ['mikro', 'n8n', 'shadow_compare'], true)
+            ? $snapshot['source']
+            : 'unknown';
+        $snapshot['freshness_at'] = $this->safeFreshness((string) ($snapshot['freshness_at'] ?? ''));
+        $snapshot['correlation_id'] = $this->safeCorrelationId($snapshot['correlation_id'] ?? null);
+
+        return array_intersect_key($snapshot, array_flip([
+            'operation_key',
+            'filter_fingerprint',
+            'data',
+            'source',
+            'freshness_at',
+            'correlation_id',
+        ]));
     }
 
     public function filterFingerprint(array $filters): string
@@ -132,6 +161,23 @@ class MikroRuntimeState
     private function snapshotKey(string $operationKey, array $filters): string
     {
         return 'mikro:last-good:'.hash('sha256', $operationKey.':'.$this->filterFingerprint($filters));
+    }
+
+    private function safeFreshness(string $value): string
+    {
+        try {
+            return (new \DateTimeImmutable($value))->format(DATE_ATOM);
+        } catch (\Throwable) {
+            return now()->toIso8601String();
+        }
+    }
+
+    private function safeCorrelationId(mixed $value): ?string
+    {
+        return is_string($value)
+            && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value) === 1
+                ? strtolower($value)
+                : null;
     }
 
     private function sortRecursive(array &$values): void
