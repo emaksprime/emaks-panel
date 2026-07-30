@@ -2480,45 +2480,99 @@ class TechnicalServiceMessagingSettingsService
      */
     public function saveMikroApiCredentials(array $values): array
     {
-        $apiKey = trim((string) ($values['api_key'] ?? ''));
-        $token = trim((string) ($values['token'] ?? ''));
-        $userCode = trim((string) ($values['user_code'] ?? ''));
-        $password = trim((string) ($values['password'] ?? ''));
+        $credential = IntegrationProviderCredential::query()->firstOrNew([
+            'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
+            'provider' => 'mikro_api',
+            'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
+            'mode' => IntegrationProviderCredential::MODE_LIVE,
+        ]);
+        $updates = [];
 
-        if ($apiKey === '' || $userCode === '' || $password === '') {
+        foreach ([
+            'api_key' => ['encrypted' => 'api_key_encrypted', 'mask' => 'api_key_mask'],
+            'password' => ['encrypted' => 'password_encrypted', 'mask' => null],
+            'token' => ['encrypted' => 'token_encrypted', 'mask' => 'token_mask'],
+        ] as $input => $fields) {
+            if (! array_key_exists($input, $values)) {
+                continue;
+            }
+
+            $value = trim((string) $values[$input]);
+            if ($value === '') {
+                continue;
+            }
+
+            $updates[$fields['encrypted']] = $value;
+            if ($fields['mask'] !== null) {
+                $updates[$fields['mask']] = $this->maskValue($value);
+            }
+        }
+
+        if ($updates === []) {
+            return $this->payload();
+        }
+
+        $credential->fill($updates);
+        $credential->forceFill([
+            'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
+            'created_by' => $credential->created_by ?? Auth::id(),
+            'updated_by' => Auth::id(),
+            'metadata' => [
+                ...(array) ($credential->metadata ?? []),
+                'auth' => filled($credential->token_encrypted) ? 'api_key_basic_token' : 'api_key_basic',
+                'password_transform' => 'none_by_panel',
+            ],
+        ])->save();
+
+        return $this->payload();
+    }
+
+    /**
+     * @param  array<int, string>  $targets
+     * @return array<string, mixed>
+     */
+    public function clearMikroApiCredentials(array $targets): array
+    {
+        $allowed = [
+            'api_key' => ['api_key_encrypted', 'api_key_mask'],
+            'password' => ['password_encrypted'],
+            'token' => ['token_encrypted', 'token_mask'],
+        ];
+        $targets = array_values(array_unique($targets));
+
+        if ($targets === [] || array_diff($targets, array_keys($allowed)) !== []) {
             throw ValidationException::withMessages([
-                'credentials' => 'Mikro API key, kullanıcı kodu ve parola zorunlu.',
+                'credentials' => 'Temizlenecek Mikro secret alanı geçersiz.',
             ]);
         }
 
-        $credential = IntegrationProviderCredential::query()->updateOrCreate(
-            [
-                'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
-                'provider' => 'mikro_api',
-                'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
-                'mode' => IntegrationProviderCredential::MODE_LIVE,
-            ],
-            [
-                'username_encrypted' => $userCode,
-                'password_encrypted' => $password,
-                'api_key_encrypted' => $apiKey,
-                'token_encrypted' => $token === '' ? null : $token,
-                'username_mask' => $this->maskValue($userCode),
-                'api_key_mask' => $this->maskValue($apiKey),
-                'token_mask' => $token === '' ? null : $this->maskValue($token),
-                'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
-                'created_by' => Auth::id(),
-                'updated_by' => Auth::id(),
-                'metadata' => [
-                    'auth' => $token === '' ? 'api_key_basic' : 'api_key_basic_token',
-                    'password_transform' => 'none_by_panel',
-                ],
-            ],
-        );
-
-        if ($credential->created_by === null) {
-            $credential->forceFill(['created_by' => Auth::id()])->save();
+        $credential = $this->credential('mikro_api');
+        if ($credential === null) {
+            return $this->payload();
         }
+
+        $updates = [];
+        foreach ($targets as $target) {
+            foreach ($allowed[$target] as $field) {
+                $updates[$field] = null;
+            }
+        }
+
+        $credential->fill($updates);
+        $hasSecret = filled($credential->api_key_encrypted)
+            || filled($credential->password_encrypted)
+            || filled($credential->token_encrypted);
+        $credential->forceFill([
+            'credentials_status' => $hasSecret
+                ? IntegrationProviderCredential::STATUS_CONFIGURED
+                : IntegrationProviderCredential::STATUS_MISSING,
+            'updated_by' => Auth::id(),
+            'metadata' => [
+                ...(array) ($credential->metadata ?? []),
+                'auth' => filled($credential->token_encrypted) ? 'api_key_basic_token' : 'api_key_basic',
+                'last_clear_targets' => $targets,
+            ],
+        ])->save();
 
         return $this->payload();
     }
@@ -2620,6 +2674,7 @@ class TechnicalServiceMessagingSettingsService
     {
         $mikro = $this->settings()['mikro_api'];
         $credential = $this->credential('mikro_api');
+        $userCode = $this->mikroUserCode($mikro, $credential);
 
         return [
             'base_url' => $mikro['base_url'],
@@ -2638,11 +2693,45 @@ class TechnicalServiceMessagingSettingsService
             'operation_controls' => (array) ($mikro['operation_controls'] ?? []),
             'api_key' => $credential?->api_key_encrypted,
             'token' => $credential?->token_encrypted,
-            'user_code' => $credential?->username_encrypted,
+            'user_code' => $userCode,
             'password' => $credential?->password_encrypted,
+            'health_configuration_ready' => $this->mikroHealthConfigurationBlockerCodes($mikro) === [],
+            'health_blocker_codes' => $this->mikroHealthConfigurationBlockerCodes($mikro),
             'live_configuration_ready' => $this->mikroLiveConfigurationReady($mikro, $credential),
             'blocker_codes' => $this->mikroConfigurationBlockerCodes($mikro, $credential),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    public function recordMikroHealthCheckResult(array $result): array
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($result): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $next = $locked['settings'];
+                $success = (bool) ($result['success'] ?? false)
+                    && ! (bool) ($result['stale'] ?? false)
+                    && ! (bool) ($result['fallback_used'] ?? false)
+                    && blank($result['error_code'] ?? null);
+                $errorCode = $result['error_code'] ?? null;
+                $safeError = is_string($errorCode) && preg_match('/^MIKRO_[A-Z0-9_]+$/', $errorCode) === 1
+                    ? $errorCode
+                    : 'MIKRO_HEALTHCHECK_FAILED';
+
+                $next['mikro_api']['last_health_check_status'] = $success ? 'success' : 'failed';
+                $next['mikro_api']['last_error_redacted'] = $success ? null : $safeError;
+                $this->persistAuthoritativeSettings($locked, $next);
+            });
+        } finally {
+            $lock();
+        }
+
+        return $this->payload();
     }
 
     public function testModeEnabled(): bool
@@ -2869,6 +2958,7 @@ class TechnicalServiceMessagingSettingsService
                 'branch_code' => null,
                 'workstation_code' => null,
                 'fiscal_year' => null,
+                'user_code' => null,
                 'timeout_seconds' => 15,
                 'server_timezone' => (string) config('services.mikro_api.server_timezone', 'Europe/Istanbul'),
                 'license_status' => 'unknown',
@@ -4171,9 +4261,12 @@ class TechnicalServiceMessagingSettingsService
             'branch_code',
             'workstation_code',
             'fiscal_year',
+            'user_code',
             'server_timezone',
             'license_status',
             'app_customer_license_status',
+            'last_health_check_status',
+            'last_error_redacted',
         ] as $field) {
             if (array_key_exists($field, $updates)) {
                 $value = trim((string) $updates[$field]);
@@ -4503,9 +4596,13 @@ class TechnicalServiceMessagingSettingsService
         $catalog = $this->mikroOperationRegistry->summary($controls, $runtimeStates);
         $contractReady = $catalog['status'] === 'active'
             && ($catalog['matrix_complete'] ?? false);
-        $credentialsReady = $credential !== null
-            && filled($credential->api_key_encrypted)
-            && $credential->basicAuthReady();
+        $userCode = $this->mikroUserCode($mikro, $credential);
+        $apiKeyPresent = $credential !== null && filled($credential->api_key_encrypted);
+        $passwordPresent = $credential !== null && filled($credential->password_encrypted);
+        $tokenPresent = $credential !== null && filled($credential->token_encrypted);
+        $credentialsReady = $apiKeyPresent && $passwordPresent;
+        $healthBlockerCodes = $this->mikroHealthConfigurationBlockerCodes($mikro);
+        $healthConfigurationReady = $healthBlockerCodes === [];
         $liveConfigurationReady = $this->mikroLiveConfigurationReady($mikro, $credential);
         $healthReady = in_array(
             strtolower(trim((string) ($mikro['last_health_check_status'] ?? ''))),
@@ -4546,6 +4643,7 @@ class TechnicalServiceMessagingSettingsService
                 'MIKRO_WORKING_YEAR_MISSING' => 'Mikro çalışma yılı eksik.',
                 'MIKRO_SERVER_TIMEZONE_INVALID' => 'Mikro sunucu saat dilimi eksik veya geçersiz.',
                 'MIKRO_API_VERSION_UNSUPPORTED' => 'Yalnız Mikro V17 contractı desteklenir.',
+                'MIKRO_TIMEOUT_INVALID' => 'Mikro HealthCheck timeout ayarı geçersiz.',
                 default => 'Mikro private base URL güvenlik sözleşmesini geçmiyor.',
             };
         }
@@ -4560,6 +4658,7 @@ class TechnicalServiceMessagingSettingsService
             'branch_code' => $mikro['branch_code'],
             'workstation_code' => $mikro['workstation_code'],
             'fiscal_year' => $mikro['fiscal_year'],
+            'user_code' => $userCode,
             'timeout_seconds' => (int) $mikro['timeout_seconds'],
             'server_timezone' => $mikro['server_timezone'],
             'license_status' => $mikro['license_status'],
@@ -4582,6 +4681,12 @@ class TechnicalServiceMessagingSettingsService
             'server_unverified_operation_count' => $catalog['server_unverified_count'],
             'runtime_eligible_read_operation_count' => $catalog['runtime_eligible_read_count'],
             'contract_ready' => $contractReady,
+            'health_configuration_ready' => $healthConfigurationReady,
+            'private_network_ready' => $healthReady,
+            'health_ready' => $healthReady,
+            'live_credentials_ready' => $credentialsReady,
+            'authenticated_canary_allowed' => $liveConfigurationReady && $healthReady,
+            'authenticated_read_ready' => false,
             'live_configuration_ready' => $liveConfigurationReady,
             'readiness_status' => $readinessStatus,
             'live_activation_status' => $liveConfigurationReady
@@ -4590,16 +4695,20 @@ class TechnicalServiceMessagingSettingsService
             'live_activation_blocker' => $liveConfigurationReady
                 ? ($healthReady ? null : 'MIKRO_LIVE_CONNECTIVITY_PENDING')
                 : 'MIKRO_LIVE_CONFIGURATION_MISSING',
-            'connection_test_allowed' => $liveConfigurationReady,
+            'connection_test_allowed' => $healthConfigurationReady,
             'credentials_ready' => $credentialsReady,
-            'user_code_mask' => $credential?->username_mask,
-            'password_mask' => $credentialsReady ? '********' : null,
+            'api_key_present' => $apiKeyPresent,
+            'password_present' => $passwordPresent,
+            'token_present' => $tokenPresent,
+            'user_code_mask' => filled($userCode) ? $this->maskValue((string) $userCode) : null,
+            'password_mask' => $passwordPresent ? '********' : null,
             'api_key_mask' => $credential?->api_key_mask,
             'token_mask' => $credential?->token_mask,
             'read_ready' => $readReady,
             'write_ready' => false,
             'last_health_check_status' => $mikro['last_health_check_status'],
             'last_error_redacted' => $mikro['last_error_redacted'],
+            'health_blocker_codes' => $healthBlockerCodes,
             'blocker_codes' => $this->mikroConfigurationBlockerCodes($mikro, $credential),
             'blocking_reasons' => array_values(array_unique($blocking)),
         ];
@@ -4623,17 +4732,9 @@ class TechnicalServiceMessagingSettingsService
         array $mikro,
         ?IntegrationProviderCredential $credential,
     ): array {
-        $blocking = [];
-        $baseUrl = trim((string) ($mikro['base_url'] ?? ''));
+        $blocking = $this->mikroHealthConfigurationBlockerCodes($mikro);
+        $userCode = $this->mikroUserCode($mikro, $credential);
 
-        if ($baseUrl === '') {
-            $blocking[] = 'MIKRO_BASE_URL_MISSING';
-        } elseif ($baseUrlBlocker = $this->mikroOperationRegistry->baseUrlBlocker($baseUrl)) {
-            $blocking[] = $baseUrlBlocker;
-        }
-        if (strtoupper(trim((string) ($mikro['api_version'] ?? ''))) !== 'V17') {
-            $blocking[] = 'MIKRO_API_VERSION_UNSUPPORTED';
-        }
         if (blank($mikro['application_code'] ?? null)) {
             $blocking[] = 'MIKRO_APPLICATION_CODE_MISSING';
         }
@@ -4651,14 +4752,54 @@ class TechnicalServiceMessagingSettingsService
         if ($credential === null || blank($credential->api_key_encrypted)) {
             $blocking[] = 'MIKRO_API_KEY_MISSING';
         }
-        if ($credential === null || blank($credential->username_encrypted)) {
+        if (blank($userCode)) {
             $blocking[] = 'MIKRO_USER_CODE_MISSING';
         }
         if ($credential === null || blank($credential->password_encrypted)) {
             $blocking[] = 'MIKRO_PASSWORD_MISSING';
         }
 
+        return array_values(array_unique($blocking));
+    }
+
+    /**
+     * @param  array<string, mixed>  $mikro
+     * @return array<int, string>
+     */
+    private function mikroHealthConfigurationBlockerCodes(array $mikro): array
+    {
+        $blocking = [];
+        $baseUrl = trim((string) ($mikro['base_url'] ?? ''));
+
+        if ($baseUrl === '') {
+            $blocking[] = 'MIKRO_BASE_URL_MISSING';
+        } elseif ($baseUrlBlocker = $this->mikroOperationRegistry->baseUrlBlocker($baseUrl)) {
+            $blocking[] = $baseUrlBlocker;
+        }
+        if (strtoupper(trim((string) ($mikro['api_version'] ?? ''))) !== 'V17') {
+            $blocking[] = 'MIKRO_API_VERSION_UNSUPPORTED';
+        }
+        $timeout = (int) ($mikro['timeout_seconds'] ?? 0);
+        if ($timeout < 3 || $timeout > 120) {
+            $blocking[] = 'MIKRO_TIMEOUT_INVALID';
+        }
+
         return $blocking;
+    }
+
+    /**
+     * @param  array<string, mixed>  $mikro
+     */
+    private function mikroUserCode(array $mikro, ?IntegrationProviderCredential $credential): ?string
+    {
+        $configured = trim((string) ($mikro['user_code'] ?? ''));
+        if ($configured !== '') {
+            return $configured;
+        }
+
+        $legacy = trim((string) ($credential?->username_encrypted ?? ''));
+
+        return $legacy === '' ? null : $legacy;
     }
 
     /**

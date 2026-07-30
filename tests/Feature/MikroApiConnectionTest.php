@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Mikro\MikroApiClient;
 use App\Services\Mikro\MikroFixedQueryCatalog;
 use App\Services\Mikro\MikroOperationRegistry;
@@ -40,12 +41,13 @@ class MikroApiConnectionTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_contract_readiness_blocks_missing_live_configuration_without_network(): void
+    public function test_health_check_blocks_missing_safe_base_url_without_network(): void
     {
         $this->actingAs($this->admin())
             ->getJson('/api/technical-service/messaging-settings')
             ->assertOk()
             ->assertJsonPath('messaging_settings.mikro_api.contract_ready', true)
+            ->assertJsonPath('messaging_settings.mikro_api.health_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
@@ -61,13 +63,112 @@ class MikroApiConnectionTest extends TestCase
         $response = $this->actingAs($this->admin())
             ->postJson('/api/technical-service/messaging-settings/mikro-api/connection-test')
             ->assertStatus(409)
-            ->assertJsonPath('mikro_connection.error_code', 'MIKRO_LIVE_CONFIGURATION_MISSING')
+            ->assertJsonPath('mikro_connection.error_code', 'MIKRO_HEALTH_CONFIGURATION_MISSING')
             ->assertJsonPath('mikro_connection.success', false)
             ->json();
 
-        foreach (['MIKRO_BASE_URL_MISSING', 'MIKRO_API_KEY_MISSING', 'MIKRO_USER_CODE_MISSING', 'MIKRO_PASSWORD_MISSING', 'MIKRO_FIRM_CODE_MISSING', 'MIKRO_WORKING_YEAR_MISSING'] as $blocker) {
-            $this->assertContains($blocker, $response['blocker_codes']);
-        }
+        $this->assertSame(['MIKRO_BASE_URL_MISSING'], $response['blocker_codes']);
+        Http::assertNothingSent();
+    }
+
+    public function test_secretless_health_check_uses_only_safe_origin_and_keeps_execution_toggles_off(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => false,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                    'base_url' => 'https://mikro-health.example.test',
+                    'api_version' => 'V17',
+                    'timeout_seconds' => 5,
+                    'user_code' => 'PRIMEAPI',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.health_configuration_ready', true)
+            ->assertJsonPath('messaging_settings.mikro_api.live_credentials_ready', false)
+            ->assertJsonPath('messaging_settings.mikro_api.user_code', 'PRIMEAPI');
+
+        Http::fake([
+            'https://mikro-health.example.test/Api/APIMethods/HealthCheck' => Http::response(['result' => ['200']], 200),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/connection-test')
+            ->assertOk()
+            ->assertJsonPath('mikro_connection.operation_key', 'health.check')
+            ->assertJsonPath('mikro_connection.success', true)
+            ->assertJsonPath('messaging_settings.mikro_api.private_network_ready', true)
+            ->assertJsonPath('messaging_settings.mikro_api.health_ready', true)
+            ->assertJsonPath('messaging_settings.mikro_api.live_credentials_ready', false)
+            ->assertJsonPath('messaging_settings.mikro_api.authenticated_read_ready', false)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.read_sync_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false);
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+            && $request->url() === 'https://mikro-health.example.test/Api/APIMethods/HealthCheck'
+            && $request->data() === []
+            && ! $request->hasHeader('Authorization')
+            && ! $request->hasHeader('ApiKey'));
+    }
+
+    public function test_secretless_health_server_failure_is_safely_mapped_without_enabling_reads(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'base_url' => 'https://mikro-health.example.test',
+                    'api_version' => 'V17',
+                    'timeout_seconds' => 5,
+                ],
+            ])
+            ->assertOk();
+        Http::fake([
+            'https://mikro-health.example.test/Api/APIMethods/HealthCheck' => Http::response(['error' => 'unavailable'], 500),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/connection-test')
+            ->assertStatus(503)
+            ->assertJsonPath('mikro_connection.error_code', 'MIKRO_SERVER_ERROR')
+            ->assertJsonPath('mikro_connection.attempt_count', 1)
+            ->assertJsonPath('messaging_settings.mikro_api.last_health_check_status', 'failed')
+            ->assertJsonPath('messaging_settings.mikro_api.last_error_redacted', 'MIKRO_SERVER_ERROR')
+            ->assertJsonPath('messaging_settings.mikro_api.enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.read_sync_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false);
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_authenticated_canary_requires_secrets_before_operation_or_network_evaluation(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => true,
+                    'base_url' => 'https://mikro-auth.example.test',
+                    'api_version' => 'V17',
+                    'application_code' => 'EMAKS-PANEL-TEST',
+                    'company_code' => 'TEST-FIRM',
+                    'fiscal_year' => '2026',
+                    'user_code' => 'PRIMEAPI',
+                    'timeout_seconds' => 5,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.health_configuration_ready', true)
+            ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
+            ->assertJsonPath('messaging_settings.mikro_api.authenticated_canary_allowed', false);
+
+        $result = app(MikroApiClient::class)->userParameters();
+
+        $this->assertSame('MIKRO_LIVE_CONFIGURATION_MISSING', $result['error_code']);
+        $this->assertSame(0, $result['attempt_count']);
         Http::assertNothingSent();
     }
 
@@ -90,7 +191,7 @@ class MikroApiConnectionTest extends TestCase
             ->json();
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
-        foreach ($secrets as $secret) {
+        foreach ([$secrets['api_key'], $secrets['password']] as $secret) {
             $this->assertStringNotContainsString($secret, $encoded);
         }
 
@@ -208,6 +309,11 @@ class MikroApiConnectionTest extends TestCase
         $this->assertSame('MIKRO_SERVER_ERROR', $fallback['error_code']);
         $this->assertSame(2, $fallback['attempt_count']);
         $this->assertSame($first['data'], $fallback['data']);
+        $readiness = app(TechnicalServiceMessagingSettingsService::class)
+            ->recordMikroHealthCheckResult($fallback)['mikro_api'];
+        $this->assertFalse($readiness['health_ready']);
+        $this->assertSame('failed', $readiness['last_health_check_status']);
+        $this->assertSame('MIKRO_SERVER_ERROR', $readiness['last_error_redacted']);
         Http::assertSentCount(3);
     }
 
@@ -357,6 +463,7 @@ class MikroApiConnectionTest extends TestCase
                     'application_code' => 'EMAKS-PANEL-TEST',
                     'company_code' => 'TEST-FIRM',
                     'fiscal_year' => '2026',
+                    'user_code' => $secrets['user_code'],
                     'server_timezone' => 'Europe/Istanbul',
                     'timeout_seconds' => 5,
                     'operation_controls' => [
@@ -371,7 +478,10 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0);
 
         $this->actingAs($this->admin())
-            ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials', $secrets)
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials', [
+                'api_key' => $secrets['api_key'],
+                'password' => $secrets['password'],
+            ])
             ->assertOk()
             ->assertJsonPath('messaging_settings.mikro_api.credentials_ready', true)
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', true)

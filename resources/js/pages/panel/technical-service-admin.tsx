@@ -428,6 +428,7 @@ type MessagingMikroApiSettings = {
     branch_code: string | null;
     workstation_code: string | null;
     fiscal_year: string | null;
+    user_code: string | null;
     timeout_seconds: number;
     server_timezone: string;
     license_status: string | null;
@@ -473,6 +474,12 @@ type MessagingMikroApiSettings = {
     server_unverified_operation_count: number;
     runtime_eligible_read_operation_count: number;
     contract_ready: boolean;
+    health_configuration_ready: boolean;
+    private_network_ready: boolean;
+    health_ready: boolean;
+    live_credentials_ready: boolean;
+    authenticated_canary_allowed: boolean;
+    authenticated_read_ready: boolean;
     live_configuration_ready: boolean;
     readiness_status:
         | 'CONTRACT_READY'
@@ -486,12 +493,16 @@ type MessagingMikroApiSettings = {
     live_activation_blocker: string | null;
     connection_test_allowed: boolean;
     credentials_ready: boolean;
+    api_key_present: boolean;
+    password_present: boolean;
+    token_present: boolean;
     user_code_mask: string | null;
     password_mask: string | null;
     api_key_mask: string | null;
     token_mask: string | null;
     read_ready: boolean;
     write_ready: boolean;
+    health_blocker_codes: string[];
     blocker_codes: string[];
     blocking_reasons: string[];
 };
@@ -1240,6 +1251,7 @@ function mikroApiInputsFromSettings(settings: MessagingSettings) {
         branch_code: settings.mikro_api.branch_code ?? '',
         workstation_code: settings.mikro_api.workstation_code ?? '',
         fiscal_year: settings.mikro_api.fiscal_year ?? '',
+        user_code: settings.mikro_api.user_code ?? '',
         timeout_seconds: String(settings.mikro_api.timeout_seconds),
         server_timezone:
             settings.mikro_api.server_timezone ?? 'Europe/Istanbul',
@@ -1558,7 +1570,6 @@ export default function TechnicalServiceAdmin({
     );
     const [mikroApiCredentialInputs, setMikroApiCredentialInputs] = useState({
         api_key: '',
-        user_code: '',
         password: '',
         token: '',
     });
@@ -2451,6 +2462,7 @@ export default function TechnicalServiceAdmin({
                             branch_code: mikroApiInputs.branch_code,
                             workstation_code: mikroApiInputs.workstation_code,
                             fiscal_year: mikroApiInputs.fiscal_year,
+                            user_code: mikroApiInputs.user_code,
                             timeout_seconds: Number(
                                 mikroApiInputs.timeout_seconds,
                             ),
@@ -3022,6 +3034,11 @@ export default function TechnicalServiceAdmin({
         setMessagingMessage('');
 
         try {
+            const credentialPayload = Object.fromEntries(
+                Object.entries(mikroApiCredentialInputs).filter(
+                    ([, value]) => value.trim() !== '',
+                ),
+            );
             const response = await fetch(
                 '/api/technical-service/messaging-settings/mikro-api/credentials',
                 {
@@ -3032,7 +3049,7 @@ export default function TechnicalServiceAdmin({
                         'X-CSRF-TOKEN': csrfToken(),
                     },
                     credentials: 'same-origin',
-                    body: JSON.stringify(mikroApiCredentialInputs),
+                    body: JSON.stringify(credentialPayload),
                 },
             );
 
@@ -3051,7 +3068,6 @@ export default function TechnicalServiceAdmin({
             applyMessagingSettings(responsePayload.messaging_settings);
             setMikroApiCredentialInputs({
                 api_key: '',
-                user_code: '',
                 password: '',
                 token: '',
             });
@@ -3090,6 +3106,11 @@ export default function TechnicalServiceAdmin({
                         'X-CSRF-TOKEN': csrfToken(),
                     },
                     credentials: 'same-origin',
+                    body: JSON.stringify({
+                        clear_api_key: true,
+                        clear_password: true,
+                        clear_token: true,
+                    }),
                 },
             );
 
@@ -3108,7 +3129,6 @@ export default function TechnicalServiceAdmin({
             applyMessagingSettings(responsePayload.messaging_settings);
             setMikroApiCredentialInputs({
                 api_key: '',
-                user_code: '',
                 password: '',
                 token: '',
             });
@@ -3141,6 +3161,10 @@ export default function TechnicalServiceAdmin({
                 },
             );
             const responsePayload = await response.json();
+
+            if (responsePayload.messaging_settings) {
+                applyMessagingSettings(responsePayload.messaging_settings);
+            }
 
             if (!response.ok) {
                 setMessagingMessage(
@@ -6665,7 +6689,10 @@ export default function TechnicalServiceAdmin({
                                                                             <button
                                                                                 type="button"
                                                                                 disabled={
-                                                                                    mikroConnectionTesting
+                                                                                    mikroConnectionTesting ||
+                                                                                    !messaging
+                                                                                        .mikro_api
+                                                                                        .connection_test_allowed
                                                                                 }
                                                                                 onClick={() =>
                                                                                     void testMikroApiConnection()
@@ -7120,6 +7147,27 @@ export default function TechnicalServiceAdmin({
                                               ? 'Canlı HealthCheck bekleniyor.'
                                               : 'Canlı bağlantı bilgileri bekleniyor.'}
                                     </p>
+                                    <div className="mt-3 grid gap-2 text-xs font-semibold text-slate-700 sm:grid-cols-2">
+                                        <p className="border-l-4 border-sky-300 bg-sky-50 px-3 py-2">
+                                            Private HealthCheck:{' '}
+                                            {messaging.mikro_api.health_ready
+                                                ? 'Hazır'
+                                                : messaging.mikro_api
+                                                        .health_configuration_ready
+                                                  ? 'Test bekliyor'
+                                                  : 'Base URL bekliyor'}
+                                        </p>
+                                        <p className="border-l-4 border-amber-300 bg-amber-50 px-3 py-2">
+                                            Authenticated Read Canary:{' '}
+                                            {messaging.mikro_api
+                                                .authenticated_read_ready
+                                                ? 'Hazır'
+                                                : messaging.mikro_api
+                                                        .live_credentials_ready
+                                                  ? 'Yetkili canary bekliyor'
+                                                  : 'API key ve parola bekliyor'}
+                                        </p>
+                                    </div>
                                     <p className="mt-1 text-xs text-slate-500">
                                         Read kataloğu:{' '}
                                         {
@@ -7189,6 +7237,10 @@ export default function TechnicalServiceAdmin({
                                                 ],
                                                 ['fiscal_year', 'Mali yıl'],
                                                 [
+                                                    'user_code',
+                                                    'Mikro kullanıcı kodu',
+                                                ],
+                                                [
                                                     'timeout_seconds',
                                                     'Timeout saniye',
                                                 ],
@@ -7240,8 +7292,8 @@ export default function TechnicalServiceAdmin({
                                         </p>
                                         <p className="mt-1 text-xs leading-5 text-slate-600">
                                             Kullanıcı:{' '}
-                                            {messaging.mikro_api
-                                                .user_code_mask ?? 'Eksik'}{' '}
+                                            {messaging.mikro_api.user_code ??
+                                                'Eksik'}{' '}
                                             / Parola:{' '}
                                             {messaging.mikro_api.password_mask ??
                                                 'Eksik'}{' '}
@@ -7254,25 +7306,6 @@ export default function TechnicalServiceAdmin({
                                                 'Eksik'}
                                         </p>
                                         <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                            <input
-                                                type="text"
-                                                value={
-                                                    mikroApiCredentialInputs.user_code
-                                                }
-                                                onChange={(event) =>
-                                                    setMikroApiCredentialInputs(
-                                                        {
-                                                            ...mikroApiCredentialInputs,
-                                                            user_code:
-                                                                event.target
-                                                                    .value,
-                                                        },
-                                                    )
-                                                }
-                                                placeholder="Mikro kullanıcı kodu"
-                                                autoComplete="off"
-                                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
-                                            />
                                             <input
                                                 type="password"
                                                 value={
@@ -7333,12 +7366,12 @@ export default function TechnicalServiceAdmin({
                                                 type="button"
                                                 disabled={
                                                     integrationCredentialSaving ||
-                                                    mikroApiCredentialInputs.api_key.trim() ===
-                                                        '' ||
-                                                    mikroApiCredentialInputs.user_code.trim() ===
-                                                        '' ||
-                                                    mikroApiCredentialInputs.password.trim() ===
-                                                        ''
+                                                    (mikroApiCredentialInputs.api_key.trim() ===
+                                                        '' &&
+                                                        mikroApiCredentialInputs.password.trim() ===
+                                                            '' &&
+                                                        mikroApiCredentialInputs.token.trim() ===
+                                                            '')
                                                 }
                                                 onClick={() => {
                                                     void saveMikroApiCredentials();
@@ -7363,16 +7396,33 @@ export default function TechnicalServiceAdmin({
                                             </button>
                                             <button
                                                 type="button"
-                                                disabled={mikroConnectionTesting}
+                                                disabled={
+                                                    mikroConnectionTesting ||
+                                                    !messaging.mikro_api
+                                                        .connection_test_allowed
+                                                }
                                                 onClick={() => {
                                                     void testMikroApiConnection();
                                                 }}
                                                 className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-80"
-                                                title="Yalnız read-only Mikro HealthCheck çalıştırılır. Eksik config ağ çağrısından önce bloklanır."
+                                                title="Yalnız secret gerektirmeyen private Mikro HealthCheck çalıştırılır."
                                             >
                                                 {mikroConnectionTesting
                                                     ? 'Mikro bağlantısı kontrol ediliyor...'
-                                                    : 'Mikro bağlantı testi (read-only)'}
+                                                    : 'Private HealthCheck'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                disabled
+                                                title={
+                                                    messaging.mikro_api
+                                                        .live_credentials_ready
+                                                        ? 'Operation-level authenticated canary ayrı yetki kapısında açılacaktır.'
+                                                        : 'API key ve parola girilmeden authenticated canary çalışmaz.'
+                                                }
+                                                className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-500 disabled:cursor-not-allowed"
+                                            >
+                                                Authenticated Read Canary
                                             </button>
                                         </div>
                                     </div>

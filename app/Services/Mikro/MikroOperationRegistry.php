@@ -124,10 +124,11 @@ class MikroOperationRegistry
     public function assertReadAllowed(string $operationKey, array $settings): array
     {
         $operation = $this->applyControl($this->read($operationKey), (array) ($settings['operation_controls'][$operationKey] ?? []));
-        if (! (bool) ($settings['enabled'] ?? false)) {
+        $isHealthCheck = $operationKey === 'health.check';
+        if (! $isHealthCheck && ! (bool) ($settings['enabled'] ?? false)) {
             throw new DomainException('MIKRO_DISABLED');
         }
-        if (! (bool) ($settings['read_sync_enabled'] ?? false)) {
+        if (! $isHealthCheck && ! (bool) ($settings['read_sync_enabled'] ?? false)) {
             throw new DomainException('MIKRO_READ_SYNC_DISABLED');
         }
         if (($operation['response_schema_status'] ?? null) !== MikroResponseSchemaCatalog::VERIFIED) {

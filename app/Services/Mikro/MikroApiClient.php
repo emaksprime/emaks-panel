@@ -227,14 +227,27 @@ class MikroApiClient
         }
         $context = $this->settings->mikroApiConnectionContext();
 
+        if ($operationKey === 'user.parameters' && ! ($context['live_configuration_ready'] ?? false)) {
+            return $this->failureResult($operationKey, 'MIKRO_LIVE_CONFIGURATION_MISSING', $correlationId);
+        }
+
         try {
             $operation = $this->registry->assertReadAllowed($operationKey, $context);
         } catch (DomainException $exception) {
             return $this->failureResult($operationKey, $exception->getMessage(), $correlationId);
         }
 
-        if (! ($context['live_configuration_ready'] ?? false)) {
-            return $this->failureResult($operationKey, 'MIKRO_CONFIGURATION_MISSING', $correlationId);
+        $configurationReady = $operationKey === 'health.check'
+            ? (bool) ($context['health_configuration_ready'] ?? false)
+            : (bool) ($context['live_configuration_ready'] ?? false);
+        if (! $configurationReady) {
+            return $this->failureResult(
+                $operationKey,
+                $operationKey === 'health.check'
+                    ? 'MIKRO_HEALTH_CONFIGURATION_MISSING'
+                    : 'MIKRO_LIVE_CONFIGURATION_MISSING',
+                $correlationId,
+            );
         }
         if ($blocker = $this->registry->baseUrlBlocker($context['base_url'] ?? null)) {
             return $this->failureResult($operationKey, 'MIKRO_INVALID_BASE_URL', $correlationId, null, 0, $blocker);

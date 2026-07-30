@@ -118,6 +118,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'mikro_api.branch_code' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.workstation_code' => ['sometimes', 'nullable', 'string', 'max:120'],
             'mikro_api.fiscal_year' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'mikro_api.user_code' => ['sometimes', 'nullable', 'string', 'max:255'],
             'mikro_api.timeout_seconds' => ['sometimes', 'required', 'integer', 'min:3', 'max:120'],
             'mikro_api.server_timezone' => ['sometimes', 'required', 'timezone'],
             'mikro_api.license_status' => ['sometimes', 'nullable', 'string', 'max:120'],
@@ -382,10 +383,9 @@ class TechnicalServiceMessagingSettingsController extends Controller
     public function saveMikroApiCredentials(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
         $data = $request->validate([
-            'api_key' => ['required', 'string', 'max:2000'],
-            'user_code' => ['required', 'string', 'max:255'],
-            'password' => ['required', 'string', 'max:2000'],
-            'token' => ['nullable', 'string', 'max:2000'],
+            'api_key' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'password' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'token' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ]);
 
         return response()->json([
@@ -394,11 +394,28 @@ class TechnicalServiceMessagingSettingsController extends Controller
         ]);
     }
 
-    public function clearMikroApiCredentials(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    public function clearMikroApiCredentials(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
+        $data = $request->validate([
+            'clear_api_key' => ['sometimes', 'boolean'],
+            'clear_password' => ['sometimes', 'boolean'],
+            'clear_token' => ['sometimes', 'boolean'],
+        ]);
+        $targets = array_keys(array_filter([
+            'api_key' => (bool) ($data['clear_api_key'] ?? false),
+            'password' => (bool) ($data['clear_password'] ?? false),
+            'token' => (bool) ($data['clear_token'] ?? false),
+        ]));
+
+        if ($targets === []) {
+            throw ValidationException::withMessages([
+                'credentials' => 'Temizlenecek Mikro secret alanı açıkça seçilmelidir.',
+            ]);
+        }
+
         return response()->json([
-            'messaging_settings' => $settings->clearProviderCredentials('mikro_api'),
-            'message' => 'Mikro API credential bilgileri temizlendi.',
+            'messaging_settings' => $settings->clearMikroApiCredentials($targets),
+            'message' => 'Seçilen Mikro API secret bilgileri temizlendi.',
         ]);
     }
 
@@ -408,12 +425,12 @@ class TechnicalServiceMessagingSettingsController extends Controller
     ): JsonResponse {
         $readiness = $settings->payload()['mikro_api'];
 
-        if (! ($readiness['live_configuration_ready'] ?? false)) {
+        if (! ($readiness['health_configuration_ready'] ?? false)) {
             return response()->json([
                 'mikro_connection' => [
                     'status' => null,
                     'success' => false,
-                    'error_code' => 'MIKRO_LIVE_CONFIGURATION_MISSING',
+                    'error_code' => 'MIKRO_HEALTH_CONFIGURATION_MISSING',
                     'duration_ms' => 0,
                     'result_count' => 0,
                     'normalized_data' => [],
@@ -421,15 +438,17 @@ class TechnicalServiceMessagingSettingsController extends Controller
                     'freshness_at' => now()->toIso8601String(),
                     'correlation_id' => null,
                 ],
-                'blocker_codes' => $readiness['blocker_codes'] ?? [],
-                'message' => 'Sözleşme hazır. Canlı Mikro bağlantı bilgileri bekleniyor.',
+                'blocker_codes' => $readiness['health_blocker_codes'] ?? [],
+                'message' => 'Mikro HealthCheck için güvenli private base URL ayarı bekleniyor.',
             ], 409);
         }
 
         $result = $client->healthCheck();
+        $messagingSettings = $settings->recordMikroHealthCheckResult($result);
 
         return response()->json([
             'mikro_connection' => $result,
+            'messaging_settings' => $messagingSettings,
             'message' => $result['success']
                 ? 'Mikro HealthCheck başarılı.'
                 : 'Mikro HealthCheck güvenli biçimde tamamlanamadı.',

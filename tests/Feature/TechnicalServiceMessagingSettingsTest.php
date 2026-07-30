@@ -476,7 +476,7 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_mikro_api_settings_and_credentials_are_readiness_only(): void
+    public function test_mikro_api_non_secret_settings_and_credentials_are_staged_independently(): void
     {
         $apiKey = 'PR88_MIKRO_API_KEY_TEST_ONLY';
         $userCode = 'PR88_MIKRO_USER_TEST_ONLY';
@@ -492,6 +492,7 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                     'application_name' => 'EMAKS Panel',
                     'company_code' => 'TEST-FIRM',
                     'fiscal_year' => '2026',
+                    'user_code' => $userCode,
                     'server_timezone' => 'Europe/Istanbul',
                     'timeout_seconds' => 15,
                     'read_sync_enabled' => true,
@@ -508,6 +509,10 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.enabled', true)
             ->assertJsonPath('messaging_settings.mikro_api.write_approval_required', true)
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.user_code', $userCode)
+            ->assertJsonPath('messaging_settings.mikro_api.api_key_present', false)
+            ->assertJsonPath('messaging_settings.mikro_api.password_present', false)
+            ->assertJsonPath('messaging_settings.mikro_api.live_credentials_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.contract_ready', true)
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
             ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 29)
@@ -528,7 +533,6 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $payload = $this->actingAs($this->admin())
             ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials', [
                 'api_key' => $apiKey,
-                'user_code' => $userCode,
                 'password' => $password,
             ])
             ->assertOk()
@@ -541,13 +545,66 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $row = DB::table('integration_provider_credentials')->where('provider', 'mikro_api')->first();
 
         $this->assertNotNull($row);
-        foreach ([$apiKey, $userCode, $password] as $secret) {
+        foreach ([$apiKey, $password] as $secret) {
             $this->assertStringNotContainsString($secret, (string) $row->api_key_encrypted);
-            $this->assertStringNotContainsString($secret, (string) $row->username_encrypted);
             $this->assertStringNotContainsString($secret, (string) $row->password_encrypted);
             $this->assertStringNotContainsString($secret, $encoded);
             $this->assertStringNotContainsString($secret, json_encode(PageConfig::query()->pluck('layout_json')->all(), JSON_THROW_ON_ERROR));
         }
+        $this->assertStringContainsString($userCode, json_encode(PageConfig::query()->pluck('layout_json')->all(), JSON_THROW_ON_ERROR));
+        $this->assertNull(IntegrationProviderCredential::query()->where('provider', 'mikro_api')->firstOrFail()->username_encrypted);
+    }
+
+    public function test_mikro_secret_updates_preserve_omitted_values_and_explicit_clear_is_targeted(): void
+    {
+        $apiKey = 'MIKRO_API_KEY_PRESERVE_TEST';
+        $password = 'MIKRO_PASSWORD_PRESERVE_TEST';
+        $token = 'MIKRO_TOKEN_PRESERVE_TEST';
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials', [
+                'api_key' => $apiKey,
+                'password' => $password,
+                'token' => $token,
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials', [
+                'api_key' => '',
+                'password' => '',
+            ])
+            ->assertOk();
+
+        $credential = IntegrationProviderCredential::query()->where('provider', 'mikro_api')->firstOrFail();
+        $this->assertSame($apiKey, $credential->api_key_encrypted);
+        $this->assertSame($password, $credential->password_encrypted);
+        $this->assertSame($token, $credential->token_encrypted);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials/clear')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['credentials']);
+
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/credentials/clear', [
+                'clear_api_key' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.api_key_present', false)
+            ->assertJsonPath('messaging_settings.mikro_api.password_present', true)
+            ->assertJsonPath('messaging_settings.mikro_api.token_present', true)
+            ->json();
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        foreach ([$apiKey, $password, $token] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
+
+        $credential->refresh();
+        $this->assertNull($credential->api_key_encrypted);
+        $this->assertSame($password, $credential->password_encrypted);
+        $this->assertSame($token, $credential->token_encrypted);
     }
 
     public function test_invalid_test_phone_is_rejected_when_test_mode_enabled(): void
