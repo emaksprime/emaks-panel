@@ -178,15 +178,14 @@ class MikroParityContract
         }
 
         $text = trim((string) $value);
-        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $text);
-        if ($date && $date->format('Y-m-d') === $text) {
-            return $text;
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/D', $text) === 1) {
+            return $this->parseDateOnly($text)->format('Y-m-d');
         }
 
         $timezone = $this->timezone($sourceTimezone);
         try {
             if ($this->hasExplicitOffset($text)) {
-                $instant = new DateTimeImmutable($text);
+                $instant = $this->parseOffsetTimestamp($text);
 
                 return $instant->setTimezone($timezone)->format('Y-m-d');
             }
@@ -977,21 +976,67 @@ class MikroParityContract
 
     private function parseOffsetTimestamp(string $value): DateTimeImmutable
     {
-        if (! preg_match('/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/i', $value)) {
+        if (preg_match(
+            '/^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[T ](?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?<fraction>\.\d{1,6})?(?<offset>Z|(?<offset_sign>[+-])(?<offset_hour>\d{2}):(?<offset_minute>\d{2}))$/iD',
+            $value,
+            $matches,
+            PREG_UNMATCHED_AS_NULL,
+        ) !== 1) {
             throw new DomainException('MIKRO_PARITY_TIMESTAMP_INVALID');
         }
 
-        return new DateTimeImmutable($value);
+        $this->assertValidTimestampComponents($matches);
+
+        $offset = strtoupper($matches['offset']) === 'Z' ? '+00:00' : $matches['offset'];
+        $fraction = is_string($matches['fraction'])
+            ? '.'.str_pad(substr($matches['fraction'], 1), 6, '0')
+            : '';
+        $normalized = sprintf(
+            '%s-%s-%sT%s:%s:%s%s%s',
+            $matches['year'],
+            $matches['month'],
+            $matches['day'],
+            $matches['hour'],
+            $matches['minute'],
+            $matches['second'],
+            $fraction,
+            $offset,
+        );
+        $format = $fraction === '' ? '!Y-m-d\TH:i:sP' : '!Y-m-d\TH:i:s.uP';
+        $instant = DateTimeImmutable::createFromFormat($format, $normalized);
+        $roundTripFormat = $fraction === '' ? 'Y-m-d\TH:i:sP' : 'Y-m-d\TH:i:s.uP';
+
+        if (! $instant || $this->dateTimeParserHasErrors() || $instant->format($roundTripFormat) !== $normalized) {
+            throw new DomainException('MIKRO_PARITY_TIMESTAMP_INVALID');
+        }
+
+        return $instant;
     }
 
     private function parseNaiveTimestamp(string $value, DateTimeZone $timezone): DateTimeImmutable
     {
-        if (! preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d{1,6})?$/', $value, $matches)) {
+        if (preg_match(
+            '/^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[T ](?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?<fraction>\.\d{1,6})?$/D',
+            $value,
+            $matches,
+            PREG_UNMATCHED_AS_NULL,
+        ) !== 1) {
             throw new DomainException('MIKRO_PARITY_TIMESTAMP_INVALID');
         }
-        $wall = $matches[1].' '.$matches[2];
+
+        $this->assertValidTimestampComponents($matches);
+
+        $wall = sprintf(
+            '%s-%s-%s %s:%s:%s',
+            $matches['year'],
+            $matches['month'],
+            $matches['day'],
+            $matches['hour'],
+            $matches['minute'],
+            $matches['second'],
+        );
         $wallUtc = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $wall, new DateTimeZone('UTC'));
-        if (! $wallUtc || $wallUtc->format('Y-m-d H:i:s') !== $wall) {
+        if (! $wallUtc || $this->dateTimeParserHasErrors() || $wallUtc->format('Y-m-d H:i:s') !== $wall) {
             throw new DomainException('MIKRO_PARITY_TIMESTAMP_INVALID');
         }
 
@@ -1022,6 +1067,55 @@ class MikroParityContract
         }
 
         return array_values($matchesByInstant)[0];
+    }
+
+    private function parseDateOnly(string $value): DateTimeImmutable
+    {
+        if (preg_match('/^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/D', $value, $matches) !== 1
+            || ! checkdate((int) $matches['month'], (int) $matches['day'], (int) $matches['year'])) {
+            throw new DomainException('MIKRO_PARITY_DATE_INVALID');
+        }
+
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value, new DateTimeZone('UTC'));
+        if (! $date || $this->dateTimeParserHasErrors() || $date->format('Y-m-d') !== $value) {
+            throw new DomainException('MIKRO_PARITY_DATE_INVALID');
+        }
+
+        return $date;
+    }
+
+    /** @param array<string, string|null> $components */
+    private function assertValidTimestampComponents(array $components): void
+    {
+        $validDate = checkdate(
+            (int) $components['month'],
+            (int) $components['day'],
+            (int) $components['year'],
+        );
+        $validClock = (int) $components['hour'] <= 23
+            && (int) $components['minute'] <= 59
+            && (int) $components['second'] <= 59;
+
+        $validOffset = true;
+        if (isset($components['offset_hour'], $components['offset_minute'])) {
+            $offsetHour = (int) $components['offset_hour'];
+            $offsetMinute = (int) $components['offset_minute'];
+            $validOffset = $offsetHour <= 14
+                && $offsetMinute <= 59
+                && ($offsetHour < 14 || $offsetMinute === 0);
+        }
+
+        if (! $validDate || ! $validClock || ! $validOffset) {
+            throw new DomainException('MIKRO_PARITY_TIMESTAMP_INVALID');
+        }
+    }
+
+    private function dateTimeParserHasErrors(): bool
+    {
+        $errors = DateTimeImmutable::getLastErrors();
+
+        return is_array($errors)
+            && ((int) ($errors['warning_count'] ?? 0) > 0 || (int) ($errors['error_count'] ?? 0) > 0);
     }
 
     private function hasExplicitOffset(string $value): bool

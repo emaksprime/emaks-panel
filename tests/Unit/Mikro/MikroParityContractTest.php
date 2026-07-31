@@ -152,7 +152,7 @@ class MikroParityContractTest extends TestCase
         $this->assertArrayNotHasKey('raw_provider_secret_field', $validResult['envelope']);
     }
 
-    public function test_iso_and_mssql_representation_of_same_instant_normalize_equal(): void
+    public function test_iso_and_mssql_same_instant_still_normalize_equal(): void
     {
         $this->assertSame(
             $this->contract->canonicalTimestamp('2026-07-31T10:15:30Z', 'UTC'),
@@ -166,7 +166,7 @@ class MikroParityContractTest extends TestCase
         $this->assertSame('2026-07-31T10:15:30Z', $this->contract->canonicalTimestamp('2026-07-31 13:15:30', 'Europe/Istanbul'));
     }
 
-    public function test_naive_timestamp_requires_explicit_source_timezone(): void
+    public function test_naive_timestamp_still_requires_source_timezone(): void
     {
         $this->expectException(DomainException::class);
         $this->expectExceptionMessage('SOURCE_TIMEZONE_UNAVAILABLE');
@@ -194,6 +194,126 @@ class MikroParityContractTest extends TestCase
         $canonical = $this->contract->canonicalTimestamp('2026-01-15 12:00:00', 'Europe/Berlin');
         $this->assertSame('2026-01-15T11:00:00Z', $canonical);
         $this->assertSame($canonical, $this->contract->canonicalTimestamp($canonical, 'Europe/Istanbul'));
+    }
+
+    public function test_non_leap_year_february_29_is_contract_error(): void
+    {
+        $this->assertDateContractError('2026-02-29');
+        $this->assertTimestampContractError('2026-02-29T10:15:30Z');
+    }
+
+    public function test_valid_leap_year_february_29_is_accepted(): void
+    {
+        $this->assertSame('2024-02-29', $this->contract->canonicalDate('2024-02-29', 'UTC'));
+        $this->assertSame(
+            '2024-02-29T10:15:30Z',
+            $this->contract->canonicalTimestamp('2024-02-29T10:15:30Z', 'UTC'),
+        );
+    }
+
+    public function test_april_31_is_contract_error(): void
+    {
+        $this->assertDateContractError('2026-04-31');
+        $this->assertTimestampContractError('2026-04-31T10:15:30+03:00');
+    }
+
+    public function test_zero_and_thirteenth_month_are_contract_errors(): void
+    {
+        $this->assertDateContractError('2026-00-10');
+        $this->assertDateContractError('2026-13-10');
+    }
+
+    public function test_explicit_offset_hour_24_is_contract_error(): void
+    {
+        $this->assertTimestampContractError('2026-07-31T10:15:30+24:00');
+    }
+
+    public function test_explicit_offset_above_iso_limit_is_contract_error(): void
+    {
+        $this->assertTimestampContractError('2026-07-31T10:15:30-15:00');
+    }
+
+    public function test_offset_hour_14_requires_zero_minutes(): void
+    {
+        $this->assertTimestampContractError('2026-07-31T10:15:30+14:01');
+        $this->assertSame(
+            '2026-07-30T20:15:30Z',
+            $this->contract->canonicalTimestamp('2026-07-31T10:15:30+14:00', 'UTC'),
+        );
+    }
+
+    public function test_timestamp_hour_24_is_contract_error(): void
+    {
+        $this->assertTimestampContractError('2026-07-31T24:15:30Z');
+    }
+
+    public function test_timestamp_minute_60_is_contract_error(): void
+    {
+        $this->assertTimestampContractError('2026-07-31T10:60:30Z');
+    }
+
+    public function test_timestamp_second_60_is_contract_error(): void
+    {
+        $this->assertTimestampContractError('2026-07-31T10:15:60Z');
+    }
+
+    public function test_parser_warnings_are_contract_error(): void
+    {
+        $this->assertDateContractError('2026-02-29');
+        $this->assertTimestampContractError('2026-04-31 10:15:30');
+    }
+
+    public function test_valid_z_timestamp_round_trips_exactly(): void
+    {
+        $value = '2026-07-31T10:15:30Z';
+
+        $this->assertSame($value, $this->contract->canonicalTimestamp($value, 'Europe/Istanbul'));
+    }
+
+    public function test_valid_positive_offset_normalizes_to_utc(): void
+    {
+        $this->assertSame(
+            '2026-07-31T07:15:30Z',
+            $this->contract->canonicalTimestamp('2026-07-31T10:15:30+03:00', 'UTC'),
+        );
+    }
+
+    public function test_valid_negative_offset_normalizes_to_utc(): void
+    {
+        $this->assertSame(
+            '2026-07-31T15:15:30Z',
+            $this->contract->canonicalTimestamp('2026-07-31T10:15:30-05:00', 'UTC'),
+        );
+    }
+
+    public function test_existing_fractional_second_and_space_separator_contract_is_preserved(): void
+    {
+        $this->assertSame(
+            '2026-07-31T07:15:30Z',
+            $this->contract->canonicalTimestamp('2026-07-31 10:15:30.123456+03:00', 'UTC'),
+        );
+        $this->assertSame(
+            '2026-07-31T10:15:30Z',
+            $this->contract->canonicalTimestamp('2026-07-31 10:15:30.1', 'UTC'),
+        );
+    }
+
+    public function test_timestamp_normalization_remains_idempotent(): void
+    {
+        $canonical = $this->contract->canonicalTimestamp('2026-07-31T10:15:30+03:00', 'UTC');
+
+        $this->assertSame($canonical, $this->contract->canonicalTimestamp($canonical, 'Europe/Istanbul'));
+    }
+
+    public function test_invalid_value_is_never_silently_rolled_forward(): void
+    {
+        foreach ([
+            '2026-02-29T10:15:30Z',
+            '2026-04-31T10:15:30+03:00',
+            '2026-07-31T10:15:30+24:00',
+        ] as $value) {
+            $this->assertTimestampContractError($value);
+        }
     }
 
     public function test_stock_on_hand_is_not_mislabelled_as_available_and_operation_blockers_remain(): void
@@ -238,6 +358,26 @@ class MikroParityContractTest extends TestCase
 
         foreach (['api_key', 'password', 'authorization', 'tax_number', 'phone_number', 'street_address'] as $forbidden) {
             $this->assertStringNotContainsString($forbidden, $json);
+        }
+    }
+
+    private function assertDateContractError(string $value): void
+    {
+        try {
+            $this->contract->canonicalDate($value, 'Europe/Istanbul');
+            $this->fail($value.' must be rejected as an invalid date.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_PARITY_DATE_INVALID', $exception->getMessage());
+        }
+    }
+
+    private function assertTimestampContractError(string $value): void
+    {
+        try {
+            $this->contract->canonicalTimestamp($value, 'Europe/Istanbul');
+            $this->fail($value.' must be rejected as an invalid timestamp.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_PARITY_TIMESTAMP_INVALID', $exception->getMessage());
         }
     }
 
