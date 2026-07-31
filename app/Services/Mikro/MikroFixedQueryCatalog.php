@@ -33,6 +33,10 @@ class MikroFixedQueryCatalog
             'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/stok_hareketleri.htm',
             'sha256' => 'afefd6614826d36fea5b298cf3f98d1ee9c5af2a9656d602b7bdd6b98f30264d',
         ],
+        'STOK_SERINO_TANIMLARI' => [
+            'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/stok_serino_tanimlari.htm',
+            'sha256' => 'db831ff499caf57b083b835941518eebe83037a47ca72e444c859be5940ab477',
+        ],
     ];
 
     /**
@@ -152,6 +156,54 @@ class MikroFixedQueryCatalog
             'parameters' => ['serial_number' => 'serial'],
             'tables' => ['CIHAZ_HAREKETLERI', 'STOK_HAREKETLERI'],
         ],
+        'parity.customer.discovery.v1' => [
+            'sql' => 'SELECT TOP ([[limit]]) CONVERT(varchar(36), cari.cari_Guid) AS record_id, LTRIM(RTRIM(cari.cari_kod)) AS customer_code, cari.cari_unvan1 AS title_1, cari.cari_unvan2 AS title_2, cari.cari_grup_kodu AS customer_group_code, CAST(cari.cari_faal_terk AS int) AS active_abandon_code, CAST(cari.cari_firma_acik_kapal AS int) AS company_open_closed_flag, CAST(cari.cari_cari_kilitli_flg AS int) AS locked_flag, CAST(cari.cari_doviz_cinsi AS int) AS currency_index, cari.cari_lastup_date AS source_updated_at FROM dbo.CARI_HESAPLAR AS cari WHERE LTRIM(RTRIM(cari.cari_kod)) <> N\'\' ORDER BY LTRIM(RTRIM(cari.cari_kod)), cari.cari_Guid',
+            'parameters' => ['limit' => 'limit'],
+            'tables' => ['CARI_HESAPLAR'],
+            'parity_only' => true,
+        ],
+        'parity.customer.detail.v1' => [
+            'sql' => 'SELECT TOP 1 CONVERT(varchar(36), cari.cari_Guid) AS record_id, LTRIM(RTRIM(cari.cari_kod)) AS customer_code, cari.cari_unvan1 AS title_1, cari.cari_unvan2 AS title_2, cari.cari_grup_kodu AS customer_group_code, CAST(cari.cari_faal_terk AS int) AS active_abandon_code, CAST(cari.cari_firma_acik_kapal AS int) AS company_open_closed_flag, CAST(cari.cari_cari_kilitli_flg AS int) AS locked_flag, CAST(cari.cari_doviz_cinsi AS int) AS currency_index, cari.cari_lastup_date AS source_updated_at FROM dbo.CARI_HESAPLAR AS cari WHERE LTRIM(RTRIM(cari.cari_kod)) = [[customer_code]]',
+            'parameters' => ['customer_code' => 'code'],
+            'tables' => ['CARI_HESAPLAR'],
+            'parity_only' => true,
+        ],
+        'parity.stock.discovery.v1' => [
+            'sql' => 'SELECT TOP ([[limit]]) CONVERT(varchar(36), sto.sto_Guid) AS record_id, LTRIM(RTRIM(sto.sto_kod)) AS item_code, dep.warehouse_code, sto.sto_birim1_ad AS unit_name, CAST(dbo.fn_DepodakiMiktar(sto.sto_kod, dep.warehouse_code, [[as_of_date]]) AS decimal(18,6)) AS on_hand_quantity, CAST(sto.sto_detay_takip AS int) AS serial_tracking_code, CAST(sto.sto_pasif_fl AS int) AS item_active_flag, sto.sto_lastup_date AS source_updated_at FROM dbo.STOKLAR AS sto CROSS JOIN (SELECT 1 AS warehouse_code UNION ALL SELECT 5 AS warehouse_code) AS dep WHERE LTRIM(RTRIM(sto.sto_kod)) <> N\'\' ORDER BY LTRIM(RTRIM(sto.sto_kod)), dep.warehouse_code',
+            'parameters' => ['limit' => 'limit', 'as_of_date' => 'date'],
+            'tables' => ['STOKLAR'],
+            'parity_only' => true,
+        ],
+        'parity.stock.detail.v1' => [
+            'sql' => 'SELECT TOP 1 CONVERT(varchar(36), sto.sto_Guid) AS record_id, LTRIM(RTRIM(sto.sto_kod)) AS item_code, [[warehouse_code]] AS warehouse_code, sto.sto_birim1_ad AS unit_name, CAST(dbo.fn_DepodakiMiktar(sto.sto_kod, [[warehouse_code]], [[as_of_date]]) AS decimal(18,6)) AS on_hand_quantity, CAST(sto.sto_detay_takip AS int) AS serial_tracking_code, CAST(sto.sto_pasif_fl AS int) AS item_active_flag, sto.sto_lastup_date AS source_updated_at FROM dbo.STOKLAR AS sto WHERE LTRIM(RTRIM(sto.sto_kod)) = [[item_code]]',
+            'parameters' => ['item_code' => 'code', 'warehouse_code' => 'warehouse', 'as_of_date' => 'date'],
+            'tables' => ['STOKLAR'],
+            'parity_only' => true,
+        ],
+        'parity.serial.discovery.v1' => [
+            'sql' => 'SELECT TOP ([[limit]]) CONVERT(varchar(36), serials.chz_Guid) AS record_id, LTRIM(RTRIM(serials.chz_serino)) AS serial_number, LTRIM(RTRIM(serials.chz_stok_kodu)) AS item_code, serials.chz_lastup_date AS source_updated_at FROM dbo.STOK_SERINO_TANIMLARI AS serials WHERE LTRIM(RTRIM(serials.chz_serino)) <> N\'\' AND LTRIM(RTRIM(serials.chz_stok_kodu)) <> N\'\' ORDER BY LTRIM(RTRIM(serials.chz_serino)), LTRIM(RTRIM(serials.chz_stok_kodu))',
+            'parameters' => ['limit' => 'limit'],
+            'tables' => ['STOK_SERINO_TANIMLARI'],
+            'parity_only' => true,
+        ],
+        'parity.serial.detail.v1' => [
+            'sql' => 'SELECT TOP 1 CONVERT(varchar(36), serials.chz_Guid) AS record_id, LTRIM(RTRIM(serials.chz_serino)) AS serial_number, LTRIM(RTRIM(serials.chz_stok_kodu)) AS item_code, CAST(movement.ChHar_rezerve_fl AS int) AS reserved_flag, CAST(movement.sth_tip AS int) AS movement_type, movement.sth_giris_depo_no AS ingress_warehouse_code, movement.sth_cikis_depo_no AS egress_warehouse_code, movement.sth_cari_kodu AS customer_code, CONVERT(varchar(36), movement.sth_sip_uid) AS order_line_guid, CONVERT(varchar(36), movement.sth_fat_uid) AS invoice_line_guid, movement.sth_evrakno_seri AS movement_document_series, movement.sth_evrakno_sira AS movement_document_number, movement.sth_tarih AS movement_timestamp, serials.chz_lastup_date AS source_updated_at FROM dbo.STOK_SERINO_TANIMLARI AS serials OUTER APPLY (SELECT TOP 1 ch.ChHar_rezerve_fl, sth.sth_tip, sth.sth_giris_depo_no, sth.sth_cikis_depo_no, sth.sth_cari_kodu, sth.sth_sip_uid, sth.sth_fat_uid, sth.sth_evrakno_seri, sth.sth_evrakno_sira, sth.sth_tarih, sth.sth_Guid FROM dbo.CIHAZ_HAREKETLERI AS ch INNER JOIN dbo.STOK_HAREKETLERI AS sth ON sth.sth_Guid = ch.ChHar_master_uid WHERE ch.ChHar_master_tablo = 0 AND LTRIM(RTRIM(ch.ChHar_SeriNo)) = LTRIM(RTRIM(serials.chz_serino)) AND LTRIM(RTRIM(ch.ChHar_StokKodu)) = LTRIM(RTRIM(serials.chz_stok_kodu)) ORDER BY sth.sth_tarih DESC, sth.sth_Guid DESC) AS movement WHERE LTRIM(RTRIM(serials.chz_serino)) = [[serial_number]] AND LTRIM(RTRIM(serials.chz_stok_kodu)) = [[item_code]]',
+            'parameters' => ['serial_number' => 'serial', 'item_code' => 'code'],
+            'tables' => ['STOK_SERINO_TANIMLARI', 'CIHAZ_HAREKETLERI', 'STOK_HAREKETLERI'],
+            'parity_only' => true,
+        ],
+        'parity.order.discovery.v1' => [
+            'sql' => 'SELECT TOP ([[limit]]) MIN(CONVERT(varchar(36), sip.sip_Guid)) AS anchor_line_guid, CONCAT(CAST(sip.sip_tip AS varchar(4)), N\'|\', CAST(sip.sip_cins AS varchar(4)), N\'|\', LTRIM(RTRIM(sip.sip_evrakno_seri)), N\'|\', CAST(sip.sip_evrakno_sira AS varchar(20))) AS document_identity, LTRIM(RTRIM(sip.sip_evrakno_seri)) AS document_series, sip.sip_evrakno_sira AS document_number, MIN(sip.sip_musteri_kod) AS customer_code, MIN(sip.sip_tarih) AS order_date, MIN(sip.sip_teslim_tarih) AS requested_delivery_date, MIN(CAST(sip.sip_doviz_cinsi AS int)) AS currency_index, MIN(CAST(sip.sip_depono AS int)) AS warehouse_code, COUNT_BIG(*) AS line_count, MAX(sip.sip_lastup_date) AS source_updated_at FROM dbo.SIPARISLER AS sip WHERE CAST(sip.sip_tarih AS date) BETWEEN [[date_from]] AND [[date_to]] GROUP BY sip.sip_tip, sip.sip_cins, sip.sip_evrakno_seri, sip.sip_evrakno_sira ORDER BY MIN(sip.sip_tarih) DESC, LTRIM(RTRIM(sip.sip_evrakno_seri)), sip.sip_evrakno_sira',
+            'parameters' => ['date_from' => 'date', 'date_to' => 'date', 'limit' => 'limit'],
+            'tables' => ['SIPARISLER'],
+            'parity_only' => true,
+        ],
+        'parity.order.detail.v1' => [
+            'sql' => 'WITH anchor AS (SELECT TOP 1 sip_tip, sip_cins, sip_evrakno_seri, sip_evrakno_sira FROM dbo.SIPARISLER WHERE sip_Guid = [[order_anchor_line_guid]]) SELECT CONVERT(varchar(36), sip.sip_Guid) AS line_guid, CONCAT(CAST(sip.sip_tip AS varchar(4)), N\'|\', CAST(sip.sip_cins AS varchar(4)), N\'|\', LTRIM(RTRIM(sip.sip_evrakno_seri)), N\'|\', CAST(sip.sip_evrakno_sira AS varchar(20))) AS document_identity, LTRIM(RTRIM(sip.sip_evrakno_seri)) AS document_series, sip.sip_evrakno_sira AS document_number, sip.sip_satirno AS line_number, sip.sip_musteri_kod AS customer_code, sip.sip_tarih AS order_date, sip.sip_teslim_tarih AS requested_delivery_date, CAST(sip.sip_iptal AS int) AS cancelled_flag, CAST(sip.sip_kapat_fl AS int) AS closed_flag, CAST(sip.sip_durumu AS int) AS raw_order_state, CAST(sip.sip_doviz_cinsi AS int) AS currency_index, CAST(sip.sip_depono AS int) AS warehouse_code, sip.sip_stok_kod AS item_code, CAST(sip.sip_birim_pntr AS int) AS unit_pointer, CAST(sip.sip_miktar AS decimal(18,6)) AS ordered_quantity, CAST(sip.sip_teslim_miktar AS decimal(18,6)) AS delivered_quantity, CAST(sip.sip_miktar - sip.sip_teslim_miktar AS decimal(18,6)) AS open_quantity, CAST(sip.sip_b_fiyat AS decimal(18,6)) AS unit_price, CAST(sip.sip_tutar AS decimal(18,6)) AS line_net_amount, CAST(sip.sip_vergi AS decimal(18,6)) AS line_tax_amount, sip.sip_lastup_date AS source_updated_at FROM dbo.SIPARISLER AS sip INNER JOIN anchor ON anchor.sip_tip = sip.sip_tip AND anchor.sip_cins = sip.sip_cins AND anchor.sip_evrakno_seri = sip.sip_evrakno_seri AND anchor.sip_evrakno_sira = sip.sip_evrakno_sira ORDER BY sip.sip_satirno, sip.sip_Guid',
+            'parameters' => ['order_anchor_line_guid' => 'guid'],
+            'tables' => ['SIPARISLER'],
+            'parity_only' => true,
+        ],
     ];
 
     /**
@@ -197,6 +249,35 @@ class MikroFixedQueryCatalog
     }
 
     /**
+     * The local-v2 workflow performs validated value substitution inside the
+     * supplied template. Keep those placeholders inside SQL literals while the
+     * Mikro API path continues to receive fully rendered SQL from render().
+     */
+    public function n8nTemplate(string $queryId): string
+    {
+        $definition = $this->definition($queryId);
+        $sql = (string) $definition['sql'];
+
+        foreach ($definition['parameters'] as $name => $type) {
+            $placeholder = '[['.$name.']]';
+            $replacement = match ($type) {
+                'guid' => "CONVERT(uniqueidentifier, '[[{$name}]]')",
+                'date' => "CONVERT(date, '[[{$name}]]')",
+                'code', 'serial' => "N'[[{$name}]]'",
+                'limit', 'warehouse' => $placeholder,
+                default => throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID'),
+            };
+            $sql = str_replace($placeholder, $replacement, $sql);
+        }
+
+        if (preg_match('/\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC(?:UTE)?|GRANT|REVOKE)\b/i', $sql)) {
+            throw new DomainException('MIKRO_FIXED_QUERY_UNSAFE');
+        }
+
+        return $sql;
+    }
+
+    /**
      * @return array<int, string>
      */
     public function queryIds(): array
@@ -212,6 +293,7 @@ class MikroFixedQueryCatalog
             'code' => $this->quotedRestrictedString($value, 80),
             'serial' => $this->quotedRestrictedString($value, 120),
             'limit' => (string) $this->boundedInteger($value, 1, 500),
+            'warehouse' => (string) $this->boundedInteger($value, 0, 999),
             default => throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID'),
         };
     }

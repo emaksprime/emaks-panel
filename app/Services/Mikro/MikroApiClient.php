@@ -21,6 +21,7 @@ class MikroApiClient
         private readonly MikroDailyPasswordSigner $passwordSigner,
         private readonly MikroRuntimeState $runtimeState,
         private readonly TechnicalServiceMessagingSettingsService $settings,
+        private readonly MikroParityContract $parityContract,
     ) {}
 
     public function healthCheck(): array
@@ -53,6 +54,45 @@ class MikroApiClient
             $operation,
             ['SQLSorgu' => $sql],
             $context,
+        );
+    }
+
+    /**
+     * Parity probes reuse the authenticated canary transport but replace the fixed
+     * query with a code-owned parity source. Runtime circuit, snapshots and source
+     * mode remain untouched.
+     *
+     * @param  array<string, mixed>  $parameters
+     * @return array<string, mixed>
+     */
+    public function authenticatedParityRead(MikroParitySource $source, array $parameters): array
+    {
+        $requestedOperationKey = $source->operationKey();
+        $context = $this->settings->mikroApiConnectionContext();
+
+        try {
+            if ($source->phase() !== 'detail') {
+                throw new DomainException('MIKRO_PARITY_DETAIL_SOURCE_REQUIRED');
+            }
+            $operation = $this->registry->assertCanaryAllowed($requestedOperationKey, $context);
+            if (($operation['adapter_type'] ?? null) !== 'FIXED_QUERY') {
+                throw new DomainException(MikroOperationRegistry::BLOCKED_CANARY_OPERATION);
+            }
+            $sql = $this->queries->render($source->queryId(), $parameters);
+        } catch (DomainException $exception) {
+            return $this->canaryFailureResult(
+                $requestedOperationKey,
+                isset($operation) ? (string) ($operation['canonical_operation_key'] ?? '') : null,
+                $exception->getMessage(),
+            );
+        }
+
+        return $this->executeAuthenticatedReadCanary(
+            $requestedOperationKey,
+            $operation,
+            ['SQLSorgu' => $sql],
+            $context,
+            $source,
         );
     }
 
@@ -366,7 +406,7 @@ class MikroApiClient
      * @param  array<string, mixed>  $context
      * @return array<string, mixed>
      */
-    private function executeAuthenticatedReadCanary(string $requestedOperationKey, array $operation, array $payload, array $context): array
+    private function executeAuthenticatedReadCanary(string $requestedOperationKey, array $operation, array $payload, array $context, ?MikroParitySource $paritySource = null): array
     {
         $canonicalOperationKey = (string) $operation['canonical_operation_key'];
         $correlationId = (string) Str::uuid();
@@ -405,7 +445,9 @@ class MikroApiClient
             $lastStatus = $response->status();
             if ($response->successful()) {
                 return $this->withCanaryMetadata(
-                    $this->successResult($canonicalOperationKey, $response, $correlationId, $startedAt, $attempt, 'CANARY_ISOLATED'),
+                    $paritySource === null
+                        ? $this->successResult($canonicalOperationKey, $response, $correlationId, $startedAt, $attempt, 'CANARY_ISOLATED')
+                        : $this->successParityResult($paritySource, $canonicalOperationKey, $response, $correlationId, $startedAt, $attempt),
                     $requestedOperationKey,
                     $canonicalOperationKey,
                 );
@@ -514,6 +556,46 @@ class MikroApiClient
         $freshness = now()->toIso8601String();
 
         return $this->resultEnvelope($operationKey, true, $response->status(), null, 'OK', $startedAt, $attempt, $data, 'mikro', $freshness, $correlationId, false, false, $circuitState);
+    }
+
+    private function successParityResult(MikroParitySource $source, string $operationKey, Response $response, string $correlationId, float $startedAt, int $attempt): array
+    {
+        $json = $response->json();
+        if (! is_array($json)) {
+            return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $response->status(), $attempt, null, $startedAt, 'CANARY_ISOLATED');
+        }
+
+        $fixedQueryEnvelope = $this->fixedQueryEnvelope($operationKey, $json);
+        if (($fixedQueryEnvelope['is_error'] ?? false) === true) {
+            return $this->failureResult($operationKey, 'MIKRO_BUSINESS_ERROR', $correlationId, $response->status(), $attempt, null, $startedAt, 'CANARY_ISOLATED');
+        }
+        $rows = $fixedQueryEnvelope['rows'] ?? $this->rows($json);
+        if ($rows === null) {
+            return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $response->status(), $attempt, null, $startedAt, 'CANARY_ISOLATED');
+        }
+
+        try {
+            $normalized = $this->parityContract->normalizeMikro($source, $rows);
+        } catch (DomainException) {
+            return $this->failureResult($operationKey, 'MIKRO_PARITY_NORMALIZATION_FAILED', $correlationId, $response->status(), $attempt, null, $startedAt, 'CANARY_ISOLATED');
+        }
+
+        return $this->resultEnvelope(
+            $operationKey,
+            true,
+            $response->status(),
+            null,
+            (string) $normalized['status'],
+            $startedAt,
+            $attempt,
+            [$normalized],
+            'mikro',
+            now()->toIso8601String(),
+            $correlationId,
+            false,
+            false,
+            'CANARY_ISOLATED',
+        );
     }
 
     private function fallbackOrFailure(string $operationKey, array $filters, string $errorCode, string $correlationId, ?float $startedAt, int $attempts, string $circuitState, ?int $status = null, ?string $message = null): array

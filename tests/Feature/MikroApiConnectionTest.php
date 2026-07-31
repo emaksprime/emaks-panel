@@ -8,6 +8,7 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Mikro\MikroApiClient;
 use App\Services\Mikro\MikroFixedQueryCatalog;
 use App\Services\Mikro\MikroOperationRegistry;
+use App\Services\Mikro\MikroParitySource;
 use App\Services\Mikro\MikroResponseSchemaCatalog;
 use App\Services\Mikro\MikroRuntimeState;
 use Carbon\CarbonImmutable;
@@ -474,6 +475,45 @@ class MikroApiConnectionTest extends TestCase
         $this->assertFalse($operation['runtime_enabled']);
         $this->assertNotEmpty($operation['v17_table_evidence']);
         Http::assertNothingSent();
+    }
+
+    public function test_authenticated_parity_probe_uses_isolated_query_without_changing_runtime_state_or_source_mode(): void
+    {
+        $this->configureCanaryContract();
+        Http::fake([
+            'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2' => $this->fixedQueryResponse([[
+                'record_id' => '123e4567-e89b-42d3-a456-426614174000',
+                'item_code' => 'STOK-001',
+                'warehouse_code' => 5,
+                'unit_name' => 'ADET',
+                'on_hand_quantity' => '12.500000',
+                'serial_tracking_code' => 3,
+                'item_active_flag' => 1,
+                'source_updated_at' => '2026-07-31T10:00:00',
+            ]]),
+        ]);
+
+        $result = app(MikroApiClient::class)->authenticatedParityRead(
+            MikroParitySource::STOCK_DETAIL,
+            ['item_code' => 'STOK-001', 'warehouse_code' => 5, 'as_of_date' => '2026-07-31'],
+        );
+
+        $this->assertTrue($result['success']);
+        $this->assertTrue($result['canary']);
+        $this->assertFalse($result['runtime_state_mutated']);
+        $this->assertFalse($result['source_mode_mutated']);
+        $this->assertSame('CONTRACT_FIELD_UNAVAILABLE', $result['data'][0]['status']);
+        $this->assertSame('12.5', $result['data'][0]['envelope']['on_hand_quantity']);
+        $this->assertArrayNotHasKey('available_quantity', $result['data'][0]['envelope']);
+        Http::assertSentCount(1);
+        Http::assertSent(function (Request $request): bool {
+            $sql = (string) data_get($request->data(), 'SQLSorgu', '');
+
+            return $request->url() === 'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2'
+                && str_contains($sql, 'AS on_hand_quantity')
+                && str_contains($sql, ' 5 AS warehouse_code')
+                && ! str_contains($sql, 'AS available_quantity');
+        });
     }
 
     public function test_transient_read_retries_are_bounded_and_last_good_is_explicit(): void
