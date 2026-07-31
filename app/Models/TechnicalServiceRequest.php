@@ -6,12 +6,19 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class TechnicalServiceRequest extends Model
 {
     use HasFactory;
     use SoftDeletes;
+
+    public const STATUS_NEW = 'Yeni';
+    public const WORKFLOW_NEW_REQUEST = 'Yeni Talep';
+    public const SOURCE_QR_MOUNT_FORM = 'qr_mount_form';
+    public const PRIORITY_MEDIUM = 'Orta';
+    public const RISK_MEDIUM = 'Orta';
 
     protected $table = 'technical_service_requests';
 
@@ -24,6 +31,9 @@ class TechnicalServiceRequest extends Model
         'service_address',
         'product_name',
         'product_model',
+        'brand',
+        'stock_code',
+        'activation_code',
         'serial_number',
         'service_type',
         'status',
@@ -94,6 +104,40 @@ class TechnicalServiceRequest extends Model
         'description',
         'resolution_notes',
         'source_channel',
+        'qr_link_id',
+        'mount_session_id',
+        'current_serial_state',
+        'has_current_sale',
+        'sale_mount_status',
+        'mount_payment_status',
+        'mount_payment_label',
+        'mount_payment_provider',
+        'mount_payment_reference',
+        'mount_payment_paid_at',
+        'invoice_series',
+        'invoice_number',
+        'invoice_display_no',
+        'dispatch_series',
+        'dispatch_number',
+        'dispatch_display_no',
+        'order_series',
+        'order_number',
+        'order_display_no',
+        'invoice_customer_type',
+        'qr_context_payload',
+        'location_latitude',
+        'location_longitude',
+        'location_place_id',
+        'location_formatted_address',
+        'location_map_url',
+        'building_no',
+        'apartment_no',
+        'door_no',
+        'floor_no',
+        'site_name',
+        'operation_control_payload',
+        'operation_control_checked_by_user_id',
+        'operation_control_checked_at',
         'travel_round_trip_km',
         'travel_billable_km',
         'travel_fee_amount',
@@ -134,6 +178,16 @@ class TechnicalServiceRequest extends Model
         'cancelled_at' => 'datetime',
         'reopened_at' => 'datetime',
         'reopen_count' => 'integer',
+        'qr_link_id' => 'integer',
+        'mount_session_id' => 'integer',
+        'has_current_sale' => 'boolean',
+        'mount_payment_paid_at' => 'datetime',
+        'qr_context_payload' => 'array',
+        'location_latitude' => 'decimal:7',
+        'location_longitude' => 'decimal:7',
+        'operation_control_payload' => 'array',
+        'operation_control_checked_by_user_id' => 'integer',
+        'operation_control_checked_at' => 'datetime',
         'travel_round_trip_km' => 'decimal:2',
         'travel_billable_km' => 'decimal:2',
         'travel_fee_amount' => 'decimal:2',
@@ -155,5 +209,25 @@ class TechnicalServiceRequest extends Model
     public function technicianRecord(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceTechnician::class, 'technical_service_technician_id');
+    }
+
+    public function requestSerials(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceRequestSerial::class, 'technical_service_request_id');
+    }
+
+    public function uploads(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceRequestUpload::class, 'technical_service_request_id');
+    }
+
+    public function routeQuotes(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceRouteQuote::class, 'technical_service_request_id');
+    }
+
+    public function latestRouteQuote(): HasOne
+    {
+        return $this->hasOne(TechnicalServiceRouteQuote::class, 'technical_service_request_id')->latestOfMany();
     }
 }
