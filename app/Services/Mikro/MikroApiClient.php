@@ -28,6 +28,34 @@ class MikroApiClient
         return $this->execute('health.check');
     }
 
+    /** @return array<string, mixed> */
+    public function authenticatedReadCanary(string $requestedOperationKey, array $parameters): array
+    {
+        $context = $this->settings->mikroApiConnectionContext();
+
+        try {
+            $operation = $this->registry->assertCanaryAllowed($requestedOperationKey, $context);
+            if (($operation['adapter_type'] ?? null) !== 'FIXED_QUERY') {
+                throw new DomainException(MikroOperationRegistry::BLOCKED_CANARY_OPERATION);
+            }
+            $queryId = (string) ($operation['fixed_query_id'] ?? '');
+            $sql = $this->queries->render($queryId, $parameters);
+        } catch (DomainException $exception) {
+            return $this->canaryFailureResult(
+                $requestedOperationKey,
+                isset($operation) ? (string) ($operation['canonical_operation_key'] ?? $operation['operation_key'] ?? '') : null,
+                $exception->getMessage(),
+            );
+        }
+
+        return $this->executeAuthenticatedReadCanary(
+            $requestedOperationKey,
+            $operation,
+            ['SQLSorgu' => $sql],
+            $context,
+        );
+    }
+
     public function userParameters(): array
     {
         return $this->execute('user.parameters');
@@ -329,6 +357,108 @@ class MikroApiClient
         return $this->failureResult($operationKey, $lastError, $correlationId, $lastStatus, $attempts, $lastMessage, $startedAt, $circuit['circuit_state']);
     }
 
+    /**
+     * Authenticated canaries intentionally bypass production routing and runtime state.
+     * They never read or write circuit/last-good state and cannot execute caller SQL.
+     *
+     * @param  array<string, mixed>  $operation
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function executeAuthenticatedReadCanary(string $requestedOperationKey, array $operation, array $payload, array $context): array
+    {
+        $canonicalOperationKey = (string) $operation['canonical_operation_key'];
+        $correlationId = (string) Str::uuid();
+        $origin = rtrim((string) $context['base_url'], '/');
+        $startedAt = microtime(true);
+        $lastError = 'MIKRO_CONNECTION_FAILED';
+        $lastStatus = null;
+        $lastMessage = null;
+        $attempts = 0;
+
+        for ($attempt = 1; $attempt <= self::MAX_READ_ATTEMPTS; $attempt++) {
+            $attempts = $attempt;
+            try {
+                $request = Http::acceptJson()
+                    ->asJson()
+                    ->withHeaders(['X-Correlation-ID' => $correlationId])
+                    ->connectTimeout(min(5, (int) $context['timeout_seconds']))
+                    ->timeout((int) $context['timeout_seconds']);
+                $url = $origin.(string) $operation['endpoint'];
+                $response = $operation['method'] === 'GET'
+                    ? $request->get($url)
+                    : $request->post($url, $this->requestPayload($operation, $payload, $context));
+            } catch (ConnectionException $exception) {
+                $lastError = $this->connectionErrorCode($exception);
+                $lastMessage = $lastError;
+                if ($this->shouldRetry($lastError, null) && $attempt < self::MAX_READ_ATTEMPTS) {
+                    continue;
+                }
+                break;
+            } catch (Throwable) {
+                $lastError = 'MIKRO_CONNECTION_FAILED';
+                $lastMessage = $lastError;
+                break;
+            }
+
+            $lastStatus = $response->status();
+            if ($response->successful()) {
+                return $this->withCanaryMetadata(
+                    $this->successResult($canonicalOperationKey, $response, $correlationId, $startedAt, $attempt, 'CANARY_ISOLATED'),
+                    $requestedOperationKey,
+                    $canonicalOperationKey,
+                );
+            }
+
+            $lastError = $this->httpErrorCode($response);
+            $lastMessage = $lastError;
+            if (! $this->shouldRetry($lastError, $lastStatus) || $attempt >= self::MAX_READ_ATTEMPTS) {
+                break;
+            }
+        }
+
+        return $this->withCanaryMetadata(
+            $this->failureResult(
+                $canonicalOperationKey,
+                $lastError,
+                $correlationId,
+                $lastStatus,
+                $attempts,
+                $lastMessage,
+                $startedAt,
+                'CANARY_ISOLATED',
+            ),
+            $requestedOperationKey,
+            $canonicalOperationKey,
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function canaryFailureResult(string $requestedOperationKey, ?string $canonicalOperationKey, string $errorCode): array
+    {
+        $canonicalOperationKey = filled($canonicalOperationKey) ? $canonicalOperationKey : $requestedOperationKey;
+
+        return $this->withCanaryMetadata(
+            $this->failureResult($canonicalOperationKey, $errorCode, (string) Str::uuid(), null, 0, null, null, 'CANARY_ISOLATED'),
+            $requestedOperationKey,
+            $canonicalOperationKey,
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function withCanaryMetadata(array $result, string $requestedOperationKey, string $canonicalOperationKey): array
+    {
+        return [
+            ...$result,
+            'requested_operation_key' => $requestedOperationKey,
+            'canonical_operation_key' => $canonicalOperationKey,
+            'canary' => true,
+            'runtime_state_mutated' => false,
+            'source_mode_mutated' => false,
+        ];
+    }
+
     private function requestPayload(array $operation, array $payload, array $context): array
     {
         $apiKeyField = (string) ($operation['api_key_field'] ?? 'ApiKey');
@@ -361,7 +491,11 @@ class MikroApiClient
             if (($json['success'] ?? true) === false || ($json['Success'] ?? true) === false) {
                 return $this->failureResult($operationKey, 'MIKRO_BUSINESS_ERROR', $correlationId, $response->status(), $attempt);
             }
-            $rows = $this->rows($json);
+            $fixedQueryEnvelope = $this->fixedQueryEnvelope($operationKey, $json);
+            if (($fixedQueryEnvelope['is_error'] ?? false) === true) {
+                return $this->failureResult($operationKey, 'MIKRO_BUSINESS_ERROR', $correlationId, $response->status(), $attempt);
+            }
+            $rows = $fixedQueryEnvelope['rows'] ?? $this->rows($json);
             if ($rows === null) {
                 return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $response->status(), $attempt);
             }
@@ -472,6 +606,52 @@ class MikroApiClient
         }
 
         return count(array_filter($json, 'is_array')) === count($json) ? array_values($json) : null;
+    }
+
+    /** @return array{is_error:bool,rows:array<int, array<string, mixed>>}|null */
+    private function fixedQueryEnvelope(string $operationKey, array $json): ?array
+    {
+        try {
+            $operation = $this->registry->read($operationKey);
+        } catch (DomainException) {
+            return null;
+        }
+        if (($operation['adapter_type'] ?? null) !== 'FIXED_QUERY') {
+            return null;
+        }
+
+        $result = $json['result'] ?? null;
+        $envelope = is_array($result) && array_is_list($result) ? ($result[0] ?? null) : null;
+        if (! is_array($envelope)
+            || ! array_key_exists('StatusCode', $envelope)
+            || ! array_key_exists('Data', $envelope)
+            || ! array_key_exists('IsError', $envelope)) {
+            return null;
+        }
+        if (($envelope['IsError'] ?? true) !== false || (int) ($envelope['StatusCode'] ?? 0) !== 200) {
+            return ['is_error' => true, 'rows' => []];
+        }
+
+        $data = $envelope['Data'];
+        if (! is_array($data) || ! array_is_list($data)) {
+            return ['is_error' => true, 'rows' => []];
+        }
+
+        $rows = [];
+        foreach ($data as $resultSet) {
+            $sqlRows = is_array($resultSet) ? ($resultSet['SQLResult1'] ?? null) : null;
+            if (! is_array($sqlRows) || ! array_is_list($sqlRows)) {
+                return ['is_error' => true, 'rows' => []];
+            }
+            foreach ($sqlRows as $row) {
+                if (! is_array($row)) {
+                    return ['is_error' => true, 'rows' => []];
+                }
+                $rows[] = $row;
+            }
+        }
+
+        return ['is_error' => false, 'rows' => $rows];
     }
 
     private function assertPage(int $size, int $index): void

@@ -137,6 +137,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('messaging-settings/mikro-api/connection-test', [TechnicalServiceMessagingSettingsController::class, 'testMikroApiConnection'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.mikro-api.connection-test');
+        Route::post('messaging-settings/mikro-api/authenticated-read-canary', [TechnicalServiceMessagingSettingsController::class, 'runMikroAuthenticatedReadCanary'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.mikro-api.authenticated-read-canary');
         Route::post('messaging-settings/mikro-api/operations/{operationKey}/circuit/reset', [TechnicalServiceMessagingSettingsController::class, 'resetMikroApiCircuit'])
             ->where('operationKey', '[A-Za-z0-9._-]+')
             ->middleware('panel.access:technical_service_admin')

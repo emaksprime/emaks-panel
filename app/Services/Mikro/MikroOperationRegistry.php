@@ -16,7 +16,17 @@ class MikroOperationRegistry
 
     public const BLOCKED_RESPONSE_SCHEMA = 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED';
 
+    public const BLOCKED_CANARY_OPERATION = 'MIKRO_CANARY_OPERATION_NOT_ALLOWED';
+
     public const SOURCE_MODES = ['mikro', 'n8n', 'shadow_compare', 'disabled'];
+
+    /** @var array<string, string> */
+    private const AUTHENTICATED_READ_CANARY_ALIASES = [
+        'customer.lookup' => 'customer.detail',
+        'stock.availability' => 'stock.availability',
+        'serial.lookup' => 'serial.lookup',
+        'order.detail' => 'order.detail',
+    ];
 
     /** @var array<string, array<string, mixed>> */
     private const READ_OPERATIONS = [
@@ -28,7 +38,7 @@ class MikroOperationRegistry
         'customer.balance' => ['name' => 'Customer balance', 'category' => 'customer', 'adapter' => 'FIXED_QUERY', 'target' => 'customer.balance', 'request' => 'MikroCustomerBalanceQuery', 'response' => 'MikroCustomerBalanceResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['customer_code', 'balance']],
         'customer.document.timeline' => ['name' => 'Customer document timeline', 'category' => 'customer', 'adapter' => 'FIXED_QUERY', 'target' => 'customer.document.timeline', 'request' => 'MikroCustomerTimelineQuery', 'response' => 'MikroCustomerTimelineResult', 'source' => 'n8n', 'fallback' => true, 'parity' => ['document_guid', 'document_date', 'amount']],
         'stock.list' => ['name' => 'Stock list', 'category' => 'stock', 'adapter' => 'DIRECT_ENDPOINT', 'target' => '/Api/APIMethods/StokListesiV2', 'method' => 'POST', 'payload_style' => 'standard', 'request' => 'MikroStockListQuery', 'response' => 'MikroStockListResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['stock_code', 'stock_name']],
-        'stock.availability' => ['name' => 'Stock availability', 'category' => 'stock', 'adapter' => 'CONTRACT_BLOCKED', 'target' => null, 'request' => 'MikroStockAvailabilityQuery', 'response' => 'MikroStockAvailabilityResult', 'source' => 'disabled', 'fallback' => true, 'parity' => ['stock_code', 'available_quantity']],
+        'stock.availability' => ['name' => 'Stock availability', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.availability', 'request' => 'MikroStockAvailabilityQuery', 'response' => 'MikroStockAvailabilityResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['stock_code', 'depot_1_quantity', 'depot_5_quantity', 'available_quantity']],
         'stock.movement.list' => ['name' => 'Stock movements', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.movement.list', 'request' => 'MikroStockMovementQuery', 'response' => 'MikroStockMovementResult', 'source' => 'n8n', 'fallback' => true, 'parity' => ['movement_guid', 'movement_date', 'quantity']],
         'serial.lookup' => ['name' => 'Serial lookup', 'category' => 'serial', 'adapter' => 'FIXED_QUERY', 'target' => 'serial.lookup', 'request' => 'MikroSerialLookupQuery', 'response' => 'MikroSerialLookupResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['serial_number', 'stock_code', 'customer_code']],
         'serial.history' => ['name' => 'Serial history', 'category' => 'serial', 'adapter' => 'FIXED_QUERY', 'target' => 'serial.history', 'request' => 'MikroSerialHistoryQuery', 'response' => 'MikroSerialHistoryResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['serial_number', 'movement_date', 'movement_type']],
@@ -77,6 +87,7 @@ class MikroOperationRegistry
 
     public function __construct(
         private readonly MikroResponseSchemaCatalog $responseSchemas,
+        private readonly MikroFixedQueryCatalog $fixedQueries,
     ) {}
 
     /** @return array<string, mixed> */
@@ -145,6 +156,81 @@ class MikroOperationRegistry
         }
 
         return $operation;
+    }
+
+    /** @return array<string, mixed> */
+    public function assertCanaryAllowed(string $requestedOperationKey, array $context): array
+    {
+        $canonicalOperationKey = self::AUTHENTICATED_READ_CANARY_ALIASES[$requestedOperationKey] ?? null;
+        if (! is_string($canonicalOperationKey)) {
+            throw new DomainException(self::BLOCKED_CANARY_OPERATION);
+        }
+
+        $operation = $this->read($canonicalOperationKey);
+        if (($operation['response_schema_status'] ?? null) !== MikroResponseSchemaCatalog::VERIFIED) {
+            throw new DomainException(self::BLOCKED_RESPONSE_SCHEMA);
+        }
+        if (! (bool) ($context['live_configuration_ready'] ?? false)) {
+            throw new DomainException('MIKRO_LIVE_CONFIGURATION_MISSING');
+        }
+        if (! (bool) ($context['health_ready'] ?? false)) {
+            throw new DomainException('MIKRO_PRIVATE_HEALTH_NOT_READY');
+        }
+        if ((bool) ($context['write_enabled'] ?? false)) {
+            throw new DomainException('MIKRO_CANARY_REQUIRES_WRITE_DISABLED');
+        }
+        if (blank($context['base_url'] ?? null) || $this->baseUrlBlocker($context['base_url'] ?? null) !== null) {
+            throw new DomainException('MIKRO_INVALID_BASE_URL');
+        }
+        if (! in_array($operation['adapter_type'] ?? null, ['DIRECT_ENDPOINT', 'FIXED_QUERY'], true)) {
+            throw new DomainException(self::BLOCKED_CANARY_OPERATION);
+        }
+        if (($operation['adapter_type'] ?? null) === 'FIXED_QUERY') {
+            $queryId = $operation['fixed_query_id'] ?? null;
+            if (! is_string($queryId) || $queryId !== $canonicalOperationKey) {
+                throw new DomainException('MIKRO_FIXED_QUERY_UNKNOWN');
+            }
+            $this->fixedQueries->definition($queryId);
+        }
+
+        return [
+            ...$operation,
+            'requested_operation_key' => $requestedOperationKey,
+            'canonical_operation_key' => $canonicalOperationKey,
+            'canary_eligible' => true,
+        ];
+    }
+
+    /** @return array{allowed:bool,operations:array<string, array<string, mixed>>,blocker_codes:array<int, string>} */
+    public function canaryEligibility(array $context): array
+    {
+        $operations = [];
+        $blockers = [];
+        foreach (array_keys(self::AUTHENTICATED_READ_CANARY_ALIASES) as $requestedOperationKey) {
+            try {
+                $operation = $this->assertCanaryAllowed($requestedOperationKey, $context);
+                $operations[$requestedOperationKey] = [
+                    'allowed' => true,
+                    'canonical_operation_key' => $operation['canonical_operation_key'],
+                    'adapter_type' => $operation['adapter_type'],
+                    'fixed_query_id' => $operation['fixed_query_id'],
+                    'blocker' => null,
+                ];
+            } catch (DomainException $exception) {
+                $blockers[] = $exception->getMessage();
+                $operations[$requestedOperationKey] = [
+                    'allowed' => false,
+                    'canonical_operation_key' => self::AUTHENTICATED_READ_CANARY_ALIASES[$requestedOperationKey],
+                    'adapter_type' => null,
+                    'fixed_query_id' => null,
+                    'blocker' => $exception->getMessage(),
+                ];
+            }
+        }
+
+        $blockers = array_values(array_unique($blockers));
+
+        return ['allowed' => $blockers === [], 'operations' => $operations, 'blocker_codes' => $blockers];
     }
 
     /** @return array<string, mixed> */

@@ -20,23 +20,23 @@ class MikroOperationRegistryTest extends TestCase
 
         $this->assertSame('active', $summary['status']);
         $this->assertSame(32, $summary['read_count']);
-        $this->assertSame(29, $summary['implemented_read_count']);
+        $this->assertSame(30, $summary['implemented_read_count']);
         $this->assertSame(1, $summary['enabled_read_count']);
         $this->assertSame(11, $summary['write_count']);
         $this->assertSame(0, $summary['enabled_write_count']);
         $this->assertSame(9, $summary['direct_endpoint_count']);
-        $this->assertSame(20, $summary['fixed_query_count']);
-        $this->assertSame(14, $summary['contract_blocked_count']);
+        $this->assertSame(21, $summary['fixed_query_count']);
+        $this->assertSame(13, $summary['contract_blocked_count']);
         $this->assertSame(1, $summary['server_verified_read_count']);
-        $this->assertSame(28, $summary['server_unverified_count']);
+        $this->assertSame(29, $summary['server_unverified_count']);
         $this->assertSame(1, $summary['runtime_eligible_read_count']);
-        $this->assertSame(21, $summary['response_schema_verified_count']);
-        $this->assertSame(11, $summary['response_schema_missing_count']);
-        $this->assertSame(20, $summary['parity_status_counts']['VERIFIED_SOURCE']);
+        $this->assertSame(22, $summary['response_schema_verified_count']);
+        $this->assertSame(10, $summary['response_schema_missing_count']);
+        $this->assertSame(21, $summary['parity_status_counts']['VERIFIED_SOURCE']);
         $this->assertSame(8, $summary['parity_status_counts']['PENDING_SOURCE']);
         $this->assertSame(1, $summary['parity_status_counts']['NOT_APPLICABLE_SYSTEM']);
         $this->assertSame(11, $summary['parity_status_counts']['WRITE_REQUIRES_READBACK_CONTRACT']);
-        $this->assertSame(3, $summary['parity_status_counts']['CONTRACT_BLOCKED']);
+        $this->assertSame(2, $summary['parity_status_counts']['CONTRACT_BLOCKED']);
         $this->assertTrue($summary['matrix_complete']);
         $this->assertSame(['health.check'], $summary['enabled_keys']);
 
@@ -109,7 +109,7 @@ class MikroOperationRegistryTest extends TestCase
             }
         }
 
-        foreach (['stock.availability', 'proforma.list', 'proforma.detail'] as $operation) {
+        foreach (['proforma.list', 'proforma.detail'] as $operation) {
             try {
                 $registry->read($operation);
                 $this->fail("{$operation} should be contract-blocked.");
@@ -121,6 +121,54 @@ class MikroOperationRegistryTest extends TestCase
         $this->expectException(DomainException::class);
         $this->expectExceptionMessage(MikroOperationRegistry::BLOCKED_UNKNOWN);
         $registry->operation('invented.operation');
+    }
+
+    public function test_canary_gate_uses_one_alias_map_and_ignores_only_production_switches(): void
+    {
+        $registry = app(MikroOperationRegistry::class);
+        $context = [
+            'enabled' => false,
+            'read_sync_enabled' => false,
+            'write_enabled' => false,
+            'base_url' => 'https://mikro-api.example.test',
+            'live_configuration_ready' => true,
+            'health_ready' => true,
+        ];
+
+        $customer = $registry->assertCanaryAllowed('customer.lookup', $context);
+        $this->assertSame('customer.detail', $customer['canonical_operation_key']);
+        $this->assertSame('customer.detail', $customer['fixed_query_id']);
+        $this->assertSame('FIXED_QUERY', $customer['adapter_type']);
+
+        foreach (['stock.availability', 'serial.lookup', 'order.detail'] as $operationKey) {
+            $operation = $registry->assertCanaryAllowed($operationKey, $context);
+            $this->assertSame($operationKey, $operation['canonical_operation_key']);
+            $this->assertSame($operationKey, $operation['fixed_query_id']);
+        }
+
+        $this->assertFalse($registry->read('serial.lookup')['runtime_enabled']);
+        $this->assertSame('shadow_compare', $registry->read('serial.lookup')['source_mode']);
+        $this->assertTrue($registry->canaryEligibility($context)['allowed']);
+    }
+
+    public function test_canary_gate_rejects_unknown_and_write_operations_before_adapter_execution(): void
+    {
+        $registry = app(MikroOperationRegistry::class);
+        $context = [
+            'write_enabled' => false,
+            'base_url' => 'https://mikro-api.example.test',
+            'live_configuration_ready' => true,
+            'health_ready' => true,
+        ];
+
+        foreach (['invented.operation', 'customer.save', 'order.list'] as $operationKey) {
+            try {
+                $registry->assertCanaryAllowed($operationKey, $context);
+                $this->fail("{$operationKey} should not pass the canary allowlist.");
+            } catch (DomainException $exception) {
+                $this->assertSame(MikroOperationRegistry::BLOCKED_CANARY_OPERATION, $exception->getMessage());
+            }
+        }
     }
 
     public function test_master_and_per_operation_read_gates_are_fail_closed(): void

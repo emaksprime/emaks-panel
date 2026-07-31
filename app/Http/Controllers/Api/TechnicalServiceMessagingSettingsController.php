@@ -7,6 +7,7 @@ use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use App\Services\Mikro\MikroApiClient;
+use App\Services\Mikro\MikroAuthenticatedReadCanaryService;
 use App\Services\Mikro\MikroOperationRegistry;
 use App\Services\Mikro\MikroRuntimeState;
 use Illuminate\Http\JsonResponse;
@@ -452,6 +453,29 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'message' => $result['success']
                 ? 'Mikro HealthCheck başarılı.'
                 : 'Mikro HealthCheck güvenli biçimde tamamlanamadı.',
+        ], $result['success'] ? 200 : 503);
+    }
+
+    public function runMikroAuthenticatedReadCanary(
+        MikroAuthenticatedReadCanaryService $canaries,
+    ): JsonResponse {
+        $eligibility = $canaries->eligibility();
+        if (! $eligibility['allowed']) {
+            return response()->json([
+                'mikro_canaries' => null,
+                'blocker_codes' => $eligibility['blocker_codes'],
+                'operations' => $eligibility['operations'],
+                'message' => 'Authenticated Mikro READ canary güvenlik kapısı hazır değil.',
+            ], 409);
+        }
+
+        $result = $canaries->run();
+
+        return response()->json([
+            'mikro_canaries' => $result,
+            'message' => $result['success']
+                ? 'Dört authenticated Mikro READ canary başarıyla tamamlandı.'
+                : 'Authenticated Mikro READ canary güvenli biçimde tamamlanamadı.',
         ], $result['success'] ? 200 : 503);
     }
 

@@ -25,6 +25,10 @@ class MikroFixedQueryCatalog
             'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/siparisler.htm',
             'sha256' => '03c9d67489cd9508baf738d7aecd2609607e768cdc169395656ad9a3986ef99d',
         ],
+        'STOKLAR' => [
+            'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/stoklar.htm',
+            'sha256' => '4d8c28a3b3e11eb669282cacd7b47b9996dfab46e616e51ed3457f85d0a91c75',
+        ],
         'STOK_HAREKETLERI' => [
             'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/stok_hareketleri.htm',
             'sha256' => 'afefd6614826d36fea5b298cf3f98d1ee9c5af2a9656d602b7bdd6b98f30264d',
@@ -36,7 +40,7 @@ class MikroFixedQueryCatalog
      * the cited FLY V17 SDK pages; n8n is used only for business-parity comparison.
      * Callers can supply values only; table, column, expression and ordering are immutable.
      *
-     * @var array<string, array{sql:string,parameters:array<string,string>,tables:array<int,string>}>
+     * @var array<string, array<string, mixed>>
      */
     private const QUERIES = [
         'customer.detail' => [
@@ -53,6 +57,14 @@ class MikroFixedQueryCatalog
             'sql' => 'SELECT TOP ([[limit]]) cha.cha_Guid AS document_guid, cha.cha_kod AS customer_code, cha.cha_tarihi AS document_date, cha.cha_evrak_tip AS document_type, cha.cha_evrakno_seri AS document_series, cha.cha_evrakno_sira AS document_number, cha.cha_aciklama AS description, cha.cha_meblag AS amount FROM dbo.CARI_HESAP_HAREKETLERI AS cha WITH (NOLOCK) WHERE LTRIM(RTRIM(cha.cha_kod)) = [[customer_code]] AND CAST(cha.cha_tarihi AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY cha.cha_tarihi DESC, cha.cha_Guid DESC',
             'parameters' => ['customer_code' => 'code', 'date_from' => 'date', 'date_to' => 'date', 'limit' => 'limit'],
             'tables' => ['CARI_HESAP_HAREKETLERI'],
+        ],
+        'stock.availability' => [
+            'sql' => 'SELECT TOP 1 sto.sto_kod AS stock_code, CAST(ISNULL(dbo.fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE()), 0) AS decimal(18,2)) AS depot_1_quantity, CAST(ISNULL(dbo.fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE()), 0) AS decimal(18,2)) AS depot_5_quantity, CAST(ISNULL(dbo.fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE()), 0) + ISNULL(dbo.fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE()), 0) AS decimal(18,2)) AS available_quantity FROM dbo.STOKLAR AS sto WITH (NOLOCK) WHERE LTRIM(RTRIM(sto.sto_kod)) = [[stock_code]]',
+            'parameters' => ['stock_code' => 'code'],
+            'tables' => ['STOKLAR'],
+            'warehouse_context' => [1, 5],
+            'depot_source_file' => 'database/seeders/PanelKnownWorkflowDataSourcesSeeder.php',
+            'depot_source_id' => 'stock_warehouse',
         ],
         'stock.movement.list' => [
             'sql' => 'SELECT TOP ([[limit]]) sth.sth_Guid AS movement_guid, sth.sth_tarih AS movement_date, sth.sth_stok_kod AS stock_code, sth.sth_cari_kodu AS customer_code, sth.sth_tip AS movement_type, sth.sth_normal_iade AS is_return, sth.sth_miktar AS quantity, sth.sth_evrakno_seri AS document_series, sth.sth_evrakno_sira AS document_number FROM dbo.STOK_HAREKETLERI AS sth WITH (NOLOCK) WHERE LTRIM(RTRIM(sth.sth_stok_kod)) = [[stock_code]] AND CAST(sth.sth_tarih AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY sth.sth_tarih DESC, sth.sth_Guid DESC',

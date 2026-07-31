@@ -11,14 +11,14 @@ class MikroFixedQueryCatalogTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_catalog_contains_only_the_twenty_documented_immutable_read_queries(): void
+    public function test_catalog_contains_only_the_twenty_one_documented_immutable_read_queries(): void
     {
         $catalog = app(MikroFixedQueryCatalog::class);
 
-        $this->assertCount(20, $catalog->queryIds());
+        $this->assertCount(21, $catalog->queryIds());
         $this->assertSame([
             'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.availability', 'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines',
@@ -87,5 +87,20 @@ class MikroFixedQueryCatalogTest extends TestCase
         $this->assertStringContainsString('sth.sth_sip_uid = sip.sip_Guid', $orderSql);
         $this->assertStringContainsString('sth.sth_Guid = ch.ChHar_master_uid', $serialSql);
         $this->assertStringContainsString("CONVERT(uniqueidentifier, '{$guid}')", $orderSql);
+    }
+
+    public function test_stock_availability_uses_the_server_owned_stock_warehouse_query_contract(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+        $definition = $catalog->definition('stock.availability');
+        $sql = $catalog->render('stock.availability', ['stock_code' => 'STOK-001']);
+
+        $this->assertSame([1, 5], $definition['warehouse_context']);
+        $this->assertSame('database/seeders/PanelKnownWorkflowDataSourcesSeeder.php', $definition['depot_source_file']);
+        $this->assertSame('stock_warehouse', $definition['depot_source_id']);
+        $this->assertStringContainsString('dbo.fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE())', $sql);
+        $this->assertStringContainsString('dbo.fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE())', $sql);
+        $this->assertStringContainsString("LTRIM(RTRIM(sto.sto_kod)) = N'STOK-001'", $sql);
+        $this->assertStringNotContainsString('[[', $sql);
     }
 }

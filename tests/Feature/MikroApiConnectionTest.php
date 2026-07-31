@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\TechnicalServiceRequestSerial;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Mikro\MikroApiClient;
@@ -51,10 +52,10 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
-            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 29)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 30)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
             ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
+            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 29)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
@@ -170,6 +171,199 @@ class MikroApiConnectionTest extends TestCase
         $this->assertSame('MIKRO_LIVE_CONFIGURATION_MISSING', $result['error_code']);
         $this->assertSame(0, $result['attempt_count']);
         Http::assertNothingSent();
+    }
+
+    public function test_canary_can_run_four_allowlisted_reads_with_global_switches_off(): void
+    {
+        $secrets = $this->configureCanaryContract();
+        $orderGuid = '123e4567-e89b-42d3-a456-426614174000';
+        TechnicalServiceRequestSerial::query()->create([
+            'serial_number' => 'CANARY-SERIAL-001',
+            'stock_code' => 'CANARY-STOCK-001',
+            'is_primary' => true,
+            'is_returned' => false,
+            'is_current_latest_sale' => true,
+        ]);
+        $rowCountBefore = TechnicalServiceRequestSerial::query()->count();
+        $registry = app(MikroOperationRegistry::class);
+        $serialBefore = $registry->read('serial.lookup');
+        $origin = 'https://mikro-api.example.test';
+        $runtimeState = app(MikroRuntimeState::class);
+        $circuitsBefore = collect(['customer.detail', 'stock.availability', 'serial.lookup', 'order.detail'])
+            ->mapWithKeys(fn (string $key): array => [$key => $runtimeState->circuit($origin, $key)])
+            ->all();
+
+        Http::fake(function (Request $request) use ($orderGuid) {
+            $sql = (string) data_get($request->data(), 'SQLSorgu', '');
+            $extra = [
+                'api_key' => 'UNKNOWN_RESPONSE_SECRET',
+                'password' => 'UNKNOWN_RESPONSE_PASSWORD',
+                'token' => 'UNKNOWN_RESPONSE_TOKEN',
+                'unexpected_nested' => ['secret' => 'UNKNOWN_NESTED_SECRET'],
+            ];
+
+            return match (true) {
+                str_contains($sql, 'CIHAZ_HAREKETLERI') => $this->fixedQueryResponse([[
+                    'serial_number' => 'CANARY-SERIAL-001',
+                    'movement_guid' => '223e4567-e89b-42d3-a456-426614174000',
+                    'movement_date' => '2026-07-29',
+                    'stock_code' => 'CANARY-STOCK-001',
+                    'customer_code' => 'CANARY-CUSTOMER-001',
+                    'order_guid' => '{'.$orderGuid.'}',
+                    'invoice_guid' => null,
+                    ...$extra,
+                ]]),
+                str_contains($sql, 'CARI_HESAPLAR') => $this->fixedQueryResponse([[
+                    'customer_code' => 'CANARY-CUSTOMER-001',
+                    'title' => 'Canary Customer',
+                    'title_2' => null,
+                    'group_code' => 'TEST',
+                    'representative_code' => 'REP',
+                    ...$extra,
+                ]]),
+                str_contains($sql, 'fn_DepodakiMiktar') => $this->fixedQueryResponse([[
+                    'stock_code' => 'CANARY-STOCK-001',
+                    'depot_1_quantity' => 2,
+                    'depot_5_quantity' => 3,
+                    'available_quantity' => 5,
+                    ...$extra,
+                ]]),
+                str_contains($sql, 'SIPARISLER') => $this->fixedQueryResponse([[
+                    'order_guid' => $orderGuid,
+                    'order_date' => '2026-07-29',
+                    'document_series' => 'TEST',
+                    'document_number' => 1,
+                    'customer_code' => 'CANARY-CUSTOMER-001',
+                    'representative_code' => 'REP',
+                    'description' => 'Canary order',
+                    ...$extra,
+                ]]),
+                default => Http::response(['error' => 'unexpected query'], 500),
+            };
+        });
+
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/authenticated-read-canary')
+            ->assertJsonPath('mikro_canaries.blocker_codes', [])
+            ->assertJsonPath('mikro_canaries.success', true)
+            ->assertOk()
+            ->assertJsonPath('mikro_canaries.mikro_read_count', 4)
+            ->assertJsonPath('mikro_canaries.mikro_write_count', 0)
+            ->assertJsonPath('mikro_canaries.business_db_write_count', 0)
+            ->assertJsonPath('mikro_canaries.source_mode_delta', 0)
+            ->assertJsonPath('mikro_canaries.runtime_enabled_delta', 0)
+            ->assertJsonPath('mikro_canaries.global_switches.enabled', false)
+            ->assertJsonPath('mikro_canaries.global_switches.read_sync_enabled', false)
+            ->assertJsonPath('mikro_canaries.global_switches.write_enabled', false)
+            ->json();
+
+        $this->assertSame(
+            ['customer.lookup', 'stock.availability', 'serial.lookup', 'order.detail'],
+            array_keys($payload['mikro_canaries']['operations']),
+        );
+        foreach ($payload['mikro_canaries']['operations'] as $operation) {
+            $this->assertTrue($operation['success']);
+            $this->assertSame('PASS', $operation['schema_validation']);
+            $this->assertFalse($operation['runtime_state_mutated']);
+            $this->assertFalse($operation['source_mode_mutated']);
+            $this->assertArrayNotHasKey('data', $operation);
+            $this->assertArrayNotHasKey('normalized_data', $operation);
+        }
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        foreach ([...array_values($secrets), 'UNKNOWN_RESPONSE_SECRET', 'UNKNOWN_RESPONSE_PASSWORD', 'UNKNOWN_RESPONSE_TOKEN', 'UNKNOWN_NESTED_SECRET'] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
+        $this->assertSame($rowCountBefore, TechnicalServiceRequestSerial::query()->count());
+        $this->assertSame($serialBefore, $registry->read('serial.lookup'));
+        $this->assertSame($circuitsBefore, collect(array_keys($circuitsBefore))
+            ->mapWithKeys(fn (string $key): array => [$key => $runtimeState->circuit($origin, $key)])
+            ->all());
+        Http::assertSentCount(4);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+            && $request->url() === $origin.'/Api/apiMethods/SqlVeriOkuV2'
+            && is_string(data_get($request->data(), 'SQLSorgu'))
+            && filled(data_get($request->data(), 'Mikro.ApiKey'))
+            && filled(data_get($request->data(), 'Mikro.Sifre')));
+        Http::assertSent(fn (Request $request): bool => str_contains(
+            (string) data_get($request->data(), 'SQLSorgu', ''),
+            "CONVERT(uniqueidentifier, '{$orderGuid}')",
+        ));
+    }
+
+    public function test_canary_allows_only_explicit_reads_and_rejects_invalid_order_guid_before_network(): void
+    {
+        $this->configureCanaryContract();
+        $client = app(MikroApiClient::class);
+
+        foreach (['invented.operation', 'customer.save', 'order.list'] as $operationKey) {
+            $result = $client->authenticatedReadCanary($operationKey, []);
+            $this->assertFalse($result['success']);
+            $this->assertSame(MikroOperationRegistry::BLOCKED_CANARY_OPERATION, $result['error_code']);
+            $this->assertSame(0, $result['attempt_count']);
+        }
+
+        $invalidGuid = $client->authenticatedReadCanary('order.detail', ['order_guid' => 'ORDER-NUMBER-IS-NOT-A-GUID']);
+        $this->assertFalse($invalidGuid['success']);
+        $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $invalidGuid['error_code']);
+        $this->assertSame(0, $invalidGuid['attempt_count']);
+        Http::assertNothingSent();
+    }
+
+    public function test_canary_route_uses_the_same_health_gate_as_the_settings_payload(): void
+    {
+        $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => false,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.authenticated_canary_allowed', false)
+            ->assertJsonPath('messaging_settings.mikro_api.authenticated_canary_blocker_codes.0', 'MIKRO_PRIVATE_HEALTH_NOT_READY');
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/authenticated-read-canary')
+            ->assertStatus(409)
+            ->assertJsonPath('blocker_codes.0', 'MIKRO_PRIVATE_HEALTH_NOT_READY');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_sample_bootstrap_requires_a_real_order_guid_without_business_writes(): void
+    {
+        $this->configureCanaryContract();
+        TechnicalServiceRequestSerial::query()->create([
+            'serial_number' => 'CANARY-SERIAL-WITHOUT-ORDER',
+            'stock_code' => 'CANARY-STOCK-001',
+            'is_primary' => true,
+            'is_returned' => false,
+            'is_current_latest_sale' => true,
+        ]);
+        $rowCountBefore = TechnicalServiceRequestSerial::query()->count();
+
+        Http::fake([
+            '*' => $this->fixedQueryResponse([[
+                'serial_number' => 'CANARY-SERIAL-WITHOUT-ORDER',
+                'stock_code' => 'CANARY-STOCK-001',
+                'customer_code' => 'CANARY-CUSTOMER-001',
+                'order_guid' => 'ORDER-NUMBER',
+            ]]),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/mikro-api/authenticated-read-canary')
+            ->assertStatus(503)
+            ->assertJsonPath('mikro_canaries.success', false)
+            ->assertJsonPath('mikro_canaries.blocker_codes.0', 'MIKRO_CANARY_SAMPLE_WITH_ORDER_GUID_NOT_FOUND')
+            ->assertJsonPath('mikro_canaries.business_db_write_count', 0)
+            ->assertJsonPath('mikro_canaries.mikro_write_count', 0);
+
+        $this->assertSame($rowCountBefore, TechnicalServiceRequestSerial::query()->count());
+        Http::assertSentCount(1);
     }
 
     public function test_health_check_uses_exact_get_contract_and_redacts_credentials(): void
@@ -444,6 +638,53 @@ class MikroApiConnectionTest extends TestCase
         }
 
         Http::assertNothingSent();
+    }
+
+    /** @param array<int, array<string, mixed>> $rows */
+    private function fixedQueryResponse(array $rows): mixed
+    {
+        return Http::response([
+            'result' => [[
+                'StatusCode' => 200,
+                'Data' => [['SQLResult1' => $rows]],
+                'ErrorMessage' => '',
+                'IsError' => false,
+            ]],
+        ], 200);
+    }
+
+    /** @return array{api_key:string,user_code:string,password:string} */
+    private function configureCanaryContract(): array
+    {
+        $secrets = $this->configureLiveContract();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => false,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                ],
+            ])
+            ->assertOk();
+
+        app(TechnicalServiceMessagingSettingsService::class)->recordMikroHealthCheckResult([
+            'success' => true,
+            'stale' => false,
+            'fallback_used' => false,
+            'error_code' => null,
+        ]);
+
+        $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/messaging-settings')
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.authenticated_canary_allowed', true)
+            ->assertJsonPath('messaging_settings.mikro_api.authenticated_canary_blocker_codes', [])
+            ->assertJsonPath('messaging_settings.mikro_api.enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.read_sync_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false);
+
+        return $secrets;
     }
 
     /** @return array{api_key:string,user_code:string,password:string} */

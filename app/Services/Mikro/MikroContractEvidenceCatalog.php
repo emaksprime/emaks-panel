@@ -143,6 +143,7 @@ final class MikroContractEvidenceCatalog
         'customer.detail' => '79e03e50eadf97ad713574ca3d115de9f6ecc045798bd57d784bf7dba3835a48',
         'customer.balance' => '342098d3246cc84948062086050f0efca4781cfe4ee6f479704fb31c7644328a',
         'customer.document.timeline' => '77d202731c594bb6a67d048bf670e8bca8789130b700ea4a6de061bca2894ccb',
+        'stock.availability' => '245e65f2a3f3a0fd4f7664559e225609b79869944f5a38a09a7ecdf18d8fdfb1',
         'stock.movement.list' => '7280b34fa4376964c60606c63b8101cbfcb136108895e443395f75016e0b40d3',
         'serial.lookup' => '53dbf0db942df656f470eff9c8a4b9d04dc384b5bde6d1268ec44ee6b344e9ea',
         'serial.history' => 'f7ea431026c2c8dce60ec0fe546704240d851a7f66d9ccf1f88f8ae98d63699b',
@@ -177,7 +178,6 @@ final class MikroContractEvidenceCatalog
 
     /** @var array<string, array{evidence_hash:string,blocker:string}> */
     private const BLOCKED = [
-        'stock.availability' => ['evidence_hash' => 'bab3a43a311872973af753f69c0f2677aabbe8e139465a8166dc68bf6981f048', 'blocker' => 'The V17 table contract is documented, but fn_DepodakiMiktar has no exact authority in the current official/local/depot evidence set.'],
         'proforma.list' => ['evidence_hash' => 'c44af447b2fd77ae08609c2d81959040b605c222fe441be9fd2711e892f2d280', 'blocker' => 'Exact official/depot read contract is unavailable.'],
         'proforma.detail' => ['evidence_hash' => '07c4d23e0e87dc9530a84866fc1b34612b5093f3633225f0ffb0a6e017286e91', 'blocker' => 'Exact official/depot read contract is unavailable.'],
         'return.create' => ['evidence_hash' => '1d500819e2d1e6e9a7992fefba3b8a2df6625260a2bfd90450eed7eaf49f97fc', 'blocker' => 'Exact official/depot write contract is unavailable.'],
@@ -258,6 +258,18 @@ final class MikroContractEvidenceCatalog
         foreach ($definition['table_evidence'] as $table => $source) {
             $sources[] = ['type' => 'fly_v17_table', 'table' => $table, ...$source];
         }
+        $depotSourceFile = null;
+        $depotMethod = null;
+        if ($operationKey === 'stock.availability') {
+            $depotSourceFile = 'database/seeders/PanelKnownWorkflowDataSourcesSeeder.php';
+            $depotMethod = 'stock_warehouse';
+            $sources[] = [
+                'type' => 'depot_implementation',
+                'uri' => $depotSourceFile,
+                'source_id' => $depotMethod,
+                'sha256' => self::FIXED_QUERY_HASHES[$operationKey],
+            ];
+        }
 
         return self::descriptor([
             'operation_key' => $operationKey,
@@ -276,10 +288,14 @@ final class MikroContractEvidenceCatalog
             'request_root_keys' => ['Mikro', 'Mikro.ApiKey', 'Mikro.CalismaYili', 'Mikro.FirmaKodu', 'Mikro.KullaniciKodu', 'Mikro.Sifre', 'SQLSorgu'],
             'response_root_keys' => ['UNSPECIFIED_IN_SOURCE'],
             'source_documents' => $sources,
-            'source_item_category' => 'SqlVeriOkuV2 / fixed query '.$operationKey,
+            'source_item_category' => $operationKey === 'stock.availability'
+                ? 'SqlVeriOkuV2 / depot stock_warehouse fixed query'
+                : 'SqlVeriOkuV2 / fixed query '.$operationKey,
             'evidence_hash' => $evidenceHash,
             'api_key_field' => 'ApiKey',
             'blocker' => 'SqlVeriOkuV2 authenticated installed-server canary and exact path-casing verification are pending Panel credentials.',
+            'depot_source_file' => $depotSourceFile,
+            'depot_method' => $depotMethod,
         ]);
     }
 
@@ -316,19 +332,6 @@ final class MikroContractEvidenceCatalog
     private static function blocked(string $operationKey, string $mode): array
     {
         $entry = self::BLOCKED[$operationKey];
-        $sources = [];
-        if ($operationKey === 'stock.availability') {
-            $sources = [[
-                'type' => 'official_current',
-                'uri' => self::SQL_PAGE,
-                'sha256' => self::SQL_PAGE_HASH,
-            ], [
-                'type' => 'fly_v17_table',
-                'table' => 'STOKLAR',
-                'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/stoklar.htm',
-                'sha256' => '4d8c28a3b3e11eb669282cacd7b47b9996dfab46e616e51ed3457f85d0a91c75',
-            ]];
-        }
 
         return self::descriptor([
             'operation_key' => $operationKey,
@@ -338,7 +341,7 @@ final class MikroContractEvidenceCatalog
             'evidence_status' => 'CONTRACT_BLOCKED',
             'runtime_eligible' => false,
             'installed_server_canary' => 'NOT_RUN_CONTRACT_BLOCKED',
-            'official_api_page' => $operationKey === 'stock.availability' ? self::SQL_PAGE : null,
+            'official_api_page' => null,
             'official_postman_item' => null,
             'local_postman_item' => null,
             'exact_http_method' => null,
@@ -346,8 +349,8 @@ final class MikroContractEvidenceCatalog
             'exact_path_casing' => null,
             'request_root_keys' => [],
             'response_root_keys' => ['UNSPECIFIED_IN_SOURCE'],
-            'source_documents' => $sources,
-            'source_item_category' => $operationKey === 'stock.availability' ? 'SqlVeriOkuV2 / fn_DepodakiMiktar authority missing' : null,
+            'source_documents' => [],
+            'source_item_category' => null,
             'evidence_hash' => $entry['evidence_hash'],
             'api_key_field' => null,
             'blocker' => $entry['blocker'],
@@ -375,7 +378,7 @@ final class MikroContractEvidenceCatalog
             'official_method' => $values['exact_http_method'],
             'request_schema' => $values['request_root_keys'],
             'response_schema' => $values['response_root_keys'],
-            'depot_evidence' => null,
+            'depot_evidence' => $values['depot_source_file'] ?? null,
             'v17_table_evidence' => $tableEvidence,
             'business_parity_source' => self::businessParity(
                 (string) $values['operation_key'],
@@ -384,8 +387,8 @@ final class MikroContractEvidenceCatalog
                 (string) $values['contract_status'],
             ),
             'official_changelog_reference' => null,
-            'depot_source_file' => null,
-            'depot_method' => null,
+            'depot_source_file' => $values['depot_source_file'] ?? null,
+            'depot_method' => $values['depot_method'] ?? null,
         ];
     }
 
@@ -423,6 +426,16 @@ final class MikroContractEvidenceCatalog
         }
 
         if ($adapterType === 'FIXED_QUERY') {
+            if ($operationKey === 'stock.availability') {
+                return [
+                    'status' => 'VERIFIED_SOURCE',
+                    'source_type' => 'DEPOT_FIXED_QUERY_AND_V17_TABLE_CONTRACT',
+                    'source_id' => 'stock_warehouse',
+                    'evidence_reference' => self::FIXED_QUERY_HASHES[$operationKey],
+                    'blocker' => null,
+                ];
+            }
+
             return [
                 'status' => 'VERIFIED_SOURCE',
                 'source_type' => 'FIXED_QUERY_AND_V17_TABLE_CONTRACT',

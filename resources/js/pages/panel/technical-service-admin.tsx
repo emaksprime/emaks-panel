@@ -479,6 +479,17 @@ type MessagingMikroApiSettings = {
     health_ready: boolean;
     live_credentials_ready: boolean;
     authenticated_canary_allowed: boolean;
+    authenticated_canary_blocker_codes: string[];
+    authenticated_canary_operations: Record<
+        string,
+        {
+            allowed: boolean;
+            canonical_operation_key: string;
+            adapter_type: string | null;
+            fixed_query_id: string | null;
+            blocker: string | null;
+        }
+    >;
     authenticated_read_ready: boolean;
     live_configuration_ready: boolean;
     readiness_status:
@@ -1485,6 +1496,7 @@ export default function TechnicalServiceAdmin({
     const [integrationCredentialSaving, setIntegrationCredentialSaving] =
         useState(false);
     const [mikroConnectionTesting, setMikroConnectionTesting] = useState(false);
+    const [mikroCanaryTesting, setMikroCanaryTesting] = useState(false);
     const [mikroCircuitResetting, setMikroCircuitResetting] = useState<
         string | null
     >(null);
@@ -3184,6 +3196,40 @@ export default function TechnicalServiceAdmin({
             );
         } finally {
             setMikroConnectionTesting(false);
+        }
+    };
+
+    const runMikroAuthenticatedReadCanary = async () => {
+        setMikroCanaryTesting(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/mikro-api/authenticated-read-canary',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                },
+            );
+            const responsePayload = await response.json();
+
+            setMessagingMessage(
+                responsePayload.message ??
+                    (response.ok
+                        ? 'Authenticated Mikro READ canary başarılı.'
+                        : 'Authenticated Mikro READ canary güvenli biçimde tamamlanamadı.'),
+            );
+        } catch {
+            setMessagingMessage(
+                'Authenticated Mikro READ canary güvenli biçimde tamamlanamadı.',
+            );
+        } finally {
+            setMikroCanaryTesting(false);
         }
     };
 
@@ -7413,16 +7459,27 @@ export default function TechnicalServiceAdmin({
                                             </button>
                                             <button
                                                 type="button"
-                                                disabled
+                                                disabled={
+                                                    mikroCanaryTesting ||
+                                                    !messaging.mikro_api
+                                                        .authenticated_canary_allowed
+                                                }
+                                                onClick={() => {
+                                                    void runMikroAuthenticatedReadCanary();
+                                                }}
                                                 title={
                                                     messaging.mikro_api
-                                                        .live_credentials_ready
-                                                        ? 'Operation-level authenticated canary ayrı yetki kapısında açılacaktır.'
-                                                        : 'API key ve parola girilmeden authenticated canary çalışmaz.'
+                                                        .authenticated_canary_allowed
+                                                        ? 'Yalnız dört allowlisted authenticated Mikro READ canary çalıştırılır.'
+                                                        : messaging.mikro_api.authenticated_canary_blocker_codes.join(
+                                                              ', ',
+                                                          )
                                                 }
                                                 className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-500 disabled:cursor-not-allowed"
                                             >
-                                                Authenticated Read Canary
+                                                {mikroCanaryTesting
+                                                    ? 'Authenticated READ canary çalışıyor...'
+                                                    : 'Authenticated Read Canary'}
                                             </button>
                                         </div>
                                     </div>

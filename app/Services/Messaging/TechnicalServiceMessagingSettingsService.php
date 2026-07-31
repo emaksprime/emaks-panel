@@ -2675,6 +2675,11 @@ class TechnicalServiceMessagingSettingsService
         $mikro = $this->settings()['mikro_api'];
         $credential = $this->credential('mikro_api');
         $userCode = $this->mikroUserCode($mikro, $credential);
+        $healthReady = in_array(
+            strtolower(trim((string) ($mikro['last_health_check_status'] ?? ''))),
+            ['ok', 'pass', 'success', 'up'],
+            true,
+        );
 
         return [
             'base_url' => $mikro['base_url'],
@@ -2697,6 +2702,7 @@ class TechnicalServiceMessagingSettingsService
             'password' => $credential?->password_encrypted,
             'health_configuration_ready' => $this->mikroHealthConfigurationBlockerCodes($mikro) === [],
             'health_blocker_codes' => $this->mikroHealthConfigurationBlockerCodes($mikro),
+            'health_ready' => $healthReady,
             'live_configuration_ready' => $this->mikroLiveConfigurationReady($mikro, $credential),
             'blocker_codes' => $this->mikroConfigurationBlockerCodes($mikro, $credential),
         ];
@@ -4609,6 +4615,12 @@ class TechnicalServiceMessagingSettingsService
             ['ok', 'pass', 'success', 'up'],
             true,
         );
+        $canaryEligibility = $this->mikroOperationRegistry->canaryEligibility([
+            'base_url' => $mikro['base_url'],
+            'live_configuration_ready' => $liveConfigurationReady,
+            'health_ready' => $healthReady,
+            'write_enabled' => (bool) $mikro['write_enabled'],
+        ]);
         $writeApprovalRequired = (bool) $mikro['write_approval_required'];
         $readReady = (bool) $mikro['enabled']
             && (bool) $mikro['read_sync_enabled']
@@ -4685,7 +4697,9 @@ class TechnicalServiceMessagingSettingsService
             'private_network_ready' => $healthReady,
             'health_ready' => $healthReady,
             'live_credentials_ready' => $credentialsReady,
-            'authenticated_canary_allowed' => $liveConfigurationReady && $healthReady,
+            'authenticated_canary_allowed' => $canaryEligibility['allowed'],
+            'authenticated_canary_blocker_codes' => $canaryEligibility['blocker_codes'],
+            'authenticated_canary_operations' => $canaryEligibility['operations'],
             'authenticated_read_ready' => false,
             'live_configuration_ready' => $liveConfigurationReady,
             'readiness_status' => $readinessStatus,
