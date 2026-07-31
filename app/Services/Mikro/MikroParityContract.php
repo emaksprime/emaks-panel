@@ -987,7 +987,10 @@ class MikroParityContract
 
         $this->assertValidTimestampComponents($matches);
 
-        $offset = strtoupper($matches['offset']) === 'Z' ? '+00:00' : $matches['offset'];
+        $offset = strtoupper($matches['offset']);
+        if ($offset === 'Z' || $offset === '-00:00') {
+            $offset = '+00:00';
+        }
         $fraction = is_string($matches['fraction'])
             ? '.'.str_pad(substr($matches['fraction'], 1), 6, '0')
             : '';

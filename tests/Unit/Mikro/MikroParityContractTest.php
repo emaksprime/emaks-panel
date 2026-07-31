@@ -286,6 +286,21 @@ class MikroParityContractTest extends TestCase
         );
     }
 
+    public function test_rfc3339_negative_zero_offset_matches_z_and_positive_zero_without_changing_the_contract(): void
+    {
+        $canonical = $this->contract->canonicalTimestamp('2026-07-31T10:15:30Z', 'UTC');
+        $contract = $this->contract->contract();
+
+        $this->assertSame($canonical, $this->contract->canonicalTimestamp('2026-07-31T10:15:30+00:00', 'UTC'));
+        $this->assertSame($canonical, $this->contract->canonicalTimestamp('2026-07-31T10:15:30-00:00', 'UTC'));
+        $this->assertSame('2026-07-31T07:15:30Z', $this->contract->canonicalTimestamp('2026-07-31T10:15:30+03:00', 'UTC'));
+        $this->assertSame('2026-07-31T13:15:30Z', $this->contract->canonicalTimestamp('2026-07-31T10:15:30-03:00', 'UTC'));
+        $this->assertSame('mikro-shadow-parity-normalization.v2', $contract['normalization_version']);
+        $this->assertSame('mikro-shadow-parity-operations.v2', $contract['operation_contract_version']);
+        $this->assertSame('mikro-shadow-parity-samples.v2', $contract['sample_policy_version']);
+        $this->assertSame('1a16f2f0371ee6e150702405a1bc35533624dbf77fef56b8de87cc08cd59dfdb', $this->contract->fingerprint());
+    }
+
     public function test_existing_fractional_second_and_space_separator_contract_is_preserved(): void
     {
         $this->assertSame(
