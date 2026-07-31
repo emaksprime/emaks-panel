@@ -293,7 +293,7 @@ class MikroFixedQueryCatalog
             'code' => $this->quotedRestrictedString($value, 80),
             'serial' => $this->quotedRestrictedString($value, 120),
             'limit' => (string) $this->boundedInteger($value, 1, 500),
-            'warehouse' => (string) $this->boundedInteger($value, 0, 999),
+            'warehouse' => (string) $this->allowedPilotWarehouse($value),
             default => throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID'),
         };
     }
@@ -341,6 +341,15 @@ class MikroFixedQueryCatalog
         }
 
         return $value;
+    }
+
+    private function allowedPilotWarehouse(mixed $value): int
+    {
+        if (filter_var($value, FILTER_VALIDATE_INT) === false || ! in_array((int) $value, [1, 5], true)) {
+            throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID');
+        }
+
+        return (int) $value;
     }
 
     private function assertSafeSql(string $sql): void

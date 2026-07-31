@@ -29,6 +29,7 @@ class MikroShadowParityRunner
         return [
             'normalization_version' => MikroParityContract::NORMALIZATION_VERSION,
             'operation_contract_version' => MikroParityContract::OPERATION_CONTRACT_VERSION,
+            'sample_policy_version' => MikroParityContract::SAMPLE_POLICY_VERSION,
             'contract_fingerprint' => $this->contract->fingerprint(),
             'operations' => $operations,
             'mikro_switches' => [
@@ -42,15 +43,33 @@ class MikroShadowParityRunner
 
     /**
      * @param  array<string, array<string, mixed>>  $parametersByOperation
-     * @return array<string, mixed>
+     * @param  array<string, mixed>  $sourceContext
+     * @param  array{key_base64:string,salt_base64:string}  $keyMaterial
+     * @param  array<string, mixed>  $retention
+     * @return array{public_manifest:array<string,mixed>,protected_manifest:array<string,mixed>}
      */
-    public function discoverSamples(array $parametersByOperation): array
-    {
+    public function discoverSamples(
+        array $parametersByOperation,
+        array $sourceContext,
+        array $keyMaterial,
+        array $retention,
+    ): array {
+        $sourceContext = $this->samples->validatedSourceContext($sourceContext);
         $results = [];
         foreach ($this->contract->operationKeys() as $operationKey) {
             $parameters = $parametersByOperation[$operationKey] ?? null;
             if (! is_array($parameters)) {
                 throw new DomainException('MIKRO_PARITY_DISCOVERY_PARAMETERS_MISSING');
+            }
+            if ($operationKey === 'stock.availability') {
+                $asOfDate = $sourceContext['as_of_date'] ?? null;
+                if (! is_string($asOfDate) || trim($asOfDate) === '') {
+                    throw new DomainException('MIKRO_PARITY_STOCK_AS_OF_DATE_MISSING');
+                }
+                if (array_key_exists('as_of_date', $parameters) && $parameters['as_of_date'] !== $asOfDate) {
+                    throw new DomainException('MIKRO_PARITY_STOCK_AS_OF_DATE_MISMATCH');
+                }
+                $parameters['as_of_date'] = $asOfDate;
             }
             $source = MikroParitySource::discoveryFor($operationKey);
             try {
@@ -65,7 +84,23 @@ class MikroShadowParityRunner
             }
         }
 
-        return $this->samples->build($results);
+        return $this->samples->build(
+            $results,
+            $sourceContext,
+            (string) ($keyMaterial['key_base64'] ?? ''),
+            (string) ($keyMaterial['salt_base64'] ?? ''),
+            $retention,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $publicManifest
+     * @param  array<string, mixed>  $protectedManifest
+     * @param  array<string, mixed>  $sourceContext
+     */
+    public function assertReusableSamples(array $publicManifest, array $protectedManifest, array $sourceContext): void
+    {
+        $this->samples->assertReusable($publicManifest, $protectedManifest, $sourceContext);
     }
 
     /**
@@ -78,6 +113,7 @@ class MikroShadowParityRunner
     public function schemaProbe(string $operationKey, array $lookup): array
     {
         $source = MikroParitySource::detailFor($operationKey);
+        $before = $this->runtimeControlFingerprint();
         try {
             $n8n = $this->n8n->readForParity($source, $lookup);
         } catch (Throwable $exception) {
@@ -88,14 +124,17 @@ class MikroShadowParityRunner
         } catch (Throwable $exception) {
             $mikro = ['success' => false, 'error_code' => $this->safeErrorCode($exception)];
         }
+        $after = $this->runtimeControlFingerprint();
 
         return [
             'operation_key' => $operationKey,
             'formal_parity_result' => 'NOT_RUN',
             'n8n' => $n8n,
             'mikro' => $mikro,
-            'source_mode_mutated' => false,
-            'mikro_switches_mutated' => false,
+            'source_mode_mutated' => ! hash_equals($before['source_modes'], $after['source_modes']),
+            'mikro_switches_mutated' => ! hash_equals($before['switches'], $after['switches']),
+            'runtime_control_fingerprint_before' => $before,
+            'runtime_control_fingerprint_after' => $after,
         ];
     }
 
@@ -113,5 +152,24 @@ class MikroShadowParityRunner
         return preg_match('/^[A-Z0-9_]+$/', $message) === 1
             ? $message
             : 'PARITY_SOURCE_REQUEST_FAILED';
+    }
+
+    /** @return array{switches:string,source_modes:string} */
+    private function runtimeControlFingerprint(): array
+    {
+        $context = $this->settings->mikroApiConnectionContext();
+        $switches = [
+            'active' => (bool) ($context['enabled'] ?? false),
+            'read_sync' => (bool) ($context['read_sync_enabled'] ?? false),
+            'write' => (bool) ($context['write_enabled'] ?? false),
+        ];
+        $sourceModes = is_array($context['operation_controls'] ?? null)
+            ? $context['operation_controls']
+            : [];
+
+        return [
+            'switches' => hash('sha256', $this->contract->canonicalJson($switches)),
+            'source_modes' => hash('sha256', $this->contract->canonicalJson($sourceModes)),
+        ];
     }
 }

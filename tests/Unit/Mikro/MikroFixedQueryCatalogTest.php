@@ -152,4 +152,30 @@ class MikroFixedQueryCatalogTest extends TestCase
         $this->assertStringContainsString("LTRIM(RTRIM(sto.sto_kod)) = N'STOK-001'", $sql);
         $this->assertStringNotContainsString('[[', $sql);
     }
+
+    public function test_warehouse_one_and_five_are_allowed_and_other_warehouse_is_rejected_before_network(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+        foreach ([1, 5] as $warehouse) {
+            $sql = $catalog->render('parity.stock.detail.v1', [
+                'item_code' => 'STOK-001',
+                'warehouse_code' => $warehouse,
+                'as_of_date' => '2026-07-31',
+            ]);
+            $this->assertStringContainsString($warehouse.' AS warehouse_code', $sql);
+        }
+
+        foreach ([0, 2, 999] as $warehouse) {
+            try {
+                $catalog->render('parity.stock.detail.v1', [
+                    'item_code' => 'STOK-001',
+                    'warehouse_code' => $warehouse,
+                    'as_of_date' => '2026-07-31',
+                ]);
+                $this->fail('Warehouse '.$warehouse.' must be rejected.');
+            } catch (DomainException $exception) {
+                $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
+            }
+        }
+    }
 }

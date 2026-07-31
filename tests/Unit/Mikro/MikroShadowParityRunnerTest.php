@@ -41,29 +41,24 @@ class MikroShadowParityRunnerTest extends TestCase
     {
         $this->settings->expects($this->once())
             ->method('mikroApiConnectionContext')
-            ->willReturn(['enabled' => false, 'read_sync_enabled' => false, 'write_enabled' => false]);
-        $runner = $this->runner();
+            ->willReturn($this->runtimeContext());
 
-        $preflight = $runner->preflight();
+        $preflight = $this->runner()->preflight();
 
         $this->assertSame(['active' => false, 'read_sync' => false, 'write' => false], $preflight['mikro_switches']);
+        $this->assertSame(MikroParityContract::SAMPLE_POLICY_VERSION, $preflight['sample_policy_version']);
         $this->assertSame('NOT_RUN', $preflight['formal_run_1']);
-        $this->assertSame('READY', $preflight['operations']['customer.lookup']['source_contract']);
+        $this->assertSame('TYPED_SCHEMA_READY', $preflight['operations']['customer.lookup']['source_contract']);
     }
 
-    public function test_schema_probe_uses_one_typed_read_per_source_without_formal_parity_result(): void
+    public function test_schema_probe_measures_runtime_controls_and_uses_one_typed_read_per_source(): void
     {
         $lookup = ['customer_code' => 'C001'];
         $n8nResult = ['status' => 'CONTRACT_FIELD_UNAVAILABLE', 'provider' => 'n8n'];
         $mikroResult = ['success' => true, 'data' => [['status' => 'CONTRACT_FIELD_UNAVAILABLE']]];
-        $this->n8n->expects($this->once())
-            ->method('readForParity')
-            ->with(MikroParitySource::CUSTOMER_DETAIL, $lookup)
-            ->willReturn($n8nResult);
-        $this->mikro->expects($this->once())
-            ->method('authenticatedParityRead')
-            ->with(MikroParitySource::CUSTOMER_DETAIL, $lookup)
-            ->willReturn($mikroResult);
+        $this->settings->expects($this->exactly(2))->method('mikroApiConnectionContext')->willReturn($this->runtimeContext());
+        $this->n8n->expects($this->once())->method('readForParity')->with(MikroParitySource::CUSTOMER_DETAIL, $lookup)->willReturn($n8nResult);
+        $this->mikro->expects($this->once())->method('authenticatedParityRead')->with(MikroParitySource::CUSTOMER_DETAIL, $lookup)->willReturn($mikroResult);
 
         $probe = $this->runner()->schemaProbe('customer.lookup', $lookup);
 
@@ -72,6 +67,52 @@ class MikroShadowParityRunnerTest extends TestCase
         $this->assertSame($mikroResult, $probe['mikro']);
         $this->assertFalse($probe['source_mode_mutated']);
         $this->assertFalse($probe['mikro_switches_mutated']);
+        $this->assertSame($probe['runtime_control_fingerprint_before'], $probe['runtime_control_fingerprint_after']);
+    }
+
+    public function test_discovery_binds_explicit_stock_as_of_date_to_every_resolved_lookup(): void
+    {
+        $this->n8n->expects($this->exactly(4))
+            ->method('readForParity')
+            ->willReturnCallback(function (MikroParitySource $source, array $parameters): array {
+                if ($source === MikroParitySource::STOCK_DISCOVERY) {
+                    $this->assertSame('2026-07-31', $parameters['as_of_date']);
+
+                    return ['status' => 'READY', 'envelope' => ['samples' => [[
+                        'identity' => 'STOK-001|1',
+                        'lookup' => ['item_code' => 'STOK-001', 'warehouse_code' => 1],
+                        'strata' => ['in_stock', 'serial_tracked', 'warehouse_1'],
+                        'strata_dimensions' => [],
+                    ]]]];
+                }
+
+                return ['status' => 'READY', 'envelope' => ['samples' => []]];
+            });
+
+        $bundle = $this->runner()->discoverSamples(
+            [
+                'customer.lookup' => ['limit' => 50],
+                'stock.availability' => ['limit' => 100],
+                'serial.lookup' => ['limit' => 50],
+                'order.detail' => ['date_from' => '2025-08-01', 'date_to' => '2026-07-31', 'limit' => 50],
+            ],
+            $this->sampleContext(),
+            ['key_base64' => base64_encode(str_repeat('K', 32)), 'salt_base64' => base64_encode(str_repeat('S', 16))],
+            $this->retention(),
+        );
+
+        $lookup = $bundle['protected_manifest']['operations']['stock.availability']['samples'][0]['lookup'];
+        $this->assertSame('2026-07-31', $lookup['as_of_date']);
+    }
+
+    public function test_stock_as_of_date_missing_or_mismatch_fails_before_network(): void
+    {
+        $this->n8n->expects($this->never())->method('readForParity');
+        $context = $this->sampleContext();
+        unset($context['as_of_date']);
+
+        $this->expectException(DomainException::class);
+        $this->runner()->discoverSamples([], $context, [], []);
     }
 
     public function test_unknown_or_write_operation_fails_before_network(): void
@@ -95,14 +136,45 @@ class MikroShadowParityRunnerTest extends TestCase
         $this->runner()->runFormalParity('customer.lookup');
     }
 
+    /** @return array<string, mixed> */
+    private function runtimeContext(): array
+    {
+        return [
+            'enabled' => false,
+            'read_sync_enabled' => false,
+            'write_enabled' => false,
+            'operation_controls' => ['customer.lookup' => ['source_mode' => 'shadow_compare']],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function sampleContext(): array
+    {
+        return [
+            'company_code' => 'EMAKS_PRIME',
+            'working_year' => 2026,
+            'branch_code' => 0,
+            'warehouse_codes' => [1, 5],
+            'as_of_date' => '2026-07-31',
+            'date_range' => ['from' => '2025-08-01', 'to' => '2026-07-31'],
+            'source_context' => ['mikro' => 'V17', 'n8n' => 'local-v2'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function retention(): array
+    {
+        return [
+            'manifest_id' => 'runner-test',
+            'purpose' => 'RUN1_RUN2_REUSE',
+            'generated_at_utc' => '2098-01-01T00:00:00Z',
+            'expires_at_utc' => '2099-01-01T00:00:00Z',
+            'retention_days' => 365,
+        ];
+    }
+
     private function runner(): MikroShadowParityRunner
     {
-        return new MikroShadowParityRunner(
-            $this->contract,
-            $this->samples,
-            $this->n8n,
-            $this->mikro,
-            $this->settings,
-        );
+        return new MikroShadowParityRunner($this->contract, $this->samples, $this->n8n, $this->mikro, $this->settings);
     }
 }
