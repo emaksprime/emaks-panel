@@ -75,7 +75,7 @@ class MikroParityContractTest extends TestCase
 
         $this->assertSame($first, $second);
         $this->assertSame('mikro-shadow-parity-normalization.v2', MikroParityContract::NORMALIZATION_VERSION);
-        $this->assertSame('mikro-shadow-parity-operations.v2', MikroParityContract::OPERATION_CONTRACT_VERSION);
+        $this->assertSame('mikro-shadow-parity-operations.v3', MikroParityContract::OPERATION_CONTRACT_VERSION);
         $this->assertSame('mikro-shadow-parity-samples.v2', MikroParityContract::SAMPLE_POLICY_VERSION);
     }
 
@@ -286,7 +286,7 @@ class MikroParityContractTest extends TestCase
         );
     }
 
-    public function test_rfc3339_negative_zero_offset_matches_z_and_positive_zero_without_changing_the_contract(): void
+    public function test_rfc3339_negative_zero_offset_matches_z_and_positive_zero_without_changing_normalization(): void
     {
         $canonical = $this->contract->canonicalTimestamp('2026-07-31T10:15:30Z', 'UTC');
         $contract = $this->contract->contract();
@@ -296,9 +296,9 @@ class MikroParityContractTest extends TestCase
         $this->assertSame('2026-07-31T07:15:30Z', $this->contract->canonicalTimestamp('2026-07-31T10:15:30+03:00', 'UTC'));
         $this->assertSame('2026-07-31T13:15:30Z', $this->contract->canonicalTimestamp('2026-07-31T10:15:30-03:00', 'UTC'));
         $this->assertSame('mikro-shadow-parity-normalization.v2', $contract['normalization_version']);
-        $this->assertSame('mikro-shadow-parity-operations.v2', $contract['operation_contract_version']);
+        $this->assertSame('mikro-shadow-parity-operations.v3', $contract['operation_contract_version']);
         $this->assertSame('mikro-shadow-parity-samples.v2', $contract['sample_policy_version']);
-        $this->assertSame('1a16f2f0371ee6e150702405a1bc35533624dbf77fef56b8de87cc08cd59dfdb', $this->contract->fingerprint());
+        $this->assertSame('7842b1b67c561b2ef995fc596a1c7ae79b0c877917d75af409385a566abc8a22', $this->contract->fingerprint());
     }
 
     public function test_existing_fractional_second_and_space_separator_contract_is_preserved(): void
@@ -351,7 +351,7 @@ class MikroParityContractTest extends TestCase
         $stock = $this->contract->normalizeN8n(MikroParitySource::STOCK_DISCOVERY, [$this->stockRow()]);
 
         $this->assertSame(['active'], $customer['envelope']['samples'][0]['strata']);
-        $this->assertSame(['currency' => '0'], $customer['envelope']['samples'][0]['strata_dimensions']);
+        $this->assertSame(['currency' => 'TRY'], $customer['envelope']['samples'][0]['strata_dimensions']);
         $this->assertContains('in_stock', $stock['envelope']['samples'][0]['strata']);
         $this->assertContains('serial_tracked', $stock['envelope']['samples'][0]['strata']);
         $this->assertArrayNotHasKey('reserved_quantity', $stock['envelope']['samples'][0]['lookup']);
@@ -363,7 +363,107 @@ class MikroParityContractTest extends TestCase
             $readiness = $this->contract->operationReadiness($operationKey);
             $this->assertSame('TYPED_SCHEMA_READY', $readiness['source_contract']);
             $this->assertTrue($readiness['schema_compiled']);
-            $this->assertSame('CONTRACT_FIELD_UNAVAILABLE', $readiness['parity_readiness']);
+            $this->assertSame(
+                $operationKey === 'customer.lookup' ? 'READY' : 'CONTRACT_FIELD_UNAVAILABLE',
+                $readiness['parity_readiness'],
+            );
+        }
+    }
+
+    public function test_customer_contract_critical_fields_are_unchanged_except_currency_availability(): void
+    {
+        $operation = $this->contract->operation('customer.lookup');
+        $schema = collect($operation['response_schema'])->keyBy('path');
+
+        $this->assertSame([
+            'record_id',
+            'customer_code',
+            'title_normalized',
+            'active_state',
+            'customer_group_code',
+            'currency_code',
+        ], $operation['promotion_critical_fields']);
+        $this->assertSame('AVAILABLE', $schema['currency_code']['availability']);
+        $this->assertSame('currency_code', $schema['currency_code']['normalizer']);
+        $this->assertArrayNotHasKey('currency_code', $operation['unavailable_fields']);
+        foreach (['balance_by_currency', 'credit_limit', 'risk_total', 'tax_identity_hash', 'tax_office_normalized', 'phone_hashes_sorted', 'address_keys_sorted'] as $field) {
+            $this->assertArrayHasKey($field, $operation['unavailable_fields']);
+        }
+    }
+
+    public function test_customer_mikro_and_n8n_mappers_emit_canonical_currency_codes(): void
+    {
+        $try = $this->customerRow();
+        $usd = $this->customerRow();
+        $usd['currency_index'] = 1;
+        $usd['currency_code'] = 'usd';
+
+        $mikro = $this->contract->normalizeMikro(MikroParitySource::CUSTOMER_DETAIL, [$try]);
+        $n8n = $this->contract->normalizeN8n(MikroParitySource::CUSTOMER_DETAIL, [$usd]);
+
+        $this->assertSame('READY', $mikro['status']);
+        $this->assertSame('TRY', $mikro['envelope']['currency_code']);
+        $this->assertSame(0, $mikro['envelope']['source_status']['currency_index']);
+        $this->assertSame('READY', $n8n['status']);
+        $this->assertSame('USD', $n8n['envelope']['currency_code']);
+        $this->assertSame(1, $n8n['envelope']['source_status']['currency_index']);
+    }
+
+    public function test_unknown_currency_index_is_field_unavailable_and_never_defaults_to_try(): void
+    {
+        foreach ([null, ''] as $unavailableValue) {
+            foreach ([MikroParitySource::CUSTOMER_DISCOVERY, MikroParitySource::CUSTOMER_DETAIL] as $source) {
+                $row = $this->customerRow();
+                $row['currency_index'] = 255;
+                $row['currency_code'] = $unavailableValue;
+                $result = $this->contract->normalizeN8n($source, [$row]);
+
+                $this->assertSame('CONTRACT_FIELD_UNAVAILABLE', $result['status']);
+                $this->assertArrayHasKey('currency_code', $result['unavailable_promotion_fields']);
+                $this->assertSame('PROMOTION_CRITICAL', $result['unavailable_promotion_fields']['currency_code']['classification']);
+                $this->assertArrayNotHasKey('currency_code', $result['envelope']);
+                $this->assertNotSame('TRY', $result['envelope']['currency_code'] ?? null);
+            }
+        }
+    }
+
+    public function test_currency_code_type_and_nullability_are_enforced(): void
+    {
+        foreach (['TL', 'EURO', 0, ['TRY']] as $invalidValue) {
+            $row = $this->customerRow();
+            $row['currency_index'] = 255;
+            $row['currency_code'] = $invalidValue;
+            $result = $this->contract->normalizeN8n(MikroParitySource::CUSTOMER_DETAIL, [$row]);
+
+            $this->assertSame('CONTRACT_ERROR', $result['status']);
+            $this->assertArrayNotHasKey('currency_code', $result['envelope']);
+        }
+    }
+
+    public function test_account_currency_is_not_conflated_with_balance_currency(): void
+    {
+        $operation = $this->contract->operation('customer.lookup');
+        $result = $this->contract->normalizeN8n(MikroParitySource::CUSTOMER_DETAIL, [$this->customerRow()]);
+
+        $this->assertSame('currency_code', $operation['source_field_mapping']['n8n']['currency_code']);
+        $this->assertArrayHasKey('balance_by_currency', $operation['unavailable_fields']);
+        $this->assertArrayNotHasKey('balance_by_currency', $result['envelope']);
+    }
+
+    public function test_stock_serial_order_contracts_are_byte_unchanged(): void
+    {
+        $expected = [
+            'stock.availability' => 'a854d510c166d1000746b4ade20354157ea782e6c92c7a66a7769cd9dc64f3c8',
+            'serial.lookup' => '7e68c4f1a0f6030fd747794a227f5eb968b81214d507859426158e689b56f37b',
+            'order.detail' => '04b325756228ba1b11d0b240d5e795bd8297a8b255dfdac2ece3c6708c572624',
+        ];
+
+        foreach ($expected as $operation => $hash) {
+            $this->assertSame(
+                $hash,
+                hash('sha256', $this->contract->canonicalJson($this->contract->operation($operation))),
+                $operation,
+            );
         }
     }
 
@@ -409,6 +509,7 @@ class MikroParityContractTest extends TestCase
             'company_open_closed_flag' => 0,
             'locked_flag' => 0,
             'currency_index' => 0,
+            'currency_code' => 'TRY',
             'source_updated_at' => '2026-07-31 13:00:00',
         ];
     }

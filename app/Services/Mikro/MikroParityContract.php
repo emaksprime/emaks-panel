@@ -12,7 +12,7 @@ class MikroParityContract
 {
     public const NORMALIZATION_VERSION = 'mikro-shadow-parity-normalization.v2';
 
-    public const OPERATION_CONTRACT_VERSION = 'mikro-shadow-parity-operations.v2';
+    public const OPERATION_CONTRACT_VERSION = 'mikro-shadow-parity-operations.v3';
 
     public const SAMPLE_POLICY_VERSION = 'mikro-shadow-parity-samples.v2';
 
@@ -298,7 +298,11 @@ class MikroParityContract
         }
 
         if ($source->phase() === 'discovery') {
-            return $this->normalizeDiscovery($source, $provider, $normalizedRows);
+            try {
+                return $this->normalizeDiscovery($source, $provider, $normalizedRows);
+            } catch (DomainException $exception) {
+                return $this->normalizationExceptionResult($source, $provider, $exception);
+            }
         }
 
         if ($normalizedRows === []) {
@@ -316,7 +320,7 @@ class MikroParityContract
             };
             $this->validateEnvelope($source->operationKey(), $envelope);
         } catch (DomainException $exception) {
-            return $this->normalizationResult($source, $provider, 'CONTRACT_ERROR', [], [$exception->getMessage()]);
+            return $this->normalizationExceptionResult($source, $provider, $exception);
         }
 
         $readiness = $this->operationReadiness($source->operationKey());
@@ -379,7 +383,7 @@ class MikroParityContract
             'identity' => $this->text($row['customer_code']),
             'lookup' => ['customer_code' => $this->text($row['customer_code'])],
             'strata' => [$active ? 'active' : 'inactive'],
-            'strata_dimensions' => ['currency' => (string) $this->integer($row['currency_index'])],
+            'strata_dimensions' => ['currency' => $this->currencyCode($row['currency_code'])],
         ];
     }
 
@@ -421,10 +425,12 @@ class MikroParityContract
             'title_normalized' => $this->normalizedText($this->text($row['title_1']).' '.($this->nullableText($row['title_2']) ?? '')),
             'active_state' => $active ? 'ACTIVE' : 'INACTIVE_OR_RESTRICTED',
             'customer_group_code' => $this->nullableText($row['customer_group_code']),
+            'currency_code' => $this->currencyCode($row['currency_code']),
             'source_status' => [
                 'active_abandon_code' => $this->integer($row['active_abandon_code']),
                 'company_open_closed_flag' => $this->integer($row['company_open_closed_flag']),
                 'locked_flag' => $this->integer($row['locked_flag']),
+                'currency_index' => $this->integer($row['currency_index']),
             ],
             'source_updated_at' => $this->canonicalTimestamp($row['source_updated_at'], $timezone, true),
         ];
@@ -541,6 +547,8 @@ class MikroParityContract
                         $this->canonicalTimestamp($value, $timezone, $field['nullable']);
                     } elseif ($field['normalizer'] === 'canonical_date') {
                         $this->canonicalDate($value, $timezone, $field['nullable']);
+                    } elseif ($field['normalizer'] === 'currency_code') {
+                        $this->currencyCode($value);
                     }
                 } catch (DomainException $exception) {
                     $errors[$path.':'.$exception->getMessage()] = true;
@@ -612,6 +620,24 @@ class MikroParityContract
         ];
     }
 
+    /** @return array<string, mixed> */
+    private function normalizationExceptionResult(MikroParitySource $source, string $provider, DomainException $exception): array
+    {
+        if (($source === MikroParitySource::CUSTOMER_DISCOVERY || $source === MikroParitySource::CUSTOMER_DETAIL)
+            && $exception->getMessage() === 'MIKRO_PARITY_CURRENCY_CODE_UNAVAILABLE') {
+            return $this->normalizationResult(
+                $source,
+                $provider,
+                'CONTRACT_FIELD_UNAVAILABLE',
+                [],
+                [],
+                ['currency_code' => $this->unavailable('PROMOTION_CRITICAL', 'Authoritative currency index-to-code mapping did not resolve for this source row.')],
+            );
+        }
+
+        return $this->normalizationResult($source, $provider, 'CONTRACT_ERROR', [], [$exception->getMessage()]);
+    }
+
     /** @return array<string, array<string, mixed>> */
     private function operationDefinitions(): array
     {
@@ -627,11 +653,10 @@ class MikroParityContract
                 'enrichment_diagnostic_fields' => ['balance_by_currency', 'credit_limit', 'risk_total', 'tax_identity_hash', 'tax_office_normalized', 'phone_hashes_sorted', 'address_keys_sorted'],
                 'response_schema' => $schemas['customer.lookup'],
                 'source_field_mapping' => [
-                    'mikro' => ['cari_Guid' => 'record_id', 'cari_kod' => 'customer_code', 'cari_unvan1+cari_unvan2' => 'title_normalized', 'status_flags' => 'active_state', 'cari_grup_kodu' => 'customer_group_code'],
-                    'n8n' => ['record_id' => 'record_id', 'customer_code' => 'customer_code', 'title_1+title_2' => 'title_normalized', 'status_flags' => 'active_state', 'customer_group_code' => 'customer_group_code'],
+                    'mikro' => ['cari_Guid' => 'record_id', 'cari_kod' => 'customer_code', 'cari_unvan1+cari_unvan2' => 'title_normalized', 'status_flags' => 'active_state', 'cari_grup_kodu' => 'customer_group_code', 'cari_doviz_cinsi->KUR_ISIMLERI_VIEW.KUR_SEMBOLU' => 'currency_code (TL maps to ISO TRY)'],
+                    'n8n' => ['record_id' => 'record_id', 'customer_code' => 'customer_code', 'title_1+title_2' => 'title_normalized', 'status_flags' => 'active_state', 'customer_group_code' => 'customer_group_code', 'currency_code' => 'currency_code'],
                 ],
                 'unavailable_fields' => [
-                    'currency_code' => $this->unavailable('PROMOTION_CRITICAL', 'V17 source proves only a currency index; no verified index-to-code authority exists in the parity source.'),
                     'balance_by_currency' => $this->unavailable('ENRICHMENT_DIAGNOSTIC', 'No verified balance-by-currency aggregation authority is sealed.'),
                     'credit_limit' => $this->unavailable('ENRICHMENT_DIAGNOSTIC', 'No verified V17 field or current primary result supplies this value.'),
                     'risk_total' => $this->unavailable('ENRICHMENT_DIAGNOSTIC', 'No verified V17 risk aggregation contract is available.'),
@@ -729,7 +754,7 @@ class MikroParityContract
                 $this->field('title_normalized', 'string', false, true, 'none', 'normalized_text'),
                 $this->field('active_state', 'string', false, true, 'none', 'enum'),
                 $this->field('customer_group_code', 'string', true, true, 'none', 'trimmed_text'),
-                $this->field('currency_code', 'string', false, true, 'none', 'unavailable', availability: 'FIELD_UNAVAILABLE'),
+                $this->field('currency_code', 'string', false, true, 'none', 'currency_code'),
                 $this->field('balance_by_currency', 'array', true, false, 'none', 'unavailable', availability: 'FIELD_UNAVAILABLE'),
                 $this->field('credit_limit', 'decimal', true, false, 'none', 'unavailable', decimalScale: 6, availability: 'FIELD_UNAVAILABLE'),
                 $this->field('risk_total', 'decimal', true, false, 'none', 'unavailable', decimalScale: 6, availability: 'FIELD_UNAVAILABLE'),
@@ -825,7 +850,7 @@ class MikroParityContract
             MikroParitySource::CUSTOMER_DISCOVERY, MikroParitySource::CUSTOMER_DETAIL => [
                 $string('record_id'), $string('customer_code'), $string('title_1'), $string('title_2', true),
                 $string('customer_group_code', true), $integer('active_abandon_code'), $integer('company_open_closed_flag'),
-                $integer('locked_flag'), $integer('currency_index'), $timestamp('source_updated_at'),
+                $integer('locked_flag'), $integer('currency_index'), $string('currency_code', nullable: true, normalizer: 'currency_code'), $timestamp('source_updated_at'),
             ],
             MikroParitySource::STOCK_DISCOVERY, MikroParitySource::STOCK_DETAIL => [
                 $string('record_id'), $string('item_code'), $integer('warehouse_code'), $string('unit_name', true),
@@ -1184,6 +1209,20 @@ class MikroParityContract
     private function normalizedText(string $value): string
     {
         return mb_strtoupper((string) preg_replace('/\s+/u', ' ', trim($value)), 'UTF-8');
+    }
+
+    private function currencyCode(mixed $value): string
+    {
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            throw new DomainException('MIKRO_PARITY_CURRENCY_CODE_UNAVAILABLE');
+        }
+
+        $code = strtoupper($this->text($value));
+        if (preg_match('/^[A-Z]{3}$/D', $code) !== 1) {
+            throw new DomainException('MIKRO_PARITY_CURRENCY_CODE_INVALID');
+        }
+
+        return $code;
     }
 
     private function integer(mixed $value): int

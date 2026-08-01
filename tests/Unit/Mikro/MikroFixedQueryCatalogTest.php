@@ -25,7 +25,7 @@ class MikroFixedQueryCatalogTest extends TestCase
             'return.list', 'return.detail', 'exchange.status', 'replacement.serial.lookup',
         ], array_slice($catalog->queryIds(), 0, 21));
         $this->assertSame([
-            'parity.customer.discovery.v1', 'parity.customer.detail.v1',
+            'parity.customer.discovery.v2', 'parity.customer.detail.v2',
             'parity.stock.discovery.v1', 'parity.stock.detail.v1',
             'parity.serial.discovery.v1', 'parity.serial.detail.v1',
             'parity.order.discovery.v1', 'parity.order.detail.v1',
@@ -64,7 +64,7 @@ class MikroFixedQueryCatalogTest extends TestCase
     {
         $catalog = app(MikroFixedQueryCatalog::class);
 
-        $customer = $catalog->n8nTemplate('parity.customer.detail.v1');
+        $customer = $catalog->n8nTemplate('parity.customer.detail.v2');
         $stock = $catalog->n8nTemplate('parity.stock.detail.v1');
         $orderDiscovery = $catalog->n8nTemplate('parity.order.discovery.v1');
         $orderDetail = $catalog->n8nTemplate('parity.order.detail.v1');
@@ -82,8 +82,8 @@ class MikroFixedQueryCatalogTest extends TestCase
     {
         $catalog = app(MikroFixedQueryCatalog::class);
         $cases = [
-            'parity.customer.discovery.v1' => ['limit' => 50],
-            'parity.customer.detail.v1' => ['customer_code' => '120.01-TEST'],
+            'parity.customer.discovery.v2' => ['limit' => 50],
+            'parity.customer.detail.v2' => ['customer_code' => '120.01-TEST'],
             'parity.stock.discovery.v1' => ['limit' => 100, 'as_of_date' => '2026-07-31'],
             'parity.stock.detail.v1' => ['item_code' => 'STOK-001', 'warehouse_code' => 5, 'as_of_date' => '2026-07-31'],
             'parity.serial.discovery.v1' => ['limit' => 50],
@@ -136,6 +136,20 @@ class MikroFixedQueryCatalogTest extends TestCase
         $this->assertStringContainsString('sth.sth_sip_uid = sip.sip_Guid', $orderSql);
         $this->assertStringContainsString('sth.sth_Guid = ch.ChHar_master_uid', $serialSql);
         $this->assertStringContainsString("CONVERT(uniqueidentifier, '{$guid}')", $orderSql);
+    }
+
+    public function test_customer_currency_query_uses_the_verified_view_and_fails_closed(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+        $definition = $catalog->definition('parity.customer.detail.v2');
+        $sql = $catalog->render('parity.customer.detail.v2', ['customer_code' => '120.01-TEST']);
+
+        $this->assertSame(['CARI_HESAPLAR', 'KUR_ISIMLERI_VIEW'], $definition['tables']);
+        $this->assertStringContainsString('currency.KUR_NUMARASI = cari.cari_doviz_cinsi', $sql);
+        $this->assertStringContainsString("= N'TL' THEN N'TRY'", $sql);
+        $this->assertStringContainsString('ELSE NULL END AS currency_code', $sql);
+        $this->assertStringNotContainsString('dbo.KUR_ISIMLERI AS', $sql);
+        $this->assertStringNotContainsString('currency.Kur_Tip', $sql);
     }
 
     public function test_stock_availability_uses_the_server_owned_stock_warehouse_query_contract(): void

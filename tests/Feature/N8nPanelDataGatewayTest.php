@@ -142,6 +142,7 @@ class N8nPanelDataGatewayTest extends TestCase
                 'company_open_closed_flag' => 0,
                 'locked_flag' => 0,
                 'currency_index' => 0,
+                'currency_code' => 'TRY',
                 'source_updated_at' => '2026-07-31T10:00:00',
             ]],
             'meta' => ['should_not_escape' => true],
@@ -153,7 +154,8 @@ class N8nPanelDataGatewayTest extends TestCase
             ['customer_code' => 'C001'],
         );
 
-        $this->assertSame('CONTRACT_FIELD_UNAVAILABLE', $result['status']);
+        $this->assertSame('READY', $result['status']);
+        $this->assertSame('TRY', $result['envelope']['currency_code']);
         $this->assertArrayNotHasKey('meta', $result);
         $this->assertArrayNotHasKey('request', $result);
         $this->assertSame($cacheBefore, DataSourceCache::query()->count());
@@ -167,6 +169,8 @@ class N8nPanelDataGatewayTest extends TestCase
             && $request['allowed_params'] === ['customer_code']
             && $request['data_source']['active'] === false
             && str_starts_with($request['query_template'], 'SELECT TOP 1')
+            && str_contains($request['query_template'], 'currency.KUR_NUMARASI = cari.cari_doviz_cinsi')
+            && str_contains($request['query_template'], "= N'TL' THEN N'TRY'")
             && str_contains($request['query_template'], "N'[[customer_code]]'"));
     }
 

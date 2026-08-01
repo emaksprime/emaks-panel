@@ -13,6 +13,10 @@ class MikroFixedQueryCatalog
             'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/cari_hesaplar.htm',
             'sha256' => 'a215880cbb4678518555cda24ea4c9b4bd83714603b7e2105aff955a53c07b00',
         ],
+        'KUR_ISIMLERI_VIEW' => [
+            'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/kur_isimleri.htm',
+            'sha256' => '97f0d70e20ed56b7844eed79c9fd2dbadbfb24ecd94d6ef090d74d723d6e626c',
+        ],
         'CARI_HESAP_HAREKETLERI' => [
             'uri' => 'https://www.mikroelterminali.com/databasehelp17/SDKv17/SDK/Tablolar/cari_hesap_hareketleri.htm',
             'sha256' => 'ab3788f4254b5d8ba3e3e4c6e96c098bdd0235c2595f573e0000c171359c210e',
@@ -156,16 +160,16 @@ class MikroFixedQueryCatalog
             'parameters' => ['serial_number' => 'serial'],
             'tables' => ['CIHAZ_HAREKETLERI', 'STOK_HAREKETLERI'],
         ],
-        'parity.customer.discovery.v1' => [
-            'sql' => 'SELECT TOP ([[limit]]) CONVERT(varchar(36), cari.cari_Guid) AS record_id, LTRIM(RTRIM(cari.cari_kod)) AS customer_code, cari.cari_unvan1 AS title_1, cari.cari_unvan2 AS title_2, cari.cari_grup_kodu AS customer_group_code, CAST(cari.cari_faal_terk AS int) AS active_abandon_code, CAST(cari.cari_firma_acik_kapal AS int) AS company_open_closed_flag, CAST(cari.cari_cari_kilitli_flg AS int) AS locked_flag, CAST(cari.cari_doviz_cinsi AS int) AS currency_index, cari.cari_lastup_date AS source_updated_at FROM dbo.CARI_HESAPLAR AS cari WHERE LTRIM(RTRIM(cari.cari_kod)) <> N\'\' ORDER BY LTRIM(RTRIM(cari.cari_kod)), cari.cari_Guid',
+        'parity.customer.discovery.v2' => [
+            'sql' => 'SELECT TOP ([[limit]]) CONVERT(varchar(36), cari.cari_Guid) AS record_id, LTRIM(RTRIM(cari.cari_kod)) AS customer_code, cari.cari_unvan1 AS title_1, cari.cari_unvan2 AS title_2, cari.cari_grup_kodu AS customer_group_code, CAST(cari.cari_faal_terk AS int) AS active_abandon_code, CAST(cari.cari_firma_acik_kapal AS int) AS company_open_closed_flag, CAST(cari.cari_cari_kilitli_flg AS int) AS locked_flag, CAST(cari.cari_doviz_cinsi AS int) AS currency_index, CASE WHEN UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU))) = N\'TL\' THEN N\'TRY\' WHEN LEN(UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU)))) = 3 AND UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU))) COLLATE Latin1_General_100_BIN2 NOT LIKE N\'%[^A-Z]%\' THEN UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU))) ELSE NULL END AS currency_code, cari.cari_lastup_date AS source_updated_at FROM dbo.CARI_HESAPLAR AS cari LEFT JOIN dbo.KUR_ISIMLERI_VIEW AS currency ON currency.KUR_NUMARASI = cari.cari_doviz_cinsi WHERE LTRIM(RTRIM(cari.cari_kod)) <> N\'\' ORDER BY LTRIM(RTRIM(cari.cari_kod)), cari.cari_Guid',
             'parameters' => ['limit' => 'limit'],
-            'tables' => ['CARI_HESAPLAR'],
+            'tables' => ['CARI_HESAPLAR', 'KUR_ISIMLERI_VIEW'],
             'parity_only' => true,
         ],
-        'parity.customer.detail.v1' => [
-            'sql' => 'SELECT TOP 1 CONVERT(varchar(36), cari.cari_Guid) AS record_id, LTRIM(RTRIM(cari.cari_kod)) AS customer_code, cari.cari_unvan1 AS title_1, cari.cari_unvan2 AS title_2, cari.cari_grup_kodu AS customer_group_code, CAST(cari.cari_faal_terk AS int) AS active_abandon_code, CAST(cari.cari_firma_acik_kapal AS int) AS company_open_closed_flag, CAST(cari.cari_cari_kilitli_flg AS int) AS locked_flag, CAST(cari.cari_doviz_cinsi AS int) AS currency_index, cari.cari_lastup_date AS source_updated_at FROM dbo.CARI_HESAPLAR AS cari WHERE LTRIM(RTRIM(cari.cari_kod)) = [[customer_code]]',
+        'parity.customer.detail.v2' => [
+            'sql' => 'SELECT TOP 1 CONVERT(varchar(36), cari.cari_Guid) AS record_id, LTRIM(RTRIM(cari.cari_kod)) AS customer_code, cari.cari_unvan1 AS title_1, cari.cari_unvan2 AS title_2, cari.cari_grup_kodu AS customer_group_code, CAST(cari.cari_faal_terk AS int) AS active_abandon_code, CAST(cari.cari_firma_acik_kapal AS int) AS company_open_closed_flag, CAST(cari.cari_cari_kilitli_flg AS int) AS locked_flag, CAST(cari.cari_doviz_cinsi AS int) AS currency_index, CASE WHEN UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU))) = N\'TL\' THEN N\'TRY\' WHEN LEN(UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU)))) = 3 AND UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU))) COLLATE Latin1_General_100_BIN2 NOT LIKE N\'%[^A-Z]%\' THEN UPPER(LTRIM(RTRIM(currency.KUR_SEMBOLU))) ELSE NULL END AS currency_code, cari.cari_lastup_date AS source_updated_at FROM dbo.CARI_HESAPLAR AS cari LEFT JOIN dbo.KUR_ISIMLERI_VIEW AS currency ON currency.KUR_NUMARASI = cari.cari_doviz_cinsi WHERE LTRIM(RTRIM(cari.cari_kod)) = [[customer_code]]',
             'parameters' => ['customer_code' => 'code'],
-            'tables' => ['CARI_HESAPLAR'],
+            'tables' => ['CARI_HESAPLAR', 'KUR_ISIMLERI_VIEW'],
             'parity_only' => true,
         ],
         'parity.stock.discovery.v1' => [

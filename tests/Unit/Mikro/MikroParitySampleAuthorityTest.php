@@ -295,7 +295,7 @@ class MikroParitySampleAuthorityTest extends TestCase
                 'identity' => sprintf('C%03d', $index),
                 'lookup' => ['customer_code' => sprintf('C%03d', $index)],
                 'strata' => [$index % 2 === 0 ? 'active' : 'inactive'],
-                'strata_dimensions' => ['currency' => (string) ($index % 2)],
+                'strata_dimensions' => ['currency' => $index % 2 === 0 ? 'TRY' : 'USD'],
             ]),
             'stock.availability' => $this->discoveryResult('stock.availability', 100, fn (int $index): array => [
                 'identity' => sprintf('S%03d|%d', intdiv($index, 2), $index % 2 === 0 ? 1 : 5),

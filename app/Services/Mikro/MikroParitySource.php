@@ -28,8 +28,8 @@ enum MikroParitySource: string
     public function queryId(): string
     {
         return match ($this) {
-            self::CUSTOMER_DISCOVERY => 'parity.customer.discovery.v1',
-            self::CUSTOMER_DETAIL => 'parity.customer.detail.v1',
+            self::CUSTOMER_DISCOVERY => 'parity.customer.discovery.v2',
+            self::CUSTOMER_DETAIL => 'parity.customer.detail.v2',
             self::STOCK_DISCOVERY => 'parity.stock.discovery.v1',
             self::STOCK_DETAIL => 'parity.stock.detail.v1',
             self::SERIAL_DISCOVERY => 'parity.serial.discovery.v1',
