@@ -3,6 +3,7 @@
 namespace App\Services\Payments;
 
 use App\Models\PageConfig;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Route;
@@ -377,6 +378,8 @@ class TechnicalServicePaymentProviderSettingsService
      */
     public function update(array $values): array
     {
+        app(TechnicalServiceMessagingSettingsService::class)
+            ->assertScopedLocalUatPaymentSettingsMutationAllowed($values);
         $layout = $this->layout();
 
         $nextRealProviderEnabled = array_key_exists('real_provider_enabled', $values)

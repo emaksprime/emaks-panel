@@ -10,6 +10,12 @@ final class ExternalEffectCapabilityRegistry
 
     public const MESSAGING_NAC_SEND = 'messaging.nac.send';
 
+    public const MAIL_SMTP_SEND = 'mail.smtp.send';
+
+    public const PAYMENT_LOCAL_SANDBOX_EXECUTE = 'payment.local_sandbox.execute';
+
+    public const LOCAL_ALLOWLISTED_UAT_PROFILE = 'LOCAL_ALLOWLISTED_MESSAGING_EMAIL_SANDBOX_PAYMENT_UAT';
+
     /**
      * @return array<string, array<string, mixed>>
      */
@@ -28,7 +34,7 @@ final class ExternalEffectCapabilityRegistry
             $this->definition('maps.google.geocode', 'EXTERNAL_READ', 'REL-5', false, false, true, 'off'),
             $this->definition('otp.send', 'OUTBOUND_COMMUNICATION', 'REL-6', true, false, true, 'no_send'),
             $this->definition('state.sla.tick', 'BACKGROUND_AUTOMATION', 'REL-7', true, false, true, 'off'),
-            $this->definition('mail.smtp.send', 'OUTBOUND_COMMUNICATION', 'REL-8', false, false, true, 'no_send'),
+            $this->definition(self::MAIL_SMTP_SEND, 'OUTBOUND_COMMUNICATION', 'REL-8', false, false, true, 'no_send'),
             $this->definition('payment.iyzico.mutate', 'FINANCIAL_MUTATION', 'REL-9', true, false, true, 'off'),
             $this->definition('payment.iyzico.reconcile', 'EXTERNAL_READ', 'REL-9', true, false, true, 'off'),
             $this->definition('payment.iyzico.callback', 'INBOUND_CALLBACK', 'REL-9', true, false, true, 'journal_only'),
@@ -47,6 +53,70 @@ final class ExternalEffectCapabilityRegistry
         ];
 
         return collect($definitions)->keyBy('code')->all();
+    }
+
+    /**
+     * The profile is server-owned. Request payloads may select neither its
+     * capabilities nor its provider, event, channel, TTL, or send limits.
+     *
+     * @return array<string, mixed>
+     */
+    public function localAllowlistedUatProfile(): array
+    {
+        $profile = [
+            'id' => self::LOCAL_ALLOWLISTED_UAT_PROFILE,
+            'version' => 1,
+            'production_ready' => false,
+            'required_capabilities' => [
+                self::MESSAGING_EVOLUTION_SEND,
+                self::MESSAGING_NAC_SEND,
+                self::MAIL_SMTP_SEND,
+                self::PAYMENT_LOCAL_SANDBOX_EXECUTE,
+            ],
+            'messaging_events' => [
+                'assignment_offer_technician' => [
+                    'whatsapp' => 'evo_whatsapp',
+                    'sms' => 'nac_sms',
+                ],
+                'appointment_approved_customer' => [
+                    'whatsapp' => 'evo_whatsapp',
+                    'sms' => 'nac_sms',
+                ],
+                'appointment_approved_technician' => [
+                    'whatsapp' => 'evo_whatsapp',
+                    'sms' => 'nac_sms',
+                ],
+                'customer_approval_request' => [
+                    'whatsapp' => 'evo_whatsapp',
+                ],
+            ],
+            'action_events' => [
+                'sandbox_payment' => [
+                    'channel' => 'sandbox_payment',
+                    'providers' => ['fake_payment', 'iyzico_sandbox'],
+                ],
+                'sandbox_payment_notification' => [
+                    'channel' => 'email',
+                    'providers' => ['smtp'],
+                ],
+            ],
+            'limits' => [
+                'whatsapp' => 4,
+                'sms' => 3,
+                'email' => 1,
+                'total' => 8,
+                'max_seconds' => 3600,
+            ],
+            'max_ttl_seconds' => 3600,
+            'ops_sms' => false,
+            'sandbox_payment' => true,
+            'real_payment' => false,
+        ];
+
+        return [
+            ...$profile,
+            'profile_fingerprint' => hash('sha256', json_encode($profile, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
+        ];
     }
 
     /**

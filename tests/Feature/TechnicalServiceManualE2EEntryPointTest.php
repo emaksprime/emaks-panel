@@ -6,6 +6,7 @@ use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessageDispatchQueue;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
@@ -234,11 +235,18 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
             ]);
 
         $codes = collect($response->json('manual_e2e_readiness.blockers'))->pluck('code');
-        $this->assertContains('manual_e2e_allowlist_invalid', $codes);
-        $this->assertNotContains('manual_e2e_ops_target_invalid', $codes);
-        $this->assertContains('messaging_disabled', $codes);
-        $this->assertContains('evo_not_ready', $codes);
-        $this->assertContains('nac_not_ready', $codes);
+        $this->assertContains('scoped_uat_phone_allowlist_invalid', $codes);
+        $this->assertContains('scoped_uat_email_allowlist_invalid', $codes);
+        $this->assertNotContains('scoped_uat_ops_target_invalid', $codes);
+        $this->assertContains('scoped_uat_local_origin_not_ready', $codes);
+        $this->assertContains('scoped_capability_not_ready:messaging.evo.send', $codes);
+        $this->assertContains('scoped_capability_not_ready:messaging.nac.send', $codes);
+        $this->assertContains('scoped_capability_not_ready:mail.smtp.send', $codes);
+        $this->assertFalse($response->json('manual_e2e_readiness.production_ready'));
+        $this->assertSame(
+            ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+            $response->json('manual_e2e_readiness.profile_id'),
+        );
         $this->assertFalse($response->json('manual_e2e_readiness.ops_sms_enabled'));
         $this->assertArrayNotHasKey('allowlisted_phones', $response->json('manual_e2e_readiness'));
         $this->assertSame($beforePages, PageConfig::query()->count());
@@ -444,7 +452,7 @@ class TechnicalServiceManualE2EEntryPointTest extends TestCase
 
         $readiness = $settings->manualE2EReadiness();
         $this->assertFalse($readiness['eligible']);
-        $this->assertContains('manual_e2e_ops_target_invalid', collect($readiness['blockers'])->pluck('code')->all());
+        $this->assertContains('scoped_uat_ops_target_invalid', collect($readiness['blockers'])->pluck('code')->all());
         Http::assertNothingSent();
     }
 

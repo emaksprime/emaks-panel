@@ -11,6 +11,8 @@ use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Mikro\MikroOperationRegistry;
 use App\Services\Mikro\MikroRuntimeState;
+use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Closure;
@@ -48,6 +50,8 @@ class TechnicalServiceMessagingSettingsService
     public const MANUAL_E2E_PHASE_WINDOW_OPEN = 'window_open';
 
     public const MANUAL_E2E_WINDOW_TTL_SECONDS = 30;
+
+    public const SCOPED_LOCAL_UAT_MAX_TTL_SECONDS = 3600;
 
     public const OUTBOUND_EXECUTION_MODE_LOCAL = 'local';
 
@@ -657,9 +661,33 @@ class TechnicalServiceMessagingSettingsService
     public function executionModeSnapshot(?string $provider = null): array
     {
         $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $runSnapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+        $scopedSnapshot = $this->isScopedLocalUatSettings($settings)
+            ? Arr::only($runSnapshot, [
+                'scoped_local_uat_profile_id',
+                'scoped_local_uat_profile_version',
+                'scoped_local_uat_profile_fingerprint',
+                'scoped_local_uat_security_fingerprint',
+                'scoped_local_uat_capability_snapshots',
+                'scoped_local_uat_production_ready',
+                'scoped_local_uat_sandbox_payment',
+                'scoped_local_uat_real_payment',
+                'scoped_local_uat_ops_sms',
+                'global_execution_mode',
+                'global_execution_state',
+                'global_execution_epoch',
+                'global_execution_revision',
+                'global_runtime_environment',
+                'global_profile_fingerprint',
+            ])
+            : [];
 
         return [
             ...app(ExternalExecutionControlPlaneService::class)->messagingSnapshot($provider),
+            ...$scopedSnapshot,
             'messaging_enabled' => (bool) ($settings['messaging_enabled'] ?? false),
         ];
     }
@@ -826,6 +854,222 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
+     * Returns only redacted, deterministic control-plane inputs. It never
+     * opens a run, queue, provider, payment, or mail transport.
+     *
+     * @return array<string, mixed>
+     */
+    public function scopedLocalUatControlPlaneState(bool $checkLifecycleLock = true): array
+    {
+        $settings = $this->settings();
+        $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+        $mail = app(TechnicalServiceMailTransportSettingsService::class)->payload();
+        $payment = app(TechnicalServicePaymentProviderSettingsService::class);
+        $paymentMode = $payment->providerMode();
+        $fakePaymentReady = ! $payment->realProviderEnabled()
+            && $payment->effectiveProvider() === 'fake'
+            && $paymentMode === 'sandbox';
+        $sandboxPaymentReady = $paymentMode === 'sandbox'
+            && ($fakePaymentReady || $payment->providerSendReady('sandbox'));
+        $sandboxPaymentProvider = $fakePaymentReady ? 'fake_payment' : 'iyzico_sandbox';
+
+        $allowlist = array_values(array_unique(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        ))));
+        sort($allowlist);
+        $opsPhone = $this->normalizePhone((string) ($settings['ops_whatsapp_phone'] ?? ''));
+        $opsEnabled = (bool) ($settings['ops_whatsapp_enabled'] ?? false);
+        $emails = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $email): string => strtolower(trim((string) $email)),
+            $payment->paymentNotificationRecipients(),
+        ), static fn (string $email): bool => filter_var($email, FILTER_VALIDATE_EMAIL) !== false)));
+        sort($emails);
+
+        $eventBlockers = [];
+        $eventPolicy = [];
+        foreach ((array) $profile['messaging_events'] as $event => $providerChannels) {
+            $type = is_array($settings['message_types'][$event] ?? null)
+                ? $settings['message_types'][$event]
+                : [];
+            $eventPolicy[$event] = [
+                'enabled' => (bool) ($type['enabled'] ?? false),
+                'real_send_allowed' => (bool) ($type['real_send_allowed'] ?? false),
+                'channel_policy' => (string) ($type['channel_policy'] ?? 'disabled'),
+                'whatsapp_provider' => (string) ($type['whatsapp_provider'] ?? ''),
+                'sms_provider' => (string) ($type['sms_provider'] ?? ''),
+            ];
+            if (! $eventPolicy[$event]['enabled'] || ! $eventPolicy[$event]['real_send_allowed']) {
+                $eventBlockers[] = [
+                    'code' => 'scoped_uat_event_not_ready:'.$event,
+                    'message' => $event.' allowlistli Yerel UAT için etkin ve gerçek-send izinli olmalı.',
+                ];
+
+                continue;
+            }
+            foreach ((array) $providerChannels as $channel => $provider) {
+                if (! $this->messageTypeAllowsScopedChannel($type, (string) $channel, (string) $provider)) {
+                    $eventBlockers[] = [
+                        'code' => 'scoped_uat_event_channel_not_ready:'.$event.':'.$channel,
+                        'message' => $event.' '.$channel.' kanalı code-owned UAT profiliyle eşleşmiyor.',
+                    ];
+                }
+            }
+        }
+        ksort($eventPolicy);
+
+        $evoReady = (bool) ($settings['messaging_enabled'] ?? false)
+            && $this->evoProviderReadyForLive($settings, false);
+        $nacReady = (bool) ($settings['messaging_enabled'] ?? false)
+            && $this->nacProviderReadyForLive($settings, false);
+        $smtpReady = (bool) data_get($mail, 'outgoing.ready', false)
+            && $payment->paymentNotificationEnabled();
+        $capabilities = [
+            ExternalEffectCapabilityRegistry::MESSAGING_EVOLUTION_SEND => [
+                'ready' => $evoReady,
+                'blockers' => $evoReady ? [] : ['evo_not_ready'],
+                'capability_revision' => 1,
+                'profile_fingerprint' => $this->messagingProfileFingerprint('evo_whatsapp', $settings),
+            ],
+            ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND => [
+                'ready' => $nacReady,
+                'blockers' => $nacReady ? [] : ['nac_not_ready'],
+                'capability_revision' => 1,
+                'profile_fingerprint' => $this->messagingProfileFingerprint('nac_sms', $settings),
+            ],
+            ExternalEffectCapabilityRegistry::MAIL_SMTP_SEND => [
+                'ready' => $smtpReady,
+                'blockers' => $smtpReady ? [] : ['smtp_not_ready'],
+                'capability_revision' => 1,
+                'profile_fingerprint' => hash('sha256', json_encode([
+                    'environment' => $this->runtimeEnvironment(),
+                    'enabled' => (bool) data_get($mail, 'outgoing.enabled', false),
+                    'mailer' => (string) data_get($mail, 'outgoing.mailer', ''),
+                    'ready' => $smtpReady,
+                    'notification_enabled' => $payment->paymentNotificationEnabled(),
+                    'from_address' => strtolower((string) data_get($mail, 'outgoing.from_address', '')),
+                ], JSON_THROW_ON_ERROR)),
+            ],
+            ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE => [
+                'ready' => $sandboxPaymentReady,
+                'blockers' => $sandboxPaymentReady ? [] : ['sandbox_payment_not_ready'],
+                'capability_revision' => 1,
+                'profile_fingerprint' => hash('sha256', json_encode([
+                    'environment' => $this->runtimeEnvironment(),
+                    'provider' => $sandboxPaymentProvider,
+                    'mode' => $paymentMode,
+                    'fake' => $fakePaymentReady,
+                    'sandbox_ready' => $sandboxPaymentReady,
+                    'real_payment' => $paymentMode === 'live',
+                ], JSON_THROW_ON_ERROR)),
+            ],
+        ];
+
+        $pendingStatuses = [
+            TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            TechnicalServiceMessageDispatch::STATUS_SENDING,
+            TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
+        ];
+        $pending = $this->pendingExternalDispatchCount();
+        $unsafe = $this->unsafeExternalDispatchCount();
+        $nonAllowlistedPending = TechnicalServiceMessageDispatch::query()
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->whereIn('status', $pendingStatuses)
+            ->whereNotIn('target_phone', $allowlist ?: ['__scoped_uat_allowlist_missing__'])
+            ->count();
+        $duplicatePending = TechnicalServiceMessageDispatch::query()
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->whereIn('status', $pendingStatuses)
+            ->whereNotNull('idempotency_key')
+            ->select('idempotency_key')
+            ->groupBy('idempotency_key')
+            ->havingRaw('COUNT(*) > 1')
+            ->get()
+            ->count();
+        $manualWorker = $this->manualE2EWorkerLeaseStatus();
+        $broadWorker = $this->outboundWorkerLeaseStatus();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $portal = $this->portalOriginReadiness($settings);
+        $mikro = (array) ($settings['mikro_api'] ?? []);
+        $ttl = max(60, min(
+            self::SCOPED_LOCAL_UAT_MAX_TTL_SECONDS,
+            (int) ($settings['manual_e2e_ttl_seconds'] ?? self::SCOPED_LOCAL_UAT_MAX_TTL_SECONDS),
+        ));
+        $invariantBlockers = $eventBlockers;
+        $addBlocker = static function (array &$target, bool $blocked, string $code, string $message): void {
+            if ($blocked) {
+                $target[] = ['code' => $code, 'message' => $message];
+            }
+        };
+        $addBlocker($invariantBlockers, count($allowlist) !== 2 || collect($allowlist)->contains(fn (string $phone): bool => ! $this->validPhone($phone)), 'scoped_uat_phone_allowlist_invalid', 'Allowlistli Yerel UAT için exact iki geçerli telefon zorunlu.');
+        $addBlocker($invariantBlockers, $opsEnabled && ($opsPhone === '' || ! in_array($opsPhone, $allowlist, true)), 'scoped_uat_ops_target_invalid', 'OPS WhatsApp hedefi exact telefon allowlisti içinde olmalı.');
+        $addBlocker($invariantBlockers, count($emails) !== 1, 'scoped_uat_email_allowlist_invalid', 'Allowlistli Yerel UAT için tek geçerli e-posta alıcısı zorunlu.');
+        $addBlocker($invariantBlockers, $pending > 0, 'scoped_uat_pending_dispatch', 'Scoped run öncesinde pending provider dispatch sıfır olmalı.');
+        $addBlocker($invariantBlockers, $unsafe > 0, 'scoped_uat_unsafe_dispatch', 'Scoped run öncesinde unsafe provider dispatch sıfır olmalı.');
+        $addBlocker($invariantBlockers, $nonAllowlistedPending > 0, 'scoped_uat_non_allowlisted_pending', 'Allowlist dışı pending dispatch bulundu.');
+        $addBlocker($invariantBlockers, $duplicatePending > 0, 'scoped_uat_duplicate_pending', 'Duplicate pending dispatch bulundu.');
+        $addBlocker($invariantBlockers, ($manualWorker['state'] ?? 'none') !== 'none', 'scoped_uat_manual_worker_present', 'Scoped run öncesinde Manual E2E worker bulunmamalı.');
+        $addBlocker($invariantBlockers, ($broadWorker['state'] ?? 'none') !== 'none', 'scoped_uat_broad_worker_present', 'Scoped run öncesinde broad outbound worker bulunmamalı.');
+        $addBlocker($invariantBlockers, ! $this->lockAvailable(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY), 'scoped_uat_worker_lock_busy', 'Scoped worker lock alınamıyor.');
+        if ($checkLifecycleLock) {
+            $addBlocker($invariantBlockers, ! $this->lifecycleLockAvailable(), 'scoped_uat_lifecycle_lock_busy', 'Scoped lifecycle lock alınamıyor.');
+        }
+        $addBlocker($invariantBlockers, $context->enabled() || $context->activeRunId() !== null, 'scoped_uat_active_run_exists', 'Önce mevcut Manual E2E run dondurulmalı.');
+        $addBlocker($invariantBlockers, $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN, 'scoped_uat_not_frozen', 'Manual E2E lifecycle frozen olmalı.');
+        $addBlocker($invariantBlockers, (bool) ($settings['real_send_enabled'] ?? false), 'scoped_uat_real_send_open', 'Real-send gate scoped run öncesinde kapalı olmalı.');
+        $addBlocker($invariantBlockers, ! (bool) ($settings['queue_paused'] ?? true), 'scoped_uat_queue_open', 'Queue scoped run öncesinde paused olmalı.');
+        $addBlocker($invariantBlockers, is_array($settings['normal_outbound_active_claim'] ?? null), 'scoped_uat_normal_claim_present', 'Normal outbound claim çözülmeden scoped run açılamaz.');
+        $addBlocker($invariantBlockers, ! (bool) data_get($portal, 'manual_e2e.ready', false), 'scoped_uat_local_origin_not_ready', 'RFC1918 LAN origin allowlistli Yerel UAT için zorunlu.');
+        $addBlocker($invariantBlockers, (bool) ($mikro['enabled'] ?? false) || (bool) ($mikro['read_sync_enabled'] ?? false) || (bool) ($mikro['write_enabled'] ?? false), 'scoped_uat_mikro_switch_open', 'Mikro active/read-sync/write scoped UAT boyunca kapalı kalmalı.');
+        $addBlocker($invariantBlockers, $paymentMode !== 'sandbox', 'scoped_uat_real_payment_mode', 'Scoped UAT yalnız sandbox/fake ödeme modunu kabul eder.');
+        $addBlocker($invariantBlockers, (int) ($settings['hourly_limit'] ?? 0) < (int) data_get($profile, 'limits.total', 8) || (int) ($settings['daily_limit'] ?? 0) < (int) data_get($profile, 'limits.total', 8), 'scoped_uat_rate_limit_invalid', 'Messaging rate limitleri scoped UAT üst sınırını güvenle taşımalı.');
+
+        $securityProfile = [
+            'profile_fingerprint' => $profile['profile_fingerprint'],
+            'phone_allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
+            'ops_phone_fingerprint' => $opsPhone === '' ? null : hash('sha256', $opsPhone),
+            'email_allowlist_fingerprint' => hash('sha256', implode('|', $emails)),
+            'event_policy' => $eventPolicy,
+            'portal_origin_fingerprint' => (string) data_get($portal, 'manual_e2e.profile_fingerprint', ''),
+            'mikro_switches' => [
+                (bool) ($mikro['enabled'] ?? false),
+                (bool) ($mikro['read_sync_enabled'] ?? false),
+                (bool) ($mikro['write_enabled'] ?? false),
+            ],
+            'ttl_seconds' => $ttl,
+            'payment_provider' => $sandboxPaymentProvider,
+            'payment_mode' => $paymentMode,
+        ];
+
+        return [
+            'capabilities' => $capabilities,
+            'invariant_blockers' => $invariantBlockers,
+            'security_fingerprint' => hash('sha256', json_encode($securityProfile, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
+            'phone_allowlist_fingerprint' => $securityProfile['phone_allowlist_fingerprint'],
+            'phone_allowlist_count' => count($allowlist),
+            'phone_allowlist_masks' => array_map(fn (string $phone): string => $this->maskPhone($phone), $allowlist),
+            'email_allowlist_fingerprint' => $securityProfile['email_allowlist_fingerprint'],
+            'email_allowlist_count' => count($emails),
+            'email_allowlist_masks' => array_map(fn (string $email): string => $this->maskEmail($email), $emails),
+            'event_policy' => $eventPolicy,
+            'event_policy_fingerprint' => hash('sha256', json_encode($eventPolicy, JSON_THROW_ON_ERROR)),
+            'evo_ready' => $evoReady,
+            'nac_ready' => $nacReady,
+            'smtp_ready' => $smtpReady,
+            'sandbox_payment_ready' => $sandboxPaymentReady,
+            'sandbox_payment_provider' => $sandboxPaymentProvider,
+            'pending_external_count' => $pending,
+            'unsafe_external_count' => $unsafe,
+            'non_allowlisted_pending_count' => $nonAllowlistedPending,
+            'duplicate_pending_count' => $duplicatePending,
+            'manual_worker_state' => (string) ($manualWorker['state'] ?? 'none'),
+            'broad_worker_state' => (string) ($broadWorker['state'] ?? 'none'),
+            'ttl_seconds' => $ttl,
+            'portal_origins' => $portal,
+        ];
+    }
+
+    /**
      * @return array{allowed:bool,code:string|null,message:string|null}
      */
     public function dispatchExecutionAuthorization(
@@ -853,8 +1097,11 @@ class TechnicalServiceMessagingSettingsService
             return $this->executionBlock('external_capability_unknown', 'Dispatch provider capability registry içinde kayıtlı değil.');
         }
 
-        $authorization = app(ExternalExecutionControlPlaneService::class)
-            ->authorizeCapabilitySnapshot($capabilityCode, $metadata);
+        $authorization = array_key_exists('scoped_local_uat_profile_id', $metadata)
+            ? app(ExternalExecutionControlPlaneService::class)
+                ->authorizeScopedLocalUatCapabilitySnapshot($capabilityCode, $metadata)
+            : app(ExternalExecutionControlPlaneService::class)
+                ->authorizeCapabilitySnapshot($capabilityCode, $metadata);
         if ($authorization['allowed']) {
             return $authorization;
         }
@@ -870,6 +1117,81 @@ class TechnicalServiceMessagingSettingsService
             $blockCode,
             (string) ($authorization['message'] ?? 'Global execution snapshot current state ile eşleşmiyor.'),
         );
+    }
+
+    /**
+     * Internal authorization for the non-messaging actions carried by the
+     * immutable scoped profile. No controller accepts these scope fields.
+     *
+     * @return array{allowed:bool,code:string|null,message:string|null}
+     */
+    public function scopedLocalUatActionAuthorization(
+        string $capabilityCode,
+        string $event,
+        string $channel,
+        string $provider,
+        ?string $recipient = null,
+        ?string $recipientRole = null,
+        ?string $payloadUrl = null,
+    ): array {
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $snapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+        if (! $context->isActive() || ! $this->isScopedLocalUatSettings($settings)) {
+            return $this->executionBlock('scoped_uat_active_run_missing', 'Aktif allowlistli Yerel UAT run bulunamadı.');
+        }
+
+        $authorization = app(ExternalExecutionControlPlaneService::class)
+            ->authorizeScopedLocalUatCapabilitySnapshot($capabilityCode, $snapshot);
+        if (! $authorization['allowed']) {
+            return $authorization;
+        }
+
+        $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+        $expectedProvider = data_get($profile, 'messaging_events.'.$event.'.'.$channel);
+        if (! is_string($expectedProvider)) {
+            $action = is_array($profile['action_events'][$event] ?? null)
+                ? $profile['action_events'][$event]
+                : [];
+            $expectedProvider = (string) ($action['channel'] ?? '') === $channel
+                && in_array($provider, (array) ($action['providers'] ?? []), true)
+                    ? $provider
+                    : null;
+        }
+        $expectedCapability = match ($channel) {
+            'whatsapp' => ExternalEffectCapabilityRegistry::MESSAGING_EVOLUTION_SEND,
+            'sms' => ExternalEffectCapabilityRegistry::MESSAGING_NAC_SEND,
+            'email' => ExternalEffectCapabilityRegistry::MAIL_SMTP_SEND,
+            'sandbox_payment' => ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE,
+            default => null,
+        };
+        if ($expectedProvider !== $provider || $expectedCapability !== $capabilityCode) {
+            return $this->executionBlock('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY', 'Event, kanal, provider veya capability scoped profile içinde izinli değil.');
+        }
+        if ($channel === 'sms' && $recipientRole === 'ops') {
+            return $this->executionBlock('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY', 'OPS SMS scoped profile içinde kapalıdır.');
+        }
+
+        if (in_array($channel, ['whatsapp', 'sms'], true)
+            && ! in_array($this->normalizePhone((string) $recipient), $context->allowlistedPhones(), true)) {
+            return $this->executionBlock('scoped_uat_recipient_not_allowlisted', 'Telefon alıcısı provider çağrısından önce reddedildi.');
+        }
+        if ($channel === 'email') {
+            $allowedEmails = array_values(array_unique(array_filter(array_map(
+                static fn (mixed $email): string => strtolower(trim((string) $email)),
+                app(TechnicalServicePaymentProviderSettingsService::class)->paymentNotificationRecipients(),
+            ), static fn (string $email): bool => filter_var($email, FILTER_VALIDATE_EMAIL) !== false)));
+            if (! in_array(strtolower(trim((string) $recipient)), $allowedEmails, true)) {
+                return $this->executionBlock('scoped_uat_email_not_allowlisted', 'E-posta alıcısı transport çağrısından önce reddedildi.');
+            }
+        }
+        if ($payloadUrl !== null && ! $this->scopedLocalUatBodyUrlsAreSafe($payloadUrl, $settings)) {
+            return $this->executionBlock('scoped_uat_payload_origin_invalid', 'Payload linki exact LAN origin ile eşleşmiyor.');
+        }
+
+        return ['allowed' => true, 'code' => null, 'message' => null];
     }
 
     /**
@@ -948,6 +1270,33 @@ class TechnicalServiceMessagingSettingsService
         $lockedFields = array_values(array_intersect(array_keys($values), self::ACTIVE_RUN_LOCKED_FIELDS));
         if ($lockedFields !== []) {
             throw new ConflictHttpException('Aktif Manual E2E oturumu varken gönderim güvenliği ayarları değiştirilemez. Önce gönderimleri dondurun.');
+        }
+    }
+
+    /**
+     * Payment mode and notification recipients are part of the immutable
+     * scoped run profile even though their settings are owned by another page.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function assertScopedLocalUatPaymentSettingsMutationAllowed(array $values): void
+    {
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if (! $context->enabled()
+            || $context->activeRunId() === null
+            || ! $this->isScopedLocalUatSettings($settings)) {
+            return;
+        }
+
+        $locked = array_intersect(array_keys($values), [
+            'real_provider_enabled',
+            'provider_mode',
+            'payment_notification_enabled',
+            'payment_notification_recipients',
+        ]);
+        if ($locked !== []) {
+            throw new ConflictHttpException('Aktif allowlistli Yerel UAT run sırasında ödeme modu ve e-posta allowlisti değiştirilemez.');
         }
     }
 
@@ -1081,10 +1430,10 @@ class TechnicalServiceMessagingSettingsService
                 $locked = $this->lockedAuthoritativeSettings();
                 $current = $locked['settings'];
                 $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
-                if ($this->executionMode($current) !== self::OUTBOUND_EXECUTION_MODE_LIVE
-                    || $this->runtimeEnvironment() === 'production') {
+                $scopedLocalUat = $this->executionMode($current) === self::OUTBOUND_EXECUTION_MODE_LOCAL;
+                if ($this->runtimeEnvironment() === 'production') {
                     throw ValidationException::withMessages([
-                        'manual_e2e' => 'Manual E2E yalnız non-production Canlı API Testi çalışma modunda hazırlanabilir.',
+                        'manual_e2e' => 'Manual E2E production ortamında hazırlanamaz.',
                     ]);
                 }
                 if ($context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
@@ -1095,15 +1444,26 @@ class TechnicalServiceMessagingSettingsService
                     throw new ConflictHttpException('Aktif Manual E2E oturumu zaten var. Yeni run için önce gönderimleri dondurun.');
                 }
 
-                $allowlist = array_key_exists('manual_e2e_allowlisted_phones', $values)
-                    ? array_values(array_unique(array_filter(array_map(
-                        fn (mixed $phone): string => $this->normalizePhone((string) $phone),
-                        (array) $values['manual_e2e_allowlisted_phones'],
-                    ))))
-                    : (array) ($current['manual_e2e_allowlisted_phones'] ?? []);
+                if ($scopedLocalUat && $values !== []) {
+                    throw ValidationException::withMessages([
+                        'manual_e2e' => 'Allowlistli Yerel UAT profili, TTL ve izin listeleri request tarafından değiştirilemez.',
+                    ]);
+                }
+
+                $allowlist = $scopedLocalUat
+                    ? (array) ($current['manual_e2e_allowlisted_phones'] ?? [])
+                    : (array_key_exists('manual_e2e_allowlisted_phones', $values)
+                        ? array_values(array_unique(array_filter(array_map(
+                            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+                            (array) $values['manual_e2e_allowlisted_phones'],
+                        ))))
+                        : (array) ($current['manual_e2e_allowlisted_phones'] ?? []));
+                $maximumTtl = $scopedLocalUat
+                    ? self::SCOPED_LOCAL_UAT_MAX_TTL_SECONDS
+                    : TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS;
                 $ttl = max(60, min(
-                    TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
-                    (int) ($values['manual_e2e_ttl_seconds'] ?? $current['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
+                    $maximumTtl,
+                    (int) ($values['manual_e2e_ttl_seconds'] ?? $current['manual_e2e_ttl_seconds'] ?? $maximumTtl),
                 ));
                 $candidate = [
                     ...$current,
@@ -1126,6 +1486,23 @@ class TechnicalServiceMessagingSettingsService
                     $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
                 }
 
+                $runSnapshot = $scopedLocalUat
+                    ? app(ExternalExecutionControlPlaneService::class)->scopedLocalUatSnapshot()
+                    : $this->executionModeSnapshot();
+                if ($scopedLocalUat) {
+                    $scopedState = $this->scopedLocalUatControlPlaneState(false);
+                    $runSnapshot = [
+                        ...$runSnapshot,
+                        'scoped_local_uat_run_id' => $runId,
+                        'scoped_local_uat_created_after' => $startedAt->toIso8601String(),
+                        'scoped_local_uat_email_allowlist_fingerprint' => (string) $scopedState['email_allowlist_fingerprint'],
+                        'scoped_local_uat_event_policy_fingerprint' => (string) $scopedState['event_policy_fingerprint'],
+                        'scoped_local_uat_sandbox_payment_provider' => (string) $scopedState['sandbox_payment_provider'],
+                        'scoped_local_uat_limits' => app(ExternalEffectCapabilityRegistry::class)
+                            ->localAllowlistedUatProfile()['limits'],
+                    ];
+                }
+
                 $next = [
                     ...$candidate,
                     'manual_e2e_enabled' => true,
@@ -1140,7 +1517,7 @@ class TechnicalServiceMessagingSettingsService
                     'manual_e2e_open_window' => null,
                     'manual_e2e_active_claim' => null,
                     'manual_e2e_run_snapshot' => [
-                        ...$this->executionModeSnapshot(),
+                        ...$runSnapshot,
                         'allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
                         'evo_ready' => (bool) $readiness['evo_ready'],
                         'nac_ready' => (bool) $readiness['nac_ready'],
@@ -2052,6 +2429,32 @@ class TechnicalServiceMessagingSettingsService
         ) {
             throw new ConflictHttpException('Dispatch provider ve kanal eşleşmesi geçersiz.');
         }
+        if ($this->isScopedLocalUatSettings($settings)) {
+            $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+            $event = (string) $dispatch->message_type;
+            $expectedProvider = data_get($profile, 'messaging_events.'.$event.'.'.$channel);
+            if (! is_string($expectedProvider) || $expectedProvider !== $provider) {
+                throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Event, kanal veya provider allowlistli Yerel UAT profiline ait değil.');
+            }
+            if ($channel === 'sms' && $recipientRole === 'ops') {
+                throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: OPS SMS allowlistli Yerel UAT profilinde kapalıdır.');
+            }
+            if (! $this->scopedLocalUatBodyUrlsAreSafe($dispatch->bodyForProvider(), $settings)) {
+                throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Mesaj linki exact LAN origin ile eşleşmiyor.');
+            }
+
+            $history = collect((array) ($settings['manual_e2e_window_history'] ?? []))
+                ->filter(fn (mixed $entry): bool => is_array($entry)
+                    && (string) ($entry['run_id'] ?? '') === $context->activeRunId());
+            $channelLimit = (int) data_get($profile, 'limits.'.$channel, 0);
+            $totalLimit = (int) data_get($profile, 'limits.total', 0);
+            if ($channelLimit <= 0
+                || $history->where('channel', $channel)->count() >= $channelLimit
+                || $totalLimit <= 0
+                || $history->count() >= $totalLimit) {
+                throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Allowlistli Yerel UAT gönderim üst sınırı aşıldı.');
+            }
+        }
         if ($target === ''
             || ! in_array($target, $context->allowlistedPhones(), true)
             || $expectedTarget === ''
@@ -2269,7 +2672,7 @@ class TechnicalServiceMessagingSettingsService
                 || $context->activeRunId() !== $runId
                 || trim($lockOwner) === ''
                 || $this->runtimeEnvironment() === 'production'
-                || $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
+                || ! $this->manualE2EExecutionScopeAllowed($settings, $context)) {
                 throw new ConflictHttpException('Worker lease aktif Manual E2E run ile eşleşmiyor.');
             }
 
@@ -2314,7 +2717,7 @@ class TechnicalServiceMessagingSettingsService
                 || (int) ($lease['outbound_mode_revision'] ?? -1) !== $this->executionModeRevision($settings)
                 || filled($lease['invalidated_at'] ?? null)
                 || $this->runtimeEnvironment() === 'production'
-                || $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE
+                || ! $this->manualE2EExecutionScopeAllowed($settings, $context)
                 || ! $context->isActive()
                 || $context->activeRunId() !== $runId) {
                 return false;
@@ -2750,7 +3153,7 @@ class TechnicalServiceMessagingSettingsService
         $settings = $this->settings();
 
         return (bool) $settings['messaging_enabled']
-            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            && $this->manualE2EExecutionScopeAllowed($settings)
             && (bool) $settings['real_send_enabled']
             && $this->readiness($settings)['can_send_real'];
     }
@@ -3176,6 +3579,70 @@ class TechnicalServiceMessagingSettingsService
      */
     private function manualE2EReadinessForSettings(array $settings, bool $checkLifecycleLock): array
     {
+        if ($this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL) {
+            $scoped = app(ExternalExecutionControlPlaneService::class)
+                ->scopedLocalUatReadiness($checkLifecycleLock);
+            $inputs = $this->scopedLocalUatControlPlaneState($checkLifecycleLock);
+            $opsPhone = $this->normalizePhone((string) ($settings['ops_whatsapp_phone'] ?? ''));
+
+            return [
+                'eligible' => (bool) $scoped['eligible'],
+                'ready' => (bool) $scoped['ready'],
+                'production_ready' => false,
+                'classification' => (string) $scoped['classification'],
+                'profile_id' => (string) $scoped['profile_id'],
+                'profile_version' => (int) $scoped['profile_version'],
+                'profile_fingerprint' => (string) $scoped['profile_fingerprint'],
+                'required_capabilities' => (array) $scoped['required_capabilities'],
+                'ready_capabilities' => (array) $scoped['ready_capabilities'],
+                'missing_capabilities' => (array) $scoped['missing_capabilities'],
+                'unrelated_global_blockers' => (array) $scoped['unrelated_global_blockers'],
+                'global_live_ready' => (bool) $scoped['global_live_ready'],
+                'global_live_blocker_count' => (int) $scoped['global_live_blocker_count'],
+                'blockers' => (array) $scoped['blockers'],
+                'warnings' => [],
+                'portal_origins' => (array) $inputs['portal_origins'],
+                'evo_ready' => (bool) $inputs['evo_ready'],
+                'nac_ready' => (bool) $inputs['nac_ready'],
+                'smtp_ready' => (bool) $inputs['smtp_ready'],
+                'sandbox_payment_ready' => (bool) $inputs['sandbox_payment_ready'],
+                'allowlisted_phones' => [],
+                'allowlisted_phone_masks' => (array) $inputs['phone_allowlist_masks'],
+                'customer_allowlisted_phone_masks' => array_values(array_filter(
+                    (array) $inputs['phone_allowlist_masks'],
+                    fn (mixed $mask): bool => $opsPhone === '' || $mask !== $this->maskPhone($opsPhone),
+                )),
+                'ops_whatsapp_phone_mask' => $opsPhone !== '' ? $this->maskPhone($opsPhone) : null,
+                'ops_whatsapp_enabled' => (bool) ($settings['ops_whatsapp_enabled'] ?? false),
+                'ops_sms_enabled' => false,
+                'email_allowlist_masks' => (array) $inputs['email_allowlist_masks'],
+                'pending_external_count' => (int) $inputs['pending_external_count'],
+                'unsafe_external_count' => (int) $inputs['unsafe_external_count'],
+                'non_allowlisted_pending_count' => (int) $inputs['non_allowlisted_pending_count'],
+                'duplicate_pending_count' => (int) $inputs['duplicate_pending_count'],
+                'worker_lock_available' => (string) $inputs['manual_worker_state'] === 'none',
+                'worker_lock_raw_available' => (string) $inputs['manual_worker_state'] === 'none',
+                'worker_state' => (string) $inputs['manual_worker_state'],
+                'worker_run_id' => null,
+                'worker_heartbeat_at' => null,
+                'worker_stale_recoverable' => false,
+                'lifecycle_lock_available' => ! collect((array) $scoped['blockers'])
+                    ->contains(fn (array $blocker): bool => ($blocker['code'] ?? null) === 'scoped_uat_lifecycle_lock_busy'),
+                'active_run_id' => TechnicalServiceManualE2ERunContext::fromSettings($settings)->activeRunId(),
+                'active_run_status' => TechnicalServiceManualE2ERunContext::fromSettings($settings)->payload()['status'],
+                'ttl_seconds' => (int) $inputs['ttl_seconds'],
+                'channel_policies' => collect((array) $inputs['event_policy'])
+                    ->map(fn (array $policy, string $event): array => [
+                        'message_type' => $event,
+                        'channel_policy' => (string) ($policy['channel_policy'] ?? 'disabled'),
+                        'whatsapp_mode' => 'scoped',
+                        'sms_mode' => 'scoped',
+                    ])
+                    ->values()
+                    ->all(),
+            ];
+        }
+
         $blockers = [];
         if ($this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
             $blockers[] = ['code' => 'outbound_execution_mode_local', 'message' => 'Manual E2E hazırlığı için çalışma modu önce Canlı API Testi olmalı.'];
@@ -3482,9 +3949,9 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if ((bool) $settings['real_send_enabled']
-            && $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
+            && ! $this->manualE2EExecutionScopeAllowed($settings)) {
             throw ValidationException::withMessages([
-                'real_send_enabled' => 'Gerçek gönderim yalnız dedicated çalışma modu Canlı olduğunda açılabilir.',
+                'real_send_enabled' => 'Gerçek gönderim yalnız global Canlı veya exact allowlistli Yerel UAT run kapsamında açılabilir.',
             ]);
         }
 
@@ -3562,6 +4029,7 @@ class TechnicalServiceMessagingSettingsService
             || $snapshotFingerprint === ''
             || ! hash_equals($snapshotFingerprint, $this->allowlistFingerprint((array) ($settings['manual_e2e_allowlisted_phones'] ?? [])))
             || ! app(ExternalExecutionControlPlaneService::class)->messagingRunSnapshotIsCurrent($runSnapshot)
+            || $this->scopedLocalUatRunEnvelopeInvalid($settings, $runId, $createdAfter, $expiresAt)
             || $this->runtimeEnvironment() === 'production'
         );
 
@@ -3597,7 +4065,7 @@ class TechnicalServiceMessagingSettingsService
                 ))
                 || $normalClaim !== null,
             self::MANUAL_E2E_PHASE_WINDOW_OPEN => ! $manualEnabled
-                || $executionMode !== self::OUTBOUND_EXECUTION_MODE_LIVE
+                || ! $this->manualE2EExecutionScopeAllowed($settings)
                 || ! $realSend
                 || $queuePaused
                 || $runId === null
@@ -3634,6 +4102,39 @@ class TechnicalServiceMessagingSettingsService
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['recipient_fingerprint'] ?? ''))
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['idempotency_fingerprint'] ?? ''))
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['body_fingerprint'] ?? ''));
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function scopedLocalUatRunEnvelopeInvalid(
+        array $settings,
+        string $runId,
+        ?CarbonImmutable $createdAfter,
+        ?CarbonImmutable $expiresAt,
+    ): bool {
+        $snapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+        if (($snapshot['scoped_local_uat_profile_id'] ?? null) !== ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE) {
+            return false;
+        }
+
+        $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+        $snapshotCreatedAfter = $this->safeDate($snapshot['scoped_local_uat_created_after'] ?? null);
+        $ttlSeconds = $createdAfter !== null && $expiresAt !== null
+            ? (int) floor($createdAfter->diffInSeconds($expiresAt))
+            : 0;
+
+        return (string) ($snapshot['scoped_local_uat_run_id'] ?? '') !== $runId
+            || $createdAfter === null
+            || $snapshotCreatedAfter === null
+            || ! $snapshotCreatedAfter->equalTo($createdAfter)
+            || $ttlSeconds < 60
+            || $ttlSeconds > self::SCOPED_LOCAL_UAT_MAX_TTL_SECONDS
+            || (array) ($snapshot['scoped_local_uat_limits'] ?? []) !== (array) $profile['limits']
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($snapshot['scoped_local_uat_email_allowlist_fingerprint'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($snapshot['scoped_local_uat_event_policy_fingerprint'] ?? ''));
     }
 
     /**
@@ -3846,12 +4347,46 @@ class TechnicalServiceMessagingSettingsService
         }
 
         return (bool) ($settings['messaging_enabled'] ?? false)
-            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            && $this->manualE2EExecutionScopeAllowed($settings, $context)
             && (bool) ($settings['real_send_enabled'] ?? false)
             && ! (bool) ($settings['test_mode_enabled'] ?? false)
             && ! (bool) ($settings['queue_paused'] ?? true)
             && $context->isActive()
             && $context->workerCommand() !== null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function manualE2EExecutionScopeAllowed(
+        array $settings,
+        ?TechnicalServiceManualE2ERunContext $context = null,
+    ): bool {
+        if ($this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE) {
+            return true;
+        }
+
+        if ($this->runtimeEnvironment() === 'production') {
+            return false;
+        }
+
+        $context ??= TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $snapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+
+        return $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
+            && $this->isScopedLocalUatSettings($settings)
+            && app(ExternalExecutionControlPlaneService::class)->messagingRunSnapshotIsCurrent($snapshot);
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function isScopedLocalUatSettings(array $settings): bool
+    {
+        return data_get($settings, 'manual_e2e_run_snapshot.scoped_local_uat_profile_id')
+            === ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE;
     }
 
     /**
@@ -5469,8 +6004,12 @@ SQL,
         $mode = $this->executionMode($settings);
         $environment = $this->runtimeEnvironment();
         $metadata = (array) $dispatch->metadata;
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $scopedManualE2E = $manualE2E
+            && $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
+            && $this->isScopedLocalUatSettings($settings);
 
-        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE) {
+        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE && ! $scopedManualE2E) {
             return $this->executionBlock('outbound_execution_mode_local', 'Global sistem çalışma modu Lokal; dış provider çağrısı kapalı.');
         }
         if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)
@@ -5491,7 +6030,6 @@ SQL,
             return $this->executionBlock('outbound_provider_set_not_ready', 'Evo ve NAC provider readiness birlikte geçerli değil; outbound fail-closed tutuldu.');
         }
 
-        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
         if ($manualE2E) {
             $runSnapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
                 ? $settings['manual_e2e_run_snapshot']
@@ -5894,6 +6432,73 @@ SQL,
         $normalized = $this->normalizePhone($phone);
 
         return preg_match('/^[1-9][0-9]{10,14}$/', $normalized) === 1;
+    }
+
+    /**
+     * @param  array<string, mixed>  $type
+     */
+    private function messageTypeAllowsScopedChannel(array $type, string $channel, string $provider): bool
+    {
+        $policy = (string) ($type['channel_policy'] ?? 'disabled');
+        $allowedPolicies = $channel === 'whatsapp'
+            ? ['whatsapp_only', 'whatsapp_primary_sms_fallback', 'whatsapp_and_sms']
+            : ['sms_only', 'whatsapp_primary_sms_fallback', 'whatsapp_and_sms'];
+        $providerField = $channel === 'whatsapp' ? 'whatsapp_provider' : 'sms_provider';
+        $modeField = $channel === 'whatsapp' ? 'whatsapp_mode' : 'sms_mode';
+
+        return in_array($channel, ['whatsapp', 'sms'], true)
+            && in_array($policy, $allowedPolicies, true)
+            && (string) ($type[$providerField] ?? '') === $provider
+            && (string) ($type[$modeField] ?? 'disabled') !== 'disabled';
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function scopedLocalUatBodyUrlsAreSafe(string $body, array $settings): bool
+    {
+        preg_match_all('~https?://[^\s<>"\']+~iu', $body, $matches);
+        $urls = array_map(
+            static fn (string $url): string => rtrim($url, '.,;:!?)]}'),
+            (array) ($matches[0] ?? []),
+        );
+        if ($urls === []) {
+            return true;
+        }
+
+        $expected = PartnerPortalPublicUrl::normalizeOrigin(
+            (string) ($settings['manual_e2e_partner_portal_origin'] ?? ''),
+        );
+        if ($expected === null || ! PartnerPortalPublicUrl::isPrivateLanOrigin($expected)) {
+            return false;
+        }
+
+        foreach ($urls as $url) {
+            $parts = parse_url($url);
+            if (! is_array($parts) || ! isset($parts['scheme'], $parts['host'])) {
+                return false;
+            }
+            $origin = strtolower((string) $parts['scheme']).'://'.strtolower((string) $parts['host']);
+            if (isset($parts['port'])) {
+                $origin .= ':'.(int) $parts['port'];
+            }
+            if (! hash_equals(strtolower($expected), $origin)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function maskEmail(string $email): string
+    {
+        $email = strtolower(trim($email));
+        [$local, $domain] = array_pad(explode('@', $email, 2), 2, '');
+        if ($local === '' || $domain === '') {
+            return '[invalid-email]';
+        }
+
+        return substr($local, 0, 1).'***@'.$domain;
     }
 
     private function maskPhone(?string $phone): ?string

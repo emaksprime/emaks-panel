@@ -527,10 +527,23 @@ type MessagingAdminSection = {
 
 type ManualE2EReadiness = {
     eligible: boolean;
+    ready?: boolean;
+    production_ready?: boolean;
+    classification?: string;
+    profile_id?: string;
+    required_capabilities?: string[];
+    ready_capabilities?: string[];
+    missing_capabilities?: string[];
+    unrelated_global_blockers?: Array<{ code: string; message: string }>;
+    global_live_ready?: boolean;
+    global_live_blocker_count?: number;
     blockers: Array<{ code: string; message: string }>;
     warnings: Array<{ code: string; message: string }>;
     evo_ready: boolean;
     nac_ready: boolean;
+    smtp_ready?: boolean;
+    sandbox_payment_ready?: boolean;
+    email_allowlist_masks?: string[];
     allowlisted_phone_masks: string[];
     customer_allowlisted_phone_masks: string[];
     ops_whatsapp_phone_mask: string | null;
@@ -7509,10 +7522,10 @@ export default function TechnicalServiceAdmin({
                                             {messaging.execution_mode.mode !==
                                             'live' ? (
                                                 <p className="mt-2 text-sm font-semibold text-amber-800">
-                                                    Manual E2E hazırlığı için
-                                                    önce Canlı çalışma modu
-                                                    readiness kapısından
-                                                    geçmelidir.
+                                                    Global Canlı readiness kapısı
+                                                    kapalı kalır. Bu panel yalnız
+                                                    code-owned allowlistli Yerel
+                                                    UAT profilini hazırlayabilir.
                                                 </p>
                                             ) : null}
                                         </div>
@@ -7540,8 +7553,6 @@ export default function TechnicalServiceAdmin({
                                                     manualE2ELifecycleBusy ||
                                                     messaging.manual_e2e
                                                         .active ||
-                                                    messaging.execution_mode
-                                                        .mode !== 'live' ||
                                                     !manualE2EReadiness?.eligible
                                                 }
                                                 onClick={() =>
@@ -7678,9 +7689,10 @@ export default function TechnicalServiceAdmin({
                                             }`}
                                         >
                                             <p className="font-bold">
-                                                {manualE2EReadiness.eligible
-                                                    ? 'Readiness hazır'
-                                                    : 'Readiness bloklu'}
+                                                {manualE2EReadiness.classification ??
+                                                    (manualE2EReadiness.eligible
+                                                        ? 'Readiness hazır'
+                                                        : 'Readiness bloklu')}
                                             </p>
                                             <p className="mt-1">
                                                 Evo:{' '}
@@ -7689,6 +7701,14 @@ export default function TechnicalServiceAdmin({
                                                     : 'Eksik'}{' '}
                                                 / NAC:{' '}
                                                 {manualE2EReadiness.nac_ready
+                                                    ? 'Hazır'
+                                                    : 'Eksik'}{' '}
+                                                / SMTP:{' '}
+                                                {manualE2EReadiness.smtp_ready
+                                                    ? 'Hazır'
+                                                    : 'Eksik'}{' '}
+                                                / Sandbox ödeme:{' '}
+                                                {manualE2EReadiness.sandbox_payment_ready
                                                     ? 'Hazır'
                                                     : 'Eksik'}{' '}
                                                 / OPS SMS: Kapalı / TTL:{' '}
@@ -7716,6 +7736,12 @@ export default function TechnicalServiceAdmin({
                                                           ', ',
                                                       )
                                                     : 'Yok'}
+                                            </p>
+                                            <p className="mt-1">
+                                                Production ready: Hayır / Global
+                                                blocker:{' '}
+                                                {manualE2EReadiness.global_live_blocker_count ??
+                                                    0}
                                             </p>
                                             {manualE2EReadiness.blockers.map(
                                                 (blocker) => (
@@ -10303,6 +10329,14 @@ export default function TechnicalServiceAdmin({
                                                 : 'Eksik'}{' '}
                                             / NAC:{' '}
                                             {manualE2EReadiness.nac_ready
+                                                ? 'Hazır'
+                                                : 'Eksik'}{' '}
+                                            / SMTP:{' '}
+                                            {manualE2EReadiness.smtp_ready
+                                                ? 'Hazır'
+                                                : 'Eksik'}{' '}
+                                            / Sandbox ödeme:{' '}
+                                            {manualE2EReadiness.sandbox_payment_ready
                                                 ? 'Hazır'
                                                 : 'Eksik'}
                                         </dd>

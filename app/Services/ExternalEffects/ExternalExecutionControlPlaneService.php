@@ -48,6 +48,7 @@ final class ExternalExecutionControlPlaneService
     {
         $state = $this->state();
         $readiness = $this->readiness($state);
+        $scopedLocalUat = $this->scopedLocalUatReadiness();
         $publicOrigin = $this->publicOriginProfile($state);
         $publicOrigin['legacy_stale_url_count'] = $this->legacyStalePublicUrlCount();
         $changedById = is_numeric($state['changed_by'] ?? null) ? (int) $state['changed_by'] : null;
@@ -75,6 +76,15 @@ final class ExternalExecutionControlPlaneService
             'correlation_id' => $state['correlation_id'],
             'public_origin' => $publicOrigin,
             'readiness' => $readiness,
+            'readiness_profiles' => [
+                'global_live' => [
+                    ...$readiness,
+                    'ready' => (bool) $readiness['eligible'],
+                    'production_ready' => $this->runtimeEnvironment() === 'production'
+                        && (bool) $readiness['eligible'],
+                ],
+                'local_allowlisted_uat' => $scopedLocalUat,
+            ],
         ];
     }
 
@@ -225,6 +235,134 @@ final class ExternalExecutionControlPlaneService
     }
 
     /**
+     * A separate, non-production readiness profile. It does not change or
+     * satisfy the global LOCAL-to-LIVE transition contract.
+     *
+     * @return array<string, mixed>
+     */
+    public function scopedLocalUatReadiness(bool $checkLifecycleLock = true): array
+    {
+        $state = $this->state();
+        $profile = $this->registry->localAllowlistedUatProfile();
+        $inputs = app(TechnicalServiceMessagingSettingsService::class)
+            ->scopedLocalUatControlPlaneState($checkLifecycleLock);
+        $capabilities = (array) ($inputs['capabilities'] ?? []);
+        $blockers = array_values((array) ($inputs['invariant_blockers'] ?? []));
+
+        if ($this->runtimeEnvironment() === 'production') {
+            $blockers[] = [
+                'code' => 'scoped_uat_production_forbidden',
+                'message' => 'Allowlistli Yerel UAT production ortamında açılamaz.',
+            ];
+        }
+        if (($state['operator_mode'] ?? null) !== self::MODE_LOCAL
+            || ($state['transition_state'] ?? null) !== self::STATE_LOCAL) {
+            $blockers[] = [
+                'code' => 'scoped_uat_requires_global_local',
+                'message' => 'Allowlistli Yerel UAT yalnız global Lokal durumda hazırlanabilir.',
+            ];
+        }
+
+        $required = array_values((array) $profile['required_capabilities']);
+        $ready = [];
+        $missing = [];
+        foreach ($required as $code) {
+            $status = is_array($capabilities[$code] ?? null) ? $capabilities[$code] : [];
+            if ((bool) ($status['ready'] ?? false)) {
+                $ready[] = $code;
+
+                continue;
+            }
+
+            $missing[] = $code;
+            $blockers[] = [
+                'code' => 'scoped_capability_not_ready:'.$code,
+                'capability' => $code,
+                'message' => $code.' allowlistli Yerel UAT için hazır değil.',
+            ];
+        }
+
+        $global = $this->readiness($state, false);
+        $unrelatedGlobalBlockers = collect((array) ($global['blockers'] ?? []))
+            ->reject(function (array $blocker) use ($required): bool {
+                $capability = is_scalar($blocker['capability'] ?? null)
+                    ? (string) $blocker['capability']
+                    : '';
+
+                return in_array($capability, $required, true);
+            })
+            ->values()
+            ->all();
+
+        return [
+            'profile_id' => $profile['id'],
+            'profile_version' => $profile['version'],
+            'profile_fingerprint' => $profile['profile_fingerprint'],
+            'ready' => $blockers === [],
+            'eligible' => $blockers === [],
+            'production_ready' => false,
+            'classification' => $blockers === []
+                ? 'Allowlistli Yerel UAT için hazır'
+                : 'Allowlistli Yerel UAT blockerları',
+            'required_capabilities' => $required,
+            'ready_capabilities' => $ready,
+            'missing_capabilities' => $missing,
+            'capabilities' => $capabilities,
+            'invariant_blockers' => array_values((array) ($inputs['invariant_blockers'] ?? [])),
+            'blockers' => $blockers,
+            'unrelated_global_blockers' => $unrelatedGlobalBlockers,
+            'global_live_ready' => (bool) ($global['eligible'] ?? false),
+            'global_live_blocker_count' => count((array) ($global['blockers'] ?? [])),
+            'active_run_eligibility' => $blockers === [],
+            'security_fingerprint' => (string) ($inputs['security_fingerprint'] ?? ''),
+            'limits' => $profile['limits'],
+            'ops_sms' => false,
+            'sandbox_payment' => true,
+            'real_payment' => false,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function scopedLocalUatSnapshot(): array
+    {
+        $state = $this->state();
+        $profile = $this->registry->localAllowlistedUatProfile();
+        $inputs = app(TechnicalServiceMessagingSettingsService::class)
+            ->scopedLocalUatControlPlaneState(false);
+        $capabilitySnapshots = [];
+        foreach ((array) $profile['required_capabilities'] as $code) {
+            $status = is_array($inputs['capabilities'][$code] ?? null)
+                ? $inputs['capabilities'][$code]
+                : [];
+            $capabilitySnapshots[$code] = [
+                'revision' => (int) ($status['capability_revision'] ?? 0),
+                'profile_fingerprint' => (string) ($status['profile_fingerprint'] ?? ''),
+            ];
+        }
+
+        return [
+            'scoped_local_uat_profile_id' => $profile['id'],
+            'scoped_local_uat_profile_version' => $profile['version'],
+            'scoped_local_uat_profile_fingerprint' => $profile['profile_fingerprint'],
+            'scoped_local_uat_security_fingerprint' => (string) ($inputs['security_fingerprint'] ?? ''),
+            'scoped_local_uat_capability_snapshots' => $capabilitySnapshots,
+            'scoped_local_uat_production_ready' => false,
+            'scoped_local_uat_sandbox_payment' => true,
+            'scoped_local_uat_real_payment' => false,
+            'scoped_local_uat_ops_sms' => false,
+            'global_execution_mode' => $state['operator_mode'],
+            'global_execution_state' => $state['transition_state'],
+            'global_execution_epoch' => $state['epoch'],
+            'global_execution_revision' => $state['revision'],
+            'global_runtime_environment' => $this->runtimeEnvironment(),
+            'global_profile_fingerprint' => $state['profile_fingerprint'],
+            'scoped_local_uat_snapshot_at' => CarbonImmutable::now()->toIso8601String(),
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function messagingSnapshot(?string $provider = null): array
@@ -307,10 +445,74 @@ final class ExternalExecutionControlPlaneService
     }
 
     /**
+     * @param  array<string, mixed>  $metadata
+     * @return array{allowed:bool,code:string|null,message:string|null}
+     */
+    public function authorizeScopedLocalUatCapabilitySnapshot(string $capabilityCode, array $metadata): array
+    {
+        $profile = $this->registry->localAllowlistedUatProfile();
+        if (! in_array($capabilityCode, (array) $profile['required_capabilities'], true)) {
+            return $this->blocked(
+                'scoped_uat_unauthorized_capability',
+                'Capability allowlistli Yerel UAT profiline ait değil.',
+            );
+        }
+
+        $state = $this->state();
+        if ($this->runtimeEnvironment() === 'production'
+            || $state['operator_mode'] !== self::MODE_LOCAL
+            || $state['transition_state'] !== self::STATE_LOCAL) {
+            return $this->blocked('scoped_uat_environment_invalid', 'Allowlistli Yerel UAT yalnız global Lokal ve non-production ortamda çalışabilir.');
+        }
+
+        $current = $this->scopedLocalUatSnapshot();
+        $storedCapability = is_array($metadata['scoped_local_uat_capability_snapshots'][$capabilityCode] ?? null)
+            ? $metadata['scoped_local_uat_capability_snapshots'][$capabilityCode]
+            : [];
+        $currentCapability = is_array($current['scoped_local_uat_capability_snapshots'][$capabilityCode] ?? null)
+            ? $current['scoped_local_uat_capability_snapshots'][$capabilityCode]
+            : [];
+        $inputs = app(TechnicalServiceMessagingSettingsService::class)
+            ->scopedLocalUatControlPlaneState(false);
+        $status = is_array($inputs['capabilities'][$capabilityCode] ?? null)
+            ? $inputs['capabilities'][$capabilityCode]
+            : [];
+
+        if (! (bool) ($status['ready'] ?? false)) {
+            return $this->blocked('scoped_uat_capability_not_ready', 'Allowlistli Yerel UAT capability readiness geçerli değil.');
+        }
+
+        if (($metadata['scoped_local_uat_profile_id'] ?? null) !== $profile['id']
+            || (int) ($metadata['scoped_local_uat_profile_version'] ?? 0) !== (int) $profile['version']
+            || ! hash_equals((string) $profile['profile_fingerprint'], (string) ($metadata['scoped_local_uat_profile_fingerprint'] ?? ''))
+            || ! hash_equals((string) $current['scoped_local_uat_security_fingerprint'], (string) ($metadata['scoped_local_uat_security_fingerprint'] ?? ''))
+            || (bool) ($metadata['scoped_local_uat_production_ready'] ?? true)
+            || ! (bool) ($metadata['scoped_local_uat_sandbox_payment'] ?? false)
+            || (bool) ($metadata['scoped_local_uat_real_payment'] ?? true)
+            || (bool) ($metadata['scoped_local_uat_ops_sms'] ?? true)
+            || ($metadata['global_execution_mode'] ?? null) !== self::MODE_LOCAL
+            || ($metadata['global_execution_state'] ?? null) !== self::STATE_LOCAL
+            || (int) ($metadata['global_execution_epoch'] ?? 0) !== (int) $state['epoch']
+            || (int) ($metadata['global_execution_revision'] ?? 0) !== (int) $state['revision']
+            || ($metadata['global_runtime_environment'] ?? null) !== $this->runtimeEnvironment()
+            || ! hash_equals((string) $state['profile_fingerprint'], (string) ($metadata['global_profile_fingerprint'] ?? ''))
+            || (int) ($storedCapability['revision'] ?? 0) !== (int) ($currentCapability['revision'] ?? 0)
+            || ! hash_equals((string) ($currentCapability['profile_fingerprint'] ?? ''), (string) ($storedCapability['profile_fingerprint'] ?? ''))) {
+            return $this->blocked('scoped_uat_snapshot_stale', 'Allowlistli Yerel UAT snapshotı current profile, capability veya güvenlik bağlamıyla eşleşmiyor.');
+        }
+
+        return ['allowed' => true, 'code' => null, 'message' => null];
+    }
+
+    /**
      * @param  array<string, mixed>  $snapshot
      */
     public function messagingRunSnapshotIsCurrent(array $snapshot): bool
     {
+        if (array_key_exists('scoped_local_uat_profile_id', $snapshot)) {
+            return $this->scopedLocalUatRunSnapshotIsCurrent($snapshot);
+        }
+
         $state = $this->state();
         $publicOrigin = $this->publicOriginProfile($state);
         if (($snapshot['global_execution_mode'] ?? null) !== self::MODE_LIVE
@@ -333,6 +535,22 @@ final class ExternalExecutionControlPlaneService
                 : [];
             if ((int) ($stored['revision'] ?? 0) !== (int) ($identity['capability_revision'] ?? 0)
                 || ! hash_equals((string) ($identity['profile_fingerprint'] ?? ''), (string) ($stored['profile_fingerprint'] ?? ''))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $snapshot
+     */
+    private function scopedLocalUatRunSnapshotIsCurrent(array $snapshot): bool
+    {
+        $profile = $this->registry->localAllowlistedUatProfile();
+        foreach ((array) $profile['required_capabilities'] as $code) {
+            $authorization = $this->authorizeScopedLocalUatCapabilitySnapshot((string) $code, $snapshot);
+            if (! $authorization['allowed']) {
                 return false;
             }
         }
