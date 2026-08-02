@@ -19,19 +19,26 @@ class PaymentProviderManager
     public function createPayment(TechnicalServiceMountPayment $payment): array
     {
         $provider = $this->providerName();
+        $scopedProvider = $this->scopedProviderName($provider);
         $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentEffect(
             $payment,
             TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE,
-            $this->scopedProviderName($provider),
+            $scopedProvider,
         );
         if ($claim['duplicate']) {
-            return $this->existingPaymentResponse($payment->refresh());
+            $existing = TechnicalServiceMountPayment::query()
+                ->findOrFail((int) ($claim['duplicate_payment_id'] ?? $payment->getKey()));
+
+            return $this->existingPaymentResponse($existing);
         }
 
         try {
             $payment = $payment->refresh();
+            if (is_string($claim['claim_nonce'])) {
+                $this->messagingSettings->beginScopedLocalUatEffectDispatch($claim['claim_nonce']);
+            }
             $this->stampProviderDecision($payment, $provider);
-            $response = $this->provider()->createPayment($payment->refresh());
+            $response = $this->providerForName($scopedProvider)->createPayment($payment->refresh());
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->completeScopedLocalUatEffect($claim['claim_nonce']);
             }
@@ -72,8 +79,14 @@ class PaymentProviderManager
 
     public function provider(): PaymentProviderInterface
     {
-        return match ($this->configuredProviderName()) {
+        return $this->providerForName($this->configuredProviderName());
+    }
+
+    private function providerForName(string $provider): PaymentProviderInterface
+    {
+        return match (strtolower(trim($provider))) {
             'fake' => app(FakePaymentProvider::class),
+            'fake_payment' => app(FakePaymentProvider::class),
             'iyzico', 'iyzico_sandbox', 'iyzico_live' => app(IyzicoPaymentProvider::class),
             default => throw new InvalidArgumentException('Desteklenmeyen odeme saglayicisi.'),
         };
@@ -101,11 +114,17 @@ class PaymentProviderManager
 
     private function scopedProviderName(string $provider): string
     {
-        if ($provider === 'fake') {
-            return 'fake_payment';
-        }
-
-        return $this->modeResolver->gatewayMode() === 'live' ? 'iyzico_live' : 'iyzico_sandbox';
+        return match (strtolower(trim($provider))) {
+            'fake', 'fake_payment' => 'fake_payment',
+            'iyzico_sandbox' => 'iyzico_sandbox',
+            'iyzico_live' => 'iyzico_live',
+            'iyzico' => match ($this->modeResolver->gatewayMode()) {
+                'sandbox' => 'iyzico_sandbox',
+                'live' => 'iyzico_live',
+                default => throw new InvalidArgumentException('Desteklenmeyen odeme saglayicisi modu.'),
+            },
+            default => throw new InvalidArgumentException('Desteklenmeyen odeme saglayicisi.'),
+        };
     }
 
     /**

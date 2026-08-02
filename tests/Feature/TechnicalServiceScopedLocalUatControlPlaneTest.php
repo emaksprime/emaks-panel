@@ -645,7 +645,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
 
         $this->assertStringContainsString('claimScopedLocalUatEmailEffect', $mail);
         $this->assertStringContainsString('claimScopedLocalUatSandboxPaymentEffect', $manager);
-        $this->assertStringContainsString('claimScopedLocalUatSandboxPaymentEffect', $settlement);
+        $this->assertStringContainsString('claimScopedLocalUatSandboxPaymentCallbackEffect', $settlement);
         $this->assertStringContainsString('Mail::mailer', $mail);
         $this->assertStringContainsString('->createPayment(', $manager);
     }
@@ -908,6 +908,195 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame(1, $payment->technicalServiceRequest?->events()->where('event_type', 'mount_payment_paid')->count());
         $callbacks = collect($this->effectHistory())->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK);
         $this->assertCount(1, $callbacks);
+    }
+
+    public function test_freeze_wins_after_claim_and_before_actual_email_transport(): void
+    {
+        ['settings' => $settings, 'run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $payment = $this->scopedPayment($runId);
+        $mail = new class($payment, ['mrn' => $payment->technicalServiceRequest?->mrn, 'amount' => number_format((float) $payment->amount, 2, '.', ''), 'currency' => $payment->currency], $settings) extends TechnicalServicePaymentAuditMail
+        {
+            public function __construct(
+                TechnicalServiceMountPayment $payment,
+                array $details,
+                private readonly TechnicalServiceMessagingSettingsService $settings,
+            ) {
+                parent::__construct($payment, $details);
+            }
+
+            public function build(): self
+            {
+                $this->settings->freezeManualE2E();
+
+                return parent::build();
+            }
+        };
+
+        try {
+            app(TechnicalServiceMailTransportSettingsService::class)->sendPaymentAuditMail(
+                [self::PAYMENT_EMAIL],
+                $mail,
+            );
+            $this->fail('Freeze final dispatch linearizationdan önce kazanırsa SMTP transport çağrılmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('frozen_before_dispatch', $exception->getMessage());
+        }
+
+        Mail::assertNothingSent();
+        $this->assertSame('frozen_unresolved', data_get(
+            $payment->fresh()->raw_payload,
+            'scoped_local_uat_effect_history.0.status',
+        ));
+        $this->assertNull(data_get($payment->fresh()->raw_payload, 'scoped_local_uat_effect_claim'));
+    }
+
+    public function test_callback_without_successful_create_session_history_is_rejected(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment, ['fake_approved' => true]);
+            $this->fail('Stored create/session authority olmadan callback paid geçişi yapmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('session_authority_missing', $exception->getMessage());
+        }
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        $this->assertNull($payment->fresh()->paid_at);
+        $this->assertSame(0, $payment->technicalServiceRequest?->events()->where('event_type', 'mount_payment_paid')->count());
+        $callback = collect(data_get($payment->fresh()->raw_payload, 'scoped_local_uat_effect_history', []))
+            ->firstWhere('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK);
+        $this->assertSame('failed', $callback['status'] ?? null);
+    }
+
+    public function test_duplicate_business_payment_rows_create_one_provider_session(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->once()->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $first = $this->scopedPayment($runId);
+        $second = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $first->technical_service_mount_session_id,
+            'technical_service_request_id' => $first->technical_service_request_id,
+            'provider' => 'fake',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => $first->amount,
+            'currency' => $first->currency,
+            'raw_payload' => $first->raw_payload,
+        ]);
+
+        $firstResponse = app(PaymentProviderManager::class)->createPayment($first);
+        $secondResponse = app(PaymentProviderManager::class)->createPayment($second);
+
+        $this->assertSame($firstResponse, $secondResponse);
+        $this->assertNotNull($first->fresh()->provider_reference);
+        $this->assertNull($second->fresh()->provider_reference);
+        $creates = collect($this->effectHistory())
+            ->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE);
+        $this->assertCount(1, $creates);
+        $this->assertStringNotContainsString('payment:'.$first->id, (string) $creates->first()['idempotency_hash']);
+        $this->assertStringNotContainsString('payment:'.$second->id, (string) $creates->first()['idempotency_hash']);
+    }
+
+    public function test_callback_provider_must_match_stored_session_and_run_snapshot(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+                'fake_approved' => true,
+                'provider' => 'iyzico',
+                'provider_mode' => 'sandbox',
+            ]);
+            $this->fail('Request provider stored fake_payment authority yerine geçmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+        }
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        $this->assertNull($payment->fresh()->paid_at);
+        $this->assertSame(0, $payment->technicalServiceRequest?->events()->where('event_type', 'mount_payment_paid')->count());
+        Mail::assertNothingSent();
+    }
+
+    public function test_payment_create_provider_must_match_immutable_run_snapshot(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $this->mock(FakePaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['provider_mode'] = 'sandbox';
+        $payment->forceFill([
+            'provider' => 'iyzico',
+            'raw_payload' => $payload,
+        ])->save();
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment->fresh());
+            $this->fail('Payment row providerı immutable fake_payment run snapshotını değiştirmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_snapshot_mismatch', $exception->getMessage());
+        }
+
+        $this->assertNull($payment->fresh()->provider_reference);
+    }
+
+    public function test_callback_run_authority_cannot_be_replaced_by_request_payload(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+                'fake_approved' => true,
+                'run_id' => 'LOCAL-UAT-WRONG-RUN',
+            ]);
+            $this->fail('Request run_id stored session authority yerine geçmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+        }
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        $this->assertNull($payment->fresh()->paid_at);
+        $this->assertSame(0, $payment->technicalServiceRequest?->events()->where('event_type', 'mount_payment_paid')->count());
+        Mail::assertNothingSent();
+    }
+
+    public function test_callback_amount_currency_and_frozen_run_are_fail_closed(): void
+    {
+        ['settings' => $settings, 'run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+                'fake_approved' => true,
+                'amount' => 2,
+                'currency' => 'USD',
+            ]);
+            $this->fail('Callback amount/currency stored session authority ile eşleşmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+        }
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+
+        $settings->freezeManualE2E();
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), ['fake_approved' => true]);
+            $this->fail('Frozen run callback paid geçişi yapmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('active_run_missing', $exception->getMessage());
+        }
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
     }
 
     public function test_wrong_expired_or_non_synthetic_payment_fails_before_provider(): void

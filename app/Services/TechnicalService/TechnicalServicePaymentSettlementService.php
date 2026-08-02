@@ -22,68 +22,33 @@ class TechnicalServicePaymentSettlementService
      */
     public function markPaid(TechnicalServiceMountPayment $payment, array $payload = []): TechnicalServiceMountPayment
     {
-        $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentEffect(
+        $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentCallbackEffect(
             $payment,
-            TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK,
-            $this->scopedProviderName($payment),
+            $payload,
         );
         if ($claim['duplicate']) {
             return $payment->refresh();
         }
 
         try {
-            $settled = DB::transaction(function () use ($payment, $payload): TechnicalServiceMountPayment {
-                $payment = TechnicalServiceMountPayment::query()
+            if (is_string($claim['claim_nonce'])) {
+                return $this->messagingSettings->executeScopedLocalUatPaymentCallback(
+                    $claim['claim_nonce'],
+                    fn (TechnicalServiceMountPayment $lockedPayment): TechnicalServiceMountPayment => $this->settleLockedPayment(
+                        $lockedPayment,
+                        $payload,
+                    ),
+                );
+            }
+
+            return DB::transaction(function () use ($payment, $payload): TechnicalServiceMountPayment {
+                $lockedPayment = TechnicalServiceMountPayment::query()
                     ->whereKey($payment->getKey())
                     ->lockForUpdate()
                     ->firstOrFail();
-                if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
-                    return $payment;
-                }
 
-                $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-                $rawPayload['callback_payload'] = $payload;
-                $providerReference = $this->paymentReferenceFromPayload($payload) ?: $payment->provider_reference;
-                $providerPaymentReference = $this->paymentReferenceFromPayload([
-                    'provider_reference' => $payload['provider_payment_reference'] ?? null,
-                ]) ?: $payment->provider_payment_reference;
-                $providerTransactionReference = $this->paymentReferenceFromPayload([
-                    'provider_reference' => $payload['provider_transaction_reference'] ?? null,
-                ]) ?: $payment->provider_transaction_reference;
-                $providerReceiptReference = $this->paymentReferenceFromPayload([
-                    'provider_reference' => $payload['provider_receipt_reference'] ?? null,
-                ]) ?: $payment->provider_receipt_reference;
-
-                $payment->forceFill([
-                    'status' => TechnicalServiceMountPayment::STATUS_PAID,
-                    'provider_reference' => $providerReference,
-                    'provider_payment_reference' => $providerPaymentReference,
-                    'provider_transaction_reference' => $providerTransactionReference,
-                    'provider_receipt_reference' => $providerReceiptReference,
-                    'paid_at' => $payment->paid_at ?? now(),
-                    'raw_payload' => $rawPayload,
-                ])->save();
-
-                $isCustomerCharge = ($rawPayload['source'] ?? null) === 'operation_customer_charge';
-                $session = $payment->session;
-
-                if (! $isCustomerCharge && $session instanceof TechnicalServiceMountSession) {
-                    $session->forceFill([
-                        'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
-                        'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT,
-                        'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
-                    ])->save();
-                }
-
-                $this->applyRequestPaymentApproval($payment);
-
-                return $payment->fresh();
+                return $this->settleLockedPayment($lockedPayment, $payload);
             });
-            if (is_string($claim['claim_nonce'])) {
-                $this->messagingSettings->completeScopedLocalUatEffect($claim['claim_nonce']);
-            }
-
-            return $settled;
         } catch (Throwable $exception) {
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
@@ -93,22 +58,52 @@ class TechnicalServicePaymentSettlementService
         }
     }
 
-    private function scopedProviderName(TechnicalServiceMountPayment $payment): string
-    {
-        $provider = strtolower(trim((string) $payment->provider));
-        if ($provider === 'fake') {
-            return 'fake_payment';
+    /** @param array<string, mixed> $payload */
+    private function settleLockedPayment(
+        TechnicalServiceMountPayment $payment,
+        array $payload,
+    ): TechnicalServiceMountPayment {
+        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            return $payment;
         }
 
-        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $mode = strtolower(trim((string) (
-            data_get($payload, 'provider_mode')
-            ?? data_get($payload, 'provider_decision.provider_mode')
-            ?? data_get($payload, 'provider_gateway.mode')
-            ?? ''
-        )));
+        $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $rawPayload['callback_payload'] = $payload;
+        $providerReference = $this->paymentReferenceFromPayload($payload) ?: $payment->provider_reference;
+        $providerPaymentReference = $this->paymentReferenceFromPayload([
+            'provider_reference' => $payload['provider_payment_reference'] ?? null,
+        ]) ?: $payment->provider_payment_reference;
+        $providerTransactionReference = $this->paymentReferenceFromPayload([
+            'provider_reference' => $payload['provider_transaction_reference'] ?? null,
+        ]) ?: $payment->provider_transaction_reference;
+        $providerReceiptReference = $this->paymentReferenceFromPayload([
+            'provider_reference' => $payload['provider_receipt_reference'] ?? null,
+        ]) ?: $payment->provider_receipt_reference;
 
-        return $mode === 'live' ? 'iyzico_live' : 'iyzico_sandbox';
+        $payment->forceFill([
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'provider_reference' => $providerReference,
+            'provider_payment_reference' => $providerPaymentReference,
+            'provider_transaction_reference' => $providerTransactionReference,
+            'provider_receipt_reference' => $providerReceiptReference,
+            'paid_at' => $payment->paid_at ?? now(),
+            'raw_payload' => $rawPayload,
+        ])->save();
+
+        $isCustomerCharge = ($rawPayload['source'] ?? null) === 'operation_customer_charge';
+        $session = $payment->session;
+
+        if (! $isCustomerCharge && $session instanceof TechnicalServiceMountSession) {
+            $session->forceFill([
+                'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+                'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT,
+                'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
+            ])->save();
+        }
+
+        $this->applyRequestPaymentApproval($payment);
+
+        return $payment->fresh();
     }
 
     private function applyRequestPaymentApproval(TechnicalServiceMountPayment $payment): void

@@ -315,6 +315,10 @@ class TechnicalServiceMailTransportSettingsService
         }
 
         try {
+            if (is_string($claim['claim_nonce'])) {
+                $mail->build();
+                $authority->beginScopedLocalUatEffectDispatch($claim['claim_nonce']);
+            }
             $this->sendUsingProfile($profile, $recipients, $mail);
             if (is_string($claim['claim_nonce'])) {
                 $authority->completeScopedLocalUatEffect($claim['claim_nonce']);
