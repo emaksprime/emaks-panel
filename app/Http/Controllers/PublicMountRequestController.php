@@ -244,9 +244,12 @@ class PublicMountRequestController extends Controller
                     'raw_payload' => $this->publicMountPaymentPayload($link, $session, $paymentProviderManager),
                 ]);
 
-                $paymentProviderManager->createPayment($payment);
+                $createResult = $paymentProviderManager->createPayment($payment);
+                $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
             } catch (\Throwable $exception) {
-                $payment?->delete();
+                if ($payment instanceof TechnicalServiceMountPayment) {
+                    $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
+                }
 
                 return redirect()->to(route('mount-request.payment.step', ['token' => $token], false))
                     ->withErrors(['payment' => $exception->getMessage()]);

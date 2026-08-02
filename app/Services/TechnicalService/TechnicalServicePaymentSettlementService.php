@@ -9,6 +9,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
 class TechnicalServicePaymentSettlementService
@@ -27,7 +28,9 @@ class TechnicalServicePaymentSettlementService
             $payload,
         );
         if ($claim['duplicate']) {
-            return $payment->refresh();
+            return TechnicalServiceMountPayment::query()
+                ->findOrFail((int) ($claim['duplicate_payment_id'] ?? 0))
+                ->refresh();
         }
 
         try {
@@ -37,6 +40,7 @@ class TechnicalServicePaymentSettlementService
                     fn (TechnicalServiceMountPayment $lockedPayment): TechnicalServiceMountPayment => $this->settleLockedPayment(
                         $lockedPayment,
                         $payload,
+                        true,
                     ),
                 );
             }
@@ -47,7 +51,7 @@ class TechnicalServicePaymentSettlementService
                     ->lockForUpdate()
                     ->firstOrFail();
 
-                return $this->settleLockedPayment($lockedPayment, $payload);
+                return $this->settleLockedPayment($lockedPayment, $payload, false);
             });
         } catch (Throwable $exception) {
             if (is_string($claim['claim_nonce'])) {
@@ -62,9 +66,21 @@ class TechnicalServicePaymentSettlementService
     private function settleLockedPayment(
         TechnicalServiceMountPayment $payment,
         array $payload,
+        bool $scopedLocalUat,
     ): TechnicalServiceMountPayment {
         if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            if ($scopedLocalUat) {
+                throw new ConflictHttpException(
+                    'scoped_uat_callback_state_invalid: Paid callback yalnız exact stored idempotent history üzerinden no-op olabilir.',
+                );
+            }
+
             return $payment;
+        }
+        if ($scopedLocalUat && $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            throw new ConflictHttpException(
+                'scoped_uat_callback_state_invalid: Scoped UAT odemesi yalniz pending durumundan paid durumuna gecebilir.',
+            );
         }
 
         $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];

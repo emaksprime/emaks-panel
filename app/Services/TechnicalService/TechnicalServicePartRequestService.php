@@ -685,9 +685,10 @@ class TechnicalServicePartRequestService
         ]);
 
         try {
-            $this->paymentProviderManager->createPayment($payment);
+            $createResult = $this->paymentProviderManager->createPayment($payment);
+            $payment = $this->paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
         } catch (Throwable $exception) {
-            $payment->delete();
+            $this->paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
 
             throw ValidationException::withMessages([
                 'payment' => $exception->getMessage(),

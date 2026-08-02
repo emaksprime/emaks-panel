@@ -948,9 +948,10 @@ class TechnicalServiceController extends Controller
             'raw_payload' => $paymentPayload,
         ]);
         try {
-            $paymentProviderManager->createPayment($payment);
+            $createResult = $paymentProviderManager->createPayment($payment);
+            $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
         } catch (Throwable $exception) {
-            $payment->delete();
+            $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
 
             throw ValidationException::withMessages([
                 'payment' => $exception->getMessage(),

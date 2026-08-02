@@ -277,6 +277,7 @@ class TechnicalServiceMailTransportSettingsService
             throw new TechnicalServiceMailTransportNotReadyException(self::NOT_READY_MESSAGE);
         }
 
+        app(TechnicalServiceMessagingSettingsService::class)->assertProviderHttpOutsideTransaction();
         try {
             $this->configureProfileMailer($profile);
             Mail::mailer('technical_service_smtp')->raw(
@@ -300,6 +301,7 @@ class TechnicalServiceMailTransportSettingsService
     {
         $profile = $this->profile();
         $authority = app(TechnicalServiceMessagingSettingsService::class);
+        $authority->assertProviderHttpOutsideTransaction();
         $claim = $authority->claimScopedLocalUatEmailEffect($mail->payment, $recipients);
 
         if ($claim['duplicate']) {
@@ -319,6 +321,7 @@ class TechnicalServiceMailTransportSettingsService
                 $mail->build();
                 $authority->beginScopedLocalUatEffectDispatch($claim['claim_nonce']);
             }
+            $authority->assertProviderHttpOutsideTransaction();
             $this->sendUsingProfile($profile, $recipients, $mail);
             if (is_string($claim['claim_nonce'])) {
                 $authority->completeScopedLocalUatEffect($claim['claim_nonce']);

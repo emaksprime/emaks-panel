@@ -18,6 +18,7 @@ class PaymentProviderManager
 
     public function createPayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
         $provider = $this->providerName();
         $scopedProvider = $this->scopedProviderName($provider);
         $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentEffect(
@@ -36,20 +37,53 @@ class PaymentProviderManager
             $payment = $payment->refresh();
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->beginScopedLocalUatEffectDispatch($claim['claim_nonce']);
+                $payment = $payment->refresh();
             }
             $this->stampProviderDecision($payment, $provider);
-            $response = $this->providerForName($scopedProvider)->createPayment($payment->refresh());
+            $this->messagingSettings->assertProviderHttpOutsideTransaction();
+            $this->providerForName($scopedProvider)->createPayment($payment->refresh());
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->completeScopedLocalUatEffect($claim['claim_nonce']);
             }
 
-            return $response;
+            return $this->existingPaymentResponse($payment->refresh());
         } catch (Throwable $exception) {
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
             }
 
             throw $exception;
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    public function canonicalPaymentFromCreateResult(array $result): TechnicalServiceMountPayment
+    {
+        $paymentId = $result['payment_id'] ?? null;
+        if (! is_numeric($paymentId) || (int) $paymentId < 1) {
+            throw new InvalidArgumentException('Kanonik odeme kaydi create sonucunda bulunamadi.');
+        }
+
+        return TechnicalServiceMountPayment::query()->findOrFail((int) $paymentId);
+    }
+
+    public function discardFailedCreatePaymentUnlessAudited(TechnicalServiceMountPayment $payment): void
+    {
+        $fresh = $payment->fresh();
+        if (! $fresh instanceof TechnicalServiceMountPayment) {
+            return;
+        }
+        $history = data_get($fresh->raw_payload, 'scoped_local_uat_effect_history', []);
+        $auditedScopedFailure = $fresh->status === TechnicalServiceMountPayment::STATUS_FAILED
+            && is_array($history)
+            && collect($history)->contains(fn (mixed $entry): bool => is_array($entry)
+                && (string) ($entry['operation'] ?? '') === TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE
+                && (string) ($entry['status'] ?? '') === 'failed');
+
+        if (! $auditedScopedFailure) {
+            $fresh->delete();
         }
     }
 
@@ -128,11 +162,12 @@ class PaymentProviderManager
     }
 
     /**
-     * @return array{provider_reference:string|null,payment_url:string|null,status:string}
+     * @return array{payment_id:int,provider_reference:string|null,payment_url:string|null,status:string}
      */
     private function existingPaymentResponse(TechnicalServiceMountPayment $payment): array
     {
         return [
+            'payment_id' => (int) $payment->getKey(),
             'provider_reference' => $payment->provider_reference,
             'payment_url' => $payment->payment_url,
             'status' => (string) $payment->status,

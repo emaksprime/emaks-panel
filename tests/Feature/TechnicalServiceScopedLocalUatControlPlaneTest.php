@@ -993,8 +993,14 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $secondResponse = app(PaymentProviderManager::class)->createPayment($second);
 
         $this->assertSame($firstResponse, $secondResponse);
+        $this->assertSame($first->id, $secondResponse['payment_id']);
         $this->assertNotNull($first->fresh()->provider_reference);
         $this->assertNull($second->fresh()->provider_reference);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $second->fresh()->status);
+        $this->assertSame($first->id, data_get(
+            $second->fresh()->raw_payload,
+            'scoped_local_uat_duplicate_payment.canonical_payment_id',
+        ));
         $creates = collect($this->effectHistory())
             ->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE);
         $this->assertCount(1, $creates);
@@ -1192,6 +1198,267 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         ));
     }
 
+    public function test_all_production_payment_create_callers_use_canonical_manager_result(): void
+    {
+        foreach ([
+            app_path('Http/Controllers/PublicMountRequestController.php'),
+            app_path('Http/Controllers/Api/TechnicalServiceController.php'),
+            app_path('Services/TechnicalService/TechnicalServicePartRequestService.php'),
+        ] as $path) {
+            $source = File::get($path);
+
+            $this->assertMatchesRegularExpression('/\$createResult\s*=.*createPayment\(\$payment\);/s', $source, $path);
+            $this->assertMatchesRegularExpression(
+                '/\$payment\s*=.*canonicalPaymentFromCreateResult\(\$createResult\);/s',
+                $source,
+                $path,
+            );
+        }
+    }
+
+    public function test_part_request_identity_prevents_distinct_obligations_from_colliding(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->twice()->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $first = $this->scopedPayment($runId, true, [
+            'source' => 'operation_customer_charge',
+            'purpose' => 'part_payment',
+            'charge_type' => 'part_payment',
+            'part_request_id' => 101,
+        ]);
+        $second = $this->duplicateScopedPayment($first, ['part_request_id' => 202]);
+
+        $firstResult = app(PaymentProviderManager::class)->createPayment($first);
+        $secondResult = app(PaymentProviderManager::class)->createPayment($second);
+
+        $this->assertNotSame($firstResult['payment_id'], $secondResult['payment_id']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $second->fresh()->status);
+    }
+
+    public function test_serial_set_identity_is_sorted_stable_and_distinguishes_different_sets(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->twice()->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $first = $this->scopedPayment($runId, true, [
+            'source' => 'operation_extra_mount_fee',
+            'purpose' => 'multi_product_mount',
+            'charge_type' => 'multi_product_mount',
+            'selected_serial_ids' => [11, 22],
+        ]);
+        $reordered = $this->duplicateScopedPayment($first, ['selected_serial_ids' => [22, 11]]);
+        $different = $this->duplicateScopedPayment($first, ['selected_serial_ids' => [11, 33]]);
+
+        $firstResult = app(PaymentProviderManager::class)->createPayment($first);
+        $reorderedResult = app(PaymentProviderManager::class)->createPayment($reordered);
+        $differentResult = app(PaymentProviderManager::class)->createPayment($different);
+
+        $this->assertSame($firstResult['payment_id'], $reorderedResult['payment_id']);
+        $this->assertNotSame($firstResult['payment_id'], $differentResult['payment_id']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $reordered->fresh()->status);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $different->fresh()->status);
+    }
+
+    public function test_scope_specific_payment_identity_fields_fail_closed_before_provider(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $this->mock(FakePaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+
+        foreach ([
+            $this->scopedPayment($runId, true, [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'part_payment',
+                'charge_type' => 'part_payment',
+            ]),
+            $this->scopedPayment($runId, true, [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'multi_product_mount',
+                'charge_type' => 'multi_product_mount',
+            ]),
+        ] as $payment) {
+            try {
+                app(PaymentProviderManager::class)->createPayment($payment);
+                $this->fail('Eksik scope-specific payment identity providera ulaşmamalıydı.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('CONTRACT_FIELD_UNAVAILABLE', $exception->getMessage());
+            }
+
+            $this->assertNull($payment->fresh()->provider_reference);
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        }
+    }
+
+    public function test_duplicate_callback_validates_stored_authority_and_returns_canonical_payment(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $canonical = $this->scopedPayment($runId);
+        $duplicate = $this->duplicateScopedPayment($canonical);
+        app(PaymentProviderManager::class)->createPayment($canonical);
+        app(PaymentProviderManager::class)->createPayment($duplicate);
+        app(TechnicalServicePaymentSettlementService::class)->markPaid($canonical->fresh(), ['fake_approved' => true]);
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($duplicate->fresh(), [
+                'fake_approved' => true,
+                'provider' => 'iyzico',
+                'provider_mode' => 'sandbox',
+            ]);
+            $this->fail('Duplicate callback stored provider authority kontrolünü atlamamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+        }
+
+        $result = app(TechnicalServicePaymentSettlementService::class)
+            ->markPaid($duplicate->fresh(), ['fake_approved' => true]);
+        $this->assertSame($canonical->id, $result->id);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $duplicate->fresh()->status);
+        $this->assertNull($duplicate->fresh()->paid_at);
+        $this->assertSame(1, $canonical->technicalServiceRequest?->events()->where('event_type', 'mount_payment_paid')->count());
+    }
+
+    public function test_scoped_callback_state_machine_rejects_failed_cancelled_and_expired_to_paid(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+
+        foreach ([
+            TechnicalServiceMountPayment::STATUS_FAILED,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            TechnicalServiceMountPayment::STATUS_EXPIRED,
+        ] as $status) {
+            $payment = $this->scopedPayment($runId);
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $payment->forceFill(['status' => $status])->save();
+
+            try {
+                app(TechnicalServicePaymentSettlementService::class)
+                    ->markPaid($payment->fresh(), ['fake_approved' => true]);
+                $this->fail($status.' payment paid durumuna geçmemeliydi.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('callback_state_invalid', $exception->getMessage());
+            }
+
+            $this->assertSame($status, $payment->fresh()->status);
+            $this->assertNull($payment->fresh()->paid_at);
+        }
+    }
+
+    public function test_exact_payment_history_is_not_limited_to_last_twenty_entries(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+        $payload = $payment->fresh()->raw_payload;
+        $history = (array) ($payload['scoped_local_uat_effect_history'] ?? []);
+        foreach (range(1, 25) as $index) {
+            $history[] = [
+                'run_id' => $runId,
+                'operation' => 'unrelated-'.$index,
+                'status' => 'completed',
+                'idempotency_hash' => hash('sha256', 'unrelated-'.$index),
+            ];
+        }
+        $payload['scoped_local_uat_effect_history'] = $history;
+        $payment->forceFill(['raw_payload' => $payload])->save();
+
+        $result = app(TechnicalServicePaymentSettlementService::class)
+            ->markPaid($payment->fresh(), ['fake_approved' => true]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertGreaterThan(20, count((array) data_get($result->raw_payload, 'scoped_local_uat_effect_history', [])));
+    }
+
+    public function test_failed_payment_history_outside_last_twenty_blocks_blind_retry(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $provider = $this->mock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->once()->andThrow(new \RuntimeException('Synthetic provider failure'));
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $payment = $this->scopedPayment($runId);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('İlk provider çağrısının başarısız olması bekleniyordu.');
+        } catch (\RuntimeException) {
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->fresh()->status);
+        }
+        $payload = $payment->fresh()->raw_payload;
+        $history = (array) ($payload['scoped_local_uat_effect_history'] ?? []);
+        foreach (range(1, 25) as $index) {
+            $history[] = [
+                'run_id' => $runId,
+                'operation' => 'unrelated-'.$index,
+                'status' => 'completed',
+                'idempotency_hash' => hash('sha256', 'unrelated-failure-'.$index),
+            ];
+        }
+        $payload['scoped_local_uat_effect_history'] = $history;
+        $payment->forceFill(['raw_payload' => $payload])->save();
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment->fresh());
+            $this->fail('Failed exact payment history kör retry üretmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('replay_blocked', $exception->getMessage());
+        }
+    }
+
+    public function test_payment_and_smtp_provider_effects_reject_nested_application_transactions(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $this->mock(FakePaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId);
+
+        foreach ([
+            fn () => app(PaymentProviderManager::class)->createPayment($payment),
+            fn () => $this->sendScopedPaymentMail($payment),
+        ] as $effect) {
+            try {
+                DB::transaction($effect);
+                $this->fail('Provider effect application transactionı içinden çalışmamalıydı.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('manual_e2e', $exception->errors());
+            }
+        }
+
+        Mail::assertNothingSent();
+        $this->assertNull(data_get($payment->fresh()->raw_payload, 'scoped_local_uat_effect_claim'));
+    }
+
+    public function test_dispatching_state_is_not_regressed_to_claimed_by_stale_model_save(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $realProvider = new FakePaymentProvider;
+        $provider = $this->mock(FakePaymentProvider::class, function ($mock) use ($realProvider): void {
+            $mock->shouldReceive('createPayment')->once()->andReturnUsing(function (TechnicalServiceMountPayment $payment) use ($realProvider): array {
+                $this->assertSame('dispatching', data_get(
+                    $payment->fresh()->raw_payload,
+                    'scoped_local_uat_effect_claim.status',
+                ));
+
+                return $realProvider->createPayment($payment);
+            });
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $payment = $this->scopedPayment($runId);
+
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        $fresh = $payment->fresh();
+        $this->assertNull(data_get($fresh->raw_payload, 'scoped_local_uat_effect_claim'));
+        $this->assertSame('completed', data_get($fresh->raw_payload, 'scoped_local_uat_effect_history.0.status'));
+        $this->assertFalse(collect((array) data_get($fresh->raw_payload, 'scoped_local_uat_effect_history', []))
+            ->contains(fn (mixed $entry): bool => is_array($entry) && ($entry['status'] ?? null) === 'claimed'));
+    }
+
     /**
      * @return array{admin:User,settings:TechnicalServiceMessagingSettingsService,run_id:string}
      */
@@ -1206,7 +1473,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         ];
     }
 
-    private function scopedPayment(string $runId, bool $synthetic = true): TechnicalServiceMountPayment
+    private function scopedPayment(string $runId, bool $synthetic = true, array $payloadOverrides = []): TechnicalServiceMountPayment
     {
         $serial = 'SCOPED-PAY-'.strtoupper(substr(hash('sha256', uniqid('', true)), 0, 12));
         $request = TechnicalServiceRequest::query()->create([
@@ -1247,6 +1514,10 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
                 'origin' => 'http://10.0.28.64:8000',
             ];
         }
+        $payload = [
+            ...$payload,
+            ...$payloadOverrides,
+        ];
 
         return TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
@@ -1256,6 +1527,24 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             'amount' => 1.0,
             'currency' => 'TRY',
             'raw_payload' => $payload,
+        ]);
+    }
+
+    private function duplicateScopedPayment(
+        TechnicalServiceMountPayment $payment,
+        array $payloadOverrides = [],
+    ): TechnicalServiceMountPayment {
+        return TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $payment->technical_service_mount_session_id,
+            'technical_service_request_id' => $payment->technical_service_request_id,
+            'provider' => $payment->provider,
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => $payment->amount,
+            'currency' => $payment->currency,
+            'raw_payload' => [
+                ...(is_array($payment->raw_payload) ? $payment->raw_payload : []),
+                ...$payloadOverrides,
+            ],
         ]);
     }
 
