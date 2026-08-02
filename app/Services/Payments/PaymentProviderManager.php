@@ -4,7 +4,9 @@ namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
@@ -23,6 +25,7 @@ class PaymentProviderManager
         private readonly TechnicalServicePaymentProviderModeResolver $modeResolver,
         private readonly TechnicalServicePaymentProviderTransportResolver $transportResolver,
         private readonly TechnicalServiceMessagingSettingsService $messagingSettings,
+        private readonly TechnicalServicePaymentProviderReconciliationService $reconciliationService,
     ) {}
 
     public function createPayment(TechnicalServiceMountPayment $payment): array
@@ -35,7 +38,7 @@ class PaymentProviderManager
             TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE,
             $scopedProvider,
         );
-        if ($claim['duplicate']) {
+        if ($claim['required'] && $claim['duplicate']) {
             $existing = TechnicalServiceMountPayment::query()
                 ->findOrFail((int) ($claim['duplicate_payment_id'] ?? $payment->getKey()));
 
@@ -45,6 +48,10 @@ class PaymentProviderManager
                     ? $claim['outcome']
                     : self::CREATE_OUTCOME_REUSED_PENDING,
             );
+        }
+
+        if (! $claim['required']) {
+            return $this->createCanonicalPayment($payment, $provider);
         }
 
         try {
@@ -75,7 +82,8 @@ class PaymentProviderManager
      */
     public function canonicalPaymentFromCreateResult(array $result): TechnicalServiceMountPayment
     {
-        if ($this->createOutcome($result) === self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE) {
+        $outcome = $this->createOutcome($result);
+        if ($outcome === self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE) {
             throw new ConflictHttpException('TERMINAL_PAYMENT_NOT_REUSABLE: Terminal odeme explicit retry sozlesmesi olmadan yeniden kullanilamaz.');
         }
 
@@ -84,7 +92,22 @@ class PaymentProviderManager
             throw new InvalidArgumentException('Kanonik odeme kaydi create sonucunda bulunamadi.');
         }
 
-        return TechnicalServiceMountPayment::query()->findOrFail((int) $paymentId);
+        $payment = TechnicalServiceMountPayment::query()->findOrFail((int) $paymentId);
+        if ($outcome === self::CREATE_OUTCOME_ALREADY_PAID) {
+            if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
+                throw new ConflictHttpException('FAIL_CLOSED_PAYMENT_OUTCOME_STATE_MISMATCH: already_paid sonucu canonical paid state taşımıyor.');
+            }
+
+            return $payment;
+        }
+        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            return $payment;
+        }
+        if (! $this->isActionablePending($payment)) {
+            throw new ConflictHttpException('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Canonical pending payment successful session authority taşımıyor.');
+        }
+
+        return $payment;
     }
 
     /** @param array<string, mixed> $result */
@@ -97,7 +120,7 @@ class PaymentProviderManager
             self::CREATE_OUTCOME_ALREADY_PAID,
             self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE,
         ], true)) {
-            throw new InvalidArgumentException('Kanonik odeme create sonucu typed outcome tasimiyor.');
+            throw new InvalidArgumentException('FAIL_CLOSED_UNKNOWN_PAYMENT_OUTCOME: Kanonik odeme create sonucu typed outcome tasimiyor.');
         }
 
         return $outcome;
@@ -105,8 +128,15 @@ class PaymentProviderManager
 
     public function canonicalPaymentForPresentation(
         TechnicalServiceMountPayment $payment,
-    ): TechnicalServiceMountPayment {
-        return $this->messagingSettings->canonicalScopedLocalUatPaymentForPresentation($payment);
+    ): ?TechnicalServiceMountPayment {
+        $payment = $this->messagingSettings->canonicalScopedLocalUatPaymentForPresentation($payment);
+        $payment = $this->canonicalPaymentFromDuplicatePointer($payment);
+
+        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            return $payment;
+        }
+
+        return $this->isActionablePending($payment) ? $payment : null;
     }
 
     public function discardFailedCreatePaymentUnlessAudited(TechnicalServiceMountPayment $payment): void
@@ -116,40 +146,433 @@ class PaymentProviderManager
             return;
         }
         $history = data_get($fresh->raw_payload, 'scoped_local_uat_effect_history', []);
-        $preservedTerminalAudit = is_array(data_get($fresh->raw_payload, 'scoped_local_uat_duplicate_payment'));
+        $preservedTerminalAudit = is_array(data_get($fresh->raw_payload, 'scoped_local_uat_duplicate_payment'))
+            || is_array(data_get($fresh->raw_payload, 'canonical_payment_duplicate'));
         $auditedScopedFailure = $fresh->status === TechnicalServiceMountPayment::STATUS_FAILED
             && is_array($history)
             && collect($history)->contains(fn (mixed $entry): bool => is_array($entry)
                 && (string) ($entry['operation'] ?? '') === TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE
                 && (string) ($entry['status'] ?? '') === 'failed');
 
-        if (! $auditedScopedFailure && ! $preservedTerminalAudit) {
+        $auditedCanonicalFailure = $fresh->status === TechnicalServiceMountPayment::STATUS_FAILED
+            && collect((array) data_get($fresh->raw_payload, 'canonical_payment_create_history', []))
+                ->contains(fn (mixed $entry): bool => is_array($entry)
+                    && (string) ($entry['status'] ?? '') === 'failed');
+
+        if (! $auditedScopedFailure && ! $auditedCanonicalFailure && ! $preservedTerminalAudit) {
             $fresh->delete();
         }
     }
 
     public function updatePayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
         $this->messagingSettings->assertScopedLocalUatUnsupportedPaymentEffect($payment, 'payment_update');
+        $current = $payment->fresh() ?? $payment;
+        if ($this->isTerminalStatus((string) $current->status)) {
+            return $this->existingPaymentResponse($current, self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE);
+        }
         $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
+        $before = $payment->refresh();
+        $statusBeforeProvider = (string) $before->status;
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+        $response = $this->providerForPayment($before)->updatePayment($before);
+        $preserved = $this->reconciliationService->preserveTerminalStateAfterProviderMutation($before, $statusBeforeProvider);
 
-        return $this->providerForPayment($payment->refresh())->updatePayment($payment->refresh());
+        return [...$response, 'status' => (string) $preserved->status];
     }
 
     public function cancelPayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
         $this->messagingSettings->assertScopedLocalUatUnsupportedPaymentEffect($payment, 'payment_cancel');
+        $current = $payment->fresh() ?? $payment;
+        if ($this->isTerminalStatus((string) $current->status)) {
+            return $this->existingPaymentResponse($current, self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE);
+        }
         $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
+        $before = $payment->refresh();
+        $statusBeforeProvider = (string) $before->status;
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+        $response = $this->providerForPayment($before)->cancelPayment($before);
+        $preserved = $this->reconciliationService->preserveTerminalStateAfterProviderMutation($before, $statusBeforeProvider);
 
-        return $this->providerForPayment($payment->refresh())->cancelPayment($payment->refresh());
+        return [...$response, 'status' => (string) $preserved->status];
     }
 
     public function syncPayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
         $this->messagingSettings->assertScopedLocalUatUnsupportedPaymentEffect($payment, 'payment_sync');
+        $current = $payment->fresh() ?? $payment;
+        if ($this->isTerminalStatus((string) $current->status)) {
+            return $this->existingPaymentResponse($current, self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE);
+        }
         $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
+        $before = $payment->refresh();
+        $statusBeforeProvider = (string) $before->status;
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+        $response = $this->providerForPayment($before)->syncPayment($before);
+        $preserved = $this->reconciliationService->preserveTerminalStateAfterProviderMutation($before, $statusBeforeProvider);
 
-        return $this->providerForPayment($payment->refresh())->syncPayment($payment->refresh());
+        return [...$response, 'status' => (string) $preserved->status];
+    }
+
+    /**
+     * Normal production and local fake flows use the same canonical create
+     * authority as scoped UAT, without borrowing scoped run state.
+     *
+     * @return array{payment_id:int,provider_reference:string|null,payment_url:string|null,status:string,outcome:string}
+     */
+    private function createCanonicalPayment(TechnicalServiceMountPayment $payment, string $provider): array
+    {
+        $claim = $this->claimCanonicalPaymentCreate($payment, $provider);
+        if ($claim['duplicate_payment_id'] !== null) {
+            $canonical = TechnicalServiceMountPayment::query()->findOrFail($claim['duplicate_payment_id']);
+
+            return $this->existingPaymentResponse($canonical, $claim['outcome']);
+        }
+
+        try {
+            $payment = TechnicalServiceMountPayment::query()->findOrFail((int) $payment->getKey());
+            $this->stampProviderDecision($payment, $provider);
+            $this->messagingSettings->assertProviderHttpOutsideTransaction();
+            $this->providerForName($provider)->createPayment($payment->refresh());
+            $payment = $this->completeCanonicalPaymentCreate(
+                $payment,
+                $claim['idempotency_hash'],
+                $claim['business_identity_hash'],
+                $provider,
+            );
+
+            return $this->existingPaymentResponse($payment, self::CREATE_OUTCOME_NEW_PENDING);
+        } catch (Throwable $exception) {
+            $this->failCanonicalPaymentCreate($payment, $claim['idempotency_hash'], $exception);
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * @return array{duplicate_payment_id:int|null,outcome:string,idempotency_hash:string,business_identity_hash:string}
+     */
+    private function claimCanonicalPaymentCreate(TechnicalServiceMountPayment $payment, string $provider): array
+    {
+        return DB::transaction(function () use ($payment, $provider): array {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $identity = $this->messagingSettings->canonicalPaymentBusinessIdentity($locked);
+            $amountMinor = $this->messagingSettings->canonicalPaymentAmountMinorUnits($locked);
+            $currency = $this->messagingSettings->canonicalPaymentCurrency($locked);
+            $provider = $this->canonicalProviderKey($provider);
+            $idempotencyHash = hash('sha256', json_encode([
+                'schema_version' => 1,
+                'operation' => 'payment_create',
+                'business_identity_hash' => $identity['identity_hash'],
+                'amount_minor' => $amountMinor,
+                'currency' => $currency,
+                'provider' => $provider,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+
+            $candidates = $this->paymentCandidates($locked)
+                ->where('id', '<', (int) $locked->getKey())
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            foreach ($candidates as $candidate) {
+                if (! $candidate instanceof TechnicalServiceMountPayment
+                    || ! $this->sameCanonicalBusinessEffect($candidate, $identity['identity_hash'], $amountMinor, $currency, $provider)) {
+                    continue;
+                }
+
+                $outcome = $this->canonicalCandidateOutcome($candidate, $idempotencyHash);
+                $this->markCanonicalDuplicate($locked, $candidate, $idempotencyHash, $identity['identity_hash'], $provider);
+
+                return [
+                    'duplicate_payment_id' => (int) $candidate->getKey(),
+                    'outcome' => $outcome,
+                    'idempotency_hash' => $idempotencyHash,
+                    'business_identity_hash' => $identity['identity_hash'],
+                ];
+            }
+
+            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
+            $payload['canonical_payment_create_claim'] = [
+                'schema_version' => 1,
+                'status' => 'claimed',
+                'idempotency_hash' => $idempotencyHash,
+                'business_identity_hash' => $identity['identity_hash'],
+                'provider' => $provider,
+                'amount_minor' => $amountMinor,
+                'currency' => $currency,
+                'claimed_at' => now()->toIso8601String(),
+            ];
+            $locked->forceFill(['raw_payload' => $payload])->save();
+
+            return [
+                'duplicate_payment_id' => null,
+                'outcome' => self::CREATE_OUTCOME_NEW_PENDING,
+                'idempotency_hash' => $idempotencyHash,
+                'business_identity_hash' => $identity['identity_hash'],
+            ];
+        });
+    }
+
+    private function completeCanonicalPaymentCreate(
+        TechnicalServiceMountPayment $payment,
+        string $idempotencyHash,
+        string $businessIdentityHash,
+        string $provider,
+    ): TechnicalServiceMountPayment {
+        return DB::transaction(function () use ($payment, $idempotencyHash, $businessIdentityHash, $provider): TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
+            $claim = is_array($payload['canonical_payment_create_claim'] ?? null)
+                ? $payload['canonical_payment_create_claim']
+                : [];
+            if ((string) ($claim['status'] ?? '') !== 'claimed'
+                || ! hash_equals((string) ($claim['idempotency_hash'] ?? ''), $idempotencyHash)
+                || ! hash_equals((string) ($claim['business_identity_hash'] ?? ''), $businessIdentityHash)) {
+                throw new ConflictHttpException('PAYMENT_CREATE_CLAIM_MISMATCH: Provider sonucu current canonical create claim ile eşleşmiyor.');
+            }
+            $providerReference = trim((string) $locked->provider_reference);
+            $paymentUrl = trim((string) $locked->payment_url);
+            if ($providerReference === '' || $paymentUrl === '') {
+                throw new ConflictHttpException('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Provider başarılı session/reference/link authority döndürmedi.');
+            }
+            if (! in_array($locked->status, [
+                TechnicalServiceMountPayment::STATUS_PENDING,
+                TechnicalServiceMountPayment::STATUS_PAID,
+            ], true)) {
+                throw new ConflictHttpException('TERMINAL_PAYMENT_NOT_REUSABLE: Provider create sonucu terminal state ile çelişiyor.');
+            }
+
+            $authority = [
+                'schema_version' => 1,
+                'create_status' => 'completed',
+                'payment_id' => (int) $locked->getKey(),
+                'idempotency_hash' => $idempotencyHash,
+                'business_identity_hash' => $businessIdentityHash,
+                'provider' => $this->canonicalProviderKey($provider),
+                'provider_reference_hash' => hash('sha256', $providerReference),
+                'payment_url_hash' => hash('sha256', $paymentUrl),
+                'amount_minor' => $this->messagingSettings->canonicalPaymentAmountMinorUnits($locked),
+                'currency' => $this->messagingSettings->canonicalPaymentCurrency($locked),
+                'completed_at' => now()->toIso8601String(),
+            ];
+            $history = is_array($payload['canonical_payment_create_history'] ?? null)
+                ? $payload['canonical_payment_create_history']
+                : [];
+            $history[] = [...$claim, 'status' => 'completed', 'completed_at' => $authority['completed_at']];
+            $payload['canonical_payment_create_claim'] = null;
+            $payload['canonical_payment_create_history'] = $history;
+            $payload['canonical_payment_session_authority'] = $authority;
+            $locked->forceFill(['raw_payload' => $payload])->save();
+
+            return $locked->fresh();
+        });
+    }
+
+    private function failCanonicalPaymentCreate(
+        TechnicalServiceMountPayment $payment,
+        string $idempotencyHash,
+        Throwable $exception,
+    ): void {
+        DB::transaction(function () use ($payment, $idempotencyHash, $exception): void {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->first();
+            if (! $locked instanceof TechnicalServiceMountPayment) {
+                return;
+            }
+            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
+            $claim = is_array($payload['canonical_payment_create_claim'] ?? null)
+                ? $payload['canonical_payment_create_claim']
+                : null;
+            if ($claim === null || ! hash_equals((string) ($claim['idempotency_hash'] ?? ''), $idempotencyHash)) {
+                return;
+            }
+            $history = is_array($payload['canonical_payment_create_history'] ?? null)
+                ? $payload['canonical_payment_create_history']
+                : [];
+            $history[] = [
+                ...$claim,
+                'status' => 'failed',
+                'failed_at' => now()->toIso8601String(),
+                'error_class' => class_basename($exception),
+                'replay_blocked' => true,
+            ];
+            $payload['canonical_payment_create_claim'] = null;
+            $payload['canonical_payment_create_history'] = $history;
+            $updates = ['raw_payload' => $payload];
+            if ($locked->status === TechnicalServiceMountPayment::STATUS_PENDING) {
+                $updates['status'] = TechnicalServiceMountPayment::STATUS_FAILED;
+            }
+            $locked->forceFill($updates)->save();
+        });
+    }
+
+    private function sameCanonicalBusinessEffect(
+        TechnicalServiceMountPayment $candidate,
+        string $businessIdentityHash,
+        string $amountMinor,
+        string $currency,
+        string $provider,
+    ): bool {
+        try {
+            $identity = $this->messagingSettings->canonicalPaymentBusinessIdentity($candidate);
+
+            return hash_equals($identity['identity_hash'], $businessIdentityHash)
+                && $this->messagingSettings->canonicalPaymentAmountMinorUnits($candidate) === $amountMinor
+                && $this->messagingSettings->canonicalPaymentCurrency($candidate) === $currency
+                && $this->canonicalProviderKey((string) $candidate->provider) === $provider;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    private function canonicalCandidateOutcome(TechnicalServiceMountPayment $candidate, string $idempotencyHash): string
+    {
+        if ($candidate->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            return self::CREATE_OUTCOME_ALREADY_PAID;
+        }
+        if ($this->isTerminalStatus((string) $candidate->status)) {
+            return self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE;
+        }
+        if ($candidate->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            throw new ConflictHttpException('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Candidate payment actionable pending değil.');
+        }
+        $claim = data_get($candidate->raw_payload, 'canonical_payment_create_claim');
+        if (is_array($claim) && hash_equals((string) ($claim['idempotency_hash'] ?? ''), $idempotencyHash)) {
+            throw new ConflictHttpException('PAYMENT_CREATE_IN_PROGRESS: Aynı business payment effecti provider sonucu bekliyor.');
+        }
+        if (! $this->isActionablePending($candidate)) {
+            throw new ConflictHttpException('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Pending payment successful provider session authority taşımıyor.');
+        }
+
+        return self::CREATE_OUTCOME_REUSED_PENDING;
+    }
+
+    private function markCanonicalDuplicate(
+        TechnicalServiceMountPayment $payment,
+        TechnicalServiceMountPayment $canonical,
+        string $idempotencyHash,
+        string $businessIdentityHash,
+        string $provider,
+    ): void {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['canonical_payment_duplicate'] = [
+            'schema_version' => 1,
+            'status' => 'superseded',
+            'canonical_payment_id' => (int) $canonical->getKey(),
+            'idempotency_hash' => $idempotencyHash,
+            'business_identity_hash' => $businessIdentityHash,
+            'provider' => $provider,
+            'resolved_at' => now()->toIso8601String(),
+        ];
+        $payment->forceFill([
+            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
+            'raw_payload' => $payload,
+        ])->save();
+    }
+
+    private function canonicalPaymentFromDuplicatePointer(TechnicalServiceMountPayment $payment): TechnicalServiceMountPayment
+    {
+        $pointer = data_get($payment->raw_payload, 'canonical_payment_duplicate');
+        if (! is_array($pointer)) {
+            return $payment;
+        }
+        $canonicalId = $pointer['canonical_payment_id'] ?? null;
+        if ((int) ($pointer['schema_version'] ?? 0) !== 1
+            || (string) ($pointer['status'] ?? '') !== 'superseded'
+            || $payment->status !== TechnicalServiceMountPayment::STATUS_CANCELLED
+            || ! is_numeric($canonicalId)
+            || (int) $canonicalId < 1
+            || (int) $canonicalId === (int) $payment->getKey()) {
+            throw new ConflictHttpException('CANONICAL_PAYMENT_POINTER_INVALID: Superseded payment canonical authority taşımıyor.');
+        }
+
+        $canonical = TechnicalServiceMountPayment::query()->findOrFail((int) $canonicalId);
+        $identity = $this->messagingSettings->canonicalPaymentBusinessIdentity($canonical);
+        if (! hash_equals((string) ($pointer['business_identity_hash'] ?? ''), $identity['identity_hash'])
+            || $this->canonicalProviderKey((string) $pointer['provider']) !== $this->canonicalProviderKey((string) $canonical->provider)) {
+            throw new ConflictHttpException('CANONICAL_PAYMENT_POINTER_INVALID: Superseded payment pointer stored business authority ile eşleşmiyor.');
+        }
+
+        return $canonical;
+    }
+
+    private function isActionablePending(TechnicalServiceMountPayment $payment): bool
+    {
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING
+            || trim((string) $payment->provider_reference) === ''
+            || trim((string) $payment->payment_url) === '') {
+            return false;
+        }
+        $canonicalFailed = collect((array) data_get($payment->raw_payload, 'canonical_payment_create_history', []))
+            ->contains(fn (mixed $entry): bool => is_array($entry) && (string) ($entry['status'] ?? '') === 'failed');
+        $scopedFailed = collect((array) data_get($payment->raw_payload, 'scoped_local_uat_effect_history', []))
+            ->contains(fn (mixed $entry): bool => is_array($entry)
+                && (string) ($entry['operation'] ?? '') === TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE
+                && (string) ($entry['status'] ?? '') === 'failed');
+        if ($canonicalFailed || $scopedFailed) {
+            return false;
+        }
+        $authority = data_get($payment->raw_payload, 'canonical_payment_session_authority');
+        if (is_array($authority)) {
+            return (string) ($authority['create_status'] ?? '') === 'completed'
+                && (int) ($authority['payment_id'] ?? 0) === (int) $payment->getKey()
+                && hash_equals((string) ($authority['provider_reference_hash'] ?? ''), hash('sha256', trim((string) $payment->provider_reference)))
+                && hash_equals((string) ($authority['payment_url_hash'] ?? ''), hash('sha256', trim((string) $payment->payment_url)))
+                && (string) ($authority['amount_minor'] ?? '') === $this->messagingSettings->canonicalPaymentAmountMinorUnits($payment)
+                && (string) ($authority['currency'] ?? '') === $this->messagingSettings->canonicalPaymentCurrency($payment);
+        }
+
+        $scopedAuthority = data_get($payment->raw_payload, 'scoped_local_uat_payment_session_authority');
+
+        return is_array($scopedAuthority)
+            && (string) ($scopedAuthority['create_status'] ?? '') === 'completed'
+            && (int) ($scopedAuthority['payment_id'] ?? 0) === (int) $payment->getKey()
+            && hash_equals((string) ($scopedAuthority['provider_reference'] ?? ''), trim((string) $payment->provider_reference))
+            && $this->messagingSettings->scopedLocalUatPaymentSessionIsCurrent($payment);
+    }
+
+    private function paymentCandidates(TechnicalServiceMountPayment $payment): Builder
+    {
+        $query = TechnicalServiceMountPayment::query();
+        if (is_numeric($payment->technical_service_mount_session_id)) {
+            return $query->where('technical_service_mount_session_id', (int) $payment->technical_service_mount_session_id);
+        }
+        if (is_numeric($payment->technical_service_request_id)) {
+            return $query->where('technical_service_request_id', (int) $payment->technical_service_request_id);
+        }
+
+        throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: Payment canonical lock authority çözülemedi.');
+    }
+
+    private function canonicalProviderKey(string $provider): string
+    {
+        return match (strtolower(trim($provider))) {
+            'fake', 'fake_payment' => 'fake',
+            'iyzico', 'iyzico_sandbox', 'iyzico_live' => 'iyzico',
+            default => throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: Payment provider canonical değil.'),
+        };
+    }
+
+    private function isTerminalStatus(?string $status): bool
+    {
+        return in_array($status, [
+            TechnicalServiceMountPayment::STATUS_PAID,
+            TechnicalServiceMountPayment::STATUS_FAILED,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            TechnicalServiceMountPayment::STATUS_EXPIRED,
+        ], true);
     }
 
     public function provider(): PaymentProviderInterface

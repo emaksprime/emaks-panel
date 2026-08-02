@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\N8nPanelDataGateway;
+use App\Services\Payments\FakePaymentProvider;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
@@ -1553,6 +1554,18 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ],
             ],
         ]);
+        $paymentUrl = (string) $payment->payment_url;
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['canonical_payment_session_authority'] = [
+            'schema_version' => 1,
+            'create_status' => 'completed',
+            'payment_id' => (int) $payment->id,
+            'provider_reference_hash' => hash('sha256', (string) $payment->provider_reference),
+            'payment_url_hash' => hash('sha256', $paymentUrl),
+            'amount_minor' => '350000',
+            'currency' => 'TRY',
+        ];
+        $payment->forceFill(['raw_payload' => $payload])->save();
 
         $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
@@ -1925,6 +1938,47 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $duplicate->fresh()->status);
     }
 
+    public function test_public_mount_shortcut_cannot_bypass_payment_manager_for_unsafe_pending(): void
+    {
+        $this->enablePreFormPayment();
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
+        ]);
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_NOT_FOUND,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
+        [, $token] = $this->qrLink();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $this->post('/mount-request/'.$token.'/payment')->assertSessionHasNoErrors();
+        $unsafe = TechnicalServiceMountPayment::query()->sole();
+        $payload = is_array($unsafe->raw_payload) ? $unsafe->raw_payload : [];
+        unset($payload['canonical_payment_session_authority']);
+        $unsafe->forceFill([
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'provider_reference' => null,
+            'payment_url' => null,
+            'raw_payload' => $payload,
+        ])->save();
+        $this->mock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldNotReceive('createPayment');
+        });
+
+        $this->post('/mount-request/'.$token.'/payment')
+            ->assertRedirect('/mount-request/'.$token.'/payment')
+            ->assertSessionHasErrors([
+                'payment' => 'PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Pending payment successful provider session authority taşımıyor.',
+            ]);
+
+        $this->assertSame(1, TechnicalServiceMountPayment::query()->count());
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $unsafe->fresh()->status);
+        $this->assertNull($unsafe->fresh()->provider_reference);
+        $this->assertNull($unsafe->fresh()->payment_url);
+    }
+
     public function test_paid_mount_payment_shows_continue_to_form_button(): void
     {
         config([
@@ -2041,6 +2095,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         config([
             'payments.provider' => 'fake',
             'payments.enable_fake_approve' => true,
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
         ]);
         Storage::fake('public');
         Carbon::setTestNow('2026-06-03 10:00:00');

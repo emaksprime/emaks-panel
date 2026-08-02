@@ -3508,9 +3508,21 @@ export function TechnicalServiceOperationCenter() {
     setExtraPaymentCreateError(null)
 
     try {
+      const transportPayload: Record<string, unknown> = { ...payload }
+
+      for (const key of ['amount', 'service_amount', 'part_amount'] as const) {
+        const value = payload[key]
+
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          transportPayload[key] = value.toFixed(2)
+        } else if (value == null) {
+          delete transportPayload[key]
+        }
+      }
+
       const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/mount-extra-payment`, {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify(transportPayload),
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 

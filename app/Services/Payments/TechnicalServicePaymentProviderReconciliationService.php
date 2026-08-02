@@ -10,6 +10,7 @@ use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class TechnicalServicePaymentProviderReconciliationService
@@ -64,17 +65,6 @@ class TechnicalServicePaymentProviderReconciliationService
         array $providerResponse,
     ): TechnicalServiceMountPayment {
         $providerResponse = PaymentProviderGatewayResponse::redactProviderResponse($providerResponse);
-
-        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
-            return $this->storeReconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_PAID);
-        }
-
-        if ($payment->status === TechnicalServiceMountPayment::STATUS_CANCELLED) {
-            return $this->storeReconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_CANCELLED, [
-                'blocked_reason' => 'paid_after_cancel_requires_admin_review',
-            ]);
-        }
-
         $reference = $this->providerReference($providerResponse) ?: $payment->provider_reference;
         $paymentReference = $this->providerPaymentReference($providerResponse);
         $transactionReference = $this->providerTransactionReference($providerResponse);
@@ -89,19 +79,42 @@ class TechnicalServicePaymentProviderReconciliationService
         $payload['provider_receipt_reference'] = $receiptReference;
         $payload['provider_paid_at'] = $providerPaidAt?->toIso8601String();
 
-        $payment->forceFill([
-            'provider' => $this->provider($providerResponse, $payment),
-            'provider_reference' => $reference,
-            'provider_payment_reference' => $paymentReference,
-            'provider_transaction_reference' => $transactionReference,
-            'provider_receipt_reference' => $receiptReference,
-            'provider_paid_at' => $providerPaidAt,
-            'raw_payload' => $payload,
-        ] + $this->syncAuditAttributes($payment, TechnicalServiceMountPayment::STATUS_PAID))->save();
+        $blocked = DB::transaction(function () use ($payment, $providerResponse): ?TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            if ($locked->status === TechnicalServiceMountPayment::STATUS_PAID) {
+                return $this->storeReconciliationPayloadWithinTransaction(
+                    $locked,
+                    $providerResponse,
+                    TechnicalServiceMountPayment::STATUS_PAID,
+                );
+            }
+            if (in_array($locked->status, [
+                TechnicalServiceMountPayment::STATUS_FAILED,
+                TechnicalServiceMountPayment::STATUS_CANCELLED,
+                TechnicalServiceMountPayment::STATUS_EXPIRED,
+            ], true)) {
+                return $this->storeReconciliationPayloadWithinTransaction(
+                    $locked,
+                    $providerResponse,
+                    (string) $locked->status,
+                    ['blocked_reason' => $locked->status === TechnicalServiceMountPayment::STATUS_CANCELLED
+                        ? 'paid_after_cancel_requires_admin_review'
+                        : 'paid_after_terminal_requires_admin_review'],
+                );
+            }
+
+            return null;
+        });
+        if ($blocked instanceof TechnicalServiceMountPayment) {
+            return $this->receiptNotificationService->notifyTrustedPaid($blocked, $providerResponse);
+        }
 
         $paidPayment = $this->settlementService->markPaid($payment->fresh(), [
             'source' => 'provider_reconciliation',
-            'provider' => $payment->provider,
+            'provider' => $this->provider($providerResponse, $payment),
             'provider_reference' => $reference,
             'provider_payment_reference' => $paymentReference,
             'provider_transaction_reference' => $transactionReference,
@@ -109,11 +122,12 @@ class TechnicalServicePaymentProviderReconciliationService
             'provider_paid_at' => $providerPaidAt?->toIso8601String(),
             'provider_status' => $this->rawProviderStatus($providerResponse),
             'provider_response_redacted' => $providerResponse['provider_response_redacted'] ?? [],
+            'provider_reconciliation' => $payload['provider_reconciliation'] ?? [],
         ]);
 
         $this->queuePaymentReceivedOpsDispatch($paidPayment->fresh(), $providerResponse);
 
-        return $this->receiptNotificationService->notifyTrustedPaid($paidPayment, $providerResponse);
+        return $paidPayment->fresh();
     }
 
     /**
@@ -167,17 +181,15 @@ class TechnicalServicePaymentProviderReconciliationService
         TechnicalServiceMountPayment $payment,
         array $providerResponse,
     ): TechnicalServiceMountPayment {
-        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
-            return $this->storeReconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_PAID);
-        }
-
-        $payment->forceFill([
-            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
-            'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_CANCELLED),
-        ] + $this->syncAuditAttributes($payment, TechnicalServiceMountPayment::STATUS_CANCELLED))->save();
+        $payment = $this->transitionProviderStatus(
+            $payment,
+            $providerResponse,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+        );
 
         $session = $payment->session;
-        if ($session instanceof TechnicalServiceMountSession
+        if ($payment->status === TechnicalServiceMountPayment::STATUS_CANCELLED
+            && $session instanceof TechnicalServiceMountSession
             && $session->mount_payment_status !== TechnicalServiceMountSession::PAYMENT_PAID) {
             $session->forceFill(['mount_payment_status' => TechnicalServiceMountSession::PAYMENT_CANCELLED])->save();
         }
@@ -192,23 +204,11 @@ class TechnicalServicePaymentProviderReconciliationService
         TechnicalServiceMountPayment $payment,
         array $providerResponse,
     ): TechnicalServiceMountPayment {
-        if (in_array($payment->status, [
-            TechnicalServiceMountPayment::STATUS_PAID,
-            TechnicalServiceMountPayment::STATUS_CANCELLED,
-        ], true)) {
-            return $this->storeReconciliationPayload($payment, $providerResponse, $payment->status);
-        }
-
-        $payment->forceFill([
-            'status' => TechnicalServiceMountPayment::STATUS_FAILED,
-            'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_FAILED),
-        ] + $this->syncAuditAttributes(
+        return $this->transitionProviderStatus(
             $payment,
+            $providerResponse,
             TechnicalServiceMountPayment::STATUS_FAILED,
-            $this->syncErrorFromProvider($providerResponse, TechnicalServiceMountPayment::STATUS_FAILED),
-        ))->save();
-
-        return $payment->fresh();
+        );
     }
 
     /**
@@ -218,16 +218,11 @@ class TechnicalServicePaymentProviderReconciliationService
         TechnicalServiceMountPayment $payment,
         array $providerResponse,
     ): TechnicalServiceMountPayment {
-        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
-            return $this->storeReconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_PAID);
-        }
-
-        $payment->forceFill([
-            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
-            'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_PENDING),
-        ] + $this->syncAuditAttributes($payment, TechnicalServiceMountPayment::STATUS_PENDING))->save();
-
-        return $payment->fresh();
+        return $this->transitionProviderStatus(
+            $payment,
+            $providerResponse,
+            TechnicalServiceMountPayment::STATUS_PENDING,
+        );
     }
 
     public function recordSyncFailure(
@@ -235,25 +230,30 @@ class TechnicalServicePaymentProviderReconciliationService
         Throwable|string $error,
         string $source = 'scheduled_reconcile',
     ): TechnicalServiceMountPayment {
-        $message = $this->redactedError($error);
-        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $payload['provider_reconciliation'] = array_merge(
-            is_array($payload['provider_reconciliation'] ?? null) ? $payload['provider_reconciliation'] : [],
-            [
-                'status' => 'provider_error',
-                'provider_status' => 'provider_error',
-                'provider_response_redacted' => [],
-                'reconciled_at' => now()->toIso8601String(),
-                'source' => $source,
-                'error_message' => $message,
-            ],
-        );
+        return DB::transaction(function () use ($payment, $error, $source): TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $message = $this->redactedError($error);
+            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
+            $payload['provider_reconciliation'] = array_merge(
+                is_array($payload['provider_reconciliation'] ?? null) ? $payload['provider_reconciliation'] : [],
+                [
+                    'status' => 'provider_error',
+                    'provider_status' => 'provider_error',
+                    'provider_response_redacted' => [],
+                    'reconciled_at' => now()->toIso8601String(),
+                    'source' => $source,
+                    'error_message' => $message,
+                ],
+            );
+            $locked->forceFill([
+                'raw_payload' => $payload,
+            ] + $this->syncAuditAttributes($locked, 'provider_error', $message))->save();
 
-        $payment->forceFill([
-            'raw_payload' => $payload,
-        ] + $this->syncAuditAttributes($payment, 'provider_error', $message))->save();
-
-        return $payment->fresh();
+            return $locked->fresh();
+        });
     }
 
     /**
@@ -342,6 +342,26 @@ class TechnicalServicePaymentProviderReconciliationService
         string $localStatus,
         array $extra = [],
     ): TechnicalServiceMountPayment {
+        return DB::transaction(function () use ($payment, $providerResponse, $localStatus, $extra): TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            return $this->storeReconciliationPayloadWithinTransaction($locked, $providerResponse, $localStatus, $extra);
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
+     * @param  array<string, mixed>  $extra
+     */
+    private function storeReconciliationPayloadWithinTransaction(
+        TechnicalServiceMountPayment $payment,
+        array $providerResponse,
+        string $localStatus,
+        array $extra = [],
+    ): TechnicalServiceMountPayment {
         $syncStatus = is_scalar($extra['blocked_reason'] ?? null)
             ? (string) $extra['blocked_reason']
             : $localStatus;
@@ -355,6 +375,71 @@ class TechnicalServicePaymentProviderReconciliationService
         ))->save();
 
         return $payment->fresh();
+    }
+
+    /**
+     * Reconciliation can enrich a terminal row but may only change status
+     * while the locked canonical payment is still pending.
+     *
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function transitionProviderStatus(
+        TechnicalServiceMountPayment $payment,
+        array $providerResponse,
+        string $requestedStatus,
+    ): TechnicalServiceMountPayment {
+        return DB::transaction(function () use ($payment, $providerResponse, $requestedStatus): TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $currentStatus = (string) $locked->status;
+            $terminal = in_array($currentStatus, [
+                TechnicalServiceMountPayment::STATUS_PAID,
+                TechnicalServiceMountPayment::STATUS_FAILED,
+                TechnicalServiceMountPayment::STATUS_CANCELLED,
+                TechnicalServiceMountPayment::STATUS_EXPIRED,
+            ], true);
+            $nextStatus = $terminal ? $currentStatus : $requestedStatus;
+            $locked->forceFill([
+                'status' => $nextStatus,
+                'raw_payload' => $this->reconciliationPayload($locked, $providerResponse, $nextStatus),
+            ] + $this->syncAuditAttributes(
+                $locked,
+                $nextStatus,
+                $this->syncErrorFromProvider($providerResponse, $nextStatus),
+            ))->save();
+
+            return $locked->fresh();
+        });
+    }
+
+    public function preserveTerminalStateAfterProviderMutation(
+        TechnicalServiceMountPayment $payment,
+        string $statusBeforeProvider,
+    ): TechnicalServiceMountPayment {
+        return DB::transaction(function () use ($payment, $statusBeforeProvider): TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $paidEvidence = $locked->paid_at !== null
+                || $locked->provider_paid_confirmed_at !== null;
+            $terminalBefore = in_array($statusBeforeProvider, [
+                TechnicalServiceMountPayment::STATUS_PAID,
+                TechnicalServiceMountPayment::STATUS_FAILED,
+                TechnicalServiceMountPayment::STATUS_CANCELLED,
+                TechnicalServiceMountPayment::STATUS_EXPIRED,
+            ], true);
+            $protectedStatus = $paidEvidence
+                ? TechnicalServiceMountPayment::STATUS_PAID
+                : ($terminalBefore ? $statusBeforeProvider : null);
+            if ($protectedStatus !== null && $locked->status !== $protectedStatus) {
+                $locked->forceFill(['status' => $protectedStatus])->save();
+            }
+
+            return $locked->fresh();
+        });
     }
 
     /**
@@ -435,11 +520,6 @@ class TechnicalServicePaymentProviderReconciliationService
             if (is_scalar($value) && trim((string) $value) !== '') {
                 return trim((string) $value);
             }
-        }
-
-        $paymentId = $providerResponse['payment_id'] ?? null;
-        if (is_scalar($paymentId) && trim((string) $paymentId) !== '') {
-            return trim((string) $paymentId);
         }
 
         return null;

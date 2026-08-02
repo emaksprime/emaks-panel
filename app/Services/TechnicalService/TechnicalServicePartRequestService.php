@@ -232,6 +232,7 @@ class TechnicalServicePartRequestService
                 $user,
             );
 
+            $partRequest = $partRequest->refresh();
             $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
             $metadata['charge_status'] = $customerCharge->status;
             $metadata['customer_charge_payment_id'] = $customerCharge->id;
@@ -704,7 +705,7 @@ class TechnicalServicePartRequestService
             ]);
         }
 
-        return $payment->refresh();
+        return $payment;
     }
 
     private function mountSessionIdForRequest(TechnicalServiceRequest $request): ?int

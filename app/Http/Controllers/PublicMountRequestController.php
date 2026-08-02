@@ -229,33 +229,29 @@ class PublicMountRequestController extends Controller
 
         $link = $this->linkOrFail($token);
         $session = $this->sessionForLink($link);
-        $payment = $this->latestPayment($session);
-        $createOutcome = PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING;
+        $payment = null;
+        $createOutcome = PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING;
 
-        if (! $payment instanceof TechnicalServiceMountPayment || $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
-            $payment = null;
+        try {
+            $payment = TechnicalServiceMountPayment::query()->create([
+                'technical_service_mount_session_id' => $session->id,
+                'provider' => $paymentProviderManager->providerName(),
+                'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'amount' => 3500,
+                'currency' => 'TRY',
+                'raw_payload' => $this->publicMountPaymentPayload($link, $session, $paymentProviderManager),
+            ]);
 
-            try {
-                $payment = TechnicalServiceMountPayment::query()->create([
-                    'technical_service_mount_session_id' => $session->id,
-                    'provider' => $paymentProviderManager->providerName(),
-                    'status' => TechnicalServiceMountPayment::STATUS_PENDING,
-                    'amount' => 3500,
-                    'currency' => 'TRY',
-                    'raw_payload' => $this->publicMountPaymentPayload($link, $session, $paymentProviderManager),
-                ]);
-
-                $createResult = $paymentProviderManager->createPayment($payment);
-                $createOutcome = $paymentProviderManager->createOutcome($createResult);
-                $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
-            } catch (\Throwable $exception) {
-                if ($payment instanceof TechnicalServiceMountPayment) {
-                    $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
-                }
-
-                return redirect()->to(route('mount-request.payment.step', ['token' => $token], false))
-                    ->withErrors(['payment' => $exception->getMessage()]);
+            $createResult = $paymentProviderManager->createPayment($payment);
+            $createOutcome = $paymentProviderManager->createOutcome($createResult);
+            $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
+        } catch (\Throwable $exception) {
+            if ($payment instanceof TechnicalServiceMountPayment) {
+                $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
             }
+
+            return redirect()->to(route('mount-request.payment.step', ['token' => $token], false))
+                ->withErrors(['payment' => $exception->getMessage()]);
         }
 
         if ($createOutcome === PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID
@@ -805,14 +801,20 @@ class PublicMountRequestController extends Controller
 
     private function latestPayment(TechnicalServiceMountSession $session): ?TechnicalServiceMountPayment
     {
-        $payment = $session->payments()
+        $payments = $session->payments()
             ->latest('id')
-            ->first();
-        if (! $payment instanceof TechnicalServiceMountPayment) {
-            return null;
+            ->get();
+        foreach ($payments as $payment) {
+            if (! $payment instanceof TechnicalServiceMountPayment) {
+                continue;
+            }
+            $canonical = app(PaymentProviderManager::class)->canonicalPaymentForPresentation($payment);
+            if ($canonical instanceof TechnicalServiceMountPayment) {
+                return $canonical;
+            }
         }
 
-        return app(PaymentProviderManager::class)->canonicalPaymentForPresentation($payment);
+        return null;
     }
 
     private function fakePaymentEnabled(): bool

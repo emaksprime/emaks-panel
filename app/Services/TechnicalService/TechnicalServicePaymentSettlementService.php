@@ -8,6 +8,7 @@ use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\Payments\TechnicalServicePaymentReceiptNotificationService;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
@@ -16,6 +17,7 @@ class TechnicalServicePaymentSettlementService
 {
     public function __construct(
         private readonly TechnicalServiceMessagingSettingsService $messagingSettings,
+        private readonly TechnicalServicePaymentReceiptNotificationService $receiptNotificationService,
     ) {}
 
     /**
@@ -28,14 +30,16 @@ class TechnicalServicePaymentSettlementService
             $payload,
         );
         if ($claim['duplicate']) {
-            return TechnicalServiceMountPayment::query()
+            $canonical = TechnicalServiceMountPayment::query()
                 ->findOrFail((int) ($claim['duplicate_payment_id'] ?? 0))
                 ->refresh();
+
+            return $this->receiptNotificationService->notifyTrustedPaid($canonical, $payload);
         }
 
         try {
             if (is_string($claim['claim_nonce'])) {
-                return $this->messagingSettings->executeScopedLocalUatPaymentCallback(
+                $paid = $this->messagingSettings->executeScopedLocalUatPaymentCallback(
                     $claim['claim_nonce'],
                     fn (TechnicalServiceMountPayment $lockedPayment): TechnicalServiceMountPayment => $this->settleLockedPayment(
                         $lockedPayment,
@@ -43,16 +47,18 @@ class TechnicalServicePaymentSettlementService
                         true,
                     ),
                 );
+            } else {
+                $paid = DB::transaction(function () use ($payment, $payload): TechnicalServiceMountPayment {
+                    $lockedPayment = TechnicalServiceMountPayment::query()
+                        ->whereKey($payment->getKey())
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    return $this->settleLockedPayment($lockedPayment, $payload, false);
+                });
             }
 
-            return DB::transaction(function () use ($payment, $payload): TechnicalServiceMountPayment {
-                $lockedPayment = TechnicalServiceMountPayment::query()
-                    ->whereKey($payment->getKey())
-                    ->lockForUpdate()
-                    ->firstOrFail();
-
-                return $this->settleLockedPayment($lockedPayment, $payload, false);
-            });
+            return $this->receiptNotificationService->notifyTrustedPaid($paid, $payload);
         } catch (Throwable $exception) {
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
@@ -75,6 +81,16 @@ class TechnicalServicePaymentSettlementService
                 );
             }
 
+            $this->receiptNotificationService->persistPaidReceiptIntentWithinTransaction($payment);
+
+            return $payment;
+        }
+        if (($payload['source'] ?? null) === 'provider_reconciliation'
+            && in_array($payment->status, [
+                TechnicalServiceMountPayment::STATUS_FAILED,
+                TechnicalServiceMountPayment::STATUS_CANCELLED,
+                TechnicalServiceMountPayment::STATUS_EXPIRED,
+            ], true)) {
             return $payment;
         }
         if ($scopedLocalUat && $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
@@ -85,24 +101,48 @@ class TechnicalServicePaymentSettlementService
 
         $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $rawPayload['callback_payload'] = $payload;
-        $providerReference = $this->paymentReferenceFromPayload($payload) ?: $payment->provider_reference;
-        $providerPaymentReference = $this->paymentReferenceFromPayload([
-            'provider_reference' => $payload['provider_payment_reference'] ?? null,
-        ]) ?: $payment->provider_payment_reference;
-        $providerTransactionReference = $this->paymentReferenceFromPayload([
-            'provider_reference' => $payload['provider_transaction_reference'] ?? null,
-        ]) ?: $payment->provider_transaction_reference;
-        $providerReceiptReference = $this->paymentReferenceFromPayload([
-            'provider_reference' => $payload['provider_receipt_reference'] ?? null,
-        ]) ?: $payment->provider_receipt_reference;
+        if (is_array($payload['provider_reconciliation'] ?? null)) {
+            $rawPayload['provider_reconciliation'] = $payload['provider_reconciliation'];
+        }
+        $providerReference = $this->paymentReferenceFromPayload(
+            $payload,
+            ['provider_reference', 'provider_token', 'token'],
+        ) ?: $payment->provider_reference;
+        $providerPaymentReference = $this->paymentReferenceFromPayload(
+            $payload,
+            ['provider_payment_reference', 'payment_reference', 'paymentId'],
+        ) ?: $payment->provider_payment_reference;
+        $providerTransactionReference = $this->paymentReferenceFromPayload(
+            $payload,
+            ['provider_transaction_reference', 'payment_transaction_id', 'paymentTransactionId', 'transaction_id'],
+        ) ?: $payment->provider_transaction_reference;
+        $providerReceiptReference = $this->paymentReferenceFromPayload(
+            $payload,
+            ['provider_receipt_reference', 'receipt_no', 'dekont_no'],
+        ) ?: $payment->provider_receipt_reference;
 
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'provider' => is_scalar($payload['provider'] ?? null) && trim((string) $payload['provider']) !== ''
+                ? trim((string) $payload['provider'])
+                : $payment->provider,
             'provider_reference' => $providerReference,
             'provider_payment_reference' => $providerPaymentReference,
             'provider_transaction_reference' => $providerTransactionReference,
             'provider_receipt_reference' => $providerReceiptReference,
             'paid_at' => $payment->paid_at ?? now(),
+            'provider_paid_at' => $payload['provider_paid_at'] ?? $payment->provider_paid_at,
+            'provider_last_synced_at' => ($payload['source'] ?? null) === 'provider_reconciliation' ? now() : $payment->provider_last_synced_at,
+            'provider_sync_attempts' => ($payload['source'] ?? null) === 'provider_reconciliation'
+                ? max(0, (int) ($payment->provider_sync_attempts ?? 0)) + 1
+                : $payment->provider_sync_attempts,
+            'provider_last_sync_status' => ($payload['source'] ?? null) === 'provider_reconciliation'
+                ? TechnicalServiceMountPayment::STATUS_PAID
+                : $payment->provider_last_sync_status,
+            'provider_last_sync_error' => ($payload['source'] ?? null) === 'provider_reconciliation'
+                ? null
+                : $payment->provider_last_sync_error,
+            'provider_paid_confirmed_at' => $payment->provider_paid_confirmed_at ?? now(),
             'raw_payload' => $rawPayload,
         ])->save();
 
@@ -118,6 +158,7 @@ class TechnicalServicePaymentSettlementService
         }
 
         $this->applyRequestPaymentApproval($payment);
+        $this->receiptNotificationService->persistPaidReceiptIntentWithinTransaction($payment);
 
         return $payment->fresh();
     }
@@ -290,9 +331,9 @@ class TechnicalServicePaymentSettlementService
     /**
      * @param  array<string, mixed>  $payload
      */
-    private function paymentReferenceFromPayload(array $payload): ?string
+    private function paymentReferenceFromPayload(array $payload, array $keys): ?string
     {
-        foreach (['provider_reference', 'payment_reference', 'reference', 'receipt_no', 'dekont_no', 'transaction_id'] as $key) {
+        foreach ($keys as $key) {
             $value = $payload[$key] ?? null;
             if (is_scalar($value) && trim((string) $value) !== '') {
                 return trim((string) $value);

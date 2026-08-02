@@ -875,15 +875,24 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        $serviceAmount = round((float) ($validated['service_amount'] ?? 0), 2);
-        $partAmount = round((float) ($validated['part_amount'] ?? 0), 2);
-        $totalAmount = $isCustomerCharge
-            ? round($serviceAmount + $partAmount, 2)
-            : round((float) ($validated['amount'] ?? 0), 2);
+        $serviceAmountMinor = isset($validated['service_amount'])
+            ? $this->strictPaymentMinorUnits((string) $validated['service_amount'])
+            : 0;
+        $partAmountMinor = isset($validated['part_amount'])
+            ? $this->strictPaymentMinorUnits((string) $validated['part_amount'])
+            : 0;
+        $totalAmountMinor = $isCustomerCharge
+            ? $serviceAmountMinor + $partAmountMinor
+            : (isset($validated['amount']) ? $this->strictPaymentMinorUnits((string) $validated['amount']) : 0);
+        $serviceAmount = $this->minorUnitsToDecimal($serviceAmountMinor);
+        $partAmount = $this->minorUnitsToDecimal($partAmountMinor);
+        $totalAmount = $this->minorUnitsToDecimal($totalAmountMinor);
 
-        if ($totalAmount <= 0) {
+        if ($totalAmountMinor <= 0 || $totalAmountMinor > 999999999999) {
             throw ValidationException::withMessages([
-                'amount' => 'Ödeme tutarı 0 TL üzerinde olmalı.',
+                'amount' => $totalAmountMinor <= 0
+                    ? 'Ödeme tutarı 0 TL üzerinde olmalı.'
+                    : 'Ödeme tutarı desteklenen üst sınırı aşmamalıdır.',
             ]);
         }
 
@@ -931,54 +940,6 @@ class TechnicalServiceController extends Controller
             'note' => $validated['note'] ?? null,
         ];
 
-        if (! $isCustomerCharge) {
-            $canonicalPurpose = $this->canonicalExtraPaymentPurpose($purpose);
-            $existingPayment = TechnicalServiceMountPayment::query()
-                ->where('technical_service_mount_session_id', $session->id)
-                ->where('technical_service_request_id', $technicalServiceRequest->id)
-                ->where('provider', $paymentProviderManager->providerName())
-                ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
-                ->latest('id')
-                ->get()
-                ->first(function (TechnicalServiceMountPayment $candidate) use ($canonicalPurpose, $currency, $partRequestId, $selectedSerialIds, $source, $totalAmount): bool {
-                    $payload = is_array($candidate->raw_payload) ? $candidate->raw_payload : [];
-                    $candidateSerialIds = collect($payload['selected_serial_ids'] ?? [])
-                        ->filter(fn (mixed $id): bool => is_int($id) || (is_string($id) && preg_match('/^[1-9][0-9]*$/', $id) === 1))
-                        ->map(fn (mixed $id): int => (int) $id)
-                        ->unique()
-                        ->sort()
-                        ->values()
-                        ->all();
-                    try {
-                        $candidatePurpose = $this->canonicalExtraPaymentPurpose((string) ($payload['purpose'] ?? ''));
-                        $candidateChargeType = $this->canonicalExtraPaymentPurpose((string) ($payload['charge_type'] ?? ''));
-                    } catch (ValidationException) {
-                        return false;
-                    }
-
-                    return ($payload['source'] ?? null) === $source
-                        && $candidatePurpose === $canonicalPurpose
-                        && $candidateChargeType === $canonicalPurpose
-                        && (int) ($payload['part_request_id'] ?? 0) === (int) ($partRequestId ?? 0)
-                        && strtoupper(trim((string) $candidate->currency)) === $currency
-                        && number_format((float) $candidate->amount, 2, '.', '') === number_format($totalAmount, 2, '.', '')
-                        && $candidateSerialIds === $selectedSerialIds;
-                });
-
-            if ($existingPayment instanceof TechnicalServiceMountPayment) {
-                return response()->json([
-                    'ok' => true,
-                    'message' => 'Ödeme linki zaten var.',
-                    'payment' => $this->mountPaymentResponse($existingPayment->refresh(), [
-                        'amount_source' => $paymentPayload['amount_source'],
-                        'reused' => true,
-                        'create_outcome' => PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING,
-                    ]),
-                    'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
-                ]);
-            }
-        }
-
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
             'technical_service_request_id' => $technicalServiceRequest->id,
@@ -1001,8 +962,6 @@ class TechnicalServiceController extends Controller
                 'payment' => $exception->getMessage(),
             ]);
         }
-        $payment = $payment->refresh();
-
         if ($createOutcome === PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID) {
             return response()->json([
                 'ok' => true,
@@ -2798,9 +2757,8 @@ class TechnicalServiceController extends Controller
             }
 
             $value = $request->input($field);
-            $valid = is_int($value)
-                || (is_string($value) && preg_match('/^(0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/', trim($value)) === 1)
-                || (is_float($value) && is_finite($value) && abs($value - round($value, 2)) <= 0.000000001);
+            $valid = is_string($value)
+                && preg_match('/^(0|[1-9][0-9]{0,9})(?:\.[0-9]{1,2})?$/', trim($value)) === 1;
 
             if (! $valid) {
                 $errors[$field] = 'Ödeme tutarı en fazla iki ondalıklı normal decimal biçiminde olmalıdır.';
@@ -2810,6 +2768,24 @@ class TechnicalServiceController extends Controller
         if ($errors !== []) {
             throw ValidationException::withMessages($errors);
         }
+    }
+
+    private function strictPaymentMinorUnits(string $value): int
+    {
+        $value = trim($value);
+        if (! preg_match('/^(0|[1-9][0-9]{0,9})(?:\.([0-9]{1,2}))?$/', $value, $matches)) {
+            throw ValidationException::withMessages([
+                'amount' => 'Ödeme tutarı normal decimal string biçiminde olmalıdır.',
+            ]);
+        }
+        $fraction = str_pad((string) ($matches[2] ?? ''), 2, '0');
+
+        return ((int) $matches[1] * 100) + (int) $fraction;
+    }
+
+    private function minorUnitsToDecimal(int $minorUnits): string
+    {
+        return intdiv($minorUnits, 100).'.'.str_pad((string) ($minorUnits % 100), 2, '0', STR_PAD_LEFT);
     }
 
     private function canonicalExtraPaymentPurpose(string $value): string

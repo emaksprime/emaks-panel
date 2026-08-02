@@ -23,6 +23,7 @@ use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1602,6 +1603,75 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame('completed', data_get($fresh->raw_payload, 'scoped_local_uat_effect_history.0.status'));
         $this->assertFalse(collect((array) data_get($fresh->raw_payload, 'scoped_local_uat_effect_history', []))
             ->contains(fn (mixed $entry): bool => is_array($entry) && ($entry['status'] ?? null) === 'claimed'));
+    }
+
+    public function test_part_service_stale_reload_cannot_replace_manager_result(): void
+    {
+        $canonical = $this->scopedPayment('STALE-MANAGER-RESULT');
+        $request = $canonical->technicalServiceRequest()->firstOrFail();
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Canonical result fixture',
+        ]);
+        $canonical->forceFill([
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'provider_reference' => 'canonical-manager-reference',
+            'payment_url' => 'http://10.0.28.64:8000/mount-payment/canonical-manager-reference',
+            'paid_at' => now(),
+        ]);
+        $manager = $this->partialMock(PaymentProviderManager::class);
+        $manager->shouldReceive('providerName')->andReturn('fake');
+        $manager->shouldReceive('environment')->andReturn('local');
+        $manager->shouldReceive('createPayment')->once()->andReturn([
+            'payment_id' => $canonical->id,
+            'provider_reference' => 'canonical-manager-reference',
+            'payment_url' => $canonical->payment_url,
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'outcome' => PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID,
+        ]);
+        $manager->shouldReceive('createOutcome')->once()
+            ->andReturn(PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID);
+        $manager->shouldReceive('canonicalPaymentFromCreateResult')->once()->andReturn($canonical);
+
+        $updated = app(TechnicalServicePartRequestService::class)->transition(
+            $partRequest,
+            TechnicalServicePartRequest::STATUS_APPROVED,
+            $this->admin(),
+            [
+                'charge_decision' => 'chargeable',
+                'service_amount' => 0,
+                'part_amount' => 1,
+                'customer_message' => 'Synthetic canonical payment message',
+            ],
+        );
+
+        $this->assertSame($canonical->id, data_get($updated->metadata, 'customer_charge_payment_id'));
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, data_get($updated->metadata, 'charge_status'));
+        $this->assertSame('canonical-manager-reference', data_get($updated->metadata, 'customer_charge.provider_reference'));
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $canonical->fresh()->status);
+    }
+
+    public function test_provider_and_payment_references_keep_distinct_callback_semantics(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+        $payment = $payment->fresh();
+        $payment->forceFill(['provider_payment_reference' => 'provider-payment-reference'])->save();
+
+        $result = app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+            'fake_approved' => true,
+            'payment_id' => $payment->id,
+            'provider_reference' => $payment->provider_reference,
+            'payment_reference' => 'provider-payment-reference',
+        ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertSame($payment->provider_reference, $result->provider_reference);
+        $this->assertSame('provider-payment-reference', $result->provider_payment_reference);
+        $this->assertNotSame($result->provider_reference, $result->provider_payment_reference);
     }
 
     /**

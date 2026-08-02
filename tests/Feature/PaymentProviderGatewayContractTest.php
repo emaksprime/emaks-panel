@@ -6,22 +6,32 @@ use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
+use App\Services\Payments\FakePaymentProvider;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
 use App\Services\Payments\PaymentProviderManager;
-use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderClientException;
+use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderDisabledException;
 use App\Services\Payments\TechnicalServicePaymentProviderGateway;
 use App\Services\Payments\TechnicalServicePaymentProviderModeResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Tests\TestCase;
 
 class PaymentProviderGatewayContractTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['services.partner_portal.public_url' => 'http://10.0.28.64:8000']);
+    }
 
     public function test_payment_provider_defaults_to_fake_mode(): void
     {
@@ -247,6 +257,8 @@ class PaymentProviderGatewayContractTest extends TestCase
                 'serial_number' => $request->serial_number,
                 'customer_name' => $request->customer_name,
                 'customer_phone' => $request->customer_phone,
+                'purpose' => 'mount_extra',
+                'charge_type' => 'mount_extra',
             ],
         ]);
 
@@ -332,6 +344,32 @@ class PaymentProviderGatewayContractTest extends TestCase
         $this->assertSame($payment->provider_reference, $response['provider_reference']);
     }
 
+    public function test_payment_update_cancel_and_sync_fail_before_provider_inside_transaction(): void
+    {
+        $this->mock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldNotReceive('updatePayment');
+            $mock->shouldNotReceive('cancelPayment');
+            $mock->shouldNotReceive('syncPayment');
+        });
+        $manager = app(PaymentProviderManager::class);
+
+        foreach (['updatePayment', 'cancelPayment', 'syncPayment'] as $method) {
+            $payment = $this->mountPayment([
+                'provider_reference' => 'transaction-guard-'.$method,
+                'payment_url' => 'https://pay.example.test/'.$method,
+            ]);
+
+            try {
+                DB::transaction(fn (): array => $manager->{$method}($payment));
+                $this->fail($method.' açık application transactionı içinden providera ulaşmamalıydı.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('manual_e2e', $exception->errors());
+            }
+
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        }
+    }
+
     public function test_real_provider_enabled_missing_gateway_does_not_fallback_to_fake(): void
     {
         config([
@@ -356,7 +394,11 @@ class PaymentProviderGatewayContractTest extends TestCase
         $this->assertSame('iyzico', $payment->provider);
         $this->assertNull($payment->provider_reference);
         $this->assertNull($payment->payment_url);
-        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
+        $this->assertTrue(collect((array) data_get($payment->raw_payload, 'canonical_payment_create_history'))
+            ->contains(fn (mixed $entry): bool => is_array($entry)
+                && ($entry['status'] ?? null) === 'failed'
+                && ($entry['replay_blocked'] ?? null) === true));
     }
 
     public function test_payment_update_builds_n8n_update_link_payload(): void
@@ -486,7 +528,7 @@ class PaymentProviderGatewayContractTest extends TestCase
         } finally {
             $this->assertTrue($client->called);
             $payment->refresh();
-            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
             $this->assertNull($payment->paid_at);
             $this->assertNull($payment->payment_url);
         }
@@ -511,7 +553,7 @@ class PaymentProviderGatewayContractTest extends TestCase
             $this->fail('Expected dry-run/no-send provider exception.');
         } catch (TechnicalServicePaymentProviderClientException) {
             $payment->refresh();
-            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
             $this->assertNull($payment->paid_at);
         }
     }
@@ -575,7 +617,7 @@ class PaymentProviderGatewayContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicalServiceRequest(array $overrides = []): TechnicalServiceRequest
     {
@@ -598,7 +640,7 @@ class PaymentProviderGatewayContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function mountPayment(array $overrides = []): TechnicalServiceMountPayment
     {
@@ -606,7 +648,7 @@ class PaymentProviderGatewayContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function mountPaymentForRequest(TechnicalServiceRequest $request, array $overrides = []): TechnicalServiceMountPayment
     {
@@ -627,6 +669,8 @@ class PaymentProviderGatewayContractTest extends TestCase
                 'serial_number' => $request->serial_number,
                 'customer_name' => $request->customer_name,
                 'customer_phone' => $request->customer_phone,
+                'purpose' => 'mount_extra',
+                'charge_type' => 'mount_extra',
             ],
         ], $overrides));
     }
@@ -652,7 +696,7 @@ class PaymentProviderGatewayContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function configureReadyRealProvider(array $overrides = []): void
     {

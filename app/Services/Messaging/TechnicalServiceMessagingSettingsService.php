@@ -1285,6 +1285,38 @@ class TechnicalServiceMessagingSettingsService
         });
     }
 
+    /** @return array{entity_type:string,entity_id:int,payment_purpose:string,identity_hash:string,part_request_fingerprint:string|null,selected_serials_fingerprint:string|null,selected_serial_count:int} */
+    public function canonicalPaymentBusinessIdentity(TechnicalServiceMountPayment $payment): array
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+        return $this->scopedLocalUatPaymentBusinessIdentity($payment, $payload);
+    }
+
+    public function canonicalPaymentAmountMinorUnits(TechnicalServiceMountPayment $payment): string
+    {
+        return $this->scopedLocalUatAmountMinorUnits($payment);
+    }
+
+    public function canonicalPaymentCurrency(TechnicalServiceMountPayment $payment): string
+    {
+        return $this->scopedLocalUatCurrency($payment);
+    }
+
+    public function scopedLocalUatPaymentSessionIsCurrent(TechnicalServiceMountPayment $payment): bool
+    {
+        $authority = data_get($payment->raw_payload, 'scoped_local_uat_payment_session_authority');
+        if (! is_array($authority) || (string) ($authority['create_status'] ?? '') !== 'completed') {
+            return false;
+        }
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+
+        return $context->isActive()
+            && $this->isScopedLocalUatSettings($settings)
+            && (string) ($authority['run_id'] ?? '') === (string) $context->activeRunId();
+    }
+
     public function assertScopedLocalUatUnsupportedPaymentEffect(
         TechnicalServiceMountPayment $payment,
         string $operation,
@@ -1607,7 +1639,7 @@ class TechnicalServiceMessagingSettingsService
 
                     if ((string) ($previous['status'] ?? '') === 'completed') {
                         $canonicalPaymentId = (int) ($previous['payment_id'] ?? $lockedPayment->getKey());
-                        $callbackSubmission = $this->scopedLocalUatCallbackSubmission($callbackPayload);
+                        $callbackSubmission = $this->scopedLocalUatCallbackSubmission($callbackPayload, $provider);
                         $duplicateClaim = [
                             'run_id' => $runId,
                             'provider' => $provider,
@@ -1686,7 +1718,7 @@ class TechnicalServiceMessagingSettingsService
                     'attempted' => true,
                 ];
                 if ($operation === self::SCOPED_EFFECT_PAYMENT_CALLBACK) {
-                    $claim['callback_submission'] = $this->scopedLocalUatCallbackSubmission($callbackPayload);
+                    $claim['callback_submission'] = $this->scopedLocalUatCallbackSubmission($callbackPayload, $provider);
                 }
                 $payload['scoped_local_uat_effect_claim'] = $claim;
                 $lockedPayment->forceFill(['raw_payload' => $payload])->save();
@@ -2027,7 +2059,7 @@ class TechnicalServiceMessagingSettingsService
 
         $source = strtolower(trim((string) ($payload['source'] ?? '')));
         $paymentPurpose = $this->scopedLocalUatCanonicalPaymentPurpose($source, $payload);
-        $partRequestId = array_key_exists('part_request_id', $payload)
+        $partRequestId = isset($payload['part_request_id'])
             ? $this->scopedLocalUatPositiveIdentifier($payload['part_request_id'], 'part_request_id')
             : null;
         if (in_array($paymentPurpose, ['part_payment', 'service_and_part_payment'], true) && $partRequestId === null) {
@@ -2484,7 +2516,7 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /** @param array<string, mixed> $payload */
-    private function scopedLocalUatCallbackSubmission(array $payload): array
+    private function scopedLocalUatCallbackSubmission(array $payload, string $storedProvider): array
     {
         $providerMode = null;
         if (array_key_exists('provider_mode', $payload)) {
@@ -2506,11 +2538,16 @@ class TechnicalServiceMessagingSettingsService
             $payload,
             ['provider', 'provider_key', 'payment_provider'],
             'provider',
-            function (mixed $value) use ($providerMode): string {
+            function (mixed $value) use ($providerMode, $storedProvider): string {
                 if (! is_scalar($value) || trim((string) $value) === '') {
                     throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider present fakat geçersiz.');
                 }
                 $provider = $this->scopedLocalUatCanonicalProviderValue((string) $value, (string) $providerMode);
+                if ($provider === null
+                    && strtolower(trim((string) $value)) === 'iyzico'
+                    && in_array($storedProvider, ['iyzico_sandbox', 'iyzico_live'], true)) {
+                    $provider = $storedProvider;
+                }
                 if ($provider === null) {
                     throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider canonical değil.');
                 }
@@ -2520,9 +2557,21 @@ class TechnicalServiceMessagingSettingsService
         );
         $reference = $this->scopedLocalUatCallbackAlias(
             $payload,
-            ['provider_reference', 'provider_payment_reference', 'payment_id'],
+            ['provider_reference', 'provider_token', 'token'],
             'provider_reference',
             fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'provider_reference'),
+        );
+        $paymentReference = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['provider_payment_reference', 'payment_reference', 'paymentId'],
+            'provider_payment_reference',
+            fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'provider_payment_reference'),
+        );
+        $localPaymentId = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['payment_id', 'mount_payment_id'],
+            'payment_id',
+            fn (mixed $value): string => (string) $this->scopedLocalUatPositiveIdentifier($value, 'payment_id'),
         );
         $amountMinor = $this->scopedLocalUatCallbackAlias(
             $payload,
@@ -2563,6 +2612,8 @@ class TechnicalServiceMessagingSettingsService
             'profile_id' => $profileId,
             'provider' => $provider,
             'provider_reference_hash' => $reference === null ? null : hash('sha256', $reference),
+            'provider_payment_reference_hash' => $paymentReference === null ? null : hash('sha256', $paymentReference),
+            'payment_id' => $localPaymentId,
             'amount_minor' => $amountMinor,
             'currency' => $currency,
             'callback_identity_hash' => $callbackIdentity,
@@ -2663,6 +2714,7 @@ class TechnicalServiceMessagingSettingsService
         );
         $businessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($payment, $payload);
         $providerReference = trim((string) $payment->provider_reference);
+        $providerPaymentReference = trim((string) $payment->provider_payment_reference);
         $submission = is_array($claim['callback_submission'] ?? null) ? $claim['callback_submission'] : [];
         $invalid = (string) ($authority['profile_id'] ?? '') !== ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
             || (string) ($authority['run_id'] ?? '') !== (string) ($claim['run_id'] ?? '')
@@ -2696,6 +2748,14 @@ class TechnicalServiceMessagingSettingsService
                     (string) $submission['provider_reference_hash'],
                     hash('sha256', $providerReference),
                 ))
+            || ((string) ($submission['provider_payment_reference_hash'] ?? '') !== ''
+                && ($providerPaymentReference === ''
+                    || ! hash_equals(
+                        (string) $submission['provider_payment_reference_hash'],
+                        hash('sha256', $providerPaymentReference),
+                    )))
+            || ((string) ($submission['payment_id'] ?? '') !== ''
+                && (int) $submission['payment_id'] !== (int) $payment->getKey())
             || ((string) ($submission['amount_minor'] ?? '') !== ''
                 && (string) $submission['amount_minor'] !== $this->scopedLocalUatAmountMinorUnits($payment))
             || ((string) ($submission['currency'] ?? '') !== ''

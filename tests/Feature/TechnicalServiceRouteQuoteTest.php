@@ -12,6 +12,7 @@ use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Services\Payments\FakePaymentProvider;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
@@ -525,7 +526,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
                 'route_quote_id' => $quote->id,
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 150,
+                'amount' => '150.00',
                 'currency' => 'TRY',
                 'reason' => 'route_fee',
                 'note' => 'Ek yol ücreti',
@@ -577,7 +578,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->actingAs($user)
             ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 875,
+                'amount' => '875.00',
                 'currency' => 'TRY',
                 'reason' => 'manual_extra',
                 'purpose' => 'manual_mount_payment',
@@ -622,7 +623,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 150,
+                'amount' => '150.00',
                 'currency' => 'TRY',
                 'purpose' => 'mount_extra',
             ])
@@ -646,7 +647,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 150,
+                'amount' => '150.00',
                 'currency' => 'TRY',
                 'purpose' => 'mount_extra',
             ])
@@ -751,7 +752,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 150,
+                'amount' => '150.00',
                 'currency' => 'TRY',
                 'purpose' => 'mount_extra',
             ])
@@ -815,7 +816,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $payload = [
             'technician_id' => $technician->id,
             'selected_serial_ids' => [$serial->id],
-            'amount' => 150,
+            'amount' => '150.00',
             'currency' => 'TRY',
             'purpose' => 'mount_extra',
         ];
@@ -839,8 +840,57 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('payment.provider_transport', 'fake_local')
             ->assertJsonPath('payment.reused', true);
 
-        $this->assertSame(1, TechnicalServiceMountPayment::query()->count());
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->count());
+        $this->assertSame(1, TechnicalServiceMountPayment::query()
+            ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->count());
+        $this->assertSame(1, TechnicalServiceMountPayment::query()
+            ->where('status', TechnicalServiceMountPayment::STATUS_CANCELLED)
+            ->whereNotNull('raw_payload->canonical_payment_duplicate')
+            ->count());
         $this->assertSame(1, $request->events()->where('event_type', 'mount_payment_link_created')->count());
+    }
+
+    public function test_technical_service_shortcut_cannot_bypass_manager_for_unsafe_pending(): void
+    {
+        config(['services.partner_portal.public_url' => 'https://payments.example.test']);
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $payload = [
+            'selected_serial_ids' => [$serial->id],
+            'amount' => '150.00',
+            'currency' => 'TRY',
+            'purpose' => 'manual_mount_payment',
+            'reason' => 'manual_extra',
+        ];
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", $payload)
+            ->assertCreated();
+        $unsafe = TechnicalServiceMountPayment::query()->sole();
+        $rawPayload = is_array($unsafe->raw_payload) ? $unsafe->raw_payload : [];
+        unset($rawPayload['canonical_payment_session_authority']);
+        $unsafe->forceFill([
+            'provider_reference' => null,
+            'payment_url' => null,
+            'raw_payload' => $rawPayload,
+        ])->save();
+        $this->mock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldNotReceive('createPayment');
+        });
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('payment')
+            ->assertJsonPath(
+                'errors.payment.0',
+                'PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Pending payment successful provider session authority taşımıyor.',
+            );
+
+        $this->assertSame(1, TechnicalServiceMountPayment::query()->count());
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $unsafe->fresh()->status);
+        $this->assertNull($unsafe->fresh()->provider_reference);
+        $this->assertNull($unsafe->fresh()->payment_url);
     }
 
     public function test_payment_status_endpoint_returns_fresh_request_and_next_action(): void
@@ -871,7 +921,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 150,
+                'amount' => '150.00',
                 'currency' => 'TRY',
                 'purpose' => 'mount_extra',
             ])
@@ -919,13 +969,18 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
-                'amount' => 150,
+                'amount' => '150.00',
                 'currency' => 'TRY',
                 'purpose' => 'mount_extra',
             ])
             ->assertJsonValidationErrors('payment');
 
-        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
+        $failedPayment = TechnicalServiceMountPayment::query()->sole();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $failedPayment->status);
+        $this->assertTrue(collect((array) data_get($failedPayment->raw_payload, 'canonical_payment_create_history'))
+            ->contains(fn (mixed $entry): bool => is_array($entry)
+                && ($entry['status'] ?? null) === 'failed'
+                && ($entry['replay_blocked'] ?? null) === true));
     }
 
     public function test_extra_mount_fee_payment_rejects_zero_amount(): void
@@ -957,7 +1012,37 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
                 'technician_id' => $technician->id,
                 'selected_serial_ids' => [$serial->id],
+                'amount' => 3500,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertJsonValidationErrors('amount');
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 3.5e3,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertJsonValidationErrors('amount');
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
                 'amount' => '3.5e3',
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertJsonValidationErrors('amount');
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => '10000000000.00',
                 'currency' => 'TRY',
                 'purpose' => 'mount_extra',
             ])

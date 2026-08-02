@@ -3,6 +3,7 @@
 namespace App\Services\Payments;
 
 use App\Mail\TechnicalServicePaymentAuditMail;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceRequest;
 use Illuminate\Support\Arr;
@@ -22,147 +23,269 @@ class TechnicalServicePaymentReceiptNotificationService
      */
     public function notifyTrustedPaid(TechnicalServiceMountPayment $payment, array $providerResponse = []): TechnicalServiceMountPayment
     {
-        $payment = $payment->fresh();
-
-        if (! $payment instanceof TechnicalServiceMountPayment
-            || $payment->status !== TechnicalServiceMountPayment::STATUS_PAID
-            || ! $this->settings->paymentNotificationEnabled()) {
-            return $payment;
-        }
-
-        $recipients = $this->settings->paymentNotificationRecipients();
-        if ($recipients === []) {
-            return $payment;
-        }
-
-        $claim = $this->claimReceiptNotification($payment, $recipients);
-        if ($claim === null) {
-            return $payment->fresh();
-        }
-
-        $payment = $claim['payment'];
-        $details = $this->mailDetails($payment, $providerResponse);
-
-        try {
-            $this->mailTransportSettings->sendPaymentAuditMail($recipients, new TechnicalServicePaymentAuditMail($payment, $details));
-            $payment = $this->finishReceiptNotification(
-                $payment,
-                $claim['idempotency_hash'],
-                'sent',
-                null,
-                $recipients,
-            );
-        } catch (TechnicalServiceMailTransportNotReadyException $exception) {
-            $payment = $this->finishReceiptNotification(
-                $payment,
-                $claim['idempotency_hash'],
-                'mailer_not_configured',
-                $this->redactedError($exception),
-                $recipients,
-            );
-        } catch (Throwable $exception) {
-            $payment = $this->finishReceiptNotification(
-                $payment,
-                $claim['idempotency_hash'],
-                'failed',
-                $this->redactedError($exception),
-                $recipients,
-            );
-        }
-
-        return $payment->fresh();
-    }
-
-    /**
-     * @param  array<int, string>  $recipients
-     * @return array{payment:TechnicalServiceMountPayment,idempotency_hash:string}|null
-     */
-    private function claimReceiptNotification(TechnicalServiceMountPayment $payment, array $recipients): ?array
-    {
-        return DB::transaction(function () use ($payment, $recipients): ?array {
+        $intent = DB::transaction(function () use ($payment): ?TechnicalServiceMessageDispatch {
             $locked = TechnicalServiceMountPayment::query()
                 ->whereKey($payment->getKey())
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            if ($locked->status !== TechnicalServiceMountPayment::STATUS_PAID
-                || $locked->receipt_notification_sent_at !== null
-                || $locked->receipt_notification_status !== null) {
+            return $this->persistPaidReceiptIntentWithinTransaction($locked);
+        });
+        if (! $intent instanceof TechnicalServiceMessageDispatch) {
+            return $payment->fresh() ?? $payment;
+        }
+
+        return $this->processReceiptIntent($intent, $providerResponse);
+    }
+
+    /**
+     * The payment row is the serialization lock. Settlement calls this while
+     * its paid-state transaction is still open, so PAID and durable intent
+     * commit together.
+     */
+    public function persistPaidReceiptIntentWithinTransaction(
+        TechnicalServiceMountPayment $payment,
+    ): ?TechnicalServiceMessageDispatch {
+        if (DB::transactionLevel() < 1) {
+            throw new ConflictHttpException('payment_receipt_intent_requires_transaction: Receipt intent paid transition transactionı içinde yazılmalıdır.');
+        }
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID
+            || ! $this->settings->paymentNotificationEnabled()) {
+            return null;
+        }
+        $recipients = $this->settings->paymentNotificationRecipients();
+        if ($recipients === []) {
+            return null;
+        }
+        $recipientFingerprints = collect($recipients)
+            ->map(fn (string $recipient): string => hash('sha256', strtolower(trim($recipient))))
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $identity = [
+            'schema_version' => 1,
+            'payment_id' => (int) $payment->getKey(),
+            'payment_purpose' => strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? $payload['source'] ?? 'payment'))),
+            'event' => 'payment_receipt_notification',
+            'recipient_fingerprints' => $recipientFingerprints,
+            'amount_minor' => $this->amountMinorUnits($payment),
+            'currency' => strtoupper((string) $payment->currency),
+            'paid_transition_fingerprint' => hash('sha256', implode('|', [
+                (string) ($payment->paid_at?->toIso8601String() ?? ''),
+                (string) $payment->provider,
+                (string) $payment->provider_reference,
+            ])),
+        ];
+        $identityHash = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        $idempotencyKey = 'receipt:'.$identityHash;
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('idempotency_key', $idempotencyKey)
+            ->lockForUpdate()
+            ->first();
+        if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
+            $dispatch = TechnicalServiceMessageDispatch::query()->create([
+                'event' => 'payment_receipt_notification',
+                'technical_service_request_id' => $payment->technical_service_request_id,
+                'request_id' => $payment->technical_service_request_id,
+                'related_type' => TechnicalServiceMountPayment::class,
+                'related_id' => (int) $payment->getKey(),
+                'message_type' => 'payment_receipt_notification',
+                'channel' => 'email',
+                'provider_key' => 'smtp_payment_receipt',
+                'recipient_role' => 'payment_notification',
+                'template_key' => TechnicalServicePaymentAuditMail::class,
+                'template_version' => 1,
+                'payload_hash' => $identityHash,
+                'idempotency_key' => $idempotencyKey,
+                'channel_policy' => 'single_claim_no_blind_retry',
+                'test_mode' => ! app()->environment('production'),
+                'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                'attempt_count' => 0,
+                'max_attempts' => 1,
+                'queued_at' => now(),
+                'triggered_by' => 'payment_paid_transaction',
+                'metadata' => [
+                    'schema_version' => 1,
+                    'payment_id' => (int) $payment->getKey(),
+                    'recipient_fingerprints' => $recipientFingerprints,
+                    'amount_minor' => $identity['amount_minor'],
+                    'currency' => $identity['currency'],
+                    'payment_purpose_fingerprint' => hash('sha256', $identity['payment_purpose']),
+                    'paid_transition_fingerprint' => $identity['paid_transition_fingerprint'],
+                    'automatic_retry_allowed' => false,
+                ],
+                'request_payload' => [
+                    'event' => 'payment_receipt_notification',
+                    'payment_fingerprint' => hash('sha256', (string) $payment->getKey()),
+                ],
+            ]);
+        }
+
+        $payload['payment_receipt_notification_claim'] = [
+            'schema_version' => 2,
+            'status' => $this->paymentReceiptStatus($dispatch),
+            'idempotency_hash' => $identityHash,
+            'dispatch_id' => (int) $dispatch->getKey(),
+            'recipient_fingerprints' => $recipientFingerprints,
+            'automatic_retry_allowed' => false,
+        ];
+        $payment->forceFill([
+            'raw_payload' => $payload,
+            'receipt_notification_to' => implode(',', $recipients),
+            'receipt_notification_status' => $this->paymentReceiptStatus($dispatch),
+            'receipt_notification_error' => $dispatch->last_error_message_redacted,
+        ])->save();
+
+        return $dispatch;
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function processReceiptIntent(
+        TechnicalServiceMessageDispatch $intent,
+        array $providerResponse,
+    ): TechnicalServiceMountPayment {
+        $claim = $this->claimReceiptDispatch($intent);
+        if ($claim === null) {
+            $payment = TechnicalServiceMountPayment::query()->findOrFail((int) $intent->related_id);
+
+            return $payment->fresh();
+        }
+        $payment = $claim['payment'];
+        $recipients = $claim['recipients'];
+
+        try {
+            $this->mailTransportSettings->sendPaymentAuditMail(
+                $recipients,
+                new TechnicalServicePaymentAuditMail($payment, $this->mailDetails($payment, $providerResponse)),
+            );
+
+            return $this->finishReceiptDispatch($claim['dispatch'], TechnicalServiceMessageDispatch::STATUS_SENT, null, $recipients);
+        } catch (TechnicalServiceMailTransportNotReadyException $exception) {
+            return $this->finishReceiptDispatch(
+                $claim['dispatch'],
+                TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED,
+                $this->redactedError($exception),
+                $recipients,
+            );
+        } catch (Throwable $exception) {
+            return $this->finishReceiptDispatch(
+                $claim['dispatch'],
+                TechnicalServiceMessageDispatch::STATUS_FAILED,
+                $this->redactedError($exception),
+                $recipients,
+            );
+        }
+    }
+
+    /** @return array{dispatch:TechnicalServiceMessageDispatch,payment:TechnicalServiceMountPayment,recipients:array<int,string>}|null */
+    private function claimReceiptDispatch(TechnicalServiceMessageDispatch $intent): ?array
+    {
+        return DB::transaction(function () use ($intent): ?array {
+            $dispatch = TechnicalServiceMessageDispatch::query()
+                ->whereKey($intent->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            if ($dispatch->status !== TechnicalServiceMessageDispatch::STATUS_QUEUED
+                || (int) $dispatch->attempt_count >= (int) $dispatch->max_attempts) {
                 return null;
             }
+            $payment = TechnicalServiceMountPayment::query()
+                ->whereKey((int) $dispatch->related_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            if ($dispatch->related_type !== TechnicalServiceMountPayment::class
+                || $payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
+                throw new ConflictHttpException('payment_receipt_dispatch_authority_invalid: Dispatch paid canonical payment ile bağlı değil.');
+            }
+            $recipients = $this->settings->paymentNotificationRecipients();
+            $currentFingerprints = collect($recipients)
+                ->map(fn (string $recipient): string => hash('sha256', strtolower(trim($recipient))))
+                ->unique()->sort()->values()->all();
+            $storedFingerprints = collect((array) data_get($dispatch->metadata, 'recipient_fingerprints', []))
+                ->map(fn (mixed $fingerprint): string => (string) $fingerprint)
+                ->sort()->values()->all();
+            if ($recipients === [] || $currentFingerprints !== $storedFingerprints) {
+                throw new ConflictHttpException('payment_receipt_recipient_drift: Receipt dispatch recipient authority değişti.');
+            }
 
-            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
-            $identity = [
-                'payment_id' => (int) $locked->getKey(),
-                'payment_purpose' => strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? $payload['source'] ?? 'payment'))),
-                'event' => 'payment_receipt_notification',
-                'recipient_fingerprints' => collect($recipients)
-                    ->map(fn (string $recipient): string => hash('sha256', strtolower(trim($recipient))))
-                    ->unique()
-                    ->sort()
-                    ->values()
-                    ->all(),
-                'paid_at' => $locked->paid_at?->toIso8601String(),
-                'provider_reference_fingerprint' => hash('sha256', trim((string) $locked->provider_reference)),
-            ];
-            $idempotencyHash = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
-            $payload['payment_receipt_notification_claim'] = [
-                'schema_version' => 1,
-                'status' => 'claimed',
-                'idempotency_hash' => $idempotencyHash,
-                'recipient_fingerprints' => $identity['recipient_fingerprints'],
-                'claimed_at' => now()->toIso8601String(),
-            ];
-            $locked->forceFill([
-                'raw_payload' => $payload,
-                'receipt_notification_to' => implode(',', $recipients),
-                'receipt_notification_status' => 'claimed',
+            $dispatch->forceFill([
+                'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+                'attempt_count' => (int) $dispatch->attempt_count + 1,
+                'sending_started_at' => now(),
+                'provider_status' => 'dispatching',
+                'last_error_code' => null,
+                'last_error_message_redacted' => null,
+            ])->save();
+            $payment->forceFill([
+                'raw_payload' => array_replace(is_array($payment->raw_payload) ? $payment->raw_payload : [], [
+                    'payment_receipt_notification_claim' => array_replace(
+                        (array) data_get($payment->raw_payload, 'payment_receipt_notification_claim', []),
+                        ['status' => 'sending', 'claimed_at' => now()->toIso8601String()],
+                    ),
+                ]),
+                'receipt_notification_status' => 'sending',
                 'receipt_notification_error' => null,
             ])->save();
 
             return [
-                'payment' => $locked->fresh(),
-                'idempotency_hash' => $idempotencyHash,
+                'dispatch' => $dispatch->fresh(),
+                'payment' => $payment->fresh(),
+                'recipients' => $recipients,
             ];
         });
     }
 
     /** @param array<int, string> $recipients */
-    private function finishReceiptNotification(
-        TechnicalServiceMountPayment $payment,
-        string $idempotencyHash,
+    private function finishReceiptDispatch(
+        TechnicalServiceMessageDispatch $intent,
         string $status,
         ?string $error,
         array $recipients,
     ): TechnicalServiceMountPayment {
-        return DB::transaction(function () use ($payment, $idempotencyHash, $status, $error, $recipients): TechnicalServiceMountPayment {
-            $locked = TechnicalServiceMountPayment::query()
-                ->whereKey($payment->getKey())
+        return DB::transaction(function () use ($intent, $status, $error, $recipients): TechnicalServiceMountPayment {
+            $dispatch = TechnicalServiceMessageDispatch::query()
+                ->whereKey($intent->getKey())
                 ->lockForUpdate()
                 ->firstOrFail();
-            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
-            $claim = is_array($payload['payment_receipt_notification_claim'] ?? null)
-                ? $payload['payment_receipt_notification_claim']
-                : [];
-            if ($locked->receipt_notification_status !== 'claimed'
-                || ! hash_equals((string) ($claim['idempotency_hash'] ?? ''), $idempotencyHash)) {
-                throw new ConflictHttpException('payment_receipt_notification_claim_mismatch: Receipt mail sonucu current atomic claim ile eşleşmiyor.');
+            if ($dispatch->status !== TechnicalServiceMessageDispatch::STATUS_SENDING) {
+                throw new ConflictHttpException('payment_receipt_dispatch_claim_mismatch: SMTP sonucu current dispatch claim ile eşleşmiyor.');
             }
-
-            $claim['status'] = $status;
-            $claim['completed_at'] = now()->toIso8601String();
-            $payload['payment_receipt_notification_claim'] = $claim;
-            $locked->forceFill([
+            $dispatch->forceFill([
+                'status' => $status,
+                'sent_at' => $status === TechnicalServiceMessageDispatch::STATUS_SENT ? now() : null,
+                'failed_at' => $status === TechnicalServiceMessageDispatch::STATUS_SENT ? null : now(),
+                'provider_status' => $status === TechnicalServiceMessageDispatch::STATUS_SENT ? 'accepted' : $status,
+                'last_error_code' => $status === TechnicalServiceMessageDispatch::STATUS_SENT ? null : $status,
+                'last_error_message_redacted' => $error,
+                'provider_response_redacted' => ['status' => $status],
+            ])->save();
+            $payment = TechnicalServiceMountPayment::query()
+                ->whereKey((int) $dispatch->related_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $paymentStatus = $status === TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED
+                ? 'mailer_not_configured'
+                : $status;
+            $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+            $payload['payment_receipt_notification_claim'] = array_replace(
+                (array) ($payload['payment_receipt_notification_claim'] ?? []),
+                ['status' => $paymentStatus, 'completed_at' => now()->toIso8601String()],
+            );
+            $payment->forceFill([
                 'raw_payload' => $payload,
-                'receipt_notification_sent_at' => $status === 'sent' ? now() : null,
+                'receipt_notification_sent_at' => $status === TechnicalServiceMessageDispatch::STATUS_SENT ? now() : null,
                 'receipt_notification_to' => implode(',', $recipients),
-                'receipt_notification_status' => $status,
+                'receipt_notification_status' => $paymentStatus,
                 'receipt_notification_error' => $error,
             ])->save();
 
             $event = match ($status) {
-                'sent' => ['payment_receipt_notification_sent', 'Ödeme bildirimi maili gönderildi'],
-                'mailer_not_configured' => ['payment_receipt_notification_blocked', 'Ödeme bildirimi maili gönderilemedi'],
+                TechnicalServiceMessageDispatch::STATUS_SENT => ['payment_receipt_notification_sent', 'Ödeme bildirimi maili gönderildi'],
+                TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED => ['payment_receipt_notification_blocked', 'Ödeme bildirimi maili gönderilemedi'],
                 default => ['payment_receipt_notification_failed', 'Ödeme bildirimi maili gönderilemedi'],
             };
             $metadata = [
@@ -171,10 +294,29 @@ class TechnicalServicePaymentReceiptNotificationService
             if ($error !== null) {
                 $metadata['error'] = $error;
             }
-            $this->recordEvent($locked, $event[0], $event[1], $metadata);
+            $this->recordEvent($payment, $event[0], $event[1], $metadata);
 
-            return $locked->fresh();
+            return $payment->fresh();
         });
+    }
+
+    private function amountMinorUnits(TechnicalServiceMountPayment $payment): string
+    {
+        $amount = trim((string) ($payment->getRawOriginal('amount') ?? $payment->amount));
+        if (! preg_match('/^(0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/', $amount, $matches)) {
+            throw new ConflictHttpException('payment_receipt_amount_invalid: Receipt identity canonical decimal amount gerektirir.');
+        }
+
+        return ltrim($matches[1].str_pad((string) ($matches[2] ?? ''), 2, '0'), '0') ?: '0';
+    }
+
+    private function paymentReceiptStatus(TechnicalServiceMessageDispatch $dispatch): string
+    {
+        return match ($dispatch->status) {
+            TechnicalServiceMessageDispatch::STATUS_QUEUED => 'queued',
+            TechnicalServiceMessageDispatch::STATUS_SENDING => 'provider_unknown',
+            default => (string) $dispatch->status,
+        };
     }
 
     /**
