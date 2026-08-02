@@ -16,6 +16,7 @@ use App\Services\N8nPanelDataGateway;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
+use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
@@ -1851,6 +1852,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         config([
             'payments.provider' => 'fake',
             'payments.enable_fake_approve' => true,
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
         ]);
 
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
@@ -1858,6 +1860,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
         $this->get('/mount-request/'.$token.'/form')->assertOk();
         $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
+        $paymentResponse->assertSessionHasNoErrors();
 
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
         $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
@@ -1877,6 +1880,49 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'form_ready')
                 ->where('statusLabel', 'Montaj ödemesi alındı'));
+    }
+
+    public function test_public_form_resolves_newer_non_actionable_row_to_canonical_paid_payment(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+            'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
+        ]);
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+        $this->post('/mount-request/'.$token.'/payment')->assertSessionHasNoErrors();
+        $canonical = TechnicalServiceMountPayment::query()->firstOrFail();
+        $this->get("/mount-payment/fake/{$canonical->id}/approve?token={$token}");
+        $canonical->refresh();
+        $duplicate = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $canonical->technical_service_mount_session_id,
+            'provider' => $canonical->provider,
+            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
+            'amount' => $canonical->amount,
+            'currency' => $canonical->currency,
+            'raw_payload' => $canonical->raw_payload,
+        ]);
+
+        $this->partialMock(PaymentProviderManager::class, function ($mock) use ($canonical, $duplicate): void {
+            $mock->shouldReceive('canonicalPaymentForPresentation')
+                ->atLeast()
+                ->once()
+                ->andReturnUsing(function (TechnicalServiceMountPayment $candidate) use ($canonical, $duplicate): TechnicalServiceMountPayment {
+                    $this->assertSame($duplicate->id, $candidate->id);
+
+                    return $canonical;
+                });
+        });
+
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'form_ready')
+                ->where('statusLabel', 'Montaj ödemesi alındı'));
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $canonical->fresh()->status);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $duplicate->fresh()->status);
     }
 
     public function test_paid_mount_payment_shows_continue_to_form_button(): void

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
@@ -942,6 +943,65 @@ class TechnicalServiceRouteQuoteTest extends TestCase
                 'reason' => 'route_fee',
             ])
             ->assertJsonValidationErrors('amount');
+
+        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
+    }
+
+    public function test_payment_identity_inputs_fail_closed_before_provider(): void
+    {
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => '3.5e3',
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertJsonValidationErrors('amount');
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => '3500.00',
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+                'charge_type' => 'route_fee',
+            ])
+            ->assertJsonValidationErrors('charge_type');
+
+        [$foreignRequest, , $foreignSerial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$foreignSerial->id],
+                'amount' => '3500.00',
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertJsonValidationErrors('selected_serial_ids');
+
+        $foreignPart = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $foreignRequest->id,
+            'root_request_id' => $foreignRequest->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Foreign scoped part',
+        ]);
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'selected_serial_ids' => [$serial->id],
+                'amount' => '3500.00',
+                'part_amount' => '3500.00',
+                'currency' => 'TRY',
+                'purpose' => 'part_payment',
+                'charge_type' => 'part_payment',
+                'part_request_id' => $foreignPart->id,
+            ])
+            ->assertJsonValidationErrors('part_request_id');
 
         $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
     }

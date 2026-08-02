@@ -6,7 +6,9 @@ use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestSerial;
 use App\Models\User;
 use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
@@ -57,6 +59,14 @@ class TechnicalServiceMessagingSettingsService
     public const SCOPED_EFFECT_PAYMENT_CREATE = 'sandbox_payment_create';
 
     public const SCOPED_EFFECT_PAYMENT_CALLBACK = 'sandbox_payment_callback';
+
+    public const SCOPED_PAYMENT_OUTCOME_NEW_PENDING = 'new_pending';
+
+    public const SCOPED_PAYMENT_OUTCOME_REUSED_PENDING = 'reused_pending';
+
+    public const SCOPED_PAYMENT_OUTCOME_ALREADY_PAID = 'already_paid';
+
+    public const SCOPED_PAYMENT_OUTCOME_TERMINAL_NOT_REUSABLE = 'terminal_not_reusable';
 
     public const OUTBOUND_EXECUTION_MODE_LOCAL = 'local';
 
@@ -1200,7 +1210,7 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
-     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null}
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null,outcome:string|null}
      */
     public function claimScopedLocalUatEmailEffect(
         TechnicalServiceMountPayment $payment,
@@ -1218,7 +1228,7 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
-     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null}
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null,outcome:string|null}
      */
     public function claimScopedLocalUatSandboxPaymentEffect(
         TechnicalServiceMountPayment $payment,
@@ -1244,7 +1254,7 @@ class TechnicalServiceMessagingSettingsService
      * from request-controlled run or provider values.
      *
      * @param  array<string, mixed>  $callbackPayload
-     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null}
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null,outcome:string|null}
      */
     public function claimScopedLocalUatSandboxPaymentCallbackEffect(
         TechnicalServiceMountPayment $payment,
@@ -1260,6 +1270,19 @@ class TechnicalServiceMessagingSettingsService
             null,
             $callbackPayload,
         );
+    }
+
+    public function canonicalScopedLocalUatPaymentForPresentation(
+        TechnicalServiceMountPayment $payment,
+    ): TechnicalServiceMountPayment {
+        return DB::transaction(function () use ($payment): TechnicalServiceMountPayment {
+            $lockedPayment = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            return $this->lockedScopedLocalUatCanonicalCallbackPayment($lockedPayment);
+        });
     }
 
     public function assertScopedLocalUatUnsupportedPaymentEffect(
@@ -1389,7 +1412,7 @@ class TechnicalServiceMessagingSettingsService
 
     /**
      * @param  array<string, mixed>  $callbackPayload
-     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null}
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null,outcome:string|null}
      */
     private function claimScopedLocalUatEffect(
         TechnicalServiceMountPayment $payment,
@@ -1419,7 +1442,13 @@ class TechnicalServiceMessagingSettingsService
                     && $this->isScopedLocalUatSettings($settings);
 
                 if (! $tagged && ! $activeScopedRun) {
-                    return ['required' => false, 'duplicate' => false, 'claim_nonce' => null, 'duplicate_payment_id' => null];
+                    return [
+                        'required' => false,
+                        'duplicate' => false,
+                        'claim_nonce' => null,
+                        'duplicate_payment_id' => null,
+                        'outcome' => null,
+                    ];
                 }
                 if (! $tagged || ! $activeScopedRun || ! $context->isActive()) {
                     throw new ConflictHttpException('scoped_uat_active_run_missing: Effect exact aktif synthetic UAT run ile bağlı değil.');
@@ -1531,7 +1560,7 @@ class TechnicalServiceMessagingSettingsService
                     $operation,
                     $businessIdentity,
                     $this->scopedLocalUatAmountMinorUnits($lockedPayment),
-                    strtoupper((string) $lockedPayment->currency),
+                    $this->scopedLocalUatCurrency($lockedPayment),
                     $provider,
                     $recipientFingerprint,
                 );
@@ -1548,35 +1577,23 @@ class TechnicalServiceMessagingSettingsService
                     );
                 }
                 if (is_array($previous)) {
-                    if ((string) ($previous['status'] ?? '') === 'completed') {
+                    if ($operation === self::SCOPED_EFFECT_PAYMENT_CREATE) {
                         $canonicalPaymentId = (int) ($previous['payment_id'] ?? $lockedPayment->getKey());
-                        if ($operation === self::SCOPED_EFFECT_PAYMENT_CREATE
-                            && $canonicalPaymentId !== (int) $lockedPayment->getKey()) {
+                        $canonicalPayment = TechnicalServiceMountPayment::query()
+                            ->whereKey($canonicalPaymentId)
+                            ->lockForUpdate()
+                            ->firstOrFail();
+                        $outcome = $this->scopedLocalUatCreateReuseOutcome($canonicalPayment, $previous);
+                        if ($canonicalPaymentId !== (int) $lockedPayment->getKey()
+                            && $outcome !== self::SCOPED_PAYMENT_OUTCOME_TERMINAL_NOT_REUSABLE) {
                             $this->markScopedLocalUatDuplicatePayment(
                                 $lockedPayment,
-                                $canonicalPaymentId,
+                                $canonicalPayment,
+                                $runId,
+                                $businessIdentity,
+                                $provider,
                                 $idempotencyHash,
                             );
-                        }
-                        if ($operation === self::SCOPED_EFFECT_PAYMENT_CALLBACK) {
-                            $duplicateClaim = [
-                                'run_id' => $runId,
-                                'provider' => $provider,
-                                'business_entity_type' => $businessIdentity['entity_type'],
-                                'business_entity_id' => $businessIdentity['entity_id'],
-                                'payment_purpose' => $businessIdentity['payment_purpose'],
-                                'business_identity_hash' => $businessIdentity['identity_hash'],
-                                'callback_submission' => $this->scopedLocalUatCallbackSubmission($callbackPayload),
-                            ];
-                            $this->assertScopedLocalUatStoredPaymentSessionAuthority(
-                                $settings,
-                                $duplicateClaim,
-                                $lockedPayment,
-                                $payload,
-                            );
-                            if ($lockedPayment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
-                                throw new ConflictHttpException('scoped_uat_callback_state_invalid: Completed callback history canonical paid state ile eşleşmiyor.');
-                            }
                         }
 
                         return [
@@ -1584,6 +1601,39 @@ class TechnicalServiceMessagingSettingsService
                             'duplicate' => true,
                             'claim_nonce' => null,
                             'duplicate_payment_id' => $canonicalPaymentId,
+                            'outcome' => $outcome,
+                        ];
+                    }
+
+                    if ((string) ($previous['status'] ?? '') === 'completed') {
+                        $canonicalPaymentId = (int) ($previous['payment_id'] ?? $lockedPayment->getKey());
+                        $callbackSubmission = $this->scopedLocalUatCallbackSubmission($callbackPayload);
+                        $duplicateClaim = [
+                            'run_id' => $runId,
+                            'provider' => $provider,
+                            'business_entity_type' => $businessIdentity['entity_type'],
+                            'business_entity_id' => $businessIdentity['entity_id'],
+                            'payment_purpose' => $businessIdentity['payment_purpose'],
+                            'business_identity_hash' => $businessIdentity['identity_hash'],
+                            'callback_submission' => $callbackSubmission,
+                        ];
+                        $this->assertScopedLocalUatStoredPaymentSessionAuthority(
+                            $settings,
+                            $duplicateClaim,
+                            $lockedPayment,
+                            $payload,
+                        );
+                        $this->assertScopedLocalUatCallbackReplayMatches($previous, $callbackSubmission);
+                        if ($lockedPayment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
+                            throw new ConflictHttpException('scoped_uat_callback_state_invalid: Completed callback history canonical paid state ile eşleşmiyor.');
+                        }
+
+                        return [
+                            'required' => true,
+                            'duplicate' => true,
+                            'claim_nonce' => null,
+                            'duplicate_payment_id' => $canonicalPaymentId,
+                            'outcome' => null,
                         ];
                     }
 
@@ -1622,7 +1672,7 @@ class TechnicalServiceMessagingSettingsService
                     'selected_serials_fingerprint' => $businessIdentity['selected_serials_fingerprint'],
                     'selected_serial_count' => $businessIdentity['selected_serial_count'],
                     'amount_minor' => $this->scopedLocalUatAmountMinorUnits($lockedPayment),
-                    'currency' => strtoupper((string) $lockedPayment->currency),
+                    'currency' => $this->scopedLocalUatCurrency($lockedPayment),
                     'request_id' => is_numeric($lockedPayment->technical_service_request_id)
                         ? (int) $lockedPayment->technical_service_request_id
                         : null,
@@ -1649,6 +1699,9 @@ class TechnicalServiceMessagingSettingsService
                     'duplicate' => false,
                     'claim_nonce' => $claimNonce,
                     'duplicate_payment_id' => null,
+                    'outcome' => $operation === self::SCOPED_EFFECT_PAYMENT_CREATE
+                        ? self::SCOPED_PAYMENT_OUTCOME_NEW_PENDING
+                        : null,
                 ];
             });
         } finally {
@@ -1907,7 +1960,7 @@ class TechnicalServiceMessagingSettingsService
             (string) ($claim['operation'] ?? ''),
             $businessIdentity,
             $this->scopedLocalUatAmountMinorUnits($payment),
-            strtoupper((string) $payment->currency),
+            $this->scopedLocalUatCurrency($payment),
             $provider,
             is_string($claim['recipient_fingerprint'] ?? null) ? $claim['recipient_fingerprint'] : null,
         );
@@ -1973,30 +2026,10 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $source = strtolower(trim((string) ($payload['source'] ?? '')));
-        $rawPurpose = strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')));
-        $paymentPurpose = match ($source) {
-            'scoped_local_uat_sandbox' => 'sandbox_payment',
-            'public_mount_payment' => 'service_payment',
-            'operation_extra_mount_fee' => match ($rawPurpose) {
-                'multi_product', 'multi_product_mount' => 'multi_product_mount',
-                'route_fee' => 'route_fee',
-                'montage_difference' => 'montage_difference',
-                'manual_extra', 'mount_extra', 'manual_mount_payment' => 'extra_mount_fee',
-                default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Extra mount payment purpose code-owned allowlist içinde değil.'),
-            },
-            'operation_customer_charge' => match ($rawPurpose) {
-                'part_payment' => 'part_payment',
-                'service_and_part_payment' => 'service_and_part_payment',
-                'service_payment' => 'customer_charge',
-                default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Customer charge purpose code-owned allowlist içinde değil.'),
-            },
-            default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Payment purpose code-owned allowlist içinde değil.'),
-        };
-
-        $partRequestId = is_numeric($payload['part_request_id'] ?? null)
-            && (int) $payload['part_request_id'] > 0
-                ? (int) $payload['part_request_id']
-                : null;
+        $paymentPurpose = $this->scopedLocalUatCanonicalPaymentPurpose($source, $payload);
+        $partRequestId = array_key_exists('part_request_id', $payload)
+            ? $this->scopedLocalUatPositiveIdentifier($payload['part_request_id'], 'part_request_id')
+            : null;
         if (in_array($paymentPurpose, ['part_payment', 'service_and_part_payment'], true) && $partRequestId === null) {
             throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: Scoped part payment part_request_id gerektirir.');
         }
@@ -2007,10 +2040,7 @@ class TechnicalServiceMessagingSettingsService
         }
         $selectedSerialIds = [];
         foreach ($rawSerialIds as $serialId) {
-            if (! is_numeric($serialId) || (int) $serialId < 1) {
-                throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: selected_serial_ids pozitif kimliklerden oluşmalı.');
-            }
-            $selectedSerialIds[] = (int) $serialId;
+            $selectedSerialIds[] = $this->scopedLocalUatPositiveIdentifier($serialId, 'selected_serial_ids');
         }
         $selectedSerialIds = array_values(array_unique($selectedSerialIds));
         sort($selectedSerialIds, SORT_NUMERIC);
@@ -2025,6 +2055,24 @@ class TechnicalServiceMessagingSettingsService
         $sessionId = is_numeric($payment->technical_service_mount_session_id)
             ? (int) $payment->technical_service_mount_session_id
             : null;
+        if ($partRequestId !== null && ($requestId === null || ! TechnicalServicePartRequest::query()
+            ->whereKey($partRequestId)
+            ->where('technical_service_request_id', $requestId)
+            ->exists())) {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: part_request_id payment request sahipliğiyle eşleşmiyor.');
+        }
+        if ($selectedSerialIds !== []) {
+            if ($requestId === null) {
+                throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: selected_serial_ids request authority olmadan doğrulanamaz.');
+            }
+            $ownedSerialCount = TechnicalServiceRequestSerial::query()
+                ->where('technical_service_request_id', $requestId)
+                ->whereIn('id', $selectedSerialIds)
+                ->count();
+            if ($ownedSerialCount !== count($selectedSerialIds)) {
+                throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: selected_serial_ids payment request sahipliğiyle eşleşmiyor.');
+            }
+        }
         $identity = [
             'entity_type' => $entityType,
             'entity_id' => $entityId,
@@ -2051,7 +2099,119 @@ class TechnicalServiceMessagingSettingsService
 
     private function scopedLocalUatAmountMinorUnits(TechnicalServiceMountPayment $payment): string
     {
-        return ltrim(str_replace('.', '', number_format((float) $payment->amount, 2, '.', '')), '0') ?: '0';
+        $rawAmount = $payment->getRawOriginal('amount');
+
+        return $this->scopedLocalUatStrictDecimalMinorUnits($rawAmount ?? $payment->amount, 'amount');
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function scopedLocalUatCanonicalPaymentPurpose(string $source, array $payload): string
+    {
+        $values = [];
+        foreach (['purpose', 'charge_type'] as $key) {
+            if (! array_key_exists($key, $payload)) {
+                continue;
+            }
+            if (! is_scalar($payload[$key]) || trim((string) $payload[$key]) === '') {
+                throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Present purpose/charge_type değeri geçersiz.');
+            }
+            $values[] = $this->scopedLocalUatCanonicalPaymentPurposeValue($source, (string) $payload[$key]);
+        }
+        if ($values === [] && array_key_exists('reason', $payload)) {
+            if (! is_scalar($payload['reason']) || trim((string) $payload['reason']) === '') {
+                throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Present reason değeri geçersiz.');
+            }
+            $values[] = $this->scopedLocalUatCanonicalPaymentPurposeValue($source, (string) $payload['reason']);
+        }
+        if ($values === []) {
+            $values[] = $this->scopedLocalUatCanonicalPaymentPurposeValue($source, '');
+        }
+        if (count(array_unique($values)) !== 1) {
+            throw new ConflictHttpException('scoped_uat_payment_purpose_conflict: purpose ve charge_type aynı business obligationı göstermiyor.');
+        }
+
+        return $values[0];
+    }
+
+    private function scopedLocalUatCanonicalPaymentPurposeValue(string $source, string $value): string
+    {
+        $value = strtolower(trim($value));
+
+        return match ($source) {
+            'scoped_local_uat_sandbox' => $value === '' || $value === 'sandbox_payment'
+                ? 'sandbox_payment'
+                : throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Sandbox payment purpose code-owned allowlist içinde değil.'),
+            'public_mount_payment' => $value === 'service_payment'
+                ? 'service_payment'
+                : throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Public mount payment purpose code-owned allowlist içinde değil.'),
+            'operation_extra_mount_fee' => match ($value) {
+                'multi_product', 'multi_product_mount' => 'multi_product_mount',
+                'route_fee' => 'route_fee',
+                'montage_difference' => 'montage_difference',
+                'manual_extra', 'mount_extra', 'manual_mount_payment' => 'extra_mount_fee',
+                default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Extra mount payment purpose code-owned allowlist içinde değil.'),
+            },
+            'operation_customer_charge' => match ($value) {
+                'part_payment' => 'part_payment',
+                'service_and_part_payment' => 'service_and_part_payment',
+                'service_payment' => 'customer_charge',
+                default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Customer charge purpose code-owned allowlist içinde değil.'),
+            },
+            default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Payment purpose code-owned allowlist içinde değil.'),
+        };
+    }
+
+    private function scopedLocalUatPositiveIdentifier(mixed $value, string $field): int
+    {
+        if (is_int($value)) {
+            $identifier = $value;
+        } elseif (is_string($value) && preg_match('/^[1-9][0-9]*$/', $value)) {
+            $identifier = (int) $value;
+        } else {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: '.$field.' pozitif canonical kimlik olmalı.');
+        }
+        if ($identifier < 1) {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: '.$field.' pozitif canonical kimlik olmalı.');
+        }
+
+        return $identifier;
+    }
+
+    private function scopedLocalUatStrictDecimalMinorUnits(mixed $value, string $field): string
+    {
+        if (is_int($value)) {
+            $decimal = (string) $value;
+        } elseif (is_float($value) && is_finite($value)) {
+            $rounded = round($value, 2);
+            if (abs($value - $rounded) > 0.000000001) {
+                throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: '.$field.' float artefact içeriyor.');
+            }
+            $decimal = number_format($rounded, 2, '.', '');
+        } elseif (is_string($value)) {
+            $decimal = trim($value);
+        } else {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: '.$field.' strict decimal olmalı.');
+        }
+        if (! preg_match('/^(0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/', $decimal, $matches)) {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: '.$field.' scientific notation veya geçersiz decimal içeriyor.');
+        }
+        $fraction = str_pad((string) ($matches[2] ?? ''), 2, '0');
+        $minor = ltrim($matches[1].$fraction, '0') ?: '0';
+        if ($minor === '0') {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: '.$field.' pozitif olmalı.');
+        }
+
+        return $minor;
+    }
+
+    private function scopedLocalUatCurrency(TechnicalServiceMountPayment $payment): string
+    {
+        $currency = strtoupper(trim((string) $payment->currency));
+        if (! preg_match('/^[A-Z]{3}$/', $currency)) {
+            throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: currency canonical üç harfli kod olmalı.');
+        }
+
+        return $currency;
     }
 
     /**
@@ -2076,6 +2236,47 @@ class TechnicalServiceMessagingSettingsService
             $provider,
             (string) $recipientFingerprint,
         ]));
+    }
+
+    /** @param array<string, mixed> $previous */
+    private function scopedLocalUatCreateReuseOutcome(
+        TechnicalServiceMountPayment $canonicalPayment,
+        array $previous,
+    ): string {
+        $status = (string) $canonicalPayment->status;
+        if (in_array($status, [
+            TechnicalServiceMountPayment::STATUS_FAILED,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            TechnicalServiceMountPayment::STATUS_EXPIRED,
+        ], true)) {
+            return self::SCOPED_PAYMENT_OUTCOME_TERMINAL_NOT_REUSABLE;
+        }
+        if ((string) ($previous['status'] ?? '') !== 'completed') {
+            throw new ConflictHttpException('scoped_uat_effect_replay_blocked: Payment create effecti tamamlanmadan reuse edilemez.');
+        }
+
+        $authority = data_get($canonicalPayment->raw_payload, 'scoped_local_uat_payment_session_authority');
+        $providerReference = trim((string) $canonicalPayment->provider_reference);
+        $authorityValid = is_array($authority)
+            && (string) ($authority['create_status'] ?? '') === 'completed'
+            && (int) ($authority['payment_id'] ?? 0) === (int) $canonicalPayment->getKey()
+            && $providerReference !== ''
+            && hash_equals((string) ($authority['provider_reference'] ?? ''), $providerReference)
+            && (string) ($authority['amount_minor'] ?? '') === $this->scopedLocalUatAmountMinorUnits($canonicalPayment)
+            && (string) ($authority['currency'] ?? '') === $this->scopedLocalUatCurrency($canonicalPayment);
+        if (! $authorityValid) {
+            throw new ConflictHttpException('scoped_uat_payment_session_incomplete: Canonical payment stored successful session authority taşımıyor.');
+        }
+
+        if ($status === TechnicalServiceMountPayment::STATUS_PAID) {
+            return self::SCOPED_PAYMENT_OUTCOME_ALREADY_PAID;
+        }
+        if ($status === TechnicalServiceMountPayment::STATUS_PENDING
+            && trim((string) $canonicalPayment->payment_url) !== '') {
+            return self::SCOPED_PAYMENT_OUTCOME_REUSED_PENDING;
+        }
+
+        return self::SCOPED_PAYMENT_OUTCOME_TERMINAL_NOT_REUSABLE;
     }
 
     /** @return array<string, mixed>|null */
@@ -2150,15 +2351,30 @@ class TechnicalServiceMessagingSettingsService
 
     private function markScopedLocalUatDuplicatePayment(
         TechnicalServiceMountPayment $payment,
-        int $canonicalPaymentId,
+        TechnicalServiceMountPayment $canonicalPayment,
+        string $runId,
+        array $businessIdentity,
+        string $provider,
         string $idempotencyHash,
     ): void {
+        $authority = data_get($canonicalPayment->raw_payload, 'scoped_local_uat_payment_session_authority');
+        if (! is_array($authority) || (string) ($authority['create_status'] ?? '') !== 'completed') {
+            throw new ConflictHttpException('scoped_uat_duplicate_payment_authority_invalid: Canonical stored session authority eksik.');
+        }
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $payload['scoped_local_uat_duplicate_payment'] = [
-            'schema_version' => 1,
+            'schema_version' => 2,
             'status' => 'superseded',
-            'canonical_payment_id' => $canonicalPaymentId,
+            'profile_id' => ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+            'run_id' => $runId,
+            'canonical_payment_id' => (int) $canonicalPayment->getKey(),
             'idempotency_hash' => $idempotencyHash,
+            'business_identity_hash' => $businessIdentity['identity_hash'],
+            'provider' => $provider,
+            'provider_reference_hash' => hash('sha256', (string) $canonicalPayment->provider_reference),
+            'amount_minor' => $this->scopedLocalUatAmountMinorUnits($payment),
+            'currency' => $this->scopedLocalUatCurrency($payment),
+            'canonical_authority_fingerprint' => $this->scopedLocalUatDuplicateAuthorityFingerprint($authority),
             'resolved_at' => now()->toIso8601String(),
         ];
         $payment->forceFill([
@@ -2176,7 +2392,10 @@ class TechnicalServiceMessagingSettingsService
         }
         $canonicalPaymentId = $duplicate['canonical_payment_id'] ?? null;
         $idempotencyHash = (string) ($duplicate['idempotency_hash'] ?? '');
-        if ($payment->status !== TechnicalServiceMountPayment::STATUS_CANCELLED
+        if ((int) ($duplicate['schema_version'] ?? 0) !== 2
+            || (string) ($duplicate['status'] ?? '') !== 'superseded'
+            || (string) ($duplicate['profile_id'] ?? '') !== ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
+            || $payment->status !== TechnicalServiceMountPayment::STATUS_CANCELLED
             || ! is_numeric($canonicalPaymentId)
             || (int) $canonicalPaymentId < 1
             || (int) $canonicalPaymentId === (int) $payment->getKey()
@@ -2189,59 +2408,224 @@ class TechnicalServiceMessagingSettingsService
             ->lockForUpdate()
             ->firstOrFail();
         $authority = data_get($canonical->raw_payload, 'scoped_local_uat_payment_session_authority');
-        if (! is_array($authority)
-            || ! hash_equals((string) ($authority['idempotency_hash'] ?? ''), $idempotencyHash)) {
-            throw new ConflictHttpException('scoped_uat_duplicate_payment_authority_invalid: Canonical stored session authority duplicate pointer ile eşleşmiyor.');
+        $paymentPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $businessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($payment, $paymentPayload);
+        $canonicalPayload = is_array($canonical->raw_payload) ? $canonical->raw_payload : [];
+        $canonicalBusinessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($canonical, $canonicalPayload);
+        $provider = $this->scopedLocalUatCanonicalPaymentProvider($payment);
+        $canonicalProvider = $this->scopedLocalUatCanonicalPaymentProvider($canonical);
+        $canonicalReference = trim((string) $canonical->provider_reference);
+        $expectedIdempotencyHash = $provider === null
+            ? ''
+            : $this->scopedLocalUatEffectIdempotencyHash(
+                (string) ($duplicate['run_id'] ?? ''),
+                self::SCOPED_EFFECT_PAYMENT_CREATE,
+                $businessIdentity,
+                $this->scopedLocalUatAmountMinorUnits($payment),
+                $this->scopedLocalUatCurrency($payment),
+                $provider,
+                null,
+            );
+        $invalid = ! is_array($authority)
+            || (string) ($authority['create_status'] ?? '') !== 'completed'
+            || (int) ($authority['payment_id'] ?? 0) !== (int) $canonical->getKey()
+            || ! hash_equals((string) ($authority['idempotency_hash'] ?? ''), $idempotencyHash)
+            || ! hash_equals($expectedIdempotencyHash, $idempotencyHash)
+            || ! hash_equals((string) ($authority['business_identity_hash'] ?? ''), $businessIdentity['identity_hash'])
+            || ! hash_equals($canonicalBusinessIdentity['identity_hash'], $businessIdentity['identity_hash'])
+            || ! hash_equals((string) ($duplicate['business_identity_hash'] ?? ''), $businessIdentity['identity_hash'])
+            || (string) ($duplicate['run_id'] ?? '') !== (string) ($authority['run_id'] ?? '')
+            || (string) ($duplicate['provider'] ?? '') !== (string) ($authority['provider'] ?? '')
+            || $provider === null
+            || $provider !== $canonicalProvider
+            || $provider !== (string) ($authority['provider'] ?? '')
+            || $canonicalReference === ''
+            || ! hash_equals((string) ($authority['provider_reference'] ?? ''), $canonicalReference)
+            || ! hash_equals((string) ($duplicate['provider_reference_hash'] ?? ''), hash('sha256', $canonicalReference))
+            || (string) ($duplicate['amount_minor'] ?? '') !== $this->scopedLocalUatAmountMinorUnits($payment)
+            || (string) ($authority['amount_minor'] ?? '') !== $this->scopedLocalUatAmountMinorUnits($canonical)
+            || $this->scopedLocalUatAmountMinorUnits($payment) !== $this->scopedLocalUatAmountMinorUnits($canonical)
+            || (string) ($duplicate['currency'] ?? '') !== $this->scopedLocalUatCurrency($payment)
+            || (string) ($authority['currency'] ?? '') !== $this->scopedLocalUatCurrency($canonical)
+            || $this->scopedLocalUatCurrency($payment) !== $this->scopedLocalUatCurrency($canonical)
+            || ! hash_equals(
+                (string) ($duplicate['canonical_authority_fingerprint'] ?? ''),
+                $this->scopedLocalUatDuplicateAuthorityFingerprint($authority),
+            );
+        if ($invalid) {
+            throw new ConflictHttpException('DUPLICATE_POINTER_AUTHORITY_MISMATCH: Duplicate pointer full stored authority ile eşleşmiyor.');
         }
 
         return $canonical;
     }
 
-    /**
-     * @param  array<string, mixed>  $payload
-     * @return array{run_id:string|null,provider:string|null,provider_reference_hash:string|null,amount_minor:string|null,currency:string|null}
-     */
+    /** @param array<string, mixed> $authority */
+    private function scopedLocalUatDuplicateAuthorityFingerprint(array $authority): string
+    {
+        $canonical = [
+            'profile_id' => (string) ($authority['profile_id'] ?? ''),
+            'run_id' => (string) ($authority['run_id'] ?? ''),
+            'payment_id' => (int) ($authority['payment_id'] ?? 0),
+            'business_entity_type' => (string) ($authority['business_entity_type'] ?? ''),
+            'business_entity_id' => (int) ($authority['business_entity_id'] ?? 0),
+            'payment_purpose' => (string) ($authority['payment_purpose'] ?? ''),
+            'business_identity_hash' => (string) ($authority['business_identity_hash'] ?? ''),
+            'part_request_fingerprint' => $authority['part_request_fingerprint'] ?? null,
+            'selected_serials_fingerprint' => $authority['selected_serials_fingerprint'] ?? null,
+            'selected_serial_count' => (int) ($authority['selected_serial_count'] ?? 0),
+            'idempotency_hash' => (string) ($authority['idempotency_hash'] ?? ''),
+            'provider' => (string) ($authority['provider'] ?? ''),
+            'provider_reference_hash' => hash('sha256', (string) ($authority['provider_reference'] ?? '')),
+            'amount_minor' => (string) ($authority['amount_minor'] ?? ''),
+            'currency' => (string) ($authority['currency'] ?? ''),
+        ];
+
+        return hash('sha256', json_encode($canonical, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    /** @param array<string, mixed> $payload */
     private function scopedLocalUatCallbackSubmission(array $payload): array
     {
-        $runId = null;
-        foreach (['run_id', 'scoped_local_uat_run_id'] as $key) {
-            if (is_scalar($payload[$key] ?? null) && trim((string) $payload[$key]) !== '') {
-                $runId = trim((string) $payload[$key]);
-                break;
+        $providerMode = null;
+        if (array_key_exists('provider_mode', $payload)) {
+            if (! is_scalar($payload['provider_mode']) || trim((string) $payload['provider_mode']) === '') {
+                throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider_mode present fakat geçersiz.');
+            }
+            $providerMode = strtolower(trim((string) $payload['provider_mode']));
+            if (! in_array($providerMode, ['local', 'sandbox', 'live'], true)) {
+                throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider_mode canonical değil.');
             }
         }
-        $providerValue = null;
-        foreach (['provider', 'provider_key', 'payment_provider'] as $key) {
-            if (array_key_exists($key, $payload)) {
-                $providerValue = $payload[$key];
-                break;
-            }
-        }
-        $provider = $providerValue === null
-            ? null
-            : ($this->scopedLocalUatCanonicalProviderValue((string) $providerValue, (string) ($payload['provider_mode'] ?? '')) ?? 'invalid');
-        $reference = null;
-        foreach (['provider_reference', 'provider_payment_reference', 'payment_id'] as $key) {
-            if (is_scalar($payload[$key] ?? null) && trim((string) $payload[$key]) !== '') {
-                $reference = trim((string) $payload[$key]);
-                break;
-            }
-        }
-        $amountMinor = null;
-        if (is_numeric($payload['amount'] ?? null)) {
-            $amountMinor = ltrim(str_replace('.', '', number_format((float) $payload['amount'], 2, '.', '')), '0') ?: '0';
-        }
-        $currency = is_scalar($payload['currency'] ?? null) && trim((string) $payload['currency']) !== ''
-            ? strtoupper(trim((string) $payload['currency']))
-            : null;
+        $runId = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['run_id', 'scoped_local_uat_run_id'],
+            'run_id',
+            fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'run_id'),
+        );
+        $provider = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['provider', 'provider_key', 'payment_provider'],
+            'provider',
+            function (mixed $value) use ($providerMode): string {
+                if (! is_scalar($value) || trim((string) $value) === '') {
+                    throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider present fakat geçersiz.');
+                }
+                $provider = $this->scopedLocalUatCanonicalProviderValue((string) $value, (string) $providerMode);
+                if ($provider === null) {
+                    throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider canonical değil.');
+                }
 
-        return [
+                return $provider;
+            },
+        );
+        $reference = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['provider_reference', 'provider_payment_reference', 'payment_id'],
+            'provider_reference',
+            fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'provider_reference'),
+        );
+        $amountMinor = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['amount', 'paid_amount'],
+            'amount',
+            fn (mixed $value): string => $this->scopedLocalUatStrictDecimalMinorUnits($value, 'callback amount'),
+        );
+        $currency = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['currency', 'payment_currency', 'currency_code'],
+            'currency',
+            function (mixed $value): string {
+                if (! is_scalar($value)) {
+                    throw new ConflictHttpException('scoped_uat_callback_field_malformed: currency present fakat geçersiz.');
+                }
+                $currency = strtoupper(trim((string) $value));
+                if (! preg_match('/^[A-Z]{3}$/', $currency)) {
+                    throw new ConflictHttpException('scoped_uat_callback_field_malformed: currency canonical değil.');
+                }
+
+                return $currency;
+            },
+        );
+        $profileId = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['profile_id', 'scoped_local_uat_profile_id'],
+            'profile_id',
+            fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'profile_id'),
+        );
+        $callbackIdentity = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['callback_id', 'idempotency_key'],
+            'callback_identity',
+            fn (mixed $value): string => hash('sha256', $this->scopedLocalUatCallbackIdentifier($value, 'callback_identity')),
+        );
+        $submission = [
             'run_id' => $runId,
+            'profile_id' => $profileId,
             'provider' => $provider,
             'provider_reference_hash' => $reference === null ? null : hash('sha256', $reference),
             'amount_minor' => $amountMinor,
             'currency' => $currency,
+            'callback_identity_hash' => $callbackIdentity,
         ];
+
+        return [
+            ...$submission,
+            'submission_fingerprint' => hash('sha256', json_encode($submission, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  array<int, string>  $aliases
+     * @param  callable(mixed): string  $normalizer
+     */
+    private function scopedLocalUatCallbackAlias(
+        array $payload,
+        array $aliases,
+        string $field,
+        callable $normalizer,
+    ): ?string {
+        $values = [];
+        foreach ($aliases as $alias) {
+            if (! array_key_exists($alias, $payload)) {
+                continue;
+            }
+            $values[] = $normalizer($payload[$alias]);
+        }
+        $values = array_values(array_unique($values));
+        if (count($values) > 1) {
+            throw new ConflictHttpException('scoped_uat_callback_alias_conflict: '.$field.' aliasları çelişiyor.');
+        }
+
+        return $values[0] ?? null;
+    }
+
+    private function scopedLocalUatCallbackIdentifier(mixed $value, string $field): string
+    {
+        if (! is_scalar($value)) {
+            throw new ConflictHttpException('scoped_uat_callback_field_malformed: '.$field.' present fakat scalar değil.');
+        }
+        $identifier = trim((string) $value);
+        if ($identifier === '' || strlen($identifier) > 512 || preg_match('/[\x00-\x1F\x7F]/', $identifier)) {
+            throw new ConflictHttpException('scoped_uat_callback_field_malformed: '.$field.' present fakat geçersiz.');
+        }
+
+        return $identifier;
+    }
+
+    /** @param array<string, mixed> $previous @param array<string, mixed> $submission */
+    private function assertScopedLocalUatCallbackReplayMatches(array $previous, array $submission): void
+    {
+        $previousSubmission = is_array($previous['callback_submission'] ?? null)
+            ? $previous['callback_submission']
+            : null;
+        if ($previousSubmission === null
+            || ! hash_equals(
+                (string) ($previousSubmission['submission_fingerprint'] ?? ''),
+                (string) ($submission['submission_fingerprint'] ?? ''),
+            )) {
+            throw new ConflictHttpException('scoped_uat_callback_replay_mismatch: Duplicate callback exact stored submission ile eşleşmiyor.');
+        }
     }
 
     /**
@@ -2299,10 +2683,12 @@ class TechnicalServiceMessagingSettingsService
             || $providerReference === ''
             || (string) ($authority['provider_reference'] ?? '') !== $providerReference
             || (string) ($authority['amount_minor'] ?? '') !== $this->scopedLocalUatAmountMinorUnits($payment)
-            || (string) ($authority['currency'] ?? '') !== strtoupper((string) $payment->currency)
+            || (string) ($authority['currency'] ?? '') !== $this->scopedLocalUatCurrency($payment)
             || ! filter_var($authority['synthetic_uat'] ?? false, FILTER_VALIDATE_BOOL)
             || ((string) ($submission['run_id'] ?? '') !== ''
                 && (string) ($submission['run_id'] ?? '') !== (string) ($authority['run_id'] ?? ''))
+            || ((string) ($submission['profile_id'] ?? '') !== ''
+                && (string) ($submission['profile_id'] ?? '') !== (string) ($authority['profile_id'] ?? ''))
             || ((string) ($submission['provider'] ?? '') !== ''
                 && (string) ($submission['provider'] ?? '') !== $snapshotProvider)
             || ((string) ($submission['provider_reference_hash'] ?? '') !== ''
@@ -2313,7 +2699,7 @@ class TechnicalServiceMessagingSettingsService
             || ((string) ($submission['amount_minor'] ?? '') !== ''
                 && (string) $submission['amount_minor'] !== $this->scopedLocalUatAmountMinorUnits($payment))
             || ((string) ($submission['currency'] ?? '') !== ''
-                && (string) $submission['currency'] !== strtoupper((string) $payment->currency));
+                && (string) $submission['currency'] !== $this->scopedLocalUatCurrency($payment));
         if ($invalid) {
             throw new ConflictHttpException('scoped_uat_callback_session_authority_mismatch: Callback stored session/run/provider bağıyla eşleşmiyor.');
         }

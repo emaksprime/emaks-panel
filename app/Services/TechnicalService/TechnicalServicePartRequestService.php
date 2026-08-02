@@ -684,14 +684,23 @@ class TechnicalServicePartRequestService
             ],
         ]);
 
+        $createOutcome = PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING;
         try {
             $createResult = $this->paymentProviderManager->createPayment($payment);
+            $createOutcome = $this->paymentProviderManager->createOutcome($createResult);
             $payment = $this->paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
         } catch (Throwable $exception) {
             $this->paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
 
             throw ValidationException::withMessages([
                 'payment' => $exception->getMessage(),
+            ]);
+        }
+
+        if ($createOutcome !== PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID
+            && $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            throw ValidationException::withMessages([
+                'payment' => 'Terminal ödeme kaydı pending parça ödeme akışında kullanılamaz.',
             ]);
         }
 

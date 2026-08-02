@@ -230,6 +230,7 @@ class PublicMountRequestController extends Controller
         $link = $this->linkOrFail($token);
         $session = $this->sessionForLink($link);
         $payment = $this->latestPayment($session);
+        $createOutcome = PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING;
 
         if (! $payment instanceof TechnicalServiceMountPayment || $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
             $payment = null;
@@ -245,6 +246,7 @@ class PublicMountRequestController extends Controller
                 ]);
 
                 $createResult = $paymentProviderManager->createPayment($payment);
+                $createOutcome = $paymentProviderManager->createOutcome($createResult);
                 $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
             } catch (\Throwable $exception) {
                 if ($payment instanceof TechnicalServiceMountPayment) {
@@ -254,6 +256,15 @@ class PublicMountRequestController extends Controller
                 return redirect()->to(route('mount-request.payment.step', ['token' => $token], false))
                     ->withErrors(['payment' => $exception->getMessage()]);
             }
+        }
+
+        if ($createOutcome === PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID
+            || $payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            return redirect()->to(route('mount-request.form', ['token' => $token], false));
+        }
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            return redirect()->to(route('mount-request.payment.step', ['token' => $token], false))
+                ->withErrors(['payment' => 'Terminal ödeme kaydı yeni ödeme oturumu olarak kullanılamaz.']);
         }
 
         $session->forceFill([
@@ -794,9 +805,14 @@ class PublicMountRequestController extends Controller
 
     private function latestPayment(TechnicalServiceMountSession $session): ?TechnicalServiceMountPayment
     {
-        return $session->payments()
+        $payment = $session->payments()
             ->latest('id')
             ->first();
+        if (! $payment instanceof TechnicalServiceMountPayment) {
+            return null;
+        }
+
+        return app(PaymentProviderManager::class)->canonicalPaymentForPresentation($payment);
     }
 
     private function fakePaymentEnabled(): bool

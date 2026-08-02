@@ -20,6 +20,7 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
@@ -801,9 +802,18 @@ class TechnicalServiceController extends Controller
             'currency' => ['nullable', 'string', 'size:3'],
             'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra,service_payment,part_payment,service_and_part_payment'],
             'purpose' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
+            'charge_type' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
+            'part_request_id' => ['nullable', 'integer', 'exists:technical_service_part_requests,id'],
             'note' => ['nullable', 'string', 'max:2000'],
             'message_template' => ['nullable', 'string', 'max:4000'],
         ]);
+        $this->assertStrictPaymentDecimalInputs($request, ['amount', 'service_amount', 'part_amount']);
+        if (isset($validated['purpose'], $validated['charge_type'])
+            && $this->canonicalExtraPaymentPurpose($validated['purpose']) !== $this->canonicalExtraPaymentPurpose($validated['charge_type'])) {
+            throw ValidationException::withMessages([
+                'charge_type' => 'purpose ve charge_type aynı ödeme yükümlülüğünü göstermelidir.',
+            ]);
+        }
 
         if ($technicalServiceRequest->mount_session_id === null) {
             throw ValidationException::withMessages([
@@ -823,6 +833,11 @@ class TechnicalServiceController extends Controller
             ->pluck('id')
             ->map(fn (mixed $id): int => (int) $id)
             ->values();
+        if ($serialIds->unique()->count() !== $validSerialIds->unique()->count()) {
+            throw ValidationException::withMessages([
+                'selected_serial_ids' => 'Seçilen seri kimliklerinin tamamı mevcut teknik servis talebine ait olmalı.',
+            ]);
+        }
         $selectedSerialSnapshots = TechnicalServiceRequestSerial::query()
             ->where('technical_service_request_id', $technicalServiceRequest->id)
             ->whereIn('id', $validSerialIds)
@@ -838,8 +853,21 @@ class TechnicalServiceController extends Controller
             ->values()
             ->all();
         $currency = strtoupper($validated['currency'] ?? 'TRY');
-        $purpose = (string) ($validated['purpose'] ?? $validated['reason'] ?? 'mount_extra');
+        $purpose = (string) ($validated['purpose'] ?? $validated['reason'] ?? $validated['charge_type'] ?? 'mount_extra');
+        $chargeType = (string) ($validated['charge_type'] ?? $purpose);
         $isCustomerCharge = in_array($purpose, ['service_payment', 'part_payment', 'service_and_part_payment'], true);
+        $partRequestId = isset($validated['part_request_id']) ? (int) $validated['part_request_id'] : null;
+        if (in_array($purpose, ['part_payment', 'service_and_part_payment'], true)) {
+            $partRequestOwned = $partRequestId !== null && TechnicalServicePartRequest::query()
+                ->whereKey($partRequestId)
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->exists();
+            if (! $partRequestOwned) {
+                throw ValidationException::withMessages([
+                    'part_request_id' => 'Parça ödemesi mevcut teknik servis talebine ait part_request_id gerektirir.',
+                ]);
+            }
+        }
         $technicianRequired = ! $isCustomerCharge && ! in_array($purpose, ['mount_extra', 'manual_mount_payment'], true);
         if ($technicianRequired && ! isset($validated['technician_id'])) {
             throw ValidationException::withMessages([
@@ -893,7 +921,8 @@ class TechnicalServiceController extends Controller
             'selected_serials' => $selectedSerialSnapshots,
             'reason' => $validated['reason'] ?? $purpose,
             'purpose' => $purpose,
-            'charge_type' => $purpose,
+            'charge_type' => $chargeType,
+            'part_request_id' => $partRequestId,
             'amount_source' => $isCustomerCharge ? 'manual_customer_charge' : 'manual_ops_amount',
             'service_amount' => $serviceAmount,
             'part_amount' => $partAmount,
@@ -903,24 +932,36 @@ class TechnicalServiceController extends Controller
         ];
 
         if (! $isCustomerCharge) {
+            $canonicalPurpose = $this->canonicalExtraPaymentPurpose($purpose);
             $existingPayment = TechnicalServiceMountPayment::query()
                 ->where('technical_service_mount_session_id', $session->id)
                 ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->where('provider', $paymentProviderManager->providerName())
                 ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
                 ->latest('id')
                 ->get()
-                ->first(function (TechnicalServiceMountPayment $candidate) use ($currency, $selectedSerialIds, $source, $totalAmount): bool {
+                ->first(function (TechnicalServiceMountPayment $candidate) use ($canonicalPurpose, $currency, $partRequestId, $selectedSerialIds, $source, $totalAmount): bool {
                     $payload = is_array($candidate->raw_payload) ? $candidate->raw_payload : [];
                     $candidateSerialIds = collect($payload['selected_serial_ids'] ?? [])
+                        ->filter(fn (mixed $id): bool => is_int($id) || (is_string($id) && preg_match('/^[1-9][0-9]*$/', $id) === 1))
                         ->map(fn (mixed $id): int => (int) $id)
-                        ->filter(fn (int $id): bool => $id > 0)
+                        ->unique()
                         ->sort()
                         ->values()
                         ->all();
+                    try {
+                        $candidatePurpose = $this->canonicalExtraPaymentPurpose((string) ($payload['purpose'] ?? ''));
+                        $candidateChargeType = $this->canonicalExtraPaymentPurpose((string) ($payload['charge_type'] ?? ''));
+                    } catch (ValidationException) {
+                        return false;
+                    }
 
                     return ($payload['source'] ?? null) === $source
-                        && strtoupper((string) $candidate->currency) === $currency
-                        && abs(((float) $candidate->amount) - $totalAmount) < 0.01
+                        && $candidatePurpose === $canonicalPurpose
+                        && $candidateChargeType === $canonicalPurpose
+                        && (int) ($payload['part_request_id'] ?? 0) === (int) ($partRequestId ?? 0)
+                        && strtoupper(trim((string) $candidate->currency)) === $currency
+                        && number_format((float) $candidate->amount, 2, '.', '') === number_format($totalAmount, 2, '.', '')
                         && $candidateSerialIds === $selectedSerialIds;
                 });
 
@@ -931,6 +972,7 @@ class TechnicalServiceController extends Controller
                     'payment' => $this->mountPaymentResponse($existingPayment->refresh(), [
                         'amount_source' => $paymentPayload['amount_source'],
                         'reused' => true,
+                        'create_outcome' => PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING,
                     ]),
                     'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
                 ]);
@@ -947,8 +989,10 @@ class TechnicalServiceController extends Controller
             'currency' => $currency,
             'raw_payload' => $paymentPayload,
         ]);
+        $createOutcome = PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING;
         try {
             $createResult = $paymentProviderManager->createPayment($payment);
+            $createOutcome = $paymentProviderManager->createOutcome($createResult);
             $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
         } catch (Throwable $exception) {
             $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
@@ -958,6 +1002,36 @@ class TechnicalServiceController extends Controller
             ]);
         }
         $payment = $payment->refresh();
+
+        if ($createOutcome === PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID) {
+            return response()->json([
+                'ok' => true,
+                'message' => 'Bu ödeme yükümlülüğü daha önce tamamlandı.',
+                'payment' => $this->mountPaymentResponse($payment, [
+                    'amount_source' => $paymentPayload['amount_source'],
+                    'reused' => true,
+                    'create_outcome' => $createOutcome,
+                ]),
+                'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            ]);
+        }
+        if ($createOutcome === PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING) {
+            return response()->json([
+                'ok' => true,
+                'message' => 'Ödeme linki zaten var.',
+                'payment' => $this->mountPaymentResponse($payment, [
+                    'amount_source' => $paymentPayload['amount_source'],
+                    'reused' => true,
+                    'create_outcome' => $createOutcome,
+                ]),
+                'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            ]);
+        }
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            throw ValidationException::withMessages([
+                'payment' => 'Terminal ödeme kaydı pending akışına geri alınamaz.',
+            ]);
+        }
 
         if (! $isCustomerCharge) {
             $technicalServiceRequest->forceFill([
@@ -1012,7 +1086,8 @@ class TechnicalServiceController extends Controller
             'ok' => true,
             'payment' => $this->mountPaymentResponse($payment, [
                 'amount_source' => $paymentPayload['amount_source'],
-                'reused' => false,
+                'reused' => $createOutcome === PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING,
+                'create_outcome' => $createOutcome,
             ]),
             'request' => $requestPayload,
         ], 201);
@@ -2710,6 +2785,47 @@ class TechnicalServiceController extends Controller
         }
 
         return round((float) $value, 2);
+    }
+
+    /** @param array<int, string> $fields */
+    private function assertStrictPaymentDecimalInputs(Request $request, array $fields): void
+    {
+        $errors = [];
+
+        foreach ($fields as $field) {
+            if (! $request->exists($field)) {
+                continue;
+            }
+
+            $value = $request->input($field);
+            $valid = is_int($value)
+                || (is_string($value) && preg_match('/^(0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/', trim($value)) === 1)
+                || (is_float($value) && is_finite($value) && abs($value - round($value, 2)) <= 0.000000001);
+
+            if (! $valid) {
+                $errors[$field] = 'Ödeme tutarı en fazla iki ondalıklı normal decimal biçiminde olmalıdır.';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+    }
+
+    private function canonicalExtraPaymentPurpose(string $value): string
+    {
+        return match (strtolower(trim($value))) {
+            'multi_product', 'multi_product_mount' => 'multi_product_mount',
+            'manual_extra', 'mount_extra', 'manual_mount_payment' => 'extra_mount_fee',
+            'route_fee' => 'route_fee',
+            'montage_difference' => 'montage_difference',
+            'service_payment' => 'service_payment',
+            'part_payment' => 'part_payment',
+            'service_and_part_payment' => 'service_and_part_payment',
+            default => throw ValidationException::withMessages([
+                'purpose' => 'Desteklenmeyen ödeme amacı.',
+            ]),
+        };
     }
 
     private function telLink(?string $phone): ?string

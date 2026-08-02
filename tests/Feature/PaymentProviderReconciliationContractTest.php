@@ -14,6 +14,7 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\Payments\TechnicalServicePaymentReceiptNotificationService;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -288,6 +289,14 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertSame('sent', $secondResult->receipt_notification_status);
         $this->assertSame('payment-audit@example.test', $secondResult->receipt_notification_to);
         $this->assertNotNull($secondResult->receipt_notification_sent_at);
+        $this->assertSame('sent', data_get(
+            $secondResult->raw_payload,
+            'payment_receipt_notification_claim.status',
+        ));
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', (string) data_get(
+            $secondResult->raw_payload,
+            'payment_receipt_notification_claim.idempotency_hash',
+        ));
 
         Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
         Mail::assertSent(TechnicalServicePaymentAuditMail::class, function (TechnicalServicePaymentAuditMail $mail): bool {
@@ -440,15 +449,19 @@ class PaymentProviderReconciliationContractTest extends TestCase
     {
         $this->enablePaymentNotification('payment-audit@example.test');
         $this->configureReadySmtpProfile();
-        $this->app->instance(TechnicalServiceMailTransportSettingsService::class, new class extends TechnicalServiceMailTransportSettingsService
+        $transport = new class extends TechnicalServiceMailTransportSettingsService
         {
+            public int $calls = 0;
+
             public function __construct() {}
 
             public function sendPaymentAuditMail(array $recipients, TechnicalServicePaymentAuditMail $mail): void
             {
+                $this->calls++;
                 throw new \RuntimeException('SMTP failed password=super-secret gateway_token=abc123');
             }
-        });
+        };
+        $this->app->instance(TechnicalServiceMailTransportSettingsService::class, $transport);
 
         $request = $this->technicalServiceRequest();
         $payment = $this->mountPaymentForRequest($request, [
@@ -483,6 +496,16 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertSame('failed', $result->receipt_notification_status);
         $this->assertStringNotContainsString('super-secret', (string) $result->receipt_notification_error);
         $this->assertStringNotContainsString('abc123', (string) $result->receipt_notification_error);
+        $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_failed')->count());
+
+        app(TechnicalServicePaymentReceiptNotificationService::class)->notifyTrustedPaid($result->fresh());
+
+        $this->assertSame(1, $transport->calls);
+        $this->assertNull($result->fresh()->receipt_notification_sent_at);
+        $this->assertSame('failed', data_get(
+            $result->fresh()->raw_payload,
+            'payment_receipt_notification_claim.status',
+        ));
         $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_failed')->count());
     }
 

@@ -6,10 +6,19 @@ use App\Models\TechnicalServiceMountPayment;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Support\Arr;
 use InvalidArgumentException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
 class PaymentProviderManager
 {
+    public const CREATE_OUTCOME_NEW_PENDING = 'new_pending';
+
+    public const CREATE_OUTCOME_REUSED_PENDING = 'reused_pending';
+
+    public const CREATE_OUTCOME_ALREADY_PAID = 'already_paid';
+
+    public const CREATE_OUTCOME_TERMINAL_NOT_REUSABLE = 'terminal_not_reusable';
+
     public function __construct(
         private readonly TechnicalServicePaymentProviderModeResolver $modeResolver,
         private readonly TechnicalServicePaymentProviderTransportResolver $transportResolver,
@@ -30,7 +39,12 @@ class PaymentProviderManager
             $existing = TechnicalServiceMountPayment::query()
                 ->findOrFail((int) ($claim['duplicate_payment_id'] ?? $payment->getKey()));
 
-            return $this->existingPaymentResponse($existing);
+            return $this->existingPaymentResponse(
+                $existing,
+                is_string($claim['outcome'] ?? null)
+                    ? $claim['outcome']
+                    : self::CREATE_OUTCOME_REUSED_PENDING,
+            );
         }
 
         try {
@@ -46,7 +60,7 @@ class PaymentProviderManager
                 $this->messagingSettings->completeScopedLocalUatEffect($claim['claim_nonce']);
             }
 
-            return $this->existingPaymentResponse($payment->refresh());
+            return $this->existingPaymentResponse($payment->refresh(), self::CREATE_OUTCOME_NEW_PENDING);
         } catch (Throwable $exception) {
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
@@ -61,12 +75,38 @@ class PaymentProviderManager
      */
     public function canonicalPaymentFromCreateResult(array $result): TechnicalServiceMountPayment
     {
+        if ($this->createOutcome($result) === self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE) {
+            throw new ConflictHttpException('TERMINAL_PAYMENT_NOT_REUSABLE: Terminal odeme explicit retry sozlesmesi olmadan yeniden kullanilamaz.');
+        }
+
         $paymentId = $result['payment_id'] ?? null;
         if (! is_numeric($paymentId) || (int) $paymentId < 1) {
             throw new InvalidArgumentException('Kanonik odeme kaydi create sonucunda bulunamadi.');
         }
 
         return TechnicalServiceMountPayment::query()->findOrFail((int) $paymentId);
+    }
+
+    /** @param array<string, mixed> $result */
+    public function createOutcome(array $result): string
+    {
+        $outcome = (string) ($result['outcome'] ?? '');
+        if (! in_array($outcome, [
+            self::CREATE_OUTCOME_NEW_PENDING,
+            self::CREATE_OUTCOME_REUSED_PENDING,
+            self::CREATE_OUTCOME_ALREADY_PAID,
+            self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE,
+        ], true)) {
+            throw new InvalidArgumentException('Kanonik odeme create sonucu typed outcome tasimiyor.');
+        }
+
+        return $outcome;
+    }
+
+    public function canonicalPaymentForPresentation(
+        TechnicalServiceMountPayment $payment,
+    ): TechnicalServiceMountPayment {
+        return $this->messagingSettings->canonicalScopedLocalUatPaymentForPresentation($payment);
     }
 
     public function discardFailedCreatePaymentUnlessAudited(TechnicalServiceMountPayment $payment): void
@@ -76,13 +116,14 @@ class PaymentProviderManager
             return;
         }
         $history = data_get($fresh->raw_payload, 'scoped_local_uat_effect_history', []);
+        $preservedTerminalAudit = is_array(data_get($fresh->raw_payload, 'scoped_local_uat_duplicate_payment'));
         $auditedScopedFailure = $fresh->status === TechnicalServiceMountPayment::STATUS_FAILED
             && is_array($history)
             && collect($history)->contains(fn (mixed $entry): bool => is_array($entry)
                 && (string) ($entry['operation'] ?? '') === TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE
                 && (string) ($entry['status'] ?? '') === 'failed');
 
-        if (! $auditedScopedFailure) {
+        if (! $auditedScopedFailure && ! $preservedTerminalAudit) {
             $fresh->delete();
         }
     }
@@ -162,15 +203,16 @@ class PaymentProviderManager
     }
 
     /**
-     * @return array{payment_id:int,provider_reference:string|null,payment_url:string|null,status:string}
+     * @return array{payment_id:int,provider_reference:string|null,payment_url:string|null,status:string,outcome:string}
      */
-    private function existingPaymentResponse(TechnicalServiceMountPayment $payment): array
+    private function existingPaymentResponse(TechnicalServiceMountPayment $payment, string $outcome): array
     {
         return [
             'payment_id' => (int) $payment->getKey(),
             'provider_reference' => $payment->provider_reference,
             'payment_url' => $payment->payment_url,
             'status' => (string) $payment->status,
+            'outcome' => $outcome,
         ];
     }
 
