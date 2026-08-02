@@ -378,57 +378,60 @@ class TechnicalServicePaymentProviderSettingsService
      */
     public function update(array $values): array
     {
-        app(TechnicalServiceMessagingSettingsService::class)
-            ->assertScopedLocalUatPaymentSettingsMutationAllowed($values);
-        $layout = $this->layout();
+        return app(TechnicalServiceMessagingSettingsService::class)
+            ->withScopedLocalUatConfigurationMutationLock('payment', function () use ($values): array {
+                app(TechnicalServiceMessagingSettingsService::class)
+                    ->assertScopedLocalUatPaymentSettingsMutationAllowed($values);
+                $layout = $this->layout();
 
-        $nextRealProviderEnabled = array_key_exists('real_provider_enabled', $values)
-            ? (bool) $values['real_provider_enabled']
-            : $this->realProviderEnabled();
-        $nextProvider = $nextRealProviderEnabled ? 'iyzico' : 'fake';
-        $nextMode = array_key_exists('provider_mode', $values)
-            ? $this->normalizeMode($values['provider_mode'])
-            : $this->providerMode();
-        $notificationRecipients = array_key_exists('payment_notification_recipients', $values)
-            ? $this->parseRecipients($values['payment_notification_recipients'])
-            : $this->paymentNotificationRecipients();
+                $nextRealProviderEnabled = array_key_exists('real_provider_enabled', $values)
+                    ? (bool) $values['real_provider_enabled']
+                    : $this->realProviderEnabled();
+                $nextProvider = $nextRealProviderEnabled ? 'iyzico' : 'fake';
+                $nextMode = array_key_exists('provider_mode', $values)
+                    ? $this->normalizeMode($values['provider_mode'])
+                    : $this->providerMode();
+                $notificationRecipients = array_key_exists('payment_notification_recipients', $values)
+                    ? $this->parseRecipients($values['payment_notification_recipients'])
+                    : $this->paymentNotificationRecipients();
 
-        if ($nextRealProviderEnabled && ! $this->canEnableRealProviderForMode($nextMode)) {
-            throw ValidationException::withMessages([
-                'real_provider_enabled' => $this->disabledReasonForMode($nextMode),
-            ]);
-        }
+                if ($nextRealProviderEnabled && ! $this->canEnableRealProviderForMode($nextMode)) {
+                    throw ValidationException::withMessages([
+                        'real_provider_enabled' => $this->disabledReasonForMode($nextMode),
+                    ]);
+                }
 
-        Arr::set($layout, self::REAL_PROVIDER_ENABLED_KEY, $nextRealProviderEnabled);
-        Arr::set($layout, self::PROVIDER_KEY, $nextProvider);
-        Arr::set($layout, self::PROVIDER_MODE_KEY, $nextMode);
+                Arr::set($layout, self::REAL_PROVIDER_ENABLED_KEY, $nextRealProviderEnabled);
+                Arr::set($layout, self::PROVIDER_KEY, $nextProvider);
+                Arr::set($layout, self::PROVIDER_MODE_KEY, $nextMode);
 
-        if (array_key_exists('payment_notification_enabled', $values)) {
-            Arr::set($layout, self::PAYMENT_NOTIFICATION_ENABLED_KEY, (bool) $values['payment_notification_enabled']);
-        }
+                if (array_key_exists('payment_notification_enabled', $values)) {
+                    Arr::set($layout, self::PAYMENT_NOTIFICATION_ENABLED_KEY, (bool) $values['payment_notification_enabled']);
+                }
 
-        if (array_key_exists('payment_notification_recipients', $values)) {
-            Arr::set($layout, self::PAYMENT_NOTIFICATION_RECIPIENTS_KEY, implode(',', $notificationRecipients));
-        }
+                if (array_key_exists('payment_notification_recipients', $values)) {
+                    Arr::set($layout, self::PAYMENT_NOTIFICATION_RECIPIENTS_KEY, implode(',', $notificationRecipients));
+                }
 
-        if (array_key_exists('company_recipient', $values)) {
-            $companyRecipient = is_array($values['company_recipient']) ? $values['company_recipient'] : [];
-            $nextCompanyRecipient = [];
+                if (array_key_exists('company_recipient', $values)) {
+                    $companyRecipient = is_array($values['company_recipient']) ? $values['company_recipient'] : [];
+                    $nextCompanyRecipient = [];
 
-            foreach (array_keys(self::COMPANY_RECIPIENT_FIELDS) as $field) {
-                $nextCompanyRecipient[$field] = $this->nullableTrimmedString($companyRecipient[$field] ?? null);
-            }
+                    foreach (array_keys(self::COMPANY_RECIPIENT_FIELDS) as $field) {
+                        $nextCompanyRecipient[$field] = $this->nullableTrimmedString($companyRecipient[$field] ?? null);
+                    }
 
-            Arr::set($layout, self::COMPANY_RECIPIENT_KEY, $nextCompanyRecipient);
-        }
+                    Arr::set($layout, self::COMPANY_RECIPIENT_KEY, $nextCompanyRecipient);
+                }
 
-        $config = PageConfig::query()->firstOrCreate(
-            ['page_code' => self::PAGE_CODE],
-            ['layout_json' => []],
-        );
-        $config->forceFill(['layout_json' => $layout])->save();
+                $config = PageConfig::query()->firstOrCreate(
+                    ['page_code' => self::PAGE_CODE],
+                    ['layout_json' => []],
+                );
+                $config->forceFill(['layout_json' => $layout])->save();
 
-        return $this->payload();
+                return $this->payload();
+            });
     }
 
     /**

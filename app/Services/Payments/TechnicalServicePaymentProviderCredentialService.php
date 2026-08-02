@@ -5,6 +5,7 @@ namespace App\Services\Payments;
 use App\Models\PaymentProviderCredential;
 use App\Models\User;
 use App\Services\AuditLogger;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Http\Request;
 
 class TechnicalServicePaymentProviderCredentialService
@@ -47,43 +48,46 @@ class TechnicalServicePaymentProviderCredentialService
      */
     public function saveIyzicoCredentials(string $mode, string $apiKey, string $secretKey, ?User $actor = null, ?Request $request = null): array
     {
-        $mode = $this->normalizeMode($mode);
-        $apiKey = trim($apiKey);
-        $secretKey = trim($secretKey);
+        return app(TechnicalServiceMessagingSettingsService::class)
+            ->withScopedLocalUatConfigurationMutationLock('payment_credentials', function () use ($mode, $apiKey, $secretKey, $actor, $request): array {
+                $mode = $this->normalizeMode($mode);
+                $apiKey = trim($apiKey);
+                $secretKey = trim($secretKey);
 
-        $credential = PaymentProviderCredential::query()->firstOrNew([
-            'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
-            'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
-            'mode' => $mode,
-        ]);
+                $credential = PaymentProviderCredential::query()->firstOrNew([
+                    'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                    'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
+                    'mode' => $mode,
+                ]);
 
-        if (! $credential->exists && $actor instanceof User) {
-            $credential->created_by = $actor->id;
-        }
+                if (! $credential->exists && $actor instanceof User) {
+                    $credential->created_by = $actor->id;
+                }
 
-        $credential->forceFill([
-            'api_key_encrypted' => $apiKey,
-            'secret_key_encrypted' => $secretKey,
-            'api_key_mask' => $this->maskApiKey($apiKey),
-            'secret_key_mask' => $this->maskSecretKey(),
-            'credentials_status' => PaymentProviderCredential::STATUS_CONFIGURED,
-            'updated_by' => $actor?->id,
-            'metadata' => [
-                'source' => 'technical_service_admin',
-                'updated_by_name' => $actor?->full_name,
-            ],
-        ])->save();
+                $credential->forceFill([
+                    'api_key_encrypted' => $apiKey,
+                    'secret_key_encrypted' => $secretKey,
+                    'api_key_mask' => $this->maskApiKey($apiKey),
+                    'secret_key_mask' => $this->maskSecretKey(),
+                    'credentials_status' => PaymentProviderCredential::STATUS_CONFIGURED,
+                    'updated_by' => $actor?->id,
+                    'metadata' => [
+                        'source' => 'technical_service_admin',
+                        'updated_by_name' => $actor?->full_name,
+                    ],
+                ])->save();
 
-        $this->auditLogger->log($actor, 'technical_service.payment_provider.credentials_saved', [
-            'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
-            'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
-            'mode' => $mode,
-            'api_key_mask' => $credential->api_key_mask,
-            'secret_key_mask' => $credential->secret_key_mask,
-            'credentials_status' => $credential->credentials_status,
-        ], $request);
+                $this->auditLogger->log($actor, 'technical_service.payment_provider.credentials_saved', [
+                    'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                    'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
+                    'mode' => $mode,
+                    'api_key_mask' => $credential->api_key_mask,
+                    'secret_key_mask' => $credential->secret_key_mask,
+                    'credentials_status' => $credential->credentials_status,
+                ], $request);
 
-        return $this->credentialPayload($mode);
+                return $this->credentialPayload($mode);
+            });
     }
 
     /**
@@ -91,41 +95,44 @@ class TechnicalServicePaymentProviderCredentialService
      */
     public function clearIyzicoCredentials(string $mode, ?User $actor = null, ?Request $request = null): array
     {
-        $mode = $this->normalizeMode($mode);
-        $credential = PaymentProviderCredential::query()->firstOrNew([
-            'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
-            'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
-            'mode' => $mode,
-        ]);
+        return app(TechnicalServiceMessagingSettingsService::class)
+            ->withScopedLocalUatConfigurationMutationLock('payment_credentials', function () use ($mode, $actor, $request): array {
+                $mode = $this->normalizeMode($mode);
+                $credential = PaymentProviderCredential::query()->firstOrNew([
+                    'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                    'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
+                    'mode' => $mode,
+                ]);
 
-        if (! $credential->exists && $actor instanceof User) {
-            $credential->created_by = $actor->id;
-        }
+                if (! $credential->exists && $actor instanceof User) {
+                    $credential->created_by = $actor->id;
+                }
 
-        $credential->forceFill([
-            'api_key_encrypted' => null,
-            'secret_key_encrypted' => null,
-            'api_key_mask' => null,
-            'secret_key_mask' => null,
-            'credentials_status' => PaymentProviderCredential::STATUS_MISSING,
-            'last_verified_at' => null,
-            'last_verification_status' => null,
-            'last_verification_message' => null,
-            'updated_by' => $actor?->id,
-            'metadata' => [
-                'source' => 'technical_service_admin',
-                'cleared_by_name' => $actor?->full_name,
-            ],
-        ])->save();
+                $credential->forceFill([
+                    'api_key_encrypted' => null,
+                    'secret_key_encrypted' => null,
+                    'api_key_mask' => null,
+                    'secret_key_mask' => null,
+                    'credentials_status' => PaymentProviderCredential::STATUS_MISSING,
+                    'last_verified_at' => null,
+                    'last_verification_status' => null,
+                    'last_verification_message' => null,
+                    'updated_by' => $actor?->id,
+                    'metadata' => [
+                        'source' => 'technical_service_admin',
+                        'cleared_by_name' => $actor?->full_name,
+                    ],
+                ])->save();
 
-        $this->auditLogger->log($actor, 'technical_service.payment_provider.credentials_cleared', [
-            'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
-            'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
-            'mode' => $mode,
-            'credentials_status' => PaymentProviderCredential::STATUS_MISSING,
-        ], $request);
+                $this->auditLogger->log($actor, 'technical_service.payment_provider.credentials_cleared', [
+                    'scope' => PaymentProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                    'provider' => PaymentProviderCredential::PROVIDER_IYZICO,
+                    'mode' => $mode,
+                    'credentials_status' => PaymentProviderCredential::STATUS_MISSING,
+                ], $request);
 
-        return $this->credentialPayload($mode);
+                return $this->credentialPayload($mode);
+            });
     }
 
     /**

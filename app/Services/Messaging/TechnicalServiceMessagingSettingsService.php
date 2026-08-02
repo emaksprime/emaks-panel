@@ -5,6 +5,7 @@ namespace App\Services\Messaging;
 use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
@@ -53,6 +54,10 @@ class TechnicalServiceMessagingSettingsService
 
     public const SCOPED_LOCAL_UAT_MAX_TTL_SECONDS = 3600;
 
+    public const SCOPED_EFFECT_PAYMENT_CREATE = 'sandbox_payment_create';
+
+    public const SCOPED_EFFECT_PAYMENT_CALLBACK = 'sandbox_payment_callback';
+
     public const OUTBOUND_EXECUTION_MODE_LOCAL = 'local';
 
     public const OUTBOUND_EXECUTION_MODE_LIVE = 'live';
@@ -87,6 +92,8 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_active_claim',
         'manual_e2e_run_snapshot',
         'manual_e2e_window_history',
+        'scoped_local_uat_active_effect_claim',
+        'scoped_local_uat_effect_history',
         'normal_outbound_active_claim',
         'normal_outbound_history',
         'outbound_execution_mode',
@@ -109,6 +116,7 @@ class TechnicalServiceMessagingSettingsService
         'nac_sms',
         'evo_whatsapp',
         'message_types',
+        'mikro_api',
         'send_delay_seconds',
         'duplicate_cooldown_minutes',
         'hourly_limit',
@@ -133,6 +141,8 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_active_claim',
         'manual_e2e_window_history',
         'manual_e2e_run_snapshot',
+        'scoped_local_uat_active_effect_claim',
+        'scoped_local_uat_effect_history',
         'normal_outbound_active_claim',
         'normal_outbound_history',
         'outbound_execution_mode',
@@ -163,6 +173,7 @@ class TechnicalServiceMessagingSettingsService
         'provider_priority',
         'nac_sms',
         'evo_whatsapp',
+        'mikro_api',
         'message_types',
         'send_delay_seconds',
         'duplicate_cooldown_minutes',
@@ -863,8 +874,10 @@ class TechnicalServiceMessagingSettingsService
     {
         $settings = $this->settings();
         $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
-        $mail = app(TechnicalServiceMailTransportSettingsService::class)->payload();
+        $mailService = app(TechnicalServiceMailTransportSettingsService::class);
+        $mail = $mailService->payload();
         $payment = app(TechnicalServicePaymentProviderSettingsService::class);
+        $paymentPayload = $payment->payload();
         $paymentMode = $payment->providerMode();
         $fakePaymentReady = ! $payment->realProviderEnabled()
             && $payment->effectiveProvider() === 'fake'
@@ -924,6 +937,8 @@ class TechnicalServiceMessagingSettingsService
             && $this->nacProviderReadyForLive($settings, false);
         $smtpReady = (bool) data_get($mail, 'outgoing.ready', false)
             && $payment->paymentNotificationEnabled();
+        $smtpConfigurationFingerprint = $mailService->scopedLocalUatConfigurationFingerprint();
+        $paymentConfigurationFingerprint = $this->scopedLocalUatPaymentConfigurationFingerprint($paymentPayload);
         $capabilities = [
             ExternalEffectCapabilityRegistry::MESSAGING_EVOLUTION_SEND => [
                 'ready' => $evoReady,
@@ -942,26 +957,17 @@ class TechnicalServiceMessagingSettingsService
                 'blockers' => $smtpReady ? [] : ['smtp_not_ready'],
                 'capability_revision' => 1,
                 'profile_fingerprint' => hash('sha256', json_encode([
-                    'environment' => $this->runtimeEnvironment(),
-                    'enabled' => (bool) data_get($mail, 'outgoing.enabled', false),
-                    'mailer' => (string) data_get($mail, 'outgoing.mailer', ''),
-                    'ready' => $smtpReady,
+                    'configuration_fingerprint' => $smtpConfigurationFingerprint,
                     'notification_enabled' => $payment->paymentNotificationEnabled(),
-                    'from_address' => strtolower((string) data_get($mail, 'outgoing.from_address', '')),
-                ], JSON_THROW_ON_ERROR)),
+                    'recipient_allowlist_fingerprint' => hash('sha256', implode('|', $emails)),
+                    'event_revision' => 'sandbox_payment_notification:v1',
+                ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
             ],
             ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE => [
                 'ready' => $sandboxPaymentReady,
                 'blockers' => $sandboxPaymentReady ? [] : ['sandbox_payment_not_ready'],
                 'capability_revision' => 1,
-                'profile_fingerprint' => hash('sha256', json_encode([
-                    'environment' => $this->runtimeEnvironment(),
-                    'provider' => $sandboxPaymentProvider,
-                    'mode' => $paymentMode,
-                    'fake' => $fakePaymentReady,
-                    'sandbox_ready' => $sandboxPaymentReady,
-                    'real_payment' => $paymentMode === 'live',
-                ], JSON_THROW_ON_ERROR)),
+                'profile_fingerprint' => $paymentConfigurationFingerprint,
             ],
         ];
 
@@ -1024,6 +1030,7 @@ class TechnicalServiceMessagingSettingsService
         $addBlocker($invariantBlockers, $paymentMode !== 'sandbox', 'scoped_uat_real_payment_mode', 'Scoped UAT yalnız sandbox/fake ödeme modunu kabul eder.');
         $addBlocker($invariantBlockers, (int) ($settings['hourly_limit'] ?? 0) < (int) data_get($profile, 'limits.total', 8) || (int) ($settings['daily_limit'] ?? 0) < (int) data_get($profile, 'limits.total', 8), 'scoped_uat_rate_limit_invalid', 'Messaging rate limitleri scoped UAT üst sınırını güvenle taşımalı.');
 
+        $mikroInvariant = $this->scopedLocalUatMikroInvariant($mikro);
         $securityProfile = [
             'profile_fingerprint' => $profile['profile_fingerprint'],
             'phone_allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
@@ -1031,14 +1038,12 @@ class TechnicalServiceMessagingSettingsService
             'email_allowlist_fingerprint' => hash('sha256', implode('|', $emails)),
             'event_policy' => $eventPolicy,
             'portal_origin_fingerprint' => (string) data_get($portal, 'manual_e2e.profile_fingerprint', ''),
-            'mikro_switches' => [
-                (bool) ($mikro['enabled'] ?? false),
-                (bool) ($mikro['read_sync_enabled'] ?? false),
-                (bool) ($mikro['write_enabled'] ?? false),
-            ],
+            'mikro_invariant' => $mikroInvariant,
             'ttl_seconds' => $ttl,
             'payment_provider' => $sandboxPaymentProvider,
             'payment_mode' => $paymentMode,
+            'smtp_configuration_fingerprint' => $smtpConfigurationFingerprint,
+            'payment_configuration_fingerprint' => $paymentConfigurationFingerprint,
         ];
 
         return [
@@ -1195,6 +1200,458 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null}
+     */
+    public function claimScopedLocalUatEmailEffect(
+        TechnicalServiceMountPayment $payment,
+        array $recipients,
+    ): array {
+        return $this->claimScopedLocalUatEffect(
+            $payment,
+            ExternalEffectCapabilityRegistry::MAIL_SMTP_SEND,
+            'sandbox_payment_notification',
+            'email',
+            'smtp',
+            'sandbox_payment_notification',
+            $recipients,
+        );
+    }
+
+    /**
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null}
+     */
+    public function claimScopedLocalUatSandboxPaymentEffect(
+        TechnicalServiceMountPayment $payment,
+        string $operation,
+        string $provider,
+    ): array {
+        if (! in_array($operation, [self::SCOPED_EFFECT_PAYMENT_CREATE, self::SCOPED_EFFECT_PAYMENT_CALLBACK], true)) {
+            throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Scoped UAT ödeme operation izni yok.');
+        }
+
+        return $this->claimScopedLocalUatEffect(
+            $payment,
+            ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE,
+            'sandbox_payment',
+            'sandbox_payment',
+            $provider,
+            $operation,
+        );
+    }
+
+    public function assertScopedLocalUatUnsupportedPaymentEffect(
+        TechnicalServiceMountPayment $payment,
+        string $operation,
+    ): void {
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $tagged = filter_var(
+            data_get($payload, 'scoped_local_uat.synthetic_uat', $payload['synthetic_uat'] ?? false),
+            FILTER_VALIDATE_BOOL,
+        );
+        $activeScopedRun = $context->enabled()
+            && $context->activeRunId() !== null
+            && $this->isScopedLocalUatSettings($settings);
+
+        if ($tagged || $activeScopedRun) {
+            throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: '.$operation.' scoped UAT ödeme profiline ait değil.');
+        }
+    }
+
+    public function completeScopedLocalUatEffect(string $claimNonce): void
+    {
+        $this->finalizeScopedLocalUatEffect($claimNonce, true);
+    }
+
+    public function failScopedLocalUatEffect(string $claimNonce, ?Throwable $exception = null): void
+    {
+        $this->finalizeScopedLocalUatEffect($claimNonce, false, $exception);
+    }
+
+    /**
+     * External SMTP/payment settings share the same lifecycle lock as run
+     * creation so a configuration write cannot race the immutable snapshot.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    public function withScopedLocalUatConfigurationMutationLock(string $scope, callable $callback): mixed
+    {
+        if (! in_array($scope, ['smtp', 'payment', 'payment_credentials'], true)) {
+            throw new ConflictHttpException('Bilinmeyen scoped UAT configuration mutation kapsamı.');
+        }
+
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            return DB::transaction(function () use ($callback): mixed {
+                $this->assertNoActiveRunMutation();
+
+                return $callback();
+            });
+        } finally {
+            $lock();
+        }
+    }
+
+    public function assertScopedLocalUatSmtpTestAllowed(): void
+    {
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if ($context->enabled() && $context->activeRunId() !== null && $this->isScopedLocalUatSettings($settings)) {
+            throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Scoped UAT sırasında yalnız ödeme bildirim e-postası gönderilebilir.');
+        }
+    }
+
+    /**
+     * @return array{required:bool,duplicate:bool,claim_nonce:string|null}
+     */
+    private function claimScopedLocalUatEffect(
+        TechnicalServiceMountPayment $payment,
+        string $capability,
+        string $event,
+        string $channel,
+        string $provider,
+        string $operation,
+        string|array|null $recipient = null,
+    ): array {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            return DB::transaction(function () use ($payment, $capability, $event, $channel, $provider, $operation, $recipient): array {
+                $locked = $this->lockedAuthoritativeSettings();
+                $settings = $locked['settings'];
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+                $lockedPayment = TechnicalServiceMountPayment::query()->whereKey($payment->getKey())->lockForUpdate()->firstOrFail();
+                $payload = is_array($lockedPayment->raw_payload) ? $lockedPayment->raw_payload : [];
+                $tagged = filter_var(
+                    data_get($payload, 'scoped_local_uat.synthetic_uat', $payload['synthetic_uat'] ?? false),
+                    FILTER_VALIDATE_BOOL,
+                );
+                $activeScopedRun = $context->enabled()
+                    && $context->activeRunId() !== null
+                    && $this->isScopedLocalUatSettings($settings);
+
+                if (! $tagged && ! $activeScopedRun) {
+                    return ['required' => false, 'duplicate' => false, 'claim_nonce' => null];
+                }
+                if (! $tagged || ! $activeScopedRun || ! $context->isActive()) {
+                    throw new ConflictHttpException('scoped_uat_active_run_missing: Effect exact aktif synthetic UAT run ile bağlı değil.');
+                }
+                if ($channel === 'email') {
+                    $submittedRecipients = is_array($recipient) ? $recipient : [$recipient];
+                    $normalizedRecipients = array_values(array_unique(array_filter(array_map(
+                        static fn (mixed $email): string => strtolower(trim((string) $email)),
+                        $submittedRecipients,
+                    ), static fn (string $email): bool => filter_var($email, FILTER_VALIDATE_EMAIL) !== false)));
+                    if (count($normalizedRecipients) !== 1 || count($normalizedRecipients) !== count($submittedRecipients)) {
+                        throw new ConflictHttpException('scoped_uat_email_not_allowlisted: Scoped UAT e-posta effecti exact tek allowlisted alıcı gerektirir.');
+                    }
+                    $recipient = $normalizedRecipients[0];
+                }
+                if ($context->phase() !== self::MANUAL_E2E_PHASE_PREPARED
+                    || is_array($settings['manual_e2e_open_window'] ?? null)
+                    || is_array($settings['manual_e2e_active_claim'] ?? null)) {
+                    throw new ConflictHttpException('scoped_uat_effect_claim_busy: Başka bir scoped effect veya dispatch penceresi aktif.');
+                }
+
+                $runId = (string) data_get($payload, 'scoped_local_uat.run_id', $payload['scoped_local_uat_run_id'] ?? '');
+                $origin = (string) data_get($payload, 'scoped_local_uat.origin', $payload['scoped_local_uat_origin'] ?? '');
+                if ($runId === '' || $runId !== $context->activeRunId()) {
+                    throw new ConflictHttpException('scoped_uat_wrong_run_id: Effect aktif run kimliğiyle eşleşmiyor.');
+                }
+                if ($lockedPayment->created_at === null
+                    || $context->createdAfter() === null
+                    || $lockedPayment->created_at->lt($context->createdAfter())
+                    || $context->expiresAt() === null
+                    || ! $lockedPayment->created_at->lt($context->expiresAt())) {
+                    throw new ConflictHttpException('scoped_uat_effect_before_enable: Effect aktif run zaman sınırı dışında.');
+                }
+                if (! is_numeric($lockedPayment->technical_service_request_id)
+                    && ! is_numeric($lockedPayment->technical_service_mount_session_id)) {
+                    throw new ConflictHttpException('scoped_uat_non_synthetic_entity: Scoped ödeme synthetic request/session ile bağlı olmalı.');
+                }
+
+                $authorization = $this->scopedLocalUatActionAuthorization(
+                    $capability,
+                    $event,
+                    $channel,
+                    $provider,
+                    $recipient,
+                    $channel === 'email' ? 'ops' : null,
+                    $origin,
+                );
+                if (! $authorization['allowed']) {
+                    throw new ConflictHttpException((string) $authorization['code'].': '.(string) $authorization['message']);
+                }
+
+                $mikro = (array) ($settings['mikro_api'] ?? []);
+                if ((bool) ($mikro['enabled'] ?? false)
+                    || (bool) ($mikro['read_sync_enabled'] ?? false)
+                    || (bool) ($mikro['write_enabled'] ?? false)
+                    || ! (bool) ($mikro['write_approval_required'] ?? true)) {
+                    throw new ConflictHttpException('scoped_uat_mikro_invariant_drift: Mikro false/false/false ve approval-required invariantı değişti.');
+                }
+
+                $state = $this->scopedLocalUatControlPlaneState(false);
+                $capabilityState = is_array($state['capabilities'][$capability] ?? null)
+                    ? $state['capabilities'][$capability]
+                    : [];
+                $configurationFingerprint = (string) ($capabilityState['profile_fingerprint'] ?? '');
+                if (! preg_match('/^[a-f0-9]{64}$/', $configurationFingerprint)) {
+                    throw new ConflictHttpException('scoped_uat_configuration_fingerprint_missing: Effect configuration bağı doğrulanamadı.');
+                }
+
+                $recipientFingerprint = $recipient === null
+                    ? null
+                    : hash('sha256', strtolower(trim($recipient)));
+                $idempotencyHash = hash('sha256', implode('|', [
+                    ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+                    $runId,
+                    $operation,
+                    'payment:'.$lockedPayment->getKey(),
+                    number_format((float) $lockedPayment->amount, 2, '.', ''),
+                    strtoupper((string) $lockedPayment->currency),
+                    (string) $recipientFingerprint,
+                ]));
+                $history = (array) ($settings['scoped_local_uat_effect_history'] ?? []);
+                $previous = collect($history)->first(fn (mixed $entry): bool => is_array($entry)
+                    && (string) ($entry['run_id'] ?? '') === $runId
+                    && hash_equals((string) ($entry['idempotency_hash'] ?? ''), $idempotencyHash));
+                if (is_array($previous)) {
+                    if ((string) ($previous['status'] ?? '') === 'completed') {
+                        return ['required' => true, 'duplicate' => true, 'claim_nonce' => null];
+                    }
+
+                    throw new ConflictHttpException('scoped_uat_effect_replay_blocked: Effect idempotency anahtarı daha önce tüketildi.');
+                }
+                if (is_array($settings['scoped_local_uat_active_effect_claim'] ?? null)) {
+                    throw new ConflictHttpException('scoped_uat_effect_claim_busy: Başka bir scoped effect claim aktif.');
+                }
+
+                if ($channel === 'email') {
+                    $counts = $this->scopedLocalUatMessagingAttemptCounts($settings, $runId);
+                    $limits = (array) data_get($settings, 'manual_e2e_run_snapshot.scoped_local_uat_limits', []);
+                    if ((int) ($limits['email'] ?? 0) <= $counts['email']
+                        || (int) ($limits['total'] ?? 0) <= $counts['total']) {
+                        throw new ConflictHttpException('scoped_uat_effect_quota_exceeded: E-posta veya toplam mesaj kotası transport öncesi doldu.');
+                    }
+                }
+
+                $claimNonce = Str::random(64);
+                $claim = [
+                    'id' => (string) Str::uuid(),
+                    'status' => 'claimed',
+                    'run_id' => $runId,
+                    'capability' => $capability,
+                    'event' => $event,
+                    'channel' => $channel,
+                    'provider' => $provider,
+                    'operation' => $operation,
+                    'payment_id' => (int) $lockedPayment->getKey(),
+                    'request_id' => is_numeric($lockedPayment->technical_service_request_id)
+                        ? (int) $lockedPayment->technical_service_request_id
+                        : null,
+                    'recipient_fingerprint' => $recipientFingerprint,
+                    'idempotency_hash' => $idempotencyHash,
+                    'claim_hash' => hash('sha256', $claimNonce),
+                    'configuration_fingerprint' => $configurationFingerprint,
+                    'origin_fingerprint' => hash('sha256', strtolower(trim($origin))),
+                    'effect_created_at' => $lockedPayment->created_at->toIso8601String(),
+                    'claimed_at' => now()->toIso8601String(),
+                    'attempted' => true,
+                ];
+                $payload['scoped_local_uat_effect_claim'] = $claim;
+                $lockedPayment->forceFill(['raw_payload' => $payload])->save();
+                $settings['scoped_local_uat_active_effect_claim'] = $claim;
+                $this->validateSettings($settings);
+                $this->persistAuthoritativeSettings($locked, $settings);
+
+                return ['required' => true, 'duplicate' => false, 'claim_nonce' => $claimNonce];
+            });
+        } finally {
+            $lock();
+        }
+    }
+
+    private function finalizeScopedLocalUatEffect(
+        string $claimNonce,
+        bool $completed,
+        ?Throwable $exception = null,
+    ): void {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($claimNonce, $completed, $exception): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $settings = $locked['settings'];
+                $claimHash = hash('sha256', $claimNonce);
+                $claim = is_array($settings['scoped_local_uat_active_effect_claim'] ?? null)
+                    ? $settings['scoped_local_uat_active_effect_claim']
+                    : null;
+                if ($claim === null || ! hash_equals((string) ($claim['claim_hash'] ?? ''), $claimHash)) {
+                    $previous = collect((array) ($settings['scoped_local_uat_effect_history'] ?? []))
+                        ->first(fn (mixed $entry): bool => is_array($entry)
+                            && hash_equals((string) ($entry['claim_hash'] ?? ''), $claimHash));
+                    if (is_array($previous) && (string) ($previous['status'] ?? '') === 'completed') {
+                        return;
+                    }
+
+                    throw new ConflictHttpException('Scoped effect sonucu aktif claim ile eşleşmiyor.');
+                }
+
+                $historyEntry = [
+                    ...$claim,
+                    'status' => $completed ? 'completed' : 'failed',
+                    'outcome' => $completed ? 'provider_accepted' : 'failed_no_retry',
+                    'completed_at' => now()->toIso8601String(),
+                    'error_class' => $completed || $exception === null ? null : class_basename($exception),
+                    'replay_blocked' => true,
+                ];
+                $payment = TechnicalServiceMountPayment::query()
+                    ->whereKey((int) ($claim['payment_id'] ?? 0))
+                    ->lockForUpdate()
+                    ->first();
+                if ($payment instanceof TechnicalServiceMountPayment) {
+                    $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+                    $paymentHistory = is_array($payload['scoped_local_uat_effect_history'] ?? null)
+                        ? $payload['scoped_local_uat_effect_history']
+                        : [];
+                    $payload['scoped_local_uat_effect_claim'] = null;
+                    $payload['scoped_local_uat_effect_history'] = array_values(array_slice([
+                        ...$paymentHistory,
+                        $historyEntry,
+                    ], -20));
+                    $payment->forceFill(['raw_payload' => $payload])->save();
+                }
+
+                $settings['scoped_local_uat_active_effect_claim'] = null;
+                $settings['scoped_local_uat_effect_history'] = $this->appendWindowHistory(
+                    (array) ($settings['scoped_local_uat_effect_history'] ?? []),
+                    $historyEntry,
+                );
+                $this->validateSettings($settings);
+                $this->persistAuthoritativeSettings($locked, $settings);
+            });
+        } finally {
+            $lock();
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $paymentPayload
+     */
+    private function scopedLocalUatPaymentConfigurationFingerprint(array $paymentPayload): string
+    {
+        $notificationRecipients = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $recipient): string => strtolower(trim((string) $recipient)),
+            (array) data_get($paymentPayload, 'payment_notification.recipients', []),
+        ))));
+        sort($notificationRecipients);
+
+        $profile = [
+            'configured_provider' => (string) ($paymentPayload['configured_provider'] ?? ''),
+            'effective_provider' => (string) ($paymentPayload['provider'] ?? ''),
+            'provider_mode' => (string) ($paymentPayload['provider_mode'] ?? ''),
+            'provider_transport' => (string) ($paymentPayload['provider_transport'] ?? ''),
+            'real_provider_enabled' => (bool) ($paymentPayload['real_provider_enabled'] ?? true),
+            'fake_active' => (bool) ($paymentPayload['fake_active'] ?? false),
+            'credential_source' => (string) ($paymentPayload['secret_source'] ?? ''),
+            'credential_reference' => hash('sha256', implode('|', [
+                (string) data_get($paymentPayload, 'credentials.masked_api_key', ''),
+                (string) data_get($paymentPayload, 'credentials.masked_secret_key', ''),
+                (string) data_get($paymentPayload, 'credentials.last_updated_at', ''),
+            ])),
+            'notification_enabled' => (bool) data_get($paymentPayload, 'payment_notification.enabled', false),
+            'notification_recipient_fingerprint' => hash('sha256', implode('|', $notificationRecipients)),
+            'payment_origin' => (string) data_get($paymentPayload, 'back_url.public_base_url', ''),
+            'sandbox_contract_revision' => 'local-sandbox-effect:v1',
+        ];
+
+        return hash('sha256', json_encode($profile, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * @param  array<string, mixed>  $mikro
+     * @return array<string, mixed>
+     */
+    private function scopedLocalUatMikroInvariant(array $mikro): array
+    {
+        $runtimeProfile = [
+            'api_version' => (string) ($mikro['api_version'] ?? ''),
+            'base_url' => (string) ($mikro['base_url'] ?? ''),
+            'company_code' => (string) ($mikro['company_code'] ?? ''),
+            'branch_code' => (string) ($mikro['branch_code'] ?? ''),
+            'fiscal_year' => (string) ($mikro['fiscal_year'] ?? ''),
+            'operation_controls' => $this->canonicalizeFingerprintValue((array) ($mikro['operation_controls'] ?? [])),
+        ];
+
+        return [
+            'active' => (bool) ($mikro['enabled'] ?? false),
+            'read_sync' => (bool) ($mikro['read_sync_enabled'] ?? false),
+            'write' => (bool) ($mikro['write_enabled'] ?? false),
+            'write_approval_required' => (bool) ($mikro['write_approval_required'] ?? true),
+            'runtime_profile_fingerprint' => hash(
+                'sha256',
+                json_encode($runtimeProfile, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            ),
+        ];
+    }
+
+    private function canonicalizeFingerprintValue(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(fn (mixed $item): mixed => $this->canonicalizeFingerprintValue($item), $value);
+        }
+
+        ksort($value);
+
+        return array_map(fn (mixed $item): mixed => $this->canonicalizeFingerprintValue($item), $value);
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array{whatsapp:int,sms:int,email:int,total:int}
+     */
+    private function scopedLocalUatMessagingAttemptCounts(array $settings, string $runId): array
+    {
+        $dispatchHistory = collect((array) ($settings['manual_e2e_window_history'] ?? []))
+            ->filter(fn (mixed $entry): bool => is_array($entry)
+                && (string) ($entry['run_id'] ?? '') === $runId);
+        $effectHistory = collect((array) ($settings['scoped_local_uat_effect_history'] ?? []))
+            ->filter(fn (mixed $entry): bool => is_array($entry)
+                && (string) ($entry['run_id'] ?? '') === $runId
+                && (string) ($entry['channel'] ?? '') === 'email'
+                && filter_var($entry['attempted'] ?? false, FILTER_VALIDATE_BOOL));
+        $activeEffect = is_array($settings['scoped_local_uat_active_effect_claim'] ?? null)
+            ? $settings['scoped_local_uat_active_effect_claim']
+            : null;
+        $activeEmail = $activeEffect !== null
+            && (string) ($activeEffect['run_id'] ?? '') === $runId
+            && (string) ($activeEffect['channel'] ?? '') === 'email'
+            && filter_var($activeEffect['attempted'] ?? false, FILTER_VALIDATE_BOOL)
+                ? 1
+                : 0;
+        $whatsapp = $dispatchHistory->where('channel', 'whatsapp')->count();
+        $sms = $dispatchHistory->where('channel', 'sms')->count();
+        $email = $effectHistory->count() + $activeEmail;
+
+        return [
+            'whatsapp' => $whatsapp,
+            'sms' => $sms,
+            'email' => $email,
+            'total' => $whatsapp + $sms + $email,
+        ];
+    }
+
+    /**
      * Legacy direct clients never possess the queue claim/permit tuple.
      *
      * @return array{allowed:false,code:string,message:string}
@@ -1307,6 +1764,7 @@ class TechnicalServiceMessagingSettingsService
         if ($this->executionMode($current) === self::OUTBOUND_EXECUTION_MODE_LIVE
             || $context->enabled()
             || $context->activeRunId() !== null
+            || is_array($current['scoped_local_uat_active_effect_claim'] ?? null)
             || is_array($current['normal_outbound_active_claim'] ?? null)) {
             throw new ConflictHttpException('Canlı çalışma modu veya aktif provider yaşam döngüsü varken gönderim güvenliği ayarları değiştirilemez. Önce çalışma modunu Lokal olarak dondurun.');
         }
@@ -1440,7 +1898,8 @@ class TechnicalServiceMessagingSettingsService
                     || $context->enabled()
                     || $context->activeRunId() !== null
                     || is_array($current['manual_e2e_open_window'] ?? null)
-                    || is_array($current['manual_e2e_active_claim'] ?? null)) {
+                    || is_array($current['manual_e2e_active_claim'] ?? null)
+                    || is_array($current['scoped_local_uat_active_effect_claim'] ?? null)) {
                     throw new ConflictHttpException('Aktif Manual E2E oturumu zaten var. Yeni run için önce gönderimleri dondurun.');
                 }
 
@@ -1516,6 +1975,7 @@ class TechnicalServiceMessagingSettingsService
                     'manual_e2e_expires_at' => $startedAt->addSeconds($ttl)->toIso8601String(),
                     'manual_e2e_open_window' => null,
                     'manual_e2e_active_claim' => null,
+                    'scoped_local_uat_active_effect_claim' => null,
                     'manual_e2e_run_snapshot' => [
                         ...$runSnapshot,
                         'allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
@@ -1567,7 +2027,8 @@ class TechnicalServiceMessagingSettingsService
                     throw new ConflictHttpException('Manual E2E run gönderim penceresi açmaya hazır değil.');
                 }
                 if (is_array($current['manual_e2e_open_window'] ?? null)
-                    || is_array($current['manual_e2e_active_claim'] ?? null)) {
+                    || is_array($current['manual_e2e_active_claim'] ?? null)
+                    || is_array($current['scoped_local_uat_active_effect_claim'] ?? null)) {
                     throw new ConflictHttpException('Manual E2E run içinde açık veya sonuçlanmamış bir gönderim penceresi var.');
                 }
                 if (collect((array) ($current['manual_e2e_window_history'] ?? []))->contains(
@@ -2002,9 +2463,38 @@ class TechnicalServiceMessagingSettingsService
                         ]);
                     }
                 }
+                $effectHistory = (array) ($current['scoped_local_uat_effect_history'] ?? []);
+                if (is_array($current['scoped_local_uat_active_effect_claim'] ?? null)) {
+                    $frozenEffect = [
+                        ...$current['scoped_local_uat_active_effect_claim'],
+                        'status' => 'frozen_unresolved',
+                        'outcome' => 'failed_no_retry',
+                        'frozen_at' => now()->toIso8601String(),
+                        'frozen_by' => Auth::id(),
+                        'replay_blocked' => true,
+                    ];
+                    $effectHistory = $this->appendWindowHistory($effectHistory, $frozenEffect);
+                    $payment = TechnicalServiceMountPayment::query()
+                        ->whereKey((int) ($frozenEffect['payment_id'] ?? 0))
+                        ->lockForUpdate()
+                        ->first();
+                    if ($payment instanceof TechnicalServiceMountPayment) {
+                        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+                        $paymentHistory = is_array($payload['scoped_local_uat_effect_history'] ?? null)
+                            ? $payload['scoped_local_uat_effect_history']
+                            : [];
+                        $payload['scoped_local_uat_effect_claim'] = null;
+                        $payload['scoped_local_uat_effect_history'] = array_values(array_slice([
+                            ...$paymentHistory,
+                            $frozenEffect,
+                        ], -20));
+                        $payment->forceFill(['raw_payload' => $payload])->save();
+                    }
+                }
                 $next = $this->deactivateManualE2EContext($current, $context);
                 $next['test_mode_enabled'] = false;
                 $next['manual_e2e_window_history'] = $history;
+                $next['scoped_local_uat_effect_history'] = $effectHistory;
                 $this->validateSettings($next);
                 $this->persistAuthoritativeSettings($locked, $next);
             });
@@ -2443,15 +2933,16 @@ class TechnicalServiceMessagingSettingsService
                 throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Mesaj linki exact LAN origin ile eşleşmiyor.');
             }
 
-            $history = collect((array) ($settings['manual_e2e_window_history'] ?? []))
-                ->filter(fn (mixed $entry): bool => is_array($entry)
-                    && (string) ($entry['run_id'] ?? '') === $context->activeRunId());
+            $attemptCounts = $this->scopedLocalUatMessagingAttemptCounts(
+                $settings,
+                (string) $context->activeRunId(),
+            );
             $channelLimit = (int) data_get($profile, 'limits.'.$channel, 0);
             $totalLimit = (int) data_get($profile, 'limits.total', 0);
             if ($channelLimit <= 0
-                || $history->where('channel', $channel)->count() >= $channelLimit
+                || $attemptCounts[$channel] >= $channelLimit
                 || $totalLimit <= 0
-                || $history->count() >= $totalLimit) {
+                || $attemptCounts['total'] >= $totalLimit) {
                 throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Allowlistli Yerel UAT gönderim üst sınırı aşıldı.');
             }
         }
@@ -2883,51 +3374,53 @@ class TechnicalServiceMessagingSettingsService
      */
     public function saveMikroApiCredentials(array $values): array
     {
-        $credential = IntegrationProviderCredential::query()->firstOrNew([
-            'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
-            'provider' => 'mikro_api',
-            'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
-            'mode' => IntegrationProviderCredential::MODE_LIVE,
-        ]);
-        $updates = [];
+        return $this->withActiveRunSafetyLock(function () use ($values): array {
+            $credential = IntegrationProviderCredential::query()->firstOrNew([
+                'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                'provider' => 'mikro_api',
+                'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
+                'mode' => IntegrationProviderCredential::MODE_LIVE,
+            ]);
+            $updates = [];
 
-        foreach ([
-            'api_key' => ['encrypted' => 'api_key_encrypted', 'mask' => 'api_key_mask'],
-            'password' => ['encrypted' => 'password_encrypted', 'mask' => null],
-            'token' => ['encrypted' => 'token_encrypted', 'mask' => 'token_mask'],
-        ] as $input => $fields) {
-            if (! array_key_exists($input, $values)) {
-                continue;
+            foreach ([
+                'api_key' => ['encrypted' => 'api_key_encrypted', 'mask' => 'api_key_mask'],
+                'password' => ['encrypted' => 'password_encrypted', 'mask' => null],
+                'token' => ['encrypted' => 'token_encrypted', 'mask' => 'token_mask'],
+            ] as $input => $fields) {
+                if (! array_key_exists($input, $values)) {
+                    continue;
+                }
+
+                $value = trim((string) $values[$input]);
+                if ($value === '') {
+                    continue;
+                }
+
+                $updates[$fields['encrypted']] = $value;
+                if ($fields['mask'] !== null) {
+                    $updates[$fields['mask']] = $this->maskValue($value);
+                }
             }
 
-            $value = trim((string) $values[$input]);
-            if ($value === '') {
-                continue;
+            if ($updates === []) {
+                return $this->payload();
             }
 
-            $updates[$fields['encrypted']] = $value;
-            if ($fields['mask'] !== null) {
-                $updates[$fields['mask']] = $this->maskValue($value);
-            }
-        }
+            $credential->fill($updates);
+            $credential->forceFill([
+                'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
+                'created_by' => $credential->created_by ?? Auth::id(),
+                'updated_by' => Auth::id(),
+                'metadata' => [
+                    ...(array) ($credential->metadata ?? []),
+                    'auth' => filled($credential->token_encrypted) ? 'api_key_basic_token' : 'api_key_basic',
+                    'password_transform' => 'none_by_panel',
+                ],
+            ])->save();
 
-        if ($updates === []) {
             return $this->payload();
-        }
-
-        $credential->fill($updates);
-        $credential->forceFill([
-            'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
-            'created_by' => $credential->created_by ?? Auth::id(),
-            'updated_by' => Auth::id(),
-            'metadata' => [
-                ...(array) ($credential->metadata ?? []),
-                'auth' => filled($credential->token_encrypted) ? 'api_key_basic_token' : 'api_key_basic',
-                'password_transform' => 'none_by_panel',
-            ],
-        ])->save();
-
-        return $this->payload();
+        });
     }
 
     /**
@@ -2936,48 +3429,50 @@ class TechnicalServiceMessagingSettingsService
      */
     public function clearMikroApiCredentials(array $targets): array
     {
-        $allowed = [
-            'api_key' => ['api_key_encrypted', 'api_key_mask'],
-            'password' => ['password_encrypted'],
-            'token' => ['token_encrypted', 'token_mask'],
-        ];
-        $targets = array_values(array_unique($targets));
+        return $this->withActiveRunSafetyLock(function () use ($targets): array {
+            $allowed = [
+                'api_key' => ['api_key_encrypted', 'api_key_mask'],
+                'password' => ['password_encrypted'],
+                'token' => ['token_encrypted', 'token_mask'],
+            ];
+            $targets = array_values(array_unique($targets));
 
-        if ($targets === [] || array_diff($targets, array_keys($allowed)) !== []) {
-            throw ValidationException::withMessages([
-                'credentials' => 'Temizlenecek Mikro secret alanı geçersiz.',
-            ]);
-        }
-
-        $credential = $this->credential('mikro_api');
-        if ($credential === null) {
-            return $this->payload();
-        }
-
-        $updates = [];
-        foreach ($targets as $target) {
-            foreach ($allowed[$target] as $field) {
-                $updates[$field] = null;
+            if ($targets === [] || array_diff($targets, array_keys($allowed)) !== []) {
+                throw ValidationException::withMessages([
+                    'credentials' => 'Temizlenecek Mikro secret alanı geçersiz.',
+                ]);
             }
-        }
 
-        $credential->fill($updates);
-        $hasSecret = filled($credential->api_key_encrypted)
-            || filled($credential->password_encrypted)
-            || filled($credential->token_encrypted);
-        $credential->forceFill([
-            'credentials_status' => $hasSecret
-                ? IntegrationProviderCredential::STATUS_CONFIGURED
-                : IntegrationProviderCredential::STATUS_MISSING,
-            'updated_by' => Auth::id(),
-            'metadata' => [
-                ...(array) ($credential->metadata ?? []),
-                'auth' => filled($credential->token_encrypted) ? 'api_key_basic_token' : 'api_key_basic',
-                'last_clear_targets' => $targets,
-            ],
-        ])->save();
+            $credential = $this->credential('mikro_api');
+            if ($credential === null) {
+                return $this->payload();
+            }
 
-        return $this->payload();
+            $updates = [];
+            foreach ($targets as $target) {
+                foreach ($allowed[$target] as $field) {
+                    $updates[$field] = null;
+                }
+            }
+
+            $credential->fill($updates);
+            $hasSecret = filled($credential->api_key_encrypted)
+                || filled($credential->password_encrypted)
+                || filled($credential->token_encrypted);
+            $credential->forceFill([
+                'credentials_status' => $hasSecret
+                    ? IntegrationProviderCredential::STATUS_CONFIGURED
+                    : IntegrationProviderCredential::STATUS_MISSING,
+                'updated_by' => Auth::id(),
+                'metadata' => [
+                    ...(array) ($credential->metadata ?? []),
+                    'auth' => filled($credential->token_encrypted) ? 'api_key_basic_token' : 'api_key_basic',
+                    'last_clear_targets' => $targets,
+                ],
+            ])->save();
+
+            return $this->payload();
+        });
     }
 
     /**
@@ -3246,7 +3741,7 @@ class TechnicalServiceMessagingSettingsService
                 && $settings['manual_e2e_active_run_id'] === null
                     ? null
                     : 'invalid');
-        foreach (['manual_e2e_open_window', 'manual_e2e_active_claim', 'manual_e2e_run_snapshot', 'normal_outbound_active_claim'] as $field) {
+        foreach (['manual_e2e_open_window', 'manual_e2e_active_claim', 'manual_e2e_run_snapshot', 'scoped_local_uat_active_effect_claim', 'normal_outbound_active_claim'] as $field) {
             $value = $settings[$field] ?? null;
             $settings[$field] = is_array($value)
                 ? $value
@@ -3254,6 +3749,9 @@ class TechnicalServiceMessagingSettingsService
         }
         $settings['manual_e2e_window_history'] = is_array($settings['manual_e2e_window_history'] ?? null)
             ? array_values($settings['manual_e2e_window_history'])
+            : [];
+        $settings['scoped_local_uat_effect_history'] = is_array($settings['scoped_local_uat_effect_history'] ?? null)
+            ? array_values($settings['scoped_local_uat_effect_history'])
             : [];
         $settings['normal_outbound_history'] = is_array($settings['normal_outbound_history'] ?? null)
             ? array_values($settings['normal_outbound_history'])
@@ -3314,6 +3812,8 @@ class TechnicalServiceMessagingSettingsService
             'manual_e2e_active_claim' => null,
             'manual_e2e_run_snapshot' => null,
             'manual_e2e_window_history' => [],
+            'scoped_local_uat_active_effect_claim' => null,
+            'scoped_local_uat_effect_history' => [],
             'normal_outbound_active_claim' => null,
             'normal_outbound_history' => [],
             'manual_e2e_ttl_seconds' => TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
@@ -3565,6 +4065,7 @@ class TechnicalServiceMessagingSettingsService
         $settings['manual_e2e_phase'] = self::MANUAL_E2E_PHASE_FROZEN;
         $settings['manual_e2e_open_window'] = null;
         $settings['manual_e2e_active_claim'] = null;
+        $settings['scoped_local_uat_active_effect_claim'] = null;
         $settings['manual_e2e_active_run_id'] = null;
         $settings['manual_e2e_started_at'] = null;
         $settings['manual_e2e_created_after'] = null;
@@ -3993,6 +4494,9 @@ class TechnicalServiceMessagingSettingsService
         $runId = TechnicalServiceManualE2ERunContext::normalizeRunId($settings['manual_e2e_active_run_id'] ?? null);
         $window = is_array($settings['manual_e2e_open_window'] ?? null) ? $settings['manual_e2e_open_window'] : null;
         $claim = is_array($settings['manual_e2e_active_claim'] ?? null) ? $settings['manual_e2e_active_claim'] : null;
+        $effectClaim = is_array($settings['scoped_local_uat_active_effect_claim'] ?? null)
+            ? $settings['scoped_local_uat_active_effect_claim']
+            : null;
         $normalClaim = is_array($settings['normal_outbound_active_claim'] ?? null)
             ? $settings['normal_outbound_active_claim']
             : null;
@@ -4008,6 +4512,7 @@ class TechnicalServiceMessagingSettingsService
             && $runId === null
             && $window === null
             && $claim === null
+            && $effectClaim === null
             && $normalClaim === null) {
             return;
         }
@@ -4043,13 +4548,38 @@ class TechnicalServiceMessagingSettingsService
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($normalClaim['recipient_fingerprint'] ?? ''))
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($normalClaim['tuple_hash'] ?? ''))
         );
+        $effectClaimInvalid = $effectClaim !== null && (
+            (string) ($effectClaim['status'] ?? '') !== 'claimed'
+            || (string) ($effectClaim['run_id'] ?? '') !== $runId
+            || (int) ($effectClaim['payment_id'] ?? 0) <= 0
+            || ! in_array((string) ($effectClaim['channel'] ?? ''), ['email', 'sandbox_payment'], true)
+            || ! in_array((string) ($effectClaim['provider'] ?? ''), ['smtp', 'fake_payment', 'iyzico_sandbox'], true)
+            || ! in_array((string) ($effectClaim['operation'] ?? ''), [
+                'sandbox_payment_notification',
+                self::SCOPED_EFFECT_PAYMENT_CREATE,
+                self::SCOPED_EFFECT_PAYMENT_CALLBACK,
+            ], true)
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($effectClaim['claim_hash'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($effectClaim['idempotency_hash'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($effectClaim['configuration_fingerprint'] ?? ''))
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($effectClaim['origin_fingerprint'] ?? ''))
+            || ! filter_var($effectClaim['attempted'] ?? false, FILTER_VALIDATE_BOOL)
+            || ((string) ($effectClaim['channel'] ?? '') === 'email'
+                && ((string) ($effectClaim['capability'] ?? '') !== ExternalEffectCapabilityRegistry::MAIL_SMTP_SEND
+                    || (string) ($effectClaim['provider'] ?? '') !== 'smtp'
+                    || ! preg_match('/^[a-f0-9]{64}$/', (string) ($effectClaim['recipient_fingerprint'] ?? ''))))
+            || ((string) ($effectClaim['channel'] ?? '') === 'sandbox_payment'
+                && ((string) ($effectClaim['capability'] ?? '') !== ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE
+                    || ! in_array((string) ($effectClaim['provider'] ?? ''), ['fake_payment', 'iyzico_sandbox'], true)))
+        );
 
-        $invalid = $normalClaimInvalid || match ($phase) {
+        $invalid = $normalClaimInvalid || $effectClaimInvalid || match ($phase) {
             self::MANUAL_E2E_PHASE_FROZEN => $manualEnabled
                 || ($productionLive ? (! $realSend || $queuePaused) : ($realSend || ! $queuePaused))
                 || $runId !== null
                 || $window !== null
-                || $claim !== null,
+                || $claim !== null
+                || $effectClaim !== null,
             self::MANUAL_E2E_PHASE_PREPARED => ! $manualEnabled
                 || $realSend
                 || ! $queuePaused
@@ -4063,6 +4593,7 @@ class TechnicalServiceMessagingSettingsService
                     || trim((string) ($claim['claim_hash'] ?? '')) === ''
                     || $this->manualE2ESecurityTupleIncomplete($claim)
                 ))
+                || ($claim !== null && $effectClaim !== null)
                 || $normalClaim !== null,
             self::MANUAL_E2E_PHASE_WINDOW_OPEN => ! $manualEnabled
                 || ! $this->manualE2EExecutionScopeAllowed($settings)
@@ -4072,6 +4603,7 @@ class TechnicalServiceMessagingSettingsService
                 || $runContextInvalid
                 || $window === null
                 || $claim !== null
+                || $effectClaim !== null
                 || (string) ($window['status'] ?? '') !== 'open'
                 || (string) ($window['run_id'] ?? '') !== $runId
                 || (int) ($window['dispatch_id'] ?? 0) <= 0
@@ -6275,9 +6807,21 @@ SQL,
             }
         }
 
+        $effectHistory = (array) ($settings['scoped_local_uat_effect_history'] ?? []);
+        if (is_array($settings['scoped_local_uat_active_effect_claim'] ?? null)) {
+            $effectHistory = $this->appendWindowHistory($effectHistory, [
+                ...$settings['scoped_local_uat_active_effect_claim'],
+                'status' => 'execution_mode_local_frozen',
+                'outcome' => 'failed_no_retry',
+                'closed_at' => CarbonImmutable::now()->toIso8601String(),
+                'replay_blocked' => true,
+            ]);
+        }
+
         $settings = $this->deactivateManualE2EContext($settings, $context);
         $settings['test_mode_enabled'] = false;
         $settings['manual_e2e_window_history'] = $history;
+        $settings['scoped_local_uat_effect_history'] = $effectHistory;
 
         return $settings;
     }

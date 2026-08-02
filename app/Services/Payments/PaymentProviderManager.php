@@ -3,25 +3,52 @@
 namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Support\Arr;
 use InvalidArgumentException;
+use Throwable;
 
 class PaymentProviderManager
 {
     public function __construct(
         private readonly TechnicalServicePaymentProviderModeResolver $modeResolver,
         private readonly TechnicalServicePaymentProviderTransportResolver $transportResolver,
+        private readonly TechnicalServiceMessagingSettingsService $messagingSettings,
     ) {}
 
     public function createPayment(TechnicalServiceMountPayment $payment): array
     {
-        $this->stampProviderDecision($payment, $this->providerName());
+        $provider = $this->providerName();
+        $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentEffect(
+            $payment,
+            TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE,
+            $this->scopedProviderName($provider),
+        );
+        if ($claim['duplicate']) {
+            return $this->existingPaymentResponse($payment->refresh());
+        }
 
-        return $this->provider()->createPayment($payment->refresh());
+        try {
+            $payment = $payment->refresh();
+            $this->stampProviderDecision($payment, $provider);
+            $response = $this->provider()->createPayment($payment->refresh());
+            if (is_string($claim['claim_nonce'])) {
+                $this->messagingSettings->completeScopedLocalUatEffect($claim['claim_nonce']);
+            }
+
+            return $response;
+        } catch (Throwable $exception) {
+            if (is_string($claim['claim_nonce'])) {
+                $this->messagingSettings->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
+            }
+
+            throw $exception;
+        }
     }
 
     public function updatePayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertScopedLocalUatUnsupportedPaymentEffect($payment, 'payment_update');
         $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
 
         return $this->providerForPayment($payment->refresh())->updatePayment($payment->refresh());
@@ -29,6 +56,7 @@ class PaymentProviderManager
 
     public function cancelPayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertScopedLocalUatUnsupportedPaymentEffect($payment, 'payment_cancel');
         $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
 
         return $this->providerForPayment($payment->refresh())->cancelPayment($payment->refresh());
@@ -36,6 +64,7 @@ class PaymentProviderManager
 
     public function syncPayment(TechnicalServiceMountPayment $payment): array
     {
+        $this->messagingSettings->assertScopedLocalUatUnsupportedPaymentEffect($payment, 'payment_sync');
         $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
 
         return $this->providerForPayment($payment->refresh())->syncPayment($payment->refresh());
@@ -68,6 +97,27 @@ class PaymentProviderManager
     private function providerNameForPayment(TechnicalServiceMountPayment $payment): string
     {
         return strtolower((string) ($payment->provider ?: $this->configuredProviderName()));
+    }
+
+    private function scopedProviderName(string $provider): string
+    {
+        if ($provider === 'fake') {
+            return 'fake_payment';
+        }
+
+        return $this->modeResolver->gatewayMode() === 'live' ? 'iyzico_live' : 'iyzico_sandbox';
+    }
+
+    /**
+     * @return array{provider_reference:string|null,payment_url:string|null,status:string}
+     */
+    private function existingPaymentResponse(TechnicalServiceMountPayment $payment): array
+    {
+        return [
+            'provider_reference' => $payment->provider_reference,
+            'payment_url' => $payment->payment_url,
+            'status' => (string) $payment->status,
+        ];
     }
 
     private function providerForPayment(TechnicalServiceMountPayment $payment): PaymentProviderInterface

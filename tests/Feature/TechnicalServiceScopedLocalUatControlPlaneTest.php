@@ -2,18 +2,26 @@
 
 namespace Tests\Feature;
 
+use App\Mail\TechnicalServicePaymentAuditMail;
 use App\Models\MailTransportProfile;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\Payments\FakePaymentProvider;
+use App\Services\Payments\IyzicoPaymentProvider;
+use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
+use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
@@ -22,6 +30,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
@@ -41,6 +50,10 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         parent::setUp();
 
         config(['app.key' => 'base64:'.base64_encode(str_repeat('s', 32))]);
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.28.64:8000',
+            'services.public_urls.payment_base_url' => 'http://10.0.28.64:8000',
+        ]);
         $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Istanbul'));
         Cache::flush();
         Http::preventStrayRequests();
@@ -622,6 +635,496 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertStringContainsString('production_ready', $source);
         $this->assertStringContainsString('sandbox_payment_ready', $source);
         $this->assertStringNotContainsString("messaging.execution_mode.mode !== 'live' ||", $source);
+    }
+
+    public function test_scoped_authorization_has_real_production_callers(): void
+    {
+        $mail = File::get(app_path('Services/Payments/TechnicalServiceMailTransportSettingsService.php'));
+        $manager = File::get(app_path('Services/Payments/PaymentProviderManager.php'));
+        $settlement = File::get(app_path('Services/TechnicalService/TechnicalServicePaymentSettlementService.php'));
+
+        $this->assertStringContainsString('claimScopedLocalUatEmailEffect', $mail);
+        $this->assertStringContainsString('claimScopedLocalUatSandboxPaymentEffect', $manager);
+        $this->assertStringContainsString('claimScopedLocalUatSandboxPaymentEffect', $settlement);
+        $this->assertStringContainsString('Mail::mailer', $mail);
+        $this->assertStringContainsString('->createPayment(', $manager);
+    }
+
+    public function test_actual_email_send_entrypoint_requires_scoped_effect_authority(): void
+    {
+        $this->readyScopedLocalUat();
+        Mail::fake();
+        $payment = $this->scopedPayment('MISSING-RUN');
+
+        try {
+            $this->sendScopedPaymentMail($payment);
+            $this->fail('Active run olmadan SMTP transporta ulaşılamamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('active_run_missing', $exception->getMessage());
+        }
+
+        Mail::assertNothingSent();
+    }
+
+    public function test_actual_sandbox_session_entrypoint_requires_scoped_effect_authority(): void
+    {
+        $this->readyScopedLocalUat();
+        $this->mock(FakePaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment('MISSING-RUN');
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Active run olmadan sandbox provider çağrılamamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('active_run_missing', $exception->getMessage());
+        }
+
+        $this->assertNull($payment->fresh()->provider_reference);
+    }
+
+    public function test_actual_sandbox_callback_requires_scoped_effect_authority(): void
+    {
+        $this->readyScopedLocalUat();
+        $payment = $this->scopedPayment('MISSING-RUN');
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment, ['fake_approved' => true]);
+            $this->fail('Active run olmadan fake callback işlenmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('active_run_missing', $exception->getMessage());
+        }
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+    }
+
+    public function test_allowlisted_email_can_be_atomically_claimed_once_and_quota_is_enforced_before_transport(): void
+    {
+        ['settings' => $settings, 'run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $first = $this->scopedPayment($runId);
+        $second = $this->scopedPayment($runId);
+
+        $this->sendScopedPaymentMail($first);
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
+
+        try {
+            $this->sendScopedPaymentMail($second);
+            $this->fail('E-posta kotası dolduktan sonra ikinci transport çağrısı olmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('quota_exceeded', $exception->getMessage());
+        }
+
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
+        $history = $this->effectHistory();
+        $this->assertCount(1, $history);
+        $this->assertSame('completed', $history[0]['status']);
+        $this->assertSame('email', $history[0]['channel']);
+        $this->assertNull(data_get($this->persistedLifecycleSettings(), 'scoped_local_uat_active_effect_claim'));
+    }
+
+    public function test_total_messaging_limit_is_enforced_across_channels(): void
+    {
+        ['settings' => $settings, 'run_id' => $runId] = $this->startScopedLocalUat();
+        $this->seedMessagingAttemptHistory($runId, ['whatsapp', 'whatsapp', 'whatsapp', 'whatsapp', 'sms', 'sms', 'sms']);
+        Mail::fake();
+
+        $this->sendScopedPaymentMail($this->scopedPayment($runId));
+        $dispatch = $this->scopedDispatch($settings);
+
+        try {
+            $settings->openManualE2ESendWindow($runId, (int) $dispatch->id);
+            $this->fail('Toplam sekiz messaging attempt sonrasında yeni dispatch açılamamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('üst sınırı', $exception->getMessage());
+        }
+
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
+    }
+
+    public function test_concurrent_email_claims_allow_only_one(): void
+    {
+        ['settings' => $settings, 'run_id' => $runId] = $this->startScopedLocalUat();
+        $first = $this->scopedPayment($runId);
+        $second = $this->scopedPayment($runId);
+        $claim = $settings->claimScopedLocalUatEmailEffect($first, [self::PAYMENT_EMAIL]);
+
+        try {
+            $settings->claimScopedLocalUatEmailEffect($second, [self::PAYMENT_EMAIL]);
+            $this->fail('Aktif atomik claim varken ikinci e-posta claim alınmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('claim_busy', $exception->getMessage());
+        } finally {
+            $settings->failScopedLocalUatEffect((string) $claim['claim_nonce']);
+        }
+
+        $this->assertCount(1, $this->effectHistory());
+    }
+
+    public function test_non_allowlisted_email_and_wrong_template_fail_before_transport(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $payment = $this->scopedPayment($runId);
+
+        try {
+            app(TechnicalServiceMailTransportSettingsService::class)->sendPaymentAuditMail(
+                ['outside@example.test'],
+                new TechnicalServicePaymentAuditMail($payment, ['mrn' => $payment->technicalServiceRequest?->mrn]),
+            );
+            $this->fail('Allowlist dışı e-posta transporta ulaşmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('not_allowlisted', $exception->getMessage());
+        }
+
+        try {
+            app(TechnicalServiceMailTransportSettingsService::class)->sendTestMail(self::PAYMENT_EMAIL);
+            $this->fail('Scoped run sırasında test template gönderilememeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('UNAUTHORIZED_CAPABILITY', $exception->getMessage());
+        }
+
+        Mail::assertNothingSent();
+    }
+
+    public function test_smtp_payment_and_mikro_settings_are_immutable_during_active_run(): void
+    {
+        ['settings' => $settings] = $this->startScopedLocalUat();
+
+        foreach ([
+            fn () => app(TechnicalServiceMailTransportSettingsService::class)->saveOutgoing([
+                'enabled' => true,
+                'host' => 'changed.example.test',
+                'port' => 465,
+                'encryption' => 'ssl',
+            ]),
+            fn () => app(TechnicalServicePaymentProviderSettingsService::class)->update(['provider_mode' => 'live']),
+            fn () => app(TechnicalServicePaymentProviderCredentialService::class)->saveIyzicoCredentials('sandbox', 'changed-key', 'changed-secret'),
+            fn () => $settings->update(['mikro_api' => ['enabled' => true]]),
+            fn () => $settings->saveMikroApiCredentials(['api_key' => 'changed-mikro-key']),
+        ] as $mutation) {
+            try {
+                $mutation();
+                $this->fail('Active-run immutable setting değiştirilememeliydi.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('aktif', mb_strtolower($exception->getMessage()));
+            }
+        }
+    }
+
+    public function test_effect_boundary_detects_smtp_fingerprint_drift(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        Mail::fake();
+        $payment = $this->scopedPayment($runId);
+        $profile = MailTransportProfile::query()->firstOrFail();
+        $profile->forceFill(['smtp_host' => 'drifted.example.test'])->save();
+
+        try {
+            $this->sendScopedPaymentMail($payment);
+            $this->fail('SMTP fingerprint drift transporttan önce reddedilmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('snapshot', mb_strtolower($exception->getMessage()));
+        }
+        Mail::assertNothingSent();
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+    }
+
+    public function test_changed_payment_provider_or_origin_invalidates_active_run_before_provider(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId);
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServicePaymentProviderSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::REAL_PROVIDER_ENABLED_KEY, true);
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::PROVIDER_KEY, 'iyzico');
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::PROVIDER_MODE_KEY, 'live');
+        $page->forceFill(['layout_json' => $layout])->save();
+        config(['services.public_urls.payment_base_url' => 'http://10.0.28.65:8000']);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Payment config/origin drift real providera ulaşmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertMatchesRegularExpression('/snapshot|capability|configuration/i', $exception->getMessage());
+        }
+
+        $this->assertNull($payment->fresh()->provider_reference);
+    }
+
+    public function test_effect_boundary_rejects_mikro_setting_drift(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $this->mutateLifecycleSettings(function (array $settings): array {
+            $settings['mikro_api']['enabled'] = true;
+
+            return $settings;
+        });
+        Mail::fake();
+
+        try {
+            $this->sendScopedPaymentMail($this->scopedPayment($runId));
+            $this->fail('Mikro invariant drift SMTP effectinden önce reddedilmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertMatchesRegularExpression('/snapshot|mikro/i', $exception->getMessage());
+        }
+
+        Mail::assertNothingSent();
+    }
+
+    public function test_sandbox_session_uses_deterministic_idempotency_and_duplicate_creates_one_session(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->once()->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $payment = $this->scopedPayment($runId);
+
+        $first = app(PaymentProviderManager::class)->createPayment($payment);
+        $second = app(PaymentProviderManager::class)->createPayment($payment->fresh());
+
+        $this->assertSame($first, $second);
+        $this->assertNotNull($payment->fresh()->provider_reference);
+        $creates = collect($this->effectHistory())->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE);
+        $this->assertCount(1, $creates);
+        $this->assertSame('completed', $creates->first()['status']);
+    }
+
+    public function test_duplicate_callback_produces_one_paid_transition(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        $first = app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), ['fake_approved' => true]);
+        $second = app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), ['fake_approved' => true]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $first->status);
+        $this->assertSame($first->paid_at?->toIso8601String(), $second->paid_at?->toIso8601String());
+        $this->assertSame(1, $payment->technicalServiceRequest?->events()->where('event_type', 'mount_payment_paid')->count());
+        $callbacks = collect($this->effectHistory())->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK);
+        $this->assertCount(1, $callbacks);
+    }
+
+    public function test_wrong_expired_or_non_synthetic_payment_fails_before_provider(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $this->mock(FakePaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+
+        foreach ([
+            $this->scopedPayment('WRONG-RUN'),
+            $this->scopedPayment($runId, false),
+        ] as $payment) {
+            try {
+                app(PaymentProviderManager::class)->createPayment($payment);
+                $this->fail('Yanlış run veya non-synthetic payment providera ulaşmamalıydı.');
+            } catch (ConflictHttpException) {
+                $this->assertNull($payment->fresh()->provider_reference);
+            }
+        }
+
+        $this->travel(3601)->seconds();
+        $expired = $this->scopedPayment($runId);
+        try {
+            app(PaymentProviderManager::class)->createPayment($expired);
+            $this->fail('Expired run providera ulaşmamalıydı.');
+        } catch (ConflictHttpException) {
+            $this->assertNull($expired->fresh()->provider_reference);
+        }
+    }
+
+    public function test_failed_transport_preserves_attempt_history_without_duplicate_send(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        $mailer = \Mockery::mock();
+        $mailer->shouldReceive('to')->once()->andReturnSelf();
+        $mailer->shouldReceive('send')->once()->andThrow(new \RuntimeException('Synthetic SMTP failure'));
+        Mail::shouldReceive('forgetMailers')->once();
+        Mail::shouldReceive('mailer')->once()->with('technical_service_smtp')->andReturn($mailer);
+
+        try {
+            $this->sendScopedPaymentMail($payment);
+            $this->fail('Synthetic SMTP exception bekleniyordu.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Synthetic SMTP failure', $exception->getMessage());
+        }
+
+        $history = $this->effectHistory();
+        $this->assertCount(1, $history);
+        $this->assertSame('failed', $history[0]['status']);
+        $this->assertTrue($history[0]['replay_blocked']);
+
+        try {
+            $this->sendScopedPaymentMail($payment->fresh());
+            $this->fail('Failed attempt kör retry ile tekrar gönderilmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('replay_blocked', $exception->getMessage());
+        }
+    }
+
+    public function test_freeze_stops_email_and_sandbox_payment_effects(): void
+    {
+        ['settings' => $settings, 'run_id' => $runId] = $this->startScopedLocalUat();
+        $claimedPayment = $this->scopedPayment($runId);
+        $mailPayment = $this->scopedPayment($runId);
+        $providerPayment = $this->scopedPayment($runId);
+        $settings->claimScopedLocalUatEmailEffect($claimedPayment, [self::PAYMENT_EMAIL]);
+        $settings->freezeManualE2E();
+        Mail::fake();
+        $this->mock(FakePaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+
+        foreach ([
+            fn () => $this->sendScopedPaymentMail($mailPayment),
+            fn () => app(PaymentProviderManager::class)->createPayment($providerPayment),
+        ] as $effect) {
+            try {
+                $effect();
+                $this->fail('Frozen run effect üretmemeliydi.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('active_run_missing', $exception->getMessage());
+            }
+        }
+
+        Mail::assertNothingSent();
+        $this->assertTrue((bool) data_get($settings->payload(), 'global.queue_paused'));
+        $this->assertNull(data_get($claimedPayment->fresh()->raw_payload, 'scoped_local_uat_effect_claim'));
+        $this->assertSame(
+            'frozen_unresolved',
+            data_get($claimedPayment->fresh()->raw_payload, 'scoped_local_uat_effect_history.0.status'),
+        );
+        $this->assertTrue((bool) data_get(
+            $claimedPayment->fresh()->raw_payload,
+            'scoped_local_uat_effect_history.0.replay_blocked',
+        ));
+    }
+
+    /**
+     * @return array{admin:User,settings:TechnicalServiceMessagingSettingsService,run_id:string}
+     */
+    private function startScopedLocalUat(): array
+    {
+        $ready = $this->readyScopedLocalUat();
+        $prepared = $ready['settings']->prepareManualE2E();
+
+        return [
+            ...$ready,
+            'run_id' => (string) data_get($prepared, 'manual_e2e.active_run_id'),
+        ];
+    }
+
+    private function scopedPayment(string $runId, bool $synthetic = true): TechnicalServiceMountPayment
+    {
+        $serial = 'SCOPED-PAY-'.strtoupper(substr(hash('sha256', uniqid('', true)), 0, 12));
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-SCOPED-PAY-'.strtoupper(substr(hash('sha256', uniqid('', true)), 0, 8)),
+            'customer_name' => 'Scoped Payment Fixture',
+            'customer_phone' => '05372081633',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Synthetic payment address',
+            'product_name' => 'Synthetic payment product',
+            'serial_number' => $serial,
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+        ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => $serial,
+            'product_name' => 'Synthetic payment product',
+        ]);
+        ['session' => $session] = TechnicalServiceMountSession::startForLink($link);
+        $session->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
+        ])->save();
+        $request->forceFill([
+            'qr_link_id' => $link->id,
+            'mount_session_id' => $session->id,
+        ])->save();
+        $payload = [
+            'source' => 'scoped_local_uat_sandbox',
+            'technical_service_request_id' => $request->id,
+            'request_code' => $request->mrn,
+        ];
+        if ($synthetic) {
+            $payload['scoped_local_uat'] = [
+                'synthetic_uat' => true,
+                'run_id' => $runId,
+                'origin' => 'http://10.0.28.64:8000',
+            ];
+        }
+
+        return TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1.0,
+            'currency' => 'TRY',
+            'raw_payload' => $payload,
+        ]);
+    }
+
+    private function sendScopedPaymentMail(TechnicalServiceMountPayment $payment): void
+    {
+        app(TechnicalServiceMailTransportSettingsService::class)->sendPaymentAuditMail(
+            [self::PAYMENT_EMAIL],
+            new TechnicalServicePaymentAuditMail($payment, [
+                'mrn' => $payment->technicalServiceRequest?->mrn,
+                'amount' => number_format((float) $payment->amount, 2, '.', ''),
+                'currency' => $payment->currency,
+            ]),
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function effectHistory(): array
+    {
+        return array_values((array) data_get(
+            $this->persistedLifecycleSettings(),
+            'scoped_local_uat_effect_history',
+            [],
+        ));
+    }
+
+    /**
+     * @param  array<int, string>  $channels
+     */
+    private function seedMessagingAttemptHistory(string $runId, array $channels): void
+    {
+        $history = collect($channels)->map(fn (string $channel, int $index): array => [
+            'id' => 'seed-'.$index,
+            'run_id' => $runId,
+            'channel' => $channel,
+            'status' => 'closed',
+            'attempted' => true,
+        ])->all();
+        $this->mutateLifecycleSettings(function (array $settings) use ($history): array {
+            $settings['manual_e2e_window_history'] = $history;
+
+            return $settings;
+        });
+    }
+
+    /**
+     * @param  callable(array<string, mixed>): array<string, mixed>  $mutator
+     */
+    private function mutateLifecycleSettings(callable $mutator): void
+    {
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        $settings = (array) data_get($layout, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY, []);
+        Arr::set($layout, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY, $mutator($settings));
+        $page->forceFill(['layout_json' => $layout])->save();
     }
 
     /**

@@ -6,6 +6,7 @@ use App\Mail\TechnicalServicePaymentAuditMail;
 use App\Models\MailTransportProfile;
 use App\Models\User;
 use App\Services\AuditLogger;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Illuminate\Http\Request;
 use Illuminate\Mail\MailManager;
 use Illuminate\Mail\Message;
@@ -70,53 +71,83 @@ class TechnicalServiceMailTransportSettingsService
         ];
     }
 
+    public function scopedLocalUatConfigurationFingerprint(): string
+    {
+        $profile = $this->profile();
+        $configuration = [
+            'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
+            'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
+            'profile_id' => $profile->exists ? (int) $profile->getKey() : null,
+            'profile_revision' => $profile->updated_at?->toIso8601String(),
+            'enabled' => (bool) $profile->outgoing_enabled,
+            'transport' => (string) ($profile->outgoing_mailer ?: MailTransportProfile::MAILER_SMTP),
+            'host' => strtolower(trim((string) $profile->smtp_host)),
+            'port' => (int) $profile->smtp_port,
+            'encryption' => $this->normalizeEncryption($profile->smtp_encryption),
+            'credential_reference' => hash('sha256', implode('|', [
+                (string) $profile->smtp_username_mask,
+                (string) $profile->smtp_password_mask,
+                $profile->updated_at?->toIso8601String() ?? '',
+            ])),
+            'username_identity_fingerprint' => hash('sha256', (string) $profile->smtp_username_mask),
+            'from_address' => strtolower(trim((string) $profile->from_address)),
+            'from_name' => trim((string) $profile->from_name),
+            'event_revision' => 'sandbox_payment_notification:v1',
+        ];
+
+        return hash('sha256', json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
     /**
      * @param  array<string, mixed>  $values
      * @return array<string, mixed>
      */
     public function saveOutgoing(array $values, ?User $actor = null, ?Request $request = null): array
     {
-        $profile = $this->profile();
-        $username = trim((string) ($values['username'] ?? ''));
-        $password = trim((string) ($values['password'] ?? ''));
+        return app(TechnicalServiceMessagingSettingsService::class)
+            ->withScopedLocalUatConfigurationMutationLock('smtp', function () use ($values, $actor, $request): array {
+                $profile = $this->profile();
+                $username = trim((string) ($values['username'] ?? ''));
+                $password = trim((string) ($values['password'] ?? ''));
 
-        $fill = [
-            'outgoing_enabled' => (bool) ($values['enabled'] ?? false),
-            'outgoing_mailer' => MailTransportProfile::MAILER_SMTP,
-            'smtp_host' => $this->nullableString($values['host'] ?? null),
-            'smtp_port' => isset($values['port']) ? (int) $values['port'] : null,
-            'smtp_encryption' => $this->normalizeEncryption($values['encryption'] ?? null),
-            'from_address' => $this->nullableString($values['from_address'] ?? null),
-            'from_name' => $this->nullableString($values['from_name'] ?? null),
-            'updated_by' => $actor?->id,
-        ];
+                $fill = [
+                    'outgoing_enabled' => (bool) ($values['enabled'] ?? false),
+                    'outgoing_mailer' => MailTransportProfile::MAILER_SMTP,
+                    'smtp_host' => $this->nullableString($values['host'] ?? null),
+                    'smtp_port' => isset($values['port']) ? (int) $values['port'] : null,
+                    'smtp_encryption' => $this->normalizeEncryption($values['encryption'] ?? null),
+                    'from_address' => $this->nullableString($values['from_address'] ?? null),
+                    'from_name' => $this->nullableString($values['from_name'] ?? null),
+                    'updated_by' => $actor?->id,
+                ];
 
-        if (! $profile->exists && $actor instanceof User) {
-            $fill['created_by'] = $actor->id;
-        }
+                if (! $profile->exists && $actor instanceof User) {
+                    $fill['created_by'] = $actor->id;
+                }
 
-        if ($username !== '') {
-            $fill['smtp_username_encrypted'] = $username;
-            $fill['smtp_username_mask'] = $this->maskUsername($username);
-        }
+                if ($username !== '') {
+                    $fill['smtp_username_encrypted'] = $username;
+                    $fill['smtp_username_mask'] = $this->maskUsername($username);
+                }
 
-        if ($password !== '') {
-            $fill['smtp_password_encrypted'] = $password;
-            $fill['smtp_password_mask'] = str_repeat('*', 12);
-        }
+                if ($password !== '') {
+                    $fill['smtp_password_encrypted'] = $password;
+                    $fill['smtp_password_mask'] = str_repeat('*', 12);
+                }
 
-        $profile->forceFill($fill)->save();
+                $profile->forceFill($fill)->save();
 
-        $this->auditLogger->log($actor, 'technical_service.mail_transport.outgoing_saved', [
-            'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
-            'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
-            'outgoing_enabled' => (bool) $profile->outgoing_enabled,
-            'smtp_host' => $profile->smtp_host,
-            'smtp_username_mask' => $profile->smtp_username_mask,
-            'from_address' => $profile->from_address,
-        ], $request);
+                $this->auditLogger->log($actor, 'technical_service.mail_transport.outgoing_saved', [
+                    'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
+                    'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
+                    'outgoing_enabled' => (bool) $profile->outgoing_enabled,
+                    'smtp_host' => $profile->smtp_host,
+                    'smtp_username_mask' => $profile->smtp_username_mask,
+                    'from_address' => $profile->from_address,
+                ], $request);
 
-        return $this->payload();
+                return $this->payload();
+            });
     }
 
     /**
@@ -124,30 +155,33 @@ class TechnicalServiceMailTransportSettingsService
      */
     public function clearOutgoing(?User $actor = null, ?Request $request = null): array
     {
-        $profile = $this->profile();
-        $profile->forceFill([
-            'outgoing_enabled' => false,
-            'smtp_host' => null,
-            'smtp_port' => null,
-            'smtp_encryption' => null,
-            'smtp_username_encrypted' => null,
-            'smtp_password_encrypted' => null,
-            'smtp_username_mask' => null,
-            'smtp_password_mask' => null,
-            'from_address' => null,
-            'from_name' => null,
-            'last_outgoing_tested_at' => null,
-            'last_outgoing_test_status' => null,
-            'last_outgoing_test_message' => null,
-            'updated_by' => $actor?->id,
-        ])->save();
+        return app(TechnicalServiceMessagingSettingsService::class)
+            ->withScopedLocalUatConfigurationMutationLock('smtp', function () use ($actor, $request): array {
+                $profile = $this->profile();
+                $profile->forceFill([
+                    'outgoing_enabled' => false,
+                    'smtp_host' => null,
+                    'smtp_port' => null,
+                    'smtp_encryption' => null,
+                    'smtp_username_encrypted' => null,
+                    'smtp_password_encrypted' => null,
+                    'smtp_username_mask' => null,
+                    'smtp_password_mask' => null,
+                    'from_address' => null,
+                    'from_name' => null,
+                    'last_outgoing_tested_at' => null,
+                    'last_outgoing_test_status' => null,
+                    'last_outgoing_test_message' => null,
+                    'updated_by' => $actor?->id,
+                ])->save();
 
-        $this->auditLogger->log($actor, 'technical_service.mail_transport.outgoing_cleared', [
-            'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
-            'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
-        ], $request);
+                $this->auditLogger->log($actor, 'technical_service.mail_transport.outgoing_cleared', [
+                    'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
+                    'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
+                ], $request);
 
-        return $this->payload();
+                return $this->payload();
+            });
     }
 
     /**
@@ -234,6 +268,7 @@ class TechnicalServiceMailTransportSettingsService
      */
     public function sendTestMail(string $recipient): array
     {
+        app(TechnicalServiceMessagingSettingsService::class)->assertScopedLocalUatSmtpTestAllowed();
         $profile = $this->profile();
 
         if (! $profile->outgoingReady()) {
@@ -264,12 +299,33 @@ class TechnicalServiceMailTransportSettingsService
     public function sendPaymentAuditMail(array $recipients, TechnicalServicePaymentAuditMail $mail): void
     {
         $profile = $this->profile();
+        $authority = app(TechnicalServiceMessagingSettingsService::class);
+        $claim = $authority->claimScopedLocalUatEmailEffect($mail->payment, $recipients);
+
+        if ($claim['duplicate']) {
+            return;
+        }
 
         if (! $profile->outgoingReady()) {
+            if (is_string($claim['claim_nonce'])) {
+                $authority->failScopedLocalUatEffect($claim['claim_nonce']);
+            }
+
             throw new TechnicalServiceMailTransportNotReadyException(self::NOT_READY_MESSAGE);
         }
 
-        $this->sendUsingProfile($profile, $recipients, $mail);
+        try {
+            $this->sendUsingProfile($profile, $recipients, $mail);
+            if (is_string($claim['claim_nonce'])) {
+                $authority->completeScopedLocalUatEffect($claim['claim_nonce']);
+            }
+        } catch (Throwable $exception) {
+            if (is_string($claim['claim_nonce'])) {
+                $authority->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
+            }
+
+            throw $exception;
+        }
     }
 
     /**
