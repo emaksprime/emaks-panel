@@ -54,6 +54,8 @@ class TechnicalServiceMessagingSettingsService
 
     public const MANUAL_E2E_WINDOW_TTL_SECONDS = 30;
 
+    public const SCOPED_LOCAL_UAT_EFFECT_WINDOW_SECONDS = 900;
+
     public const SCOPED_LOCAL_UAT_MAX_TTL_SECONDS = 3600;
 
     public const SCOPED_EFFECT_PAYMENT_CREATE = 'sandbox_payment_create';
@@ -884,6 +886,7 @@ class TechnicalServiceMessagingSettingsService
     {
         $settings = $this->settings();
         $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+        $effectWindowContract = self::manualE2EEffectWindowContract((string) $profile['id']);
         $mailService = app(TechnicalServiceMailTransportSettingsService::class);
         $mail = $mailService->payload();
         $payment = app(TechnicalServicePaymentProviderSettingsService::class);
@@ -1050,6 +1053,8 @@ class TechnicalServiceMessagingSettingsService
             'portal_origin_fingerprint' => (string) data_get($portal, 'manual_e2e.profile_fingerprint', ''),
             'mikro_invariant' => $mikroInvariant,
             'ttl_seconds' => $ttl,
+            'effect_window_seconds' => $effectWindowContract['effect_window_seconds'],
+            'effect_window_fingerprint' => $effectWindowContract['effect_window_fingerprint'],
             'payment_provider' => $sandboxPaymentProvider,
             'payment_mode' => $paymentMode,
             'smtp_configuration_fingerprint' => $smtpConfigurationFingerprint,
@@ -1080,6 +1085,8 @@ class TechnicalServiceMessagingSettingsService
             'manual_worker_state' => (string) ($manualWorker['state'] ?? 'none'),
             'broad_worker_state' => (string) ($broadWorker['state'] ?? 'none'),
             'ttl_seconds' => $ttl,
+            'effect_window_seconds' => $effectWindowContract['effect_window_seconds'],
+            'effect_window_fingerprint' => $effectWindowContract['effect_window_fingerprint'],
             'portal_origins' => $portal,
         ];
     }
@@ -1156,6 +1163,9 @@ class TechnicalServiceMessagingSettingsService
             : [];
         if (! $context->isActive() || ! $this->isScopedLocalUatSettings($settings)) {
             return $this->executionBlock('scoped_uat_active_run_missing', 'Aktif allowlistli Yerel UAT run bulunamadı.');
+        }
+        if (self::resolvedManualE2EEffectWindowContract($snapshot) === null) {
+            return $this->executionBlock('scoped_uat_snapshot_stale', 'Allowlistli Yerel UAT effect-window snapshotı geçersiz.');
         }
 
         $authorization = app(ExternalExecutionControlPlaneService::class)
@@ -3506,6 +3516,16 @@ class TechnicalServiceMessagingSettingsService
                             ->localAllowlistedUatProfile()['limits'],
                     ];
                 }
+                $effectWindowContract = self::manualE2EEffectWindowContract(
+                    is_scalar($runSnapshot['scoped_local_uat_profile_id'] ?? null)
+                        ? (string) $runSnapshot['scoped_local_uat_profile_id']
+                        : null,
+                );
+                $runSnapshot = [
+                    ...$runSnapshot,
+                    'effect_window_seconds' => $effectWindowContract['effect_window_seconds'],
+                    'effect_window_fingerprint' => $effectWindowContract['effect_window_fingerprint'],
+                ];
 
                 $next = [
                     ...$candidate,
@@ -3594,7 +3614,23 @@ class TechnicalServiceMessagingSettingsService
                 if (! $executionAuthorization['allowed']) {
                     throw new ConflictHttpException((string) $executionAuthorization['message']);
                 }
+                $effectWindowContract = self::resolvedManualE2EEffectWindowContract(
+                    is_array($current['manual_e2e_run_snapshot'] ?? null)
+                        ? $current['manual_e2e_run_snapshot']
+                        : [],
+                );
+                $runExpiresAt = $context->expiresAt();
+                if ($effectWindowContract === null || $runExpiresAt === null) {
+                    throw new ConflictHttpException('Manual E2E effect-window snapshotı doğrulanamadı.');
+                }
                 $openedAt = CarbonImmutable::now();
+                $effectExpiresAt = $openedAt->addSeconds($effectWindowContract['effect_window_seconds']);
+                if ($runExpiresAt->lt($effectExpiresAt)) {
+                    $effectExpiresAt = $runExpiresAt;
+                }
+                if (! $openedAt->lt($effectExpiresAt)) {
+                    throw new ConflictHttpException('Manual E2E effect-window süresi doldu.');
+                }
                 $window = [
                     'id' => (string) Str::uuid(),
                     'status' => 'open',
@@ -3608,8 +3644,10 @@ class TechnicalServiceMessagingSettingsService
                     'offer_cycle_id' => $authoritative['offer_cycle_id'],
                     'idempotency_fingerprint' => $authoritative['idempotency_fingerprint'],
                     'body_fingerprint' => $authoritative['body_fingerprint'],
+                    'effect_window_seconds' => $effectWindowContract['effect_window_seconds'],
+                    'effect_window_fingerprint' => $effectWindowContract['effect_window_fingerprint'],
                     'opened_at' => $openedAt->toIso8601String(),
-                    'expires_at' => $openedAt->addSeconds(self::MANUAL_E2E_WINDOW_TTL_SECONDS)->toIso8601String(),
+                    'expires_at' => $effectExpiresAt->toIso8601String(),
                     'maximum_attempts' => 1,
                     'opened_by' => Auth::id(),
                 ];
@@ -3746,6 +3784,7 @@ class TechnicalServiceMessagingSettingsService
                     || (string) ($window['status'] ?? '') !== 'open'
                     || (string) ($window['run_id'] ?? '') !== $runId
                     || (int) ($window['dispatch_id'] ?? 0) !== $dispatchId
+                    || $this->invalidWindowTtl($window, $current)
                     || $this->windowExpired($window)
                     || ! (bool) ($current['real_send_enabled'] ?? false)
                     || (bool) ($current['queue_paused'] ?? true)
@@ -3833,6 +3872,7 @@ class TechnicalServiceMessagingSettingsService
                     || (int) ($claim['dispatch_id'] ?? 0) !== $dispatchId
                     || (string) ($claim['run_id'] ?? '') !== $context->activeRunId()
                     || ! hash_equals((string) ($claim['claim_hash'] ?? ''), $claimHash)
+                    || $this->invalidWindowTtl($claim, $current)
                     || $this->windowExpired($claim)
                 ) {
                     throw new ConflictHttpException('Manual E2E transport izni geçersiz veya daha önce kullanılmış.');
@@ -4672,6 +4712,57 @@ class TechnicalServiceMessagingSettingsService
             && $storedOfferCycleId === $authoritative['offer_cycle_id']
             && (string) ($stored['idempotency_fingerprint'] ?? '') === $authoritative['idempotency_fingerprint']
             && (string) ($stored['body_fingerprint'] ?? '') === $authoritative['body_fingerprint'];
+    }
+
+    /**
+     * @return array{profile_id:string,effect_window_seconds:int,effect_window_fingerprint:string}
+     */
+    public static function manualE2EEffectWindowContract(?string $profileId): array
+    {
+        $profileId = trim((string) $profileId);
+        $isScopedLocalUat = $profileId === ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE;
+        $resolvedProfileId = $isScopedLocalUat
+            ? ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
+            : 'default';
+        $seconds = $isScopedLocalUat
+            ? self::SCOPED_LOCAL_UAT_EFFECT_WINDOW_SECONDS
+            : self::MANUAL_E2E_WINDOW_TTL_SECONDS;
+        $fingerprint = hash('sha256', json_encode([
+            'profile_id' => $resolvedProfileId,
+            'effect_window_seconds' => $seconds,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+
+        return [
+            'profile_id' => $resolvedProfileId,
+            'effect_window_seconds' => $seconds,
+            'effect_window_fingerprint' => $fingerprint,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runSnapshot
+     * @return array{profile_id:string,effect_window_seconds:int,effect_window_fingerprint:string}|null
+     */
+    public static function resolvedManualE2EEffectWindowContract(array $runSnapshot): ?array
+    {
+        $hasScopedProfile = array_key_exists('scoped_local_uat_profile_id', $runSnapshot);
+        $profileId = $hasScopedProfile && is_scalar($runSnapshot['scoped_local_uat_profile_id'])
+            ? trim((string) $runSnapshot['scoped_local_uat_profile_id'])
+            : null;
+        if ($hasScopedProfile && $profileId !== ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE) {
+            return null;
+        }
+
+        $contract = self::manualE2EEffectWindowContract($profileId);
+        if ((int) ($runSnapshot['effect_window_seconds'] ?? 0) !== $contract['effect_window_seconds']
+            || ! hash_equals(
+                $contract['effect_window_fingerprint'],
+                (string) ($runSnapshot['effect_window_fingerprint'] ?? ''),
+            )) {
+            return null;
+        }
+
+        return $contract;
     }
 
     /**
@@ -6170,6 +6261,7 @@ class TechnicalServiceMessagingSettingsService
                     || (int) ($claim['dispatch_id'] ?? 0) <= 0
                     || trim((string) ($claim['claim_hash'] ?? '')) === ''
                     || $this->manualE2ESecurityTupleIncomplete($claim)
+                    || $this->invalidWindowTtl($claim, $settings)
                 ))
                 || ($claim !== null && $effectClaim !== null)
                 || $normalClaim !== null,
@@ -6189,7 +6281,7 @@ class TechnicalServiceMessagingSettingsService
                 || ! in_array((string) ($window['channel'] ?? ''), ['whatsapp', 'sms'], true)
                 || (int) ($window['maximum_attempts'] ?? 0) !== 1
                 || $this->manualE2ESecurityTupleIncomplete($window)
-                || $this->invalidWindowTtl($window)
+                || $this->invalidWindowTtl($window, $settings)
                 || $normalClaim !== null,
             default => true,
         };
@@ -6211,7 +6303,9 @@ class TechnicalServiceMessagingSettingsService
             || trim((string) ($scope['role_target'] ?? '')) === ''
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['recipient_fingerprint'] ?? ''))
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['idempotency_fingerprint'] ?? ''))
-            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['body_fingerprint'] ?? ''));
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['body_fingerprint'] ?? ''))
+            || (int) ($scope['effect_window_seconds'] ?? 0) <= 0
+            || ! preg_match('/^[a-f0-9]{64}$/', (string) ($scope['effect_window_fingerprint'] ?? ''));
     }
 
     /**
@@ -6231,6 +6325,7 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+        $effectWindowContract = self::resolvedManualE2EEffectWindowContract($snapshot);
         $snapshotCreatedAfter = $this->safeDate($snapshot['scoped_local_uat_created_after'] ?? null);
         $ttlSeconds = $createdAfter !== null && $expiresAt !== null
             ? (int) floor($createdAfter->diffInSeconds($expiresAt))
@@ -6242,6 +6337,8 @@ class TechnicalServiceMessagingSettingsService
             || ! $snapshotCreatedAfter->equalTo($createdAfter)
             || $ttlSeconds < 60
             || $ttlSeconds > self::SCOPED_LOCAL_UAT_MAX_TTL_SECONDS
+            || $effectWindowContract === null
+            || $effectWindowContract['effect_window_seconds'] !== self::SCOPED_LOCAL_UAT_EFFECT_WINDOW_SECONDS
             || (array) ($snapshot['scoped_local_uat_limits'] ?? []) !== (array) $profile['limits']
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($snapshot['scoped_local_uat_email_allowlist_fingerprint'] ?? ''))
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($snapshot['scoped_local_uat_event_policy_fingerprint'] ?? ''));
@@ -6249,9 +6346,15 @@ class TechnicalServiceMessagingSettingsService
 
     /**
      * @param  array<string, mixed>  $window
+     * @param  array<string, mixed>  $settings
      */
-    private function invalidWindowTtl(array $window): bool
+    private function invalidWindowTtl(array $window, array $settings): bool
     {
+        $snapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+        $effectWindowContract = self::resolvedManualE2EEffectWindowContract($snapshot);
+        $runExpiresAt = $this->safeDate($settings['manual_e2e_expires_at'] ?? null);
         try {
             $openedAt = CarbonImmutable::parse((string) ($window['opened_at'] ?? ''));
             $expiresAt = CarbonImmutable::parse((string) ($window['expires_at'] ?? ''));
@@ -6259,8 +6362,22 @@ class TechnicalServiceMessagingSettingsService
             return true;
         }
 
+        if ($effectWindowContract === null || $runExpiresAt === null) {
+            return true;
+        }
+
+        $expectedExpiresAt = $openedAt->addSeconds($effectWindowContract['effect_window_seconds']);
+        if ($runExpiresAt->lt($expectedExpiresAt)) {
+            $expectedExpiresAt = $runExpiresAt;
+        }
+
         return ! $openedAt->lt($expiresAt)
-            || $openedAt->diffInSeconds($expiresAt) > self::MANUAL_E2E_WINDOW_TTL_SECONDS;
+            || ! $expiresAt->equalTo($expectedExpiresAt)
+            || (int) ($window['effect_window_seconds'] ?? 0) !== $effectWindowContract['effect_window_seconds']
+            || ! hash_equals(
+                $effectWindowContract['effect_window_fingerprint'],
+                (string) ($window['effect_window_fingerprint'] ?? ''),
+            );
     }
 
     private function safeDate(mixed $value): ?CarbonImmutable

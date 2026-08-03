@@ -127,6 +127,18 @@ class TechnicalServiceManualE2ERunContext
         return $this->parseDate($this->settings['manual_e2e_expires_at'] ?? null);
     }
 
+    /**
+     * @return array{profile_id:string,effect_window_seconds:int,effect_window_fingerprint:string}|null
+     */
+    public function effectWindowContract(): ?array
+    {
+        return TechnicalServiceMessagingSettingsService::resolvedManualE2EEffectWindowContract(
+            is_array($this->settings['manual_e2e_run_snapshot'] ?? null)
+                ? $this->settings['manual_e2e_run_snapshot']
+                : [],
+        );
+    }
+
     public function isActive(): bool
     {
         return $this->contextBlockingReason() === null;
@@ -317,9 +329,11 @@ class TechnicalServiceManualE2ERunContext
     public function workerCommand(int $sleepSeconds = 10): ?string
     {
         $window = $this->openWindow();
+        $effectWindowContract = $this->effectWindowContract();
         if (! $this->isActive()
             || $this->phase() !== TechnicalServiceMessagingSettingsService::MANUAL_E2E_PHASE_WINDOW_OPEN
             || $window === null
+            || $effectWindowContract === null
             || ! (bool) ($this->settings['real_send_enabled'] ?? false)
             || (bool) ($this->settings['queue_paused'] ?? true)
             || $this->remainingTtlSeconds() <= 0) {
@@ -336,8 +350,25 @@ class TechnicalServiceManualE2ERunContext
         }
 
         try {
+            $windowOpenedAt = CarbonImmutable::parse((string) ($window['opened_at'] ?? ''));
             $windowExpiresAt = CarbonImmutable::parse((string) ($window['expires_at'] ?? ''));
         } catch (Throwable) {
+            return null;
+        }
+        $runExpiresAt = $this->expiresAt();
+        if ($runExpiresAt === null) {
+            return null;
+        }
+        $expectedExpiresAt = $windowOpenedAt->addSeconds($effectWindowContract['effect_window_seconds']);
+        if ($runExpiresAt->lt($expectedExpiresAt)) {
+            $expectedExpiresAt = $runExpiresAt;
+        }
+        if (! $windowExpiresAt->equalTo($expectedExpiresAt)
+            || (int) ($window['effect_window_seconds'] ?? 0) !== $effectWindowContract['effect_window_seconds']
+            || ! hash_equals(
+                $effectWindowContract['effect_window_fingerprint'],
+                (string) ($window['effect_window_fingerprint'] ?? ''),
+            )) {
             return null;
         }
         $windowRemaining = max(0, (int) floor($this->now->diffInSeconds($windowExpiresAt)));
@@ -360,7 +391,7 @@ class TechnicalServiceManualE2ERunContext
             ...$parts,
             '--require-real-send-enabled',
             '--require-queue-not-paused',
-            '--max-seconds='.min(TechnicalServiceMessagingSettingsService::MANUAL_E2E_WINDOW_TTL_SECONDS, $windowRemaining),
+            '--max-seconds='.$windowRemaining,
             '--sleep-seconds=0',
             '--stop-after-idle-cycles=1',
         ]);
@@ -394,6 +425,7 @@ class TechnicalServiceManualE2ERunContext
             'created_after' => $this->createdAfter()?->toIso8601String(),
             'expires_at' => $this->expiresAt()?->toIso8601String(),
             'remaining_ttl_seconds' => $this->remainingTtlSeconds(),
+            'effect_window_seconds' => $this->effectWindowContract()['effect_window_seconds'] ?? null,
             'worker_command_ready' => $this->workerCommand() !== null,
             'worker_command' => $this->workerCommand(),
             'allowlisted_phone_count' => count($this->allowlistedPhones()),
@@ -428,6 +460,7 @@ class TechnicalServiceManualE2ERunContext
             'offer_cycle_id',
             'opened_at',
             'expires_at',
+            'effect_window_seconds',
             'claimed_at',
             'http_started_at',
             'maximum_attempts',

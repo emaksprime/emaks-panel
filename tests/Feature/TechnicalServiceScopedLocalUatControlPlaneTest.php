@@ -306,6 +306,156 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_local_allowlisted_uat_effect_window_is_code_owned_snapshot_bound_and_shared_with_worker(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $localContract = TechnicalServiceMessagingSettingsService::manualE2EEffectWindowContract(
+            ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+        );
+        $defaultContract = TechnicalServiceMessagingSettingsService::manualE2EEffectWindowContract(null);
+
+        $this->assertSame(900, $localContract['effect_window_seconds']);
+        $this->assertSame(30, $defaultContract['effect_window_seconds']);
+        $this->assertNull(TechnicalServiceMessagingSettingsService::resolvedManualE2EEffectWindowContract([
+            'scoped_local_uat_profile_id' => 'unknown-profile',
+            'effect_window_seconds' => 900,
+            'effect_window_fingerprint' => $localContract['effect_window_fingerprint'],
+        ]));
+
+        $prepared = $settings->prepareManualE2E();
+        $stored = $this->persistedLifecycleSettings();
+        $snapshot = (array) ($stored['manual_e2e_run_snapshot'] ?? []);
+        $state = $settings->scopedLocalUatControlPlaneState(false);
+
+        $this->assertSame(3600, $stored['manual_e2e_ttl_seconds']);
+        $this->assertSame(900, $snapshot['effect_window_seconds']);
+        $this->assertSame($localContract['effect_window_fingerprint'], $snapshot['effect_window_fingerprint']);
+        $this->assertSame(900, $state['effect_window_seconds']);
+        $this->assertSame($localContract['effect_window_fingerprint'], $state['effect_window_fingerprint']);
+        $this->assertTrue(app(ExternalExecutionControlPlaneService::class)->messagingRunSnapshotIsCurrent($snapshot));
+
+        $dispatch = $this->scopedDispatch($settings);
+        $settings->openManualE2ESendWindow(
+            (string) data_get($prepared, 'manual_e2e.active_run_id'),
+            $dispatch->id,
+        );
+        $stored = $this->persistedLifecycleSettings();
+        $window = (array) ($stored['manual_e2e_open_window'] ?? []);
+        $workerCommand = (string) data_get($settings->payload(), 'manual_e2e.worker_command');
+
+        $this->assertSame(900, $window['effect_window_seconds']);
+        $this->assertSame($localContract['effect_window_fingerprint'], $window['effect_window_fingerprint']);
+        $this->assertSame(900, (int) Carbon::parse($window['opened_at'])->diffInSeconds(Carbon::parse($window['expires_at'])));
+        $this->assertStringContainsString('--max-seconds=900', $workerCommand);
+        Http::assertNothingSent();
+    }
+
+    public function test_local_uat_effect_window_request_overrides_and_snapshot_drift_fail_closed(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+
+        foreach (['effect_window_seconds', 'claim_window_seconds', 'ttl', 'expires_in', 'manual_window', 'authorization_window'] as $field) {
+            foreach ([5, 30, 900, 3600] as $value) {
+                try {
+                    $settings->prepareManualE2E([$field => $value]);
+                    $this->fail("{$field} request override reddedilmeliydi.");
+                } catch (ValidationException) {
+                    $this->assertNull($settings->manualE2EContext()->activeRunId());
+                }
+            }
+        }
+
+        $prepared = $settings->prepareManualE2E();
+        $dispatch = $this->scopedDispatch($settings);
+        $this->mutateLifecycleSettings(function (array $current): array {
+            $snapshot = (array) ($current['manual_e2e_run_snapshot'] ?? []);
+            $snapshot['effect_window_seconds'] = 30;
+            $current['manual_e2e_run_snapshot'] = $snapshot;
+
+            return $current;
+        });
+
+        try {
+            $settings->openManualE2ESendWindow(
+                (string) data_get($prepared, 'manual_e2e.active_run_id'),
+                $dispatch->id,
+            );
+            $this->fail('Mutasyona uğramış effect-window snapshotı reddedilmeliydi.');
+        } catch (ConflictHttpException|ValidationException) {
+            $dispatch->refresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+            $this->assertSame(0, $dispatch->attempt_count);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_local_uat_claim_passes_at_899_seconds(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $prepared = $settings->prepareManualE2E();
+        $dispatch = $this->scopedDispatch($settings);
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $settings->openManualE2ESendWindow($runId, $dispatch->id);
+
+        $this->travel(899)->seconds();
+        $claim = $settings->claimManualE2ESend($dispatch->id, $runId);
+
+        $this->assertSame($runId, $claim['run_id']);
+        $this->assertSame($dispatch->id, $claim['dispatch_id']);
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->status);
+        $this->assertSame(1, $dispatch->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_local_uat_claim_rejects_at_900_seconds_without_effect(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $prepared = $settings->prepareManualE2E();
+        $dispatch = $this->scopedDispatch($settings);
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $settings->openManualE2ESendWindow($runId, $dispatch->id);
+
+        $this->travel(900)->seconds();
+
+        try {
+            $settings->claimManualE2ESend($dispatch->id, $runId);
+            $this->fail('Local UAT effect-window tam 900 saniyede kapanmalıydı.');
+        } catch (ConflictHttpException) {
+            $dispatch->refresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+            $this->assertSame(0, $dispatch->attempt_count);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_same_scoped_dispatch_window_can_be_claimed_only_once(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $prepared = $settings->prepareManualE2E();
+        $dispatch = $this->scopedDispatch($settings);
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $settings->openManualE2ESendWindow($runId, $dispatch->id);
+
+        $first = $settings->claimManualE2ESend($dispatch->id, $runId);
+        $this->assertSame($dispatch->id, $first['dispatch_id']);
+
+        try {
+            $settings->claimManualE2ESend($dispatch->id, $runId);
+            $this->fail('Aynı dispatch window ikinci kez claim edilememeliydi.');
+        } catch (ConflictHttpException) {
+            $dispatch->refresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->status);
+            $this->assertSame(1, $dispatch->attempt_count);
+        }
+        Http::assertNothingSent();
+    }
+
     public function test_generic_settings_cannot_mutate_active_run(): void
     {
         ['settings' => $settings] = $this->readyScopedLocalUat();

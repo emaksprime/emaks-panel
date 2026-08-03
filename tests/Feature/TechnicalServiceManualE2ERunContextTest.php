@@ -27,6 +27,7 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
     {
         parent::setUp();
 
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('m', 32))]);
         $this->travelTo(Carbon::parse('2026-07-21 12:00:00', 'Europe/Istanbul'));
         Http::preventStrayRequests();
     }
@@ -199,6 +200,50 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $this->assertStringNotContainsString('905372081633', $output);
         $this->assertStringNotContainsString('evo_whatsapp,nac_sms', $output);
         $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
+        Http::assertNothingSent();
+    }
+
+    public function test_default_effect_window_and_worker_remain_thirty_seconds_and_claim_at_29_seconds(): void
+    {
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $prepared = $settings->enableManualE2E();
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $dispatch = $this->manualDispatch($settings, 'evo_whatsapp', 'whatsapp');
+        $settings->openManualE2ESendWindow($runId, $dispatch->id);
+        $payload = $settings->payload();
+
+        $this->assertSame(30, data_get($payload, 'manual_e2e.effect_window_seconds'));
+        $this->assertSame(30, data_get($payload, 'manual_e2e.open_window.effect_window_seconds'));
+        $this->assertStringContainsString('--max-seconds=30', (string) data_get($payload, 'manual_e2e.worker_command'));
+
+        $this->travel(29)->seconds();
+        $claim = $settings->claimManualE2ESend($dispatch->id, $runId);
+
+        $this->assertSame($dispatch->id, $claim['dispatch_id']);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_default_effect_window_rejects_claim_at_30_seconds_without_effect(): void
+    {
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $prepared = $settings->enableManualE2E();
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $dispatch = $this->manualDispatch($settings, 'evo_whatsapp', 'whatsapp');
+        $settings->openManualE2ESendWindow($runId, $dispatch->id);
+
+        $this->travel(30)->seconds();
+
+        try {
+            $settings->claimManualE2ESend($dispatch->id, $runId);
+            $this->fail('Default effect-window tam 30 saniyede kapanmalıydı.');
+        } catch (ConflictHttpException) {
+            $dispatch->refresh();
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+            $this->assertSame(0, $dispatch->attempt_count);
+        }
         Http::assertNothingSent();
     }
 
