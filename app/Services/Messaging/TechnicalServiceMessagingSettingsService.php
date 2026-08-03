@@ -1219,6 +1219,41 @@ class TechnicalServiceMessagingSettingsService
         return ['allowed' => true, 'code' => null, 'message' => null];
     }
 
+    /** Resolve the immutable provider family and mode through one code-owned contract. */
+    public function canonicalScopedLocalUatProviderIdentity(
+        string $providerFamily,
+        string $providerMode,
+    ): string {
+        $providerValue = strtolower(trim($providerFamily));
+        $modeValue = strtolower(trim($providerMode));
+        $family = match ($providerValue) {
+            'fake', 'fake_payment' => 'fake',
+            'iyzico', 'iyzico_sandbox', 'iyzico_live' => 'iyzico',
+            default => throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Provider family authority canonical değil.'),
+        };
+        $mode = match ($modeValue) {
+            'local', 'sandbox', 'live' => $modeValue,
+            default => throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Provider mode authority canonical değil.'),
+        };
+        $identity = match ([$family, $mode]) {
+            ['fake', 'local'] => 'fake_payment',
+            ['iyzico', 'sandbox'] => 'iyzico_sandbox',
+            ['iyzico', 'live'] => 'iyzico_live',
+            default => throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Provider family ve mode authority canonical değil.'),
+        };
+        $embeddedIdentity = match ($providerValue) {
+            'fake_payment' => 'fake_payment',
+            'iyzico_sandbox' => 'iyzico_sandbox',
+            'iyzico_live' => 'iyzico_live',
+            default => null,
+        };
+        if ($embeddedIdentity !== null && ! hash_equals($embeddedIdentity, $identity)) {
+            throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Composite provider identity ve mode authority eşleşmiyor.');
+        }
+
+        return $identity;
+    }
+
     /**
      * @return array{required:bool,duplicate:bool,claim_nonce:string|null,duplicate_payment_id:int|null,outcome:string|null}
      */
@@ -1243,19 +1278,28 @@ class TechnicalServiceMessagingSettingsService
     public function claimScopedLocalUatSandboxPaymentEffect(
         TechnicalServiceMountPayment $payment,
         string $operation,
-        string $provider,
+        string $providerFamily,
+        string $providerMode,
     ): array {
         if ($operation !== self::SCOPED_EFFECT_PAYMENT_CREATE) {
             throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Scoped UAT ödeme operation izni yok.');
         }
+
+        $providerIdentity = $this->canonicalScopedLocalUatProviderIdentity($providerFamily, $providerMode);
 
         return $this->claimScopedLocalUatEffect(
             $payment,
             ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE,
             'sandbox_payment',
             'sandbox_payment',
-            $provider,
+            $providerIdentity,
             $operation,
+            null,
+            [],
+            [
+                'family' => strtolower(trim($providerFamily)),
+                'mode' => strtolower(trim($providerMode)),
+            ],
         );
     }
 
@@ -1522,11 +1566,12 @@ class TechnicalServiceMessagingSettingsService
         string $operation,
         string|array|null $recipient = null,
         array $callbackPayload = [],
+        ?array $providerAuthority = null,
     ): array {
         $lock = $this->acquireLifecycleLock();
 
         try {
-            return DB::transaction(function () use ($payment, $capability, $event, $channel, $provider, $operation, $recipient, $callbackPayload): array {
+            return DB::transaction(function () use ($payment, $capability, $event, $channel, $provider, $operation, $recipient, $callbackPayload, $providerAuthority): array {
                 $locked = $this->lockedAuthoritativeSettings();
                 $settings = $locked['settings'];
                 $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
@@ -1598,6 +1643,8 @@ class TechnicalServiceMessagingSettingsService
                 }
 
                 $businessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($lockedPayment, $payload);
+                $resolvedProviderFamily = null;
+                $resolvedProviderMode = null;
                 $snapshotProvider = (string) data_get(
                     $settings,
                     'manual_e2e_run_snapshot.scoped_local_uat_sandbox_payment_provider',
@@ -1609,8 +1656,32 @@ class TechnicalServiceMessagingSettingsService
                     }
                     if ($operation === self::SCOPED_EFFECT_PAYMENT_CALLBACK) {
                         $provider = $snapshotProvider;
-                    } elseif ($provider !== $snapshotProvider) {
-                        throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: Payment create providerı immutable run snapshot ile eşleşmiyor.');
+                        $resolvedProviderMode = $this->scopedLocalUatProviderModeForProvider($snapshotProvider);
+                    } else {
+                        $submittedProviderFamily = is_array($providerAuthority)
+                            ? strtolower(trim((string) ($providerAuthority['family'] ?? '')))
+                            : '';
+                        $submittedProviderMode = is_array($providerAuthority)
+                            ? strtolower(trim((string) ($providerAuthority['mode'] ?? '')))
+                            : '';
+                        $lockedProviderAuthority = $this->lockedScopedLocalUatPaymentProviderAuthority(
+                            $locked['main_page'],
+                        );
+                        if (! hash_equals($lockedProviderAuthority['family'], $submittedProviderFamily)) {
+                            throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: provider_family_mismatch; manager provider family locked settings authority ile eşleşmiyor.');
+                        }
+                        if (! hash_equals($lockedProviderAuthority['mode'], $submittedProviderMode)) {
+                            throw new ConflictHttpException('scoped_uat_provider_mode_mismatch: Manager provider mode locked settings authority ile eşleşmiyor.');
+                        }
+                        $resolvedProviderFamily = $lockedProviderAuthority['family'];
+                        $resolvedProviderMode = $lockedProviderAuthority['mode'];
+                        $provider = $this->assertScopedLocalUatPaymentProviderIdentityBeforeClaim(
+                            $lockedPayment,
+                            $payload,
+                            $snapshotProvider,
+                            $resolvedProviderFamily,
+                            $resolvedProviderMode,
+                        );
                     }
                 }
                 if (! is_string($provider) || $provider === '') {
@@ -1793,6 +1864,13 @@ class TechnicalServiceMessagingSettingsService
                 ];
                 if ($operation === self::SCOPED_EFFECT_PAYMENT_CALLBACK) {
                     $claim['callback_submission'] = $this->scopedLocalUatCallbackSubmission($callbackPayload, $provider);
+                }
+                if ($channel === 'sandbox_payment') {
+                    $claim['provider_family'] = $resolvedProviderFamily;
+                    $claim['provider_mode'] = $resolvedProviderMode;
+                }
+                if ($operation === self::SCOPED_EFFECT_PAYMENT_CREATE && $resolvedProviderMode !== null) {
+                    $payload['provider_mode'] = $resolvedProviderMode;
                 }
                 $payload['scoped_local_uat_effect_claim'] = $claim;
                 $lockedPayment->forceFill(['raw_payload' => $payload])->save();
@@ -2113,8 +2191,14 @@ class TechnicalServiceMessagingSettingsService
             if ((string) ($claim['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CALLBACK) {
                 $this->assertScopedLocalUatStoredPaymentSessionAuthority($settings, $claim, $payment, $payload);
                 $this->bindScopedLocalUatCallbackReferences($payment, $claim);
-            } elseif ($this->scopedLocalUatCanonicalPaymentProvider($payment) !== $snapshotProvider) {
-                throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: Payment create providerı immutable run snapshot ile eşleşmiyor.');
+            } else {
+                $this->assertScopedLocalUatPaymentProviderIdentityBeforeClaim(
+                    $payment,
+                    $payload,
+                    $snapshotProvider,
+                    strtolower(trim((string) ($claim['provider_family'] ?? ''))),
+                    strtolower(trim((string) ($claim['provider_mode'] ?? ''))),
+                );
             }
         }
 
@@ -2706,17 +2790,16 @@ class TechnicalServiceMessagingSettingsService
             $payload,
             ['provider', 'provider_key', 'payment_provider'],
             'provider',
-            function (mixed $value) use ($providerMode, $storedProvider): string {
+            function (mixed $value) use ($providerMode): string {
                 if (! is_scalar($value) || trim((string) $value) === '') {
                     throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider present fakat geçersiz.');
                 }
-                $provider = $this->scopedLocalUatCanonicalProviderValue((string) $value, (string) $providerMode);
-                if ($provider === null
-                    && strtolower(trim((string) $value)) === 'iyzico'
-                    && in_array($storedProvider, ['iyzico_sandbox', 'iyzico_live'], true)) {
-                    $provider = $storedProvider;
-                }
-                if ($provider === null) {
+                try {
+                    $provider = $this->canonicalScopedLocalUatProviderIdentity(
+                        (string) $value,
+                        (string) $providerMode,
+                    );
+                } catch (ConflictHttpException) {
                     throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider canonical değil.');
                 }
 
@@ -3065,25 +3148,99 @@ class TechnicalServiceMessagingSettingsService
             ?? ''
         );
 
-        return $this->scopedLocalUatCanonicalProviderValue((string) $payment->provider, $mode);
+        try {
+            return $this->canonicalScopedLocalUatProviderIdentity((string) $payment->provider, $mode);
+        } catch (ConflictHttpException) {
+            return null;
+        }
     }
 
-    private function scopedLocalUatCanonicalProviderValue(string $provider, string $mode = ''): ?string
-    {
-        $provider = strtolower(trim($provider));
-        $mode = strtolower(trim($mode));
+    /**
+     * Validate the locked payment against the locked run snapshot before any
+     * claim, settings, history, audit, or provider-decision mutation.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function assertScopedLocalUatPaymentProviderIdentityBeforeClaim(
+        TechnicalServiceMountPayment $payment,
+        array $payload,
+        string $snapshotProviderIdentity,
+        string $providerFamily,
+        string $providerMode,
+    ): string {
+        if (! in_array($providerFamily, ['fake', 'iyzico'], true)) {
+            throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Payment provider family-only authority çözülemedi.');
+        }
 
-        return match ($provider) {
-            'fake', 'fake_payment' => 'fake_payment',
-            'iyzico_sandbox' => 'iyzico_sandbox',
-            'iyzico_live' => 'iyzico_live',
-            'iyzico' => match ($mode) {
-                'sandbox' => 'iyzico_sandbox',
-                'live' => 'iyzico_live',
-                default => null,
-            },
-            default => null,
-        };
+        $storedProviderFamily = strtolower(trim((string) $payment->provider));
+        if (! hash_equals($providerFamily, $storedProviderFamily)) {
+            throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: provider_family_mismatch; payment provider family stored authority ile eşleşmiyor.');
+        }
+
+        $providerIdentity = $this->canonicalScopedLocalUatProviderIdentity($providerFamily, $providerMode);
+        if (! hash_equals($snapshotProviderIdentity, $providerIdentity)) {
+            throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: Payment provider family/mode immutable run snapshot ile eşleşmiyor.');
+        }
+
+        $storedMode = Arr::get($payload, 'provider_mode')
+            ?? Arr::get($payload, 'provider_decision.provider_mode')
+            ?? Arr::get($payload, 'provider_gateway.mode')
+            ?? Arr::get($payload, 'provider_gateway.provider_mode');
+        if ($storedMode !== null && (! is_scalar($storedMode)
+            || ! hash_equals(
+                $providerIdentity,
+                $this->canonicalScopedLocalUatProviderIdentity($storedProviderFamily, (string) $storedMode),
+            ))) {
+            throw new ConflictHttpException('scoped_uat_provider_mode_mismatch: Payment provider mode stored authority ile eşleşmiyor.');
+        }
+
+        return $providerIdentity;
+    }
+
+    /**
+     * @return array{family:string,mode:string,identity:string}
+     */
+    private function lockedScopedLocalUatPaymentProviderAuthority(PageConfig $page): array
+    {
+        $layout = is_array($page->layout_json) ? $page->layout_json : [];
+        $realProviderEnabled = filter_var(
+            Arr::get(
+                $layout,
+                TechnicalServicePaymentProviderSettingsService::REAL_PROVIDER_ENABLED_KEY,
+                config('payments.real_provider_enabled', false),
+            ),
+            FILTER_VALIDATE_BOOLEAN,
+        );
+        $configuredProvider = strtolower(trim((string) Arr::get(
+            $layout,
+            TechnicalServicePaymentProviderSettingsService::PROVIDER_KEY,
+            config('payments.provider_name', config('payments.provider', 'iyzico')),
+        )));
+        $providerFamily = $realProviderEnabled
+            ? match ($configuredProvider) {
+                'fake', 'fake_payment' => 'fake',
+                'iyzico', 'iyzico_sandbox', 'iyzico_live' => 'iyzico',
+                default => throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Locked provider family authority canonical değil.'),
+            }
+        : 'fake';
+        $providerMode = $providerFamily === 'fake'
+            ? 'local'
+            : match (strtolower(trim((string) Arr::get(
+                $layout,
+                TechnicalServicePaymentProviderSettingsService::PROVIDER_MODE_KEY,
+                config('payments.gateway.mode', config('payments.environment', 'sandbox')),
+            )))) {
+                'sandbox' => 'sandbox',
+                'live' => 'live',
+                default => throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Locked provider mode authority canonical değil.'),
+            };
+        $identityInput = $realProviderEnabled ? $configuredProvider : $providerFamily;
+
+        return [
+            'family' => $providerFamily,
+            'mode' => $providerMode,
+            'identity' => $this->canonicalScopedLocalUatProviderIdentity($identityInput, $providerMode),
+        ];
     }
 
     private function scopedLocalUatProviderModeForProvider(string $provider): string

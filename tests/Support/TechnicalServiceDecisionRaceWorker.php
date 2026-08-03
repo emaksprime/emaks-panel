@@ -2,12 +2,17 @@
 
 declare(strict_types=1);
 
+use App\Models\TechnicalServiceMountPayment;
+use App\Services\Payments\IyzicoPaymentProvider;
+use App\Services\Payments\PaymentProviderManager;
 use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\Support\IsolatedPostgreSqlEnvironment;
 
 ini_set('display_errors', '0');
@@ -36,6 +41,73 @@ try {
 
     IsolatedPostgreSqlEnvironment::assertLaravelConfiguration($app->make('config'));
     installOutboundGuards();
+
+    if (in_array($mode, ['provider_claim_mismatch', 'provider_claim_valid'], true)) {
+        $workerStage = 'provider_claim_race';
+        $worker = isset($argv[3]) && is_string($argv[3]) ? $argv[3] : '';
+        $paymentId = isset($argv[4]) && is_string($argv[4]) && ctype_digit($argv[4])
+            ? (int) $argv[4]
+            : 0;
+        $raceDirectory = isset($argv[5]) && is_string($argv[5]) ? $argv[5] : '';
+        $counterPath = isset($argv[6]) && is_string($argv[6]) ? $argv[6] : '';
+        $testNow = isset($argv[7]) && is_string($argv[7]) ? $argv[7] : '';
+
+        assertProviderClaimRaceArguments(
+            $facts['nonce'],
+            $worker,
+            $paymentId,
+            $raceDirectory,
+            $counterPath,
+        );
+        Carbon::setTestNow(Carbon::parse($testNow));
+        $connection = $app->make('db')->connection('pgsql');
+        IsolatedPostgreSqlEnvironment::assertConnectedDatabase($connection);
+        $payment = TechnicalServiceMountPayment::query()->findOrFail($paymentId);
+        $app->instance(IyzicoPaymentProvider::class, new class($counterPath) extends IyzicoPaymentProvider
+        {
+            public function __construct(private readonly string $counterPath) {}
+
+            public function createPayment(TechnicalServiceMountPayment $payment): array
+            {
+                incrementProviderCallCounter($this->counterPath);
+                usleep(150_000);
+                $reference = 'race-session-'.$payment->getKey();
+                $payment->forceFill([
+                    'provider' => 'iyzico',
+                    'provider_reference' => $reference,
+                    'payment_url' => 'http://10.0.28.64:8000/payments/'.$reference,
+                    'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                ])->save();
+
+                return [
+                    'provider_reference' => $reference,
+                    'payment_url' => 'http://10.0.28.64:8000/payments/'.$reference,
+                    'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                ];
+            }
+        });
+
+        synchronizeProviderClaimRace($raceDirectory, $worker);
+
+        try {
+            $result = $app->make(PaymentProviderManager::class)->createPayment($payment);
+            $outcome = (string) ($result['outcome'] ?? 'unknown');
+            $rejection = 'none';
+        } catch (ConflictHttpException $exception) {
+            $outcome = 'rejected';
+            $rejection = explode(':', $exception->getMessage(), 2)[0];
+        }
+
+        assertNoExternalEffects();
+        emitPayload([
+            'ok' => true,
+            'mode' => $mode,
+            'worker' => $worker,
+            'outcome' => $outcome,
+            'rejection' => $rejection,
+            'outbound_guarded' => true,
+        ]);
+    }
 
     if ($mode === 'preflight') {
         assertNoExternalEffects();
@@ -173,7 +245,13 @@ try {
 
     echo json_encode([
         'ok' => false,
-        'mode' => in_array($mode, ['preflight', 'connectivity', 'barrier'], true) ? $mode : 'invalid',
+        'mode' => in_array($mode, [
+            'preflight',
+            'connectivity',
+            'barrier',
+            'provider_claim_mismatch',
+            'provider_claim_valid',
+        ], true) ? $mode : 'invalid',
         'error' => 'worker_failed',
         'class' => (new ReflectionClass($exception))->getShortName(),
         'code' => $errorCode,
@@ -216,6 +294,66 @@ function registerWorkerPid(string $nonce): void
 
     if (file_put_contents($registry, $entry, FILE_APPEND | LOCK_EX) === false) {
         throw new RuntimeException('worker_registry_write_failed');
+    }
+}
+
+function assertProviderClaimRaceArguments(
+    string $nonce,
+    string $worker,
+    int $paymentId,
+    string $raceDirectory,
+    string $counterPath,
+): void {
+    $expectedDirectory = 'emaks-pr92-provider-preclaim-'.$nonce.'-'.$paymentId;
+    if (! in_array($worker, ['one', 'two'], true)
+        || $paymentId < 1
+        || ! is_dir($raceDirectory)
+        || basename($raceDirectory) !== $expectedDirectory
+        || dirname($counterPath) !== $raceDirectory
+        || basename($counterPath) !== 'provider-calls.txt'
+        || ! is_file($counterPath)) {
+        throw new RuntimeException('provider_claim_race_arguments_invalid');
+    }
+}
+
+function synchronizeProviderClaimRace(string $raceDirectory, string $worker): void
+{
+    $readyPath = $raceDirectory.DIRECTORY_SEPARATOR.$worker.'.ready';
+    if (file_put_contents($readyPath, (string) getmypid(), LOCK_EX) === false) {
+        throw new RuntimeException('provider_claim_race_ready_write_failed');
+    }
+
+    $deadline = microtime(true) + 15;
+    do {
+        $ready = glob($raceDirectory.DIRECTORY_SEPARATOR.'*.ready');
+        if (is_array($ready) && count($ready) === 2) {
+            return;
+        }
+        usleep(25_000);
+    } while (microtime(true) < $deadline);
+
+    throw new RuntimeException('provider_claim_race_barrier_timeout');
+}
+
+function incrementProviderCallCounter(string $counterPath): void
+{
+    $handle = fopen($counterPath, 'c+');
+    if ($handle === false || ! flock($handle, LOCK_EX)) {
+        throw new RuntimeException('provider_claim_counter_lock_failed');
+    }
+
+    try {
+        rewind($handle);
+        $current = trim((string) stream_get_contents($handle));
+        $next = (ctype_digit($current) ? (int) $current : 0) + 1;
+        rewind($handle);
+        if (! ftruncate($handle, 0) || fwrite($handle, (string) $next) === false) {
+            throw new RuntimeException('provider_claim_counter_write_failed');
+        }
+        fflush($handle);
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
     }
 }
 

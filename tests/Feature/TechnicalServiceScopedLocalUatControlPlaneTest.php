@@ -37,6 +37,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
 class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
@@ -2085,6 +2086,67 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_provider_identity_validation_runs_under_lock_before_first_claim_mutation(): void
+    {
+        $source = File::get(app_path('Services/Messaging/TechnicalServiceMessagingSettingsService.php'));
+        $methodStart = strpos($source, 'private function claimScopedLocalUatEffect(');
+        $methodEnd = strpos($source, 'private function finalizeScopedLocalUatEffect(', $methodStart);
+
+        $this->assertIsInt($methodStart);
+        $this->assertIsInt($methodEnd);
+        $method = substr($source, $methodStart, $methodEnd - $methodStart);
+        $settingsLock = strpos($method, '$this->lockedAuthoritativeSettings()');
+        $paymentLock = strpos($method, '->lockForUpdate()->firstOrFail()');
+        $lockedProviderAuthority = strpos($method, '$this->lockedScopedLocalUatPaymentProviderAuthority(');
+        $validation = strpos($method, '$this->assertScopedLocalUatPaymentProviderIdentityBeforeClaim(');
+        $paymentMutation = strpos($method, "\$payload['scoped_local_uat_effect_claim'] = \$claim;");
+        $settingsMutation = strpos($method, "\$settings['scoped_local_uat_active_effect_claim'] = \$claim;");
+
+        foreach ([$settingsLock, $paymentLock, $lockedProviderAuthority, $validation, $paymentMutation, $settingsMutation] as $position) {
+            $this->assertIsInt($position);
+        }
+        $this->assertTrue($settingsLock < $lockedProviderAuthority);
+        $this->assertTrue($paymentLock < $lockedProviderAuthority);
+        $this->assertTrue($lockedProviderAuthority < $validation);
+        $this->assertTrue($settingsLock < $validation);
+        $this->assertTrue($paymentLock < $validation);
+        $this->assertTrue($validation < $paymentMutation);
+        $this->assertTrue($validation < $settingsMutation);
+    }
+
+    public function test_fake_local_mode_consistency_uses_single_canonical_provider_resolver(): void
+    {
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+
+        $this->assertSame('fake_payment', $settings->canonicalScopedLocalUatProviderIdentity('fake', 'local'));
+        $this->assertSame('fake_payment', $settings->canonicalScopedLocalUatProviderIdentity('fake_payment', 'local'));
+        $this->assertSame('iyzico_sandbox', $settings->canonicalScopedLocalUatProviderIdentity('iyzico', 'sandbox'));
+        $this->assertSame('iyzico_live', $settings->canonicalScopedLocalUatProviderIdentity('iyzico', 'live'));
+
+        foreach ([
+            ['fake', 'sandbox'],
+            ['fake_payment', 'sandbox'],
+            ['iyzico', 'local'],
+            ['iyzico_sandbox', 'live'],
+            ['iyzico_live', 'sandbox'],
+        ] as [$family, $mode]) {
+            try {
+                $settings->canonicalScopedLocalUatProviderIdentity($family, $mode);
+                $this->fail($family.'/'.$mode.' provider identity mismatch accepted.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('provider_identity_invalid', $exception->getMessage());
+            }
+        }
+
+        $managerSource = File::get(app_path('Services/Payments/PaymentProviderManager.php'));
+        $settingsSource = File::get(app_path('Services/Messaging/TechnicalServiceMessagingSettingsService.php'));
+
+        $this->assertSame(1, substr_count($settingsSource, 'function canonicalScopedLocalUatProviderIdentity('));
+        $this->assertSame(0, substr_count($managerSource, 'function canonicalProviderIdentity('));
+        $this->assertSame(0, substr_count($settingsSource, 'function scopedLocalUatCanonicalProviderValue('));
+        $this->assertGreaterThanOrEqual(2, substr_count($managerSource, 'canonicalScopedLocalUatProviderIdentity('));
+    }
+
     public function test_family_only_payment_provider_is_canonicalized_with_stored_mode(): void
     {
         ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
@@ -2112,6 +2174,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
         $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
         $payment->save();
+        $before = $this->providerAuthorityStateSnapshot($payment);
 
         try {
             app(PaymentProviderManager::class)->createPayment($payment);
@@ -2124,6 +2187,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertNull(data_get($fresh->raw_payload, 'provider_mode'));
         $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
         $this->assertNull($fresh->provider_reference);
+        $this->assertSame($before, $this->providerAuthorityStateSnapshot($payment));
         Http::assertNothingSent();
     }
 
@@ -2132,6 +2196,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
         $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
         $payment = $this->scopedPayment($runId);
+        $before = $this->providerAuthorityStateSnapshot($payment);
 
         try {
             app(PaymentProviderManager::class)->createPayment($payment);
@@ -2144,6 +2209,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame('fake', $fresh->provider);
         $this->assertNull(data_get($fresh->raw_payload, 'provider_mode'));
         $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
+        $this->assertSame($before, $this->providerAuthorityStateSnapshot($payment));
         Http::assertNothingSent();
     }
 
@@ -2159,6 +2225,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             'sandbox' => false,
         ])->forceFill(['provider' => 'iyzico']);
         $payment->save();
+        $before = $this->providerAuthorityStateSnapshot($payment);
 
         try {
             app(PaymentProviderManager::class)->createPayment($payment);
@@ -2172,6 +2239,31 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame('live', data_get($fresh->raw_payload, 'provider_mode'));
         $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
         $this->assertNull($fresh->provider_reference);
+        $this->assertSame($before, $this->providerAuthorityStateSnapshot($payment));
+        Http::assertNothingSent();
+    }
+
+    public function test_snapshot_tamper_is_rejected_before_claim_state_mutation(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+        $this->mutateLifecycleSettings(function (array $settings): array {
+            data_set($settings, 'manual_e2e_run_snapshot.scoped_local_uat_sandbox_payment_provider', 'fake_payment');
+
+            return $settings;
+        });
+        $before = $this->providerAuthorityStateSnapshot($payment);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Tampered provider snapshot claim mutationından önce reddedilmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_snapshot_mismatch', $exception->getMessage());
+        }
+
+        $this->assertSame($before, $this->providerAuthorityStateSnapshot($payment));
         Http::assertNothingSent();
     }
 
@@ -2211,6 +2303,46 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame('sandbox-session-reference', $fresh->provider_reference);
         $this->assertSame('http://10.0.28.64:8000/payments/sandbox-session-reference', $fresh->payment_url);
         $this->assertSame('completed', data_get($fresh->raw_payload, 'scoped_local_uat_effect_history.0.status'));
+        Http::assertNothingSent();
+    }
+
+    public function test_postgresql_concurrent_mismatch_has_zero_claim_and_state_mutation(): void
+    {
+        $this->requirePostgreSqlProviderClaimRace();
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->forcePaymentProviderMode('live');
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+        $before = $this->providerAuthorityStateSnapshot($payment);
+
+        $race = $this->runProviderClaimRace($payment, 'provider_claim_mismatch');
+
+        $this->assertSame(0, $race['provider_calls']);
+        $this->assertSame(['rejected', 'rejected'], $race['outcomes']);
+        $this->assertSame($before, $this->providerAuthorityStateSnapshot($payment));
+        $this->assertSame(0, collect($this->effectHistory())->where('payment_id', $payment->getKey())->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_postgresql_concurrent_valid_identity_has_one_claim_winner_and_provider_effect(): void
+    {
+        $this->requirePostgreSqlProviderClaimRace();
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        $race = $this->runProviderClaimRace($payment, 'provider_claim_valid');
+        $history = collect($this->effectHistory())
+            ->where('payment_id', $payment->getKey())
+            ->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE);
+
+        $this->assertSame(1, $race['provider_calls']);
+        $this->assertSame(1, $history->count());
+        $this->assertSame('completed', $history->first()['status'] ?? null);
+        $this->assertSame(1, collect($race['outcomes'])->filter(
+            fn (string $outcome): bool => $outcome === PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING,
+        )->count());
+        $this->assertSame('race-session-'.$payment->getKey(), $payment->fresh()->provider_reference);
         Http::assertNothingSent();
     }
 
@@ -2550,11 +2682,149 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
     {
         return [
             'requests' => TechnicalServiceRequest::query()->count(),
+            'request_events' => DB::table('technical_service_request_events')->count(),
             'dispatches' => TechnicalServiceMessageDispatch::query()->count(),
             'payments' => TechnicalServiceMountPayment::query()->count(),
             'page_configs' => PageConfig::query()->count(),
             'mail_profiles' => MailTransportProfile::query()->count(),
+            'audit_logs' => DB::connection()->getSchemaBuilder()->hasTable('audit_logs')
+                ? DB::table('audit_logs')->count()
+                : 0,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function providerAuthorityStateSnapshot(TechnicalServiceMountPayment $payment): array
+    {
+        $pages = PageConfig::query()
+            ->whereIn('page_code', array_values(array_unique([
+                TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE,
+                TechnicalServicePaymentProviderSettingsService::PAGE_CODE,
+            ])))
+            ->orderBy('page_code')
+            ->get()
+            ->mapWithKeys(fn (PageConfig $page): array => [
+                (string) $page->page_code => $page->getRawOriginal(),
+            ])
+            ->all();
+
+        return [
+            'payment' => $payment->fresh()->getRawOriginal(),
+            'settings_pages' => $pages,
+            'business_counts' => $this->businessCounts(),
+        ];
+    }
+
+    private function requirePostgreSqlProviderClaimRace(): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('Provider claim concurrency requires disposable PostgreSQL.');
+        }
+    }
+
+    /**
+     * @return array{outcomes:list<string>,provider_calls:int}
+     */
+    private function runProviderClaimRace(TechnicalServiceMountPayment $payment, string $mode): array
+    {
+        $this->assertContains($mode, ['provider_claim_mismatch', 'provider_claim_valid']);
+        $nonce = (string) getenv('REL4G_NONCE');
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{12}$/', $nonce);
+        $raceDirectory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'emaks-pr92-provider-preclaim-'.$nonce.'-'.$payment->getKey();
+        $counterPath = $raceDirectory.DIRECTORY_SEPARATOR.'provider-calls.txt';
+        if (File::isDirectory($raceDirectory)) {
+            File::deleteDirectory($raceDirectory);
+        }
+        File::ensureDirectoryExists($raceDirectory);
+        File::put($counterPath, '0');
+
+        $connection = DB::connection();
+        $this->assertSame(1, $connection->transactionLevel());
+        $connection->commit();
+        $connection->disconnect();
+
+        $projectRoot = dirname(__DIR__, 2);
+        $workerScript = $projectRoot.DIRECTORY_SEPARATOR.'tests'.DIRECTORY_SEPARATOR.'Support'.DIRECTORY_SEPARATOR.'TechnicalServiceDecisionRaceWorker.php';
+        $command = $this->providerClaimRacePhpCommand();
+        $environment = [
+            'APP_KEY' => (string) config('app.key'),
+            'CACHE_STORE' => 'array',
+            'MAIL_MAILER' => 'array',
+            'PARTNER_PORTAL_PUBLIC_URL' => 'http://10.0.28.64:8000',
+            'PUBLIC_PAYMENT_BASE_URL' => 'http://10.0.28.64:8000',
+            'QUEUE_CONNECTION' => 'sync',
+            'SESSION_DRIVER' => 'array',
+        ];
+        $processes = collect(['one', 'two'])->mapWithKeys(function (string $worker) use (
+            $command,
+            $workerScript,
+            $mode,
+            $nonce,
+            $payment,
+            $raceDirectory,
+            $counterPath,
+            $projectRoot,
+            $environment,
+        ): array {
+            $process = new Process([
+                ...$command,
+                $workerScript,
+                $mode,
+                $nonce,
+                $worker,
+                (string) $payment->getKey(),
+                $raceDirectory,
+                $counterPath,
+                now()->toIso8601String(),
+            ], $projectRoot, $environment);
+            $process->setTimeout(40);
+            $process->setIdleTimeout(25);
+
+            return [$worker => $process];
+        });
+
+        try {
+            $processes->each(fn (Process $process) => $process->start());
+            $processes->each(fn (Process $process) => $process->wait());
+            $payloads = $processes->map(function (Process $process, string $worker): array {
+                $this->assertSame(0, $process->getExitCode(), $worker.' provider claim worker failed: '.$process->getErrorOutput());
+
+                try {
+                    $payload = json_decode(trim($process->getOutput()), true, 32, JSON_THROW_ON_ERROR);
+                } catch (\JsonException) {
+                    $this->fail($worker.' provider claim worker returned invalid JSON: '.$process->getOutput());
+                }
+
+                $this->assertIsArray($payload);
+                $this->assertTrue((bool) ($payload['ok'] ?? false));
+                $this->assertTrue((bool) ($payload['outbound_guarded'] ?? false));
+
+                return $payload;
+            });
+            $providerCalls = (int) trim(File::get($counterPath));
+
+            return [
+                'outcomes' => $payloads->pluck('outcome')->map(fn (mixed $outcome): string => (string) $outcome)->sort()->values()->all(),
+                'provider_calls' => $providerCalls,
+            ];
+        } finally {
+            $processes->each(function (Process $process): void {
+                if ($process->isRunning()) {
+                    $process->stop(1);
+                }
+            });
+            File::deleteDirectory($raceDirectory);
+            DB::purge();
+            DB::connection()->beginTransaction();
+        }
+    }
+
+    /** @return list<string> */
+    private function providerClaimRacePhpCommand(): array
+    {
+        return [PHP_BINARY];
     }
 
     /**
