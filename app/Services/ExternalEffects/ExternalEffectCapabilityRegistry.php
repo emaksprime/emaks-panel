@@ -95,6 +95,10 @@ final class ExternalEffectCapabilityRegistry
                     'channel' => 'sandbox_payment',
                     'providers' => ['fake_payment', 'iyzico_sandbox'],
                 ],
+                'sandbox_payment_callback' => [
+                    'channel' => 'sandbox_payment',
+                    'providers' => ['fake_payment', 'iyzico_sandbox'],
+                ],
                 'sandbox_payment_notification' => [
                     'channel' => 'email',
                     'providers' => ['smtp'],

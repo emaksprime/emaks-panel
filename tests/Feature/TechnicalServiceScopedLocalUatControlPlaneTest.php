@@ -22,6 +22,7 @@ use App\Services\Payments\IyzicoPaymentProvider;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
+use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
@@ -1030,7 +1031,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             ]);
             $this->fail('Request provider stored fake_payment authority yerine geçmemeliydi.');
         } catch (ConflictHttpException $exception) {
-            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+            $this->assertStringContainsString('provider_mode_mismatch', $exception->getMessage());
         }
 
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
@@ -1342,7 +1343,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             ]);
             $this->fail('Duplicate callback stored provider authority kontrolünü atlamamalıydı.');
         } catch (ConflictHttpException $exception) {
-            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+            $this->assertStringContainsString('provider_mode_mismatch', $exception->getMessage());
         }
 
         $result = app(TechnicalServicePaymentSettlementService::class)
@@ -1502,7 +1503,7 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
                 app(TechnicalServicePaymentSettlementService::class)->markPaid($canonical->fresh(), $payload);
                 $this->fail('Malformed veya çelişkili callback authority paid geçişi yapmamalıydı.');
             } catch (ConflictHttpException $exception) {
-                $this->assertMatchesRegularExpression('/malformed|conflict|CONTRACT_FIELD_UNAVAILABLE/i', $exception->getMessage());
+                $this->assertMatchesRegularExpression('/malformed|mismatch|conflict|CONTRACT_FIELD_UNAVAILABLE/i', $exception->getMessage());
             }
             $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $canonical->fresh()->status);
         }
@@ -1672,6 +1673,118 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame($payment->provider_reference, $result->provider_reference);
         $this->assertSame('provider-payment-reference', $result->provider_payment_reference);
         $this->assertNotSame($result->provider_reference, $result->provider_payment_reference);
+    }
+
+    public function test_actual_scoped_reconciliation_uses_code_owned_callback_effect_and_omits_absent_optional_references(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+        $payment = $payment->fresh();
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'fake',
+                'provider_status' => 'paid',
+                'provider_reference' => $payment->provider_reference,
+                'provider_response_redacted' => ['status' => 'paid'],
+            ]);
+
+        $profile = app(ExternalEffectCapabilityRegistry::class)->localAllowlistedUatProfile();
+        $this->assertSame(
+            ['channel' => 'sandbox_payment', 'providers' => ['fake_payment', 'iyzico_sandbox']],
+            $profile['action_events']['sandbox_payment_callback'],
+        );
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $callbackPayload = (array) data_get($result->raw_payload, 'callback_payload', []);
+        $this->assertArrayNotHasKey('provider_payment_reference', $callbackPayload);
+        $this->assertArrayNotHasKey('provider_transaction_reference', $callbackPayload);
+        $callbackHistory = collect((array) data_get($result->raw_payload, 'scoped_local_uat_effect_history', []))
+            ->firstWhere('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK);
+        $this->assertSame('completed', $callbackHistory['status'] ?? null);
+        $this->assertSame('local', data_get($callbackHistory, 'callback_submission.provider_mode'));
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', (string) data_get(
+            $callbackHistory,
+            'callback_submission.submission_fingerprint',
+        ));
+    }
+
+    public function test_callback_optional_references_are_strict_and_first_valid_values_bind_once(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        foreach ([null, ''] as $invalidReference) {
+            try {
+                app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+                    'fake_approved' => true,
+                    'provider_payment_reference' => $invalidReference,
+                ]);
+                $this->fail('Present null/empty provider payment reference malformed olmalıydı.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('field_malformed', $exception->getMessage());
+            }
+        }
+
+        $first = app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+            'fake_approved' => true,
+            'provider_payment_reference' => 'provider-payment-first',
+            'provider_transaction_reference' => 'provider-transaction-first',
+        ]);
+        $same = app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+            'fake_approved' => true,
+            'provider_payment_reference' => 'provider-payment-first',
+            'provider_transaction_reference' => 'provider-transaction-first',
+        ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $first->status);
+        $this->assertSame('provider-payment-first', $first->provider_payment_reference);
+        $this->assertSame('provider-transaction-first', $first->provider_transaction_reference);
+        $this->assertSame($first->id, $same->id);
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+                'fake_approved' => true,
+                'provider_payment_reference' => 'provider-payment-first',
+                'provider_transaction_reference' => 'provider-transaction-different',
+            ]);
+            $this->fail('Stored first transaction reference request ile değiştirilememeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('session_authority_mismatch', $exception->getMessage());
+        }
+        $this->assertSame('provider-transaction-first', $payment->fresh()->provider_transaction_reference);
+        $callbackHistory = collect((array) data_get($payment->fresh()->raw_payload, 'scoped_local_uat_effect_history', []))
+            ->firstWhere('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK);
+        $this->assertArrayNotHasKey('_provider_payment_reference_binding', (array) data_get($callbackHistory, 'callback_submission', []));
+        $this->assertArrayNotHasKey('_provider_transaction_reference_binding', (array) data_get($callbackHistory, 'callback_submission', []));
+    }
+
+    public function test_provider_mode_is_bound_to_submission_fingerprint_and_cannot_be_overridden(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $payment = $this->scopedPayment($runId);
+        app(PaymentProviderManager::class)->createPayment($payment);
+
+        try {
+            app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), [
+                'fake_approved' => true,
+                'provider_mode' => 'sandbox',
+            ]);
+            $this->fail('Request provider_mode stored local authority yerine geçmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_mode_mismatch', $exception->getMessage());
+        }
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+
+        $paid = app(TechnicalServicePaymentSettlementService::class)->markPaid($payment->fresh(), ['fake_approved' => true]);
+        $callback = collect((array) data_get($paid->raw_payload, 'scoped_local_uat_effect_history', []))
+            ->firstWhere('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CALLBACK);
+        $this->assertSame('local', data_get($callback, 'callback_submission.provider_mode'));
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', (string) data_get(
+            $callback,
+            'callback_submission.submission_fingerprint',
+        ));
     }
 
     /**

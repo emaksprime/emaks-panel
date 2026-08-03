@@ -24,6 +24,7 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
+use App\Services\Payments\FakePaymentProvider;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
@@ -2321,6 +2322,60 @@ class TechnicalServiceWorkflowTest extends TestCase
             'technical_service_request_id' => $request->id,
             'event_type' => 'mount_payment_link_cancelled',
         ]);
+    }
+
+    public function test_actual_cancel_caller_uses_manager_result_and_cannot_resave_concurrent_paid_state(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ]);
+        $session = $this->mountSessionForRequest($request);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'actual-cancel-race-reference',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 700,
+            'currency' => 'TRY',
+            'payment_url' => 'http://10.0.28.64:8000/mount-payment/actual-cancel-race-reference',
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+                'technical_service_request_id' => $request->id,
+                'request_code' => $request->mrn,
+            ],
+        ]);
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock) use ($payment): void {
+            $mock->shouldReceive('cancelPayment')->once()->andReturnUsing(function () use ($payment): array {
+                TechnicalServiceMountPayment::query()->whereKey($payment->id)->update([
+                    'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                    'paid_at' => now(),
+                    'provider_paid_confirmed_at' => now(),
+                ]);
+
+                return [
+                    'provider_reference' => 'actual-cancel-race-reference',
+                    'payment_url' => 'http://10.0.28.64:8000/mount-payment/actual-cancel-race-reference',
+                    'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                ];
+            });
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/cancel", [
+                'reason' => 'Synthetic concurrent paid race',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['payment']);
+
+        $fresh = $payment->fresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $fresh->status);
+        $this->assertNotNull($fresh->paid_at);
+        $this->assertArrayNotHasKey('cancellation_reason', (array) $fresh->raw_payload);
+        $this->assertSame(0, $request->events()->where('event_type', 'mount_payment_link_cancelled')->count());
     }
 
     public function test_cancelled_payment_link_remains_in_history_and_second_cancel_is_idempotent(): void

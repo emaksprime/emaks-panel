@@ -1235,7 +1235,7 @@ class TechnicalServiceMessagingSettingsService
         string $operation,
         string $provider,
     ): array {
-        if (! in_array($operation, [self::SCOPED_EFFECT_PAYMENT_CREATE, self::SCOPED_EFFECT_PAYMENT_CALLBACK], true)) {
+        if ($operation !== self::SCOPED_EFFECT_PAYMENT_CREATE) {
             throw new ConflictHttpException('FAIL_CLOSED_UNAUTHORIZED_CAPABILITY: Scoped UAT ödeme operation izni yok.');
         }
 
@@ -1263,7 +1263,7 @@ class TechnicalServiceMessagingSettingsService
         return $this->claimScopedLocalUatEffect(
             $payment,
             ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE,
-            'sandbox_payment',
+            'sandbox_payment_callback',
             'sandbox_payment',
             null,
             self::SCOPED_EFFECT_PAYMENT_CALLBACK,
@@ -1305,16 +1305,73 @@ class TechnicalServiceMessagingSettingsService
 
     public function scopedLocalUatPaymentSessionIsCurrent(TechnicalServiceMountPayment $payment): bool
     {
-        $authority = data_get($payment->raw_payload, 'scoped_local_uat_payment_session_authority');
-        if (! is_array($authority) || (string) ($authority['create_status'] ?? '') !== 'completed') {
+        try {
+            $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+            $authority = $payload['scoped_local_uat_payment_session_authority'] ?? null;
+            if (! is_array($authority)) {
+                return false;
+            }
+            $settings = $this->settings();
+            $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+            if (! $context->isActive()
+                || ! $this->isScopedLocalUatSettings($settings)
+                || (string) ($authority['run_id'] ?? '') !== (string) $context->activeRunId()) {
+                return false;
+            }
+            $this->assertScopedLocalUatStoredPaymentSessionAuthority(
+                $settings,
+                [
+                    ...$authority,
+                    'callback_submission' => [],
+                ],
+                $payment,
+                $payload,
+            );
+
+            return true;
+        } catch (Throwable) {
             return false;
         }
+    }
+
+    public function assertScopedLocalUatPaymentReconciliationAllowed(
+        TechnicalServiceMountPayment $payment,
+    ): void {
         $settings = $this->settings();
         $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $tagged = filter_var(
+            data_get($payload, 'scoped_local_uat.synthetic_uat', $payload['synthetic_uat'] ?? false),
+            FILTER_VALIDATE_BOOL,
+        );
+        $activeScopedRun = $context->enabled()
+            && $context->activeRunId() !== null
+            && $this->isScopedLocalUatSettings($settings);
+        if (! $tagged && ! $activeScopedRun) {
+            return;
+        }
+        if (! $tagged || ! $activeScopedRun || ! $context->isActive()
+            || ! $this->scopedLocalUatPaymentSessionIsCurrent($payment)) {
+            throw new ConflictHttpException('scoped_uat_callback_session_authority_missing: Payment reconciliation exact current stored session authority gerektirir.');
+        }
 
-        return $context->isActive()
-            && $this->isScopedLocalUatSettings($settings)
-            && (string) ($authority['run_id'] ?? '') === (string) $context->activeRunId();
+        $provider = $this->scopedLocalUatCanonicalPaymentProvider($payment);
+        $origin = (string) data_get($payload, 'scoped_local_uat.origin', $payload['scoped_local_uat_origin'] ?? '');
+        if ($provider === null) {
+            throw new ConflictHttpException('scoped_uat_provider_snapshot_invalid: Reconciliation provider authority çözülemedi.');
+        }
+        $authorization = $this->scopedLocalUatActionAuthorization(
+            ExternalEffectCapabilityRegistry::PAYMENT_LOCAL_SANDBOX_EXECUTE,
+            'sandbox_payment_callback',
+            'sandbox_payment',
+            $provider,
+            null,
+            null,
+            $origin,
+        );
+        if (! $authorization['allowed']) {
+            throw new ConflictHttpException((string) $authorization['code'].': '.(string) $authorization['message']);
+        }
     }
 
     public function assertScopedLocalUatUnsupportedPaymentEffect(
@@ -1805,7 +1862,7 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $historyEntry = [
-            ...$claim,
+            ...$this->scopedLocalUatHistoryClaim($claim),
             'status' => $completed ? 'completed' : 'failed',
             'outcome' => $completed ? 'provider_accepted' : 'failed_no_retry',
             'completed_at' => now()->toIso8601String(),
@@ -1827,10 +1884,21 @@ class TechnicalServiceMessagingSettingsService
                 $historyEntry,
             ]);
             if ($completed && (string) ($claim['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CREATE) {
-                $payload['scoped_local_uat_payment_session_authority'] = $this->scopedLocalUatPaymentSessionAuthority(
+                $sessionAuthority = $this->scopedLocalUatPaymentSessionAuthority(
                     $payment,
                     $claim,
                 );
+                $historyEntry = [
+                    ...$historyEntry,
+                    'provider_mode' => $sessionAuthority['provider_mode'],
+                    'provider_reference_hash' => $sessionAuthority['provider_reference_hash'],
+                    'payment_url_hash' => $sessionAuthority['payment_url_hash'],
+                ];
+                $payload['scoped_local_uat_effect_history'] = array_values([
+                    ...$paymentHistory,
+                    $historyEntry,
+                ]);
+                $payload['scoped_local_uat_payment_session_authority'] = $sessionAuthority;
             }
             $updates = ['raw_payload' => $payload];
             if (! $completed && (string) ($claim['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CREATE) {
@@ -2027,6 +2095,7 @@ class TechnicalServiceMessagingSettingsService
             }
             if ((string) ($claim['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CALLBACK) {
                 $this->assertScopedLocalUatStoredPaymentSessionAuthority($settings, $claim, $payment, $payload);
+                $this->bindScopedLocalUatCallbackReferences($payment, $claim);
             } elseif ($this->scopedLocalUatCanonicalPaymentProvider($payment) !== $snapshotProvider) {
                 throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: Payment create providerı immutable run snapshot ile eşleşmiyor.');
             }
@@ -2518,14 +2587,15 @@ class TechnicalServiceMessagingSettingsService
     /** @param array<string, mixed> $payload */
     private function scopedLocalUatCallbackSubmission(array $payload, string $storedProvider): array
     {
-        $providerMode = null;
+        $providerMode = $this->scopedLocalUatProviderModeForProvider($storedProvider);
         if (array_key_exists('provider_mode', $payload)) {
             if (! is_scalar($payload['provider_mode']) || trim((string) $payload['provider_mode']) === '') {
                 throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider_mode present fakat geçersiz.');
             }
-            $providerMode = strtolower(trim((string) $payload['provider_mode']));
-            if (! in_array($providerMode, ['local', 'sandbox', 'live'], true)) {
-                throw new ConflictHttpException('scoped_uat_callback_field_malformed: provider_mode canonical değil.');
+            $requestedProviderMode = strtolower(trim((string) $payload['provider_mode']));
+            if (! in_array($requestedProviderMode, ['local', 'sandbox', 'live'], true)
+                || ! hash_equals($providerMode, $requestedProviderMode)) {
+                throw new ConflictHttpException('scoped_uat_callback_provider_mode_mismatch: provider_mode stored authority ile eşleşmiyor.');
             }
         }
         $runId = $this->scopedLocalUatCallbackAlias(
@@ -2566,6 +2636,12 @@ class TechnicalServiceMessagingSettingsService
             ['provider_payment_reference', 'payment_reference', 'paymentId'],
             'provider_payment_reference',
             fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'provider_payment_reference'),
+        );
+        $transactionReference = $this->scopedLocalUatCallbackAlias(
+            $payload,
+            ['provider_transaction_reference', 'payment_transaction_id', 'paymentTransactionId', 'transaction_id'],
+            'provider_transaction_reference',
+            fn (mixed $value): string => $this->scopedLocalUatCallbackIdentifier($value, 'provider_transaction_reference'),
         );
         $localPaymentId = $this->scopedLocalUatCallbackAlias(
             $payload,
@@ -2611,8 +2687,10 @@ class TechnicalServiceMessagingSettingsService
             'run_id' => $runId,
             'profile_id' => $profileId,
             'provider' => $provider,
+            'provider_mode' => $providerMode,
             'provider_reference_hash' => $reference === null ? null : hash('sha256', $reference),
             'provider_payment_reference_hash' => $paymentReference === null ? null : hash('sha256', $paymentReference),
+            'provider_transaction_reference_hash' => $transactionReference === null ? null : hash('sha256', $transactionReference),
             'payment_id' => $localPaymentId,
             'amount_minor' => $amountMinor,
             'currency' => $currency,
@@ -2622,6 +2700,8 @@ class TechnicalServiceMessagingSettingsService
         return [
             ...$submission,
             'submission_fingerprint' => hash('sha256', json_encode($submission, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
+            '_provider_payment_reference_binding' => $paymentReference,
+            '_provider_transaction_reference_binding' => $transactionReference,
         ];
     }
 
@@ -2695,18 +2775,6 @@ class TechnicalServiceMessagingSettingsService
             throw new ConflictHttpException('scoped_uat_callback_session_authority_missing: Başarılı stored payment create/session authority bulunamadı.');
         }
 
-        $createHistory = collect((array) ($payload['scoped_local_uat_effect_history'] ?? []))
-            ->first(fn (mixed $entry): bool => is_array($entry)
-                && (string) ($entry['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CREATE
-                && (string) ($entry['status'] ?? '') === 'completed'
-                && hash_equals(
-                    (string) ($entry['idempotency_hash'] ?? ''),
-                    (string) ($authority['idempotency_hash'] ?? ''),
-                ));
-        if (! is_array($createHistory)) {
-            throw new ConflictHttpException('scoped_uat_callback_session_history_missing: Successful create history callback öncesi zorunludur.');
-        }
-
         $snapshotProvider = (string) data_get(
             $settings,
             'manual_e2e_run_snapshot.scoped_local_uat_sandbox_payment_provider',
@@ -2715,7 +2783,28 @@ class TechnicalServiceMessagingSettingsService
         $businessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($payment, $payload);
         $providerReference = trim((string) $payment->provider_reference);
         $providerPaymentReference = trim((string) $payment->provider_payment_reference);
+        $providerTransactionReference = trim((string) $payment->provider_transaction_reference);
+        $paymentUrl = trim((string) $payment->payment_url);
+        $providerMode = $this->scopedLocalUatProviderModeForProvider($snapshotProvider);
         $submission = is_array($claim['callback_submission'] ?? null) ? $claim['callback_submission'] : [];
+        $createHistory = collect((array) ($payload['scoped_local_uat_effect_history'] ?? []))
+            ->first(fn (mixed $entry): bool => is_array($entry)
+                && (string) ($entry['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CREATE
+                && (string) ($entry['status'] ?? '') === 'completed'
+                && (int) ($entry['payment_id'] ?? 0) === (int) $payment->getKey()
+                && (string) ($entry['profile_id'] ?? '') === ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
+                && (string) ($entry['run_id'] ?? '') === (string) ($authority['run_id'] ?? '')
+                && hash_equals((string) ($entry['idempotency_hash'] ?? ''), (string) ($authority['idempotency_hash'] ?? ''))
+                && hash_equals((string) ($entry['business_identity_hash'] ?? ''), $businessIdentity['identity_hash'])
+                && (string) ($entry['provider'] ?? '') === $snapshotProvider
+                && (string) ($entry['provider_mode'] ?? '') === $providerMode
+                && hash_equals((string) ($entry['provider_reference_hash'] ?? ''), hash('sha256', $providerReference))
+                && hash_equals((string) ($entry['payment_url_hash'] ?? ''), hash('sha256', $paymentUrl))
+                && (string) ($entry['amount_minor'] ?? '') === $this->scopedLocalUatAmountMinorUnits($payment)
+                && (string) ($entry['currency'] ?? '') === $this->scopedLocalUatCurrency($payment));
+        if (! is_array($createHistory)) {
+            throw new ConflictHttpException('scoped_uat_callback_session_history_missing: Successful create history callback öncesi zorunludur.');
+        }
         $invalid = (string) ($authority['profile_id'] ?? '') !== ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
             || (string) ($authority['run_id'] ?? '') !== (string) ($claim['run_id'] ?? '')
             || (int) ($authority['payment_id'] ?? 0) !== (int) $payment->getKey()
@@ -2732,8 +2821,11 @@ class TechnicalServiceMessagingSettingsService
             || (string) ($authority['provider'] ?? '') !== $snapshotProvider
             || (string) ($claim['provider'] ?? '') !== $snapshotProvider
             || $this->scopedLocalUatCanonicalPaymentProvider($payment) !== $snapshotProvider
+            || (string) ($authority['provider_mode'] ?? '') !== $providerMode
             || $providerReference === ''
             || (string) ($authority['provider_reference'] ?? '') !== $providerReference
+            || $paymentUrl === ''
+            || ! hash_equals((string) ($authority['payment_url_hash'] ?? ''), hash('sha256', $paymentUrl))
             || (string) ($authority['amount_minor'] ?? '') !== $this->scopedLocalUatAmountMinorUnits($payment)
             || (string) ($authority['currency'] ?? '') !== $this->scopedLocalUatCurrency($payment)
             || ! filter_var($authority['synthetic_uat'] ?? false, FILTER_VALIDATE_BOOL)
@@ -2743,17 +2835,25 @@ class TechnicalServiceMessagingSettingsService
                 && (string) ($submission['profile_id'] ?? '') !== (string) ($authority['profile_id'] ?? ''))
             || ((string) ($submission['provider'] ?? '') !== ''
                 && (string) ($submission['provider'] ?? '') !== $snapshotProvider)
+            || ((string) ($submission['provider_mode'] ?? '') !== ''
+                && (string) $submission['provider_mode'] !== $providerMode)
             || ((string) ($submission['provider_reference_hash'] ?? '') !== ''
                 && ! hash_equals(
                     (string) $submission['provider_reference_hash'],
                     hash('sha256', $providerReference),
                 ))
             || ((string) ($submission['provider_payment_reference_hash'] ?? '') !== ''
-                && ($providerPaymentReference === ''
-                    || ! hash_equals(
-                        (string) $submission['provider_payment_reference_hash'],
-                        hash('sha256', $providerPaymentReference),
-                    )))
+                && $providerPaymentReference !== ''
+                && ! hash_equals(
+                    (string) $submission['provider_payment_reference_hash'],
+                    hash('sha256', $providerPaymentReference),
+                ))
+            || ((string) ($submission['provider_transaction_reference_hash'] ?? '') !== ''
+                && $providerTransactionReference !== ''
+                && ! hash_equals(
+                    (string) $submission['provider_transaction_reference_hash'],
+                    hash('sha256', $providerTransactionReference),
+                ))
             || ((string) ($submission['payment_id'] ?? '') !== ''
                 && (int) $submission['payment_id'] !== (int) $payment->getKey())
             || ((string) ($submission['amount_minor'] ?? '') !== ''
@@ -2772,9 +2872,11 @@ class TechnicalServiceMessagingSettingsService
     ): array {
         $provider = $this->scopedLocalUatCanonicalPaymentProvider($payment);
         $providerReference = trim((string) $payment->provider_reference);
+        $paymentUrl = trim((string) $payment->payment_url);
         if ($provider === null
             || $provider !== (string) ($claim['provider'] ?? '')
-            || $providerReference === '') {
+            || $providerReference === ''
+            || $paymentUrl === '') {
             throw new ConflictHttpException('scoped_uat_payment_session_incomplete: Provider create sonucu stored session authority üretemedi.');
         }
 
@@ -2793,13 +2895,66 @@ class TechnicalServiceMessagingSettingsService
             'selected_serial_count' => (int) ($claim['selected_serial_count'] ?? 0),
             'idempotency_hash' => (string) ($claim['idempotency_hash'] ?? ''),
             'provider' => $provider,
+            'provider_mode' => $this->scopedLocalUatProviderModeForProvider($provider),
             'provider_reference' => $providerReference,
+            'provider_reference_hash' => hash('sha256', $providerReference),
+            'payment_url_hash' => hash('sha256', $paymentUrl),
             'amount_minor' => (string) ($claim['amount_minor'] ?? ''),
             'currency' => (string) ($claim['currency'] ?? ''),
             'configuration_fingerprint' => (string) ($claim['configuration_fingerprint'] ?? ''),
             'synthetic_uat' => true,
             'created_at' => now()->toIso8601String(),
         ];
+    }
+
+    /** @param array<string, mixed> $claim */
+    private function bindScopedLocalUatCallbackReferences(
+        TechnicalServiceMountPayment $payment,
+        array $claim,
+    ): void {
+        $submission = is_array($claim['callback_submission'] ?? null)
+            ? $claim['callback_submission']
+            : [];
+        $bindings = [
+            'provider_payment_reference' => $submission['_provider_payment_reference_binding'] ?? null,
+            'provider_transaction_reference' => $submission['_provider_transaction_reference_binding'] ?? null,
+        ];
+        $updates = [];
+        foreach ($bindings as $field => $incoming) {
+            if ($incoming === null) {
+                continue;
+            }
+            $incoming = trim((string) $incoming);
+            if ($incoming === '') {
+                throw new ConflictHttpException('scoped_uat_callback_field_malformed: Callback reference boş olamaz.');
+            }
+            $stored = trim((string) $payment->getAttribute($field));
+            if ($stored === '') {
+                $updates[$field] = $incoming;
+
+                continue;
+            }
+            if (! hash_equals($stored, $incoming)) {
+                throw new ConflictHttpException('scoped_uat_callback_reference_mismatch: Stored provider reference değiştirilemez.');
+            }
+        }
+        if ($updates !== []) {
+            $payment->forceFill($updates)->save();
+        }
+    }
+
+    /** @param array<string, mixed> $claim */
+    private function scopedLocalUatHistoryClaim(array $claim): array
+    {
+        $history = $claim;
+        if (is_array($history['callback_submission'] ?? null)) {
+            unset(
+                $history['callback_submission']['_provider_payment_reference_binding'],
+                $history['callback_submission']['_provider_transaction_reference_binding'],
+            );
+        }
+
+        return $history;
     }
 
     private function scopedLocalUatCanonicalPaymentProvider(TechnicalServiceMountPayment $payment): ?string
@@ -2830,6 +2985,16 @@ class TechnicalServiceMessagingSettingsService
                 default => null,
             },
             default => null,
+        };
+    }
+
+    private function scopedLocalUatProviderModeForProvider(string $provider): string
+    {
+        return match ($provider) {
+            'fake_payment' => 'local',
+            'iyzico_sandbox' => 'sandbox',
+            'iyzico_live' => 'live',
+            default => throw new ConflictHttpException('scoped_uat_provider_snapshot_invalid: Stored provider mode authority çözülemedi.'),
         };
     }
 

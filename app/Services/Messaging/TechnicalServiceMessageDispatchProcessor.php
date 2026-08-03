@@ -3,6 +3,7 @@
 namespace App\Services\Messaging;
 
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Services\Payments\TechnicalServicePaymentReceiptNotificationService;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -102,6 +103,21 @@ class TechnicalServiceMessageDispatchProcessor
      */
     public function processOne(int $dispatchId, bool $noExternal = false, array $allowlistedPhones = [], array $options = []): array
     {
+        $candidate = TechnicalServiceMessageDispatch::query()->find($dispatchId);
+        if (! $candidate instanceof TechnicalServiceMessageDispatch) {
+            return ['id' => $dispatchId, 'status' => 'missing'];
+        }
+        if ($this->isReceiptOwnedDispatch($candidate)) {
+            return [
+                'id' => $candidate->id,
+                'status' => $candidate->status,
+                'skipped' => true,
+                'blocked' => false,
+                'provider_status' => 'receipt_specific_processor_required',
+                'reason' => 'Receipt dispatch yalnız receipt-specific processor tarafından claim edilebilir.',
+            ];
+        }
+
         $connection = DB::connection();
         $transactionLevel = $connection->transactionLevel();
         $pdoInTransaction = $connection->getPdo()->inTransaction();
@@ -116,11 +132,6 @@ class TechnicalServiceMessageDispatchProcessor
                 'provider_status' => 'dispatch_outer_transaction_open',
                 'reason' => 'Provider dispatch açık DB transaction içinde başlatılamaz.',
             ];
-        }
-
-        $candidate = TechnicalServiceMessageDispatch::query()->find($dispatchId);
-        if (! $candidate instanceof TechnicalServiceMessageDispatch) {
-            return ['id' => $dispatchId, 'status' => 'missing'];
         }
         $manualContext = $this->settings->manualE2EContext();
         $activeManualE2E = $manualContext->enabled()
@@ -903,6 +914,10 @@ class TechnicalServiceMessageDispatchProcessor
         return TechnicalServiceMessageDispatch::query()
             ->whereIn('status', [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED])
             ->where(function ($query): void {
+                $query->whereNull('provider_key')
+                    ->orWhere('provider_key', '<>', TechnicalServicePaymentReceiptNotificationService::RECEIPT_PROVIDER);
+            })
+            ->where(function ($query): void {
                 $query->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now());
             })
             ->when($options['dispatch_id'] ?? null, fn ($query, $id) => $query->whereKey((int) $id))
@@ -932,6 +947,11 @@ class TechnicalServiceMessageDispatchProcessor
             ->when($allowlistedTargets !== [], fn ($query) => $query->whereIn('target_phone', $allowlistedTargets))
             ->orderBy('next_attempt_at')
             ->orderBy('id');
+    }
+
+    private function isReceiptOwnedDispatch(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        return $dispatch->provider_key === TechnicalServicePaymentReceiptNotificationService::RECEIPT_PROVIDER;
     }
 
     /**

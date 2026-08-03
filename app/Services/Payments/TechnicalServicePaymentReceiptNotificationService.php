@@ -13,6 +13,12 @@ use Throwable;
 
 class TechnicalServicePaymentReceiptNotificationService
 {
+    public const RECEIPT_EVENT = 'payment_receipt_notification';
+
+    public const RECEIPT_CHANNEL = 'email';
+
+    public const RECEIPT_PROVIDER = 'smtp_payment_receipt';
+
     public function __construct(
         private readonly TechnicalServicePaymentProviderSettingsService $settings,
         private readonly TechnicalServiceMailTransportSettingsService $mailTransportSettings,
@@ -49,35 +55,11 @@ class TechnicalServicePaymentReceiptNotificationService
         if (DB::transactionLevel() < 1) {
             throw new ConflictHttpException('payment_receipt_intent_requires_transaction: Receipt intent paid transition transactionı içinde yazılmalıdır.');
         }
-        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID
-            || ! $this->settings->paymentNotificationEnabled()) {
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
             return null;
         }
-        $recipients = $this->settings->paymentNotificationRecipients();
-        if ($recipients === []) {
-            return null;
-        }
-        $recipientFingerprints = collect($recipients)
-            ->map(fn (string $recipient): string => hash('sha256', strtolower(trim($recipient))))
-            ->unique()
-            ->sort()
-            ->values()
-            ->all();
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $identity = [
-            'schema_version' => 1,
-            'payment_id' => (int) $payment->getKey(),
-            'payment_purpose' => strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? $payload['source'] ?? 'payment'))),
-            'event' => 'payment_receipt_notification',
-            'recipient_fingerprints' => $recipientFingerprints,
-            'amount_minor' => $this->amountMinorUnits($payment),
-            'currency' => strtoupper((string) $payment->currency),
-            'paid_transition_fingerprint' => hash('sha256', implode('|', [
-                (string) ($payment->paid_at?->toIso8601String() ?? ''),
-                (string) $payment->provider,
-                (string) $payment->provider_reference,
-            ])),
-        ];
+        $identity = $this->receiptBusinessIdentity($payment);
         $identityHash = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
         $idempotencyKey = 'receipt:'.$identityHash;
         $dispatch = TechnicalServiceMessageDispatch::query()
@@ -85,15 +67,23 @@ class TechnicalServicePaymentReceiptNotificationService
             ->lockForUpdate()
             ->first();
         if (! $dispatch instanceof TechnicalServiceMessageDispatch) {
+            if (! $this->settings->paymentNotificationEnabled()) {
+                return null;
+            }
+            $recipients = $this->normalizedReceiptRecipients($this->settings->paymentNotificationRecipients());
+            if ($recipients === []) {
+                return null;
+            }
+            $recipientFingerprints = $this->recipientFingerprints($recipients);
             $dispatch = TechnicalServiceMessageDispatch::query()->create([
-                'event' => 'payment_receipt_notification',
+                'event' => self::RECEIPT_EVENT,
                 'technical_service_request_id' => $payment->technical_service_request_id,
                 'request_id' => $payment->technical_service_request_id,
                 'related_type' => TechnicalServiceMountPayment::class,
                 'related_id' => (int) $payment->getKey(),
-                'message_type' => 'payment_receipt_notification',
-                'channel' => 'email',
-                'provider_key' => 'smtp_payment_receipt',
+                'message_type' => self::RECEIPT_EVENT,
+                'channel' => self::RECEIPT_CHANNEL,
+                'provider_key' => self::RECEIPT_PROVIDER,
                 'recipient_role' => 'payment_notification',
                 'template_key' => TechnicalServicePaymentAuditMail::class,
                 'template_version' => 1,
@@ -107,7 +97,7 @@ class TechnicalServicePaymentReceiptNotificationService
                 'queued_at' => now(),
                 'triggered_by' => 'payment_paid_transaction',
                 'metadata' => [
-                    'schema_version' => 1,
+                    'schema_version' => 2,
                     'payment_id' => (int) $payment->getKey(),
                     'recipient_fingerprints' => $recipientFingerprints,
                     'amount_minor' => $identity['amount_minor'],
@@ -117,10 +107,15 @@ class TechnicalServicePaymentReceiptNotificationService
                     'automatic_retry_allowed' => false,
                 ],
                 'request_payload' => [
-                    'event' => 'payment_receipt_notification',
+                    'event' => self::RECEIPT_EVENT,
                     'payment_fingerprint' => hash('sha256', (string) $payment->getKey()),
+                    'recipient_emails' => $recipients,
                 ],
             ]);
+        } else {
+            $this->assertReceiptDispatchAuthority($dispatch, $payment, $identityHash);
+            $recipients = $this->storedReceiptRecipients($dispatch);
+            $recipientFingerprints = $this->recipientFingerprints($recipients);
         }
 
         $payload['payment_receipt_notification_claim'] = [
@@ -185,6 +180,10 @@ class TechnicalServicePaymentReceiptNotificationService
     private function claimReceiptDispatch(TechnicalServiceMessageDispatch $intent): ?array
     {
         return DB::transaction(function () use ($intent): ?array {
+            $payment = TechnicalServiceMountPayment::query()
+                ->whereKey((int) $intent->related_id)
+                ->lockForUpdate()
+                ->firstOrFail();
             $dispatch = TechnicalServiceMessageDispatch::query()
                 ->whereKey($intent->getKey())
                 ->lockForUpdate()
@@ -193,24 +192,15 @@ class TechnicalServicePaymentReceiptNotificationService
                 || (int) $dispatch->attempt_count >= (int) $dispatch->max_attempts) {
                 return null;
             }
-            $payment = TechnicalServiceMountPayment::query()
-                ->whereKey((int) $dispatch->related_id)
-                ->lockForUpdate()
-                ->firstOrFail();
             if ($dispatch->related_type !== TechnicalServiceMountPayment::class
+                || (int) $dispatch->related_id !== (int) $payment->getKey()
                 || $payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
                 throw new ConflictHttpException('payment_receipt_dispatch_authority_invalid: Dispatch paid canonical payment ile bağlı değil.');
             }
-            $recipients = $this->settings->paymentNotificationRecipients();
-            $currentFingerprints = collect($recipients)
-                ->map(fn (string $recipient): string => hash('sha256', strtolower(trim($recipient))))
-                ->unique()->sort()->values()->all();
-            $storedFingerprints = collect((array) data_get($dispatch->metadata, 'recipient_fingerprints', []))
-                ->map(fn (mixed $fingerprint): string => (string) $fingerprint)
-                ->sort()->values()->all();
-            if ($recipients === [] || $currentFingerprints !== $storedFingerprints) {
-                throw new ConflictHttpException('payment_receipt_recipient_drift: Receipt dispatch recipient authority değişti.');
-            }
+            $identity = $this->receiptBusinessIdentity($payment);
+            $identityHash = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            $this->assertReceiptDispatchAuthority($dispatch, $payment, $identityHash);
+            $recipients = $this->storedReceiptRecipients($dispatch);
 
             $dispatch->forceFill([
                 'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
@@ -247,12 +237,20 @@ class TechnicalServicePaymentReceiptNotificationService
         array $recipients,
     ): TechnicalServiceMountPayment {
         return DB::transaction(function () use ($intent, $status, $error, $recipients): TechnicalServiceMountPayment {
+            $payment = TechnicalServiceMountPayment::query()
+                ->whereKey((int) $intent->related_id)
+                ->lockForUpdate()
+                ->firstOrFail();
             $dispatch = TechnicalServiceMessageDispatch::query()
                 ->whereKey($intent->getKey())
                 ->lockForUpdate()
                 ->firstOrFail();
             if ($dispatch->status !== TechnicalServiceMessageDispatch::STATUS_SENDING) {
                 throw new ConflictHttpException('payment_receipt_dispatch_claim_mismatch: SMTP sonucu current dispatch claim ile eşleşmiyor.');
+            }
+            if ($dispatch->related_type !== TechnicalServiceMountPayment::class
+                || (int) $dispatch->related_id !== (int) $payment->getKey()) {
+                throw new ConflictHttpException('payment_receipt_dispatch_authority_invalid: Dispatch canonical payment bağı değişti.');
             }
             $dispatch->forceFill([
                 'status' => $status,
@@ -263,10 +261,6 @@ class TechnicalServicePaymentReceiptNotificationService
                 'last_error_message_redacted' => $error,
                 'provider_response_redacted' => ['status' => $status],
             ])->save();
-            $payment = TechnicalServiceMountPayment::query()
-                ->whereKey((int) $dispatch->related_id)
-                ->lockForUpdate()
-                ->firstOrFail();
             $paymentStatus = $status === TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED
                 ? 'mailer_not_configured'
                 : $status;
@@ -308,6 +302,94 @@ class TechnicalServicePaymentReceiptNotificationService
         }
 
         return ltrim($matches[1].str_pad((string) ($matches[2] ?? ''), 2, '0'), '0') ?: '0';
+    }
+
+    /** @return array<string, mixed> */
+    private function receiptBusinessIdentity(TechnicalServiceMountPayment $payment): array
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+        return [
+            'schema_version' => 2,
+            'payment_id' => (int) $payment->getKey(),
+            'payment_purpose' => strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? $payload['source'] ?? 'payment'))),
+            'event' => self::RECEIPT_EVENT,
+            'amount_minor' => $this->amountMinorUnits($payment),
+            'currency' => strtoupper((string) $payment->currency),
+            'paid_transition_fingerprint' => hash('sha256', implode('|', [
+                (string) ($payment->paid_at?->toIso8601String() ?? ''),
+                (string) $payment->provider,
+                (string) $payment->provider_reference,
+            ])),
+        ];
+    }
+
+    /** @param array<int, mixed> $recipients */
+    private function normalizedReceiptRecipients(array $recipients): array
+    {
+        $normalized = [];
+        foreach ($recipients as $recipient) {
+            if (! is_string($recipient)) {
+                throw new ConflictHttpException('payment_receipt_recipient_invalid: Receipt recipient snapshot geçerli e-posta gerektirir.');
+            }
+            $recipient = trim($recipient);
+            if ($recipient === '' || filter_var($recipient, FILTER_VALIDATE_EMAIL) === false) {
+                throw new ConflictHttpException('payment_receipt_recipient_invalid: Receipt recipient snapshot geçerli e-posta gerektirir.');
+            }
+            $normalized[strtolower($recipient)] = $recipient;
+        }
+        ksort($normalized);
+
+        return array_values($normalized);
+    }
+
+    /** @param array<int, string> $recipients */
+    private function recipientFingerprints(array $recipients): array
+    {
+        $fingerprints = array_map(
+            fn (string $recipient): string => hash('sha256', strtolower(trim($recipient))),
+            $recipients,
+        );
+        sort($fingerprints);
+
+        return array_values(array_unique($fingerprints));
+    }
+
+    /** @return array<int, string> */
+    private function storedReceiptRecipients(TechnicalServiceMessageDispatch $dispatch): array
+    {
+        $stored = data_get($dispatch->request_payload, 'recipient_emails');
+        if (! is_array($stored) || ! array_is_list($stored)) {
+            throw new ConflictHttpException('payment_receipt_recipient_snapshot_missing: Receipt dispatch immutable recipient snapshot taşımıyor.');
+        }
+        $recipients = $this->normalizedReceiptRecipients($stored);
+        $storedFingerprints = collect((array) data_get($dispatch->metadata, 'recipient_fingerprints', []))
+            ->map(fn (mixed $fingerprint): string => (string) $fingerprint)
+            ->sort()
+            ->values()
+            ->all();
+        if ($recipients === [] || $this->recipientFingerprints($recipients) !== $storedFingerprints) {
+            throw new ConflictHttpException('payment_receipt_recipient_snapshot_invalid: Receipt recipient snapshot fingerprint bağı geçersiz.');
+        }
+
+        return $recipients;
+    }
+
+    private function assertReceiptDispatchAuthority(
+        TechnicalServiceMessageDispatch $dispatch,
+        TechnicalServiceMountPayment $payment,
+        string $identityHash,
+    ): void {
+        if ($dispatch->event !== self::RECEIPT_EVENT
+            || $dispatch->message_type !== self::RECEIPT_EVENT
+            || $dispatch->channel !== self::RECEIPT_CHANNEL
+            || $dispatch->provider_key !== self::RECEIPT_PROVIDER
+            || $dispatch->related_type !== TechnicalServiceMountPayment::class
+            || (int) $dispatch->related_id !== (int) $payment->getKey()
+            || ! hash_equals((string) $dispatch->payload_hash, $identityHash)
+            || ! hash_equals((string) $dispatch->idempotency_key, 'receipt:'.$identityHash)) {
+            throw new ConflictHttpException('payment_receipt_dispatch_authority_invalid: Receipt dispatch canonical paid transition authority ile eşleşmiyor.');
+        }
     }
 
     private function paymentReceiptStatus(TechnicalServiceMessageDispatch $dispatch): string

@@ -10,6 +10,7 @@ use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
+use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
@@ -225,7 +226,8 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertNull($result->provider_payment_reference);
         $this->assertNull($result->provider_transaction_reference);
         $this->assertNull($result->provider_receipt_reference);
-        $this->assertNull($result->raw_payload['provider_reconciliation']['provider_payment_reference'] ?? null);
+        $this->assertArrayNotHasKey('provider_payment_reference', $result->raw_payload['provider_reconciliation']);
+        $this->assertArrayNotHasKey('provider_transaction_reference', $result->raw_payload['provider_reconciliation']);
         $this->assertSame('iyzico-token', $result->provider_reference);
     }
 
@@ -576,8 +578,25 @@ class PaymentProviderReconciliationContractTest extends TestCase
 
             return (int) $notifications->persistPaidReceiptIntentWithinTransaction($locked)?->id;
         });
+        $firstIntent = TechnicalServiceMessageDispatch::query()->findOrFail($firstIntentId);
+        $firstIdempotencyKey = $firstIntent->idempotency_key;
+        $this->assertSame(['payment-audit@example.test'], data_get($firstIntent->request_payload, 'recipient_emails'));
+
+        $pageConfig = PageConfig::query()
+            ->where('page_code', TechnicalServicePaymentProviderSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = is_array($pageConfig->layout_json) ? $pageConfig->layout_json : [];
+        data_set($layout, 'technical_service.payment.notification.recipients', 'changed-recipient@example.test');
+        $pageConfig->forceFill(['layout_json' => $layout])->save();
+
+        $thirdIntentId = DB::transaction(function () use ($payment, $notifications): int {
+            $locked = TechnicalServiceMountPayment::query()->whereKey($payment->id)->lockForUpdate()->firstOrFail();
+
+            return (int) $notifications->persistPaidReceiptIntentWithinTransaction($locked)?->id;
+        });
 
         $this->assertSame($firstIntentId, $secondIntentId);
+        $this->assertSame($firstIntentId, $thirdIntentId);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->fresh()->status);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'id' => $firstIntentId,
@@ -590,7 +609,57 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()
             ->where('message_type', 'payment_receipt_notification')
             ->count());
+        $storedIntent = TechnicalServiceMessageDispatch::query()->findOrFail($firstIntentId);
+        $this->assertSame($firstIdempotencyKey, $storedIntent->idempotency_key);
+        $this->assertSame(['payment-audit@example.test'], data_get($storedIntent->request_payload, 'recipient_emails'));
+        $this->assertSame('payment-audit@example.test', $payment->fresh()->receipt_notification_to);
         Mail::assertNothingSent();
+    }
+
+    public function test_generic_processor_cannot_claim_or_block_receipt_owned_dispatch(): void
+    {
+        Mail::fake();
+        $this->enablePaymentNotification('payment-audit@example.test');
+        $this->configureReadySmtpProfile();
+        $payment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'receipt-claim-partition-token',
+        ]);
+        $notifications = app(TechnicalServicePaymentReceiptNotificationService::class);
+        $intentId = DB::transaction(function () use ($payment, $notifications): int {
+            $locked = TechnicalServiceMountPayment::query()->whereKey($payment->id)->lockForUpdate()->firstOrFail();
+            $locked->forceFill([
+                'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                'paid_at' => now(),
+            ])->save();
+
+            return (int) $notifications->persistPaidReceiptIntentWithinTransaction($locked)?->id;
+        });
+
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+        $batchResult = $processor->process(['limit' => 10, 'no_external' => true]);
+        $singleResult = $processor->processOne($intentId, true);
+
+        $this->assertSame(0, $batchResult['count']);
+        $this->assertTrue($singleResult['skipped']);
+        $this->assertFalse($singleResult['blocked']);
+        $this->assertSame('receipt_specific_processor_required', $singleResult['provider_status']);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'id' => $intentId,
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'attempt_count' => 0,
+        ]);
+        Mail::assertNothingSent();
+
+        $result = $notifications->notifyTrustedPaid($payment->fresh());
+
+        $this->assertSame('sent', $result->receipt_notification_status);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'id' => $intentId,
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
+            'attempt_count' => 1,
+        ]);
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
     }
 
     public function test_concurrent_paid_state_cannot_be_regressed_by_reconciliation_save(): void

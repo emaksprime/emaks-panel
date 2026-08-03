@@ -74,8 +74,12 @@ class TechnicalServicePaymentProviderReconciliationService
         if ($reference !== null) {
             $payload['provider_reference'] = $reference;
         }
-        $payload['provider_payment_reference'] = $paymentReference;
-        $payload['provider_transaction_reference'] = $transactionReference;
+        if ($paymentReference !== null) {
+            $payload['provider_payment_reference'] = $paymentReference;
+        }
+        if ($transactionReference !== null) {
+            $payload['provider_transaction_reference'] = $transactionReference;
+        }
         $payload['provider_receipt_reference'] = $receiptReference;
         $payload['provider_paid_at'] = $providerPaidAt?->toIso8601String();
 
@@ -112,18 +116,24 @@ class TechnicalServicePaymentProviderReconciliationService
             return $this->receiptNotificationService->notifyTrustedPaid($blocked, $providerResponse);
         }
 
-        $paidPayment = $this->settlementService->markPaid($payment->fresh(), [
+        $settlementPayload = [
             'source' => 'provider_reconciliation',
             'provider' => $this->provider($providerResponse, $payment),
             'provider_reference' => $reference,
-            'provider_payment_reference' => $paymentReference,
-            'provider_transaction_reference' => $transactionReference,
             'provider_receipt_reference' => $receiptReference,
             'provider_paid_at' => $providerPaidAt?->toIso8601String(),
             'provider_status' => $this->rawProviderStatus($providerResponse),
             'provider_response_redacted' => $providerResponse['provider_response_redacted'] ?? [],
             'provider_reconciliation' => $payload['provider_reconciliation'] ?? [],
-        ]);
+        ];
+        if ($paymentReference !== null) {
+            $settlementPayload['provider_payment_reference'] = $paymentReference;
+        }
+        if ($transactionReference !== null) {
+            $settlementPayload['provider_transaction_reference'] = $transactionReference;
+        }
+
+        $paidPayment = $this->settlementService->markPaid($payment->fresh(), $settlementPayload);
 
         $this->queuePaymentReceivedOpsDispatch($paidPayment->fresh(), $providerResponse);
 
@@ -319,16 +329,23 @@ class TechnicalServicePaymentProviderReconciliationService
         array $extra = [],
     ): array {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $payload['provider_reconciliation'] = array_merge([
+        $reconciliation = [
             'status' => $localStatus,
             'provider_status' => $this->rawProviderStatus($providerResponse),
-            'provider_payment_reference' => $this->providerPaymentReference($providerResponse),
-            'provider_transaction_reference' => $this->providerTransactionReference($providerResponse),
             'provider_receipt_reference' => $this->providerReceiptReference($providerResponse),
             'provider_paid_at' => $this->providerPaidAt($providerResponse)?->toIso8601String(),
             'provider_response_redacted' => $providerResponse['provider_response_redacted'] ?? [],
             'reconciled_at' => now()->toIso8601String(),
-        ], $extra);
+        ];
+        $paymentReference = $this->providerPaymentReference($providerResponse);
+        $transactionReference = $this->providerTransactionReference($providerResponse);
+        if ($paymentReference !== null) {
+            $reconciliation['provider_payment_reference'] = $paymentReference;
+        }
+        if ($transactionReference !== null) {
+            $reconciliation['provider_transaction_reference'] = $transactionReference;
+        }
+        $payload['provider_reconciliation'] = array_merge($reconciliation, $extra);
 
         return $payload;
     }

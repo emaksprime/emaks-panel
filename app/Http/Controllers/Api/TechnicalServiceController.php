@@ -1251,25 +1251,28 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $cancellationAudit = [
+            'cancelled_at' => now()->toISOString(),
+            'cancelled_by_user_id' => $request->user()?->id,
+            'cancelled_by_name' => $request->user()?->name,
+            'cancellation_reason' => $validated['reason'] ?? 'OPS tarafından iptal edildi',
+            'cancel_source' => 'ops_payment_modal',
+        ];
+
         try {
-            $paymentProviderManager->cancelPayment($payment);
+            $canonicalResult = $paymentProviderManager->cancelPayment($payment, $cancellationAudit);
+            $payment = $paymentProviderManager->canonicalPaymentFromMutationResult($canonicalResult);
         } catch (Throwable $exception) {
             throw ValidationException::withMessages([
                 'payment' => $exception->getMessage(),
             ]);
         }
-
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_CANCELLED) {
+            throw ValidationException::withMessages([
+                'payment' => 'PAYMENT_CANCEL_STATE_CONFLICT: Ödeme provider işlemi sırasında terminal duruma geçti; iptal uygulanmadı.',
+            ]);
+        }
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $payload['cancelled_at'] = now()->toISOString();
-        $payload['cancelled_by_user_id'] = $request->user()?->id;
-        $payload['cancelled_by_name'] = $request->user()?->name;
-        $payload['cancellation_reason'] = $validated['reason'] ?? 'OPS tarafından iptal edildi';
-        $payload['cancel_source'] = 'ops_payment_modal';
-
-        $payment->forceFill([
-            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
-            'raw_payload' => $payload,
-        ])->save();
 
         $remainingMountPayments = TechnicalServiceMountPayment::query()
             ->where('technical_service_request_id', $technicalServiceRequest->id)

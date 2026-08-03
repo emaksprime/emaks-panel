@@ -20,6 +20,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
 
 class PaymentProviderGatewayContractTest extends TestCase
@@ -616,6 +617,135 @@ class PaymentProviderGatewayContractTest extends TestCase
         app(PaymentProviderManager::class)->createPayment($this->mountPayment(['provider' => 'iyzico']));
     }
 
+    public function test_pending_reuse_requires_exact_successful_create_history(): void
+    {
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->once()->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $canonical = $this->mountPayment();
+        $duplicate = $this->duplicatePayment($canonical);
+        $manager = app(PaymentProviderManager::class);
+        $manager->createPayment($canonical);
+        $payload = is_array($canonical->fresh()->raw_payload) ? $canonical->fresh()->raw_payload : [];
+        unset($payload['canonical_payment_create_history']);
+        $canonical->forceFill(['raw_payload' => $payload])->save();
+
+        try {
+            $manager->createPayment($duplicate);
+            $this->fail('Completed metadata exact successful history olmadan pending reuse yetkisi olmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE', $exception->getMessage());
+        }
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $duplicate->fresh()->status);
+        $this->assertNull($duplicate->fresh()->provider_reference);
+    }
+
+    public function test_pending_history_must_match_payment_business_idempotency_provider_and_session(): void
+    {
+        $mutations = [
+            'payment' => fn (array $entry): array => [...$entry, 'payment_id' => (int) $entry['payment_id'] + 1000],
+            'business' => fn (array $entry): array => [...$entry, 'business_identity_hash' => str_repeat('a', 64)],
+            'idempotency' => fn (array $entry): array => [...$entry, 'idempotency_hash' => str_repeat('b', 64)],
+            'provider' => fn (array $entry): array => [...$entry, 'provider' => 'iyzico'],
+            'provider_reference' => fn (array $entry): array => [...$entry, 'provider_reference_hash' => str_repeat('c', 64)],
+            'payment_url' => fn (array $entry): array => [...$entry, 'payment_url_hash' => str_repeat('d', 64)],
+        ];
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock) use ($mutations): void {
+            $mock->shouldReceive('createPayment')->times(count($mutations))->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $manager = app(PaymentProviderManager::class);
+
+        foreach ($mutations as $label => $mutate) {
+            $canonical = $this->mountPayment();
+            $duplicate = $this->duplicatePayment($canonical);
+            $manager->createPayment($canonical);
+            $payload = is_array($canonical->fresh()->raw_payload) ? $canonical->fresh()->raw_payload : [];
+            $payload['canonical_payment_create_history'][0] = $mutate($payload['canonical_payment_create_history'][0]);
+            $canonical->forceFill(['raw_payload' => $payload])->save();
+
+            try {
+                $manager->createPayment($duplicate);
+                $this->fail($label.' mismatch pending reuse yetkisi olmamalıydı.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertStringContainsString('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE', $exception->getMessage());
+            }
+            $this->assertNull($duplicate->fresh()->provider_reference);
+        }
+    }
+
+    public function test_failed_history_blocks_blind_reuse_and_exact_history_reuses_without_provider_call(): void
+    {
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->twice()->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $manager = app(PaymentProviderManager::class);
+
+        $valid = $this->mountPayment();
+        $validDuplicate = $this->duplicatePayment($valid);
+        $first = $manager->createPayment($valid);
+        $reused = $manager->createPayment($validDuplicate);
+        $this->assertSame(PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING, $first['outcome']);
+        $this->assertSame(PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING, $reused['outcome']);
+        $this->assertSame($valid->id, $reused['payment_id']);
+
+        $failed = $this->mountPayment();
+        $failedDuplicate = $this->duplicatePayment($failed);
+        $manager->createPayment($failed);
+        $payload = is_array($failed->fresh()->raw_payload) ? $failed->fresh()->raw_payload : [];
+        $payload['canonical_payment_create_history'][] = [
+            'operation' => 'payment_create',
+            'status' => 'failed',
+            'replay_blocked' => true,
+        ];
+        $failed->forceFill(['raw_payload' => $payload])->save();
+
+        try {
+            $manager->createPayment($failedDuplicate);
+            $this->fail('Failed history blind pending reuse üretmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE', $exception->getMessage());
+        }
+        $this->assertNull($failedDuplicate->fresh()->provider_reference);
+    }
+
+    public function test_manager_cancel_result_is_canonical_authority_and_preserves_concurrent_paid_state(): void
+    {
+        $payment = $this->mountPayment([
+            'provider_reference' => 'cancel-race-reference',
+            'payment_url' => 'http://10.0.28.64:8000/mount-payment/cancel-race-reference',
+        ]);
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock) use ($payment): void {
+            $mock->shouldReceive('cancelPayment')->once()->andReturnUsing(function () use ($payment): array {
+                TechnicalServiceMountPayment::query()->whereKey($payment->id)->update([
+                    'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                    'paid_at' => now(),
+                    'provider_paid_confirmed_at' => now(),
+                ]);
+
+                return [
+                    'provider_reference' => 'cancel-race-reference',
+                    'payment_url' => 'http://10.0.28.64:8000/mount-payment/cancel-race-reference',
+                    'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                ];
+            });
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+
+        $manager = app(PaymentProviderManager::class);
+        $result = $manager->cancelPayment($payment, ['cancellation_reason' => 'Synthetic race']);
+        $canonical = $manager->canonicalPaymentFromMutationResult($result);
+
+        $this->assertSame($payment->id, $result['payment_id']);
+        $this->assertSame(PaymentProviderManager::MUTATION_OUTCOME_TERMINAL_CONFLICT, $result['outcome']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result['status']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $canonical->status);
+        $this->assertArrayNotHasKey('cancellation_reason', (array) $canonical->raw_payload);
+    }
+
     /**
      * @param  array<string, mixed>  $overrides
      */
@@ -673,6 +803,19 @@ class PaymentProviderGatewayContractTest extends TestCase
                 'charge_type' => 'mount_extra',
             ],
         ], $overrides));
+    }
+
+    private function duplicatePayment(TechnicalServiceMountPayment $payment): TechnicalServiceMountPayment
+    {
+        return TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $payment->technical_service_mount_session_id,
+            'technical_service_request_id' => $payment->technical_service_request_id,
+            'provider' => $payment->provider,
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => $payment->amount,
+            'currency' => $payment->currency,
+            'raw_payload' => $payment->raw_payload,
+        ]);
     }
 
     private function mountSessionForRequest(TechnicalServiceRequest $request): TechnicalServiceMountSession
