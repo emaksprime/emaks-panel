@@ -35,8 +35,9 @@ class PaymentProviderManager
     public function createPayment(TechnicalServiceMountPayment $payment): array
     {
         $this->messagingSettings->assertProviderHttpOutsideTransaction();
-        $provider = $this->providerName();
-        $scopedProvider = $this->scopedProviderName($provider);
+        $provider = $this->canonicalProviderKey($this->providerName());
+        $providerMode = $this->providerModeForFamily($provider);
+        $scopedProvider = $this->canonicalProviderIdentity($provider, $providerMode);
         $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentEffect(
             $payment,
             TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE,
@@ -65,10 +66,16 @@ class PaymentProviderManager
         try {
             $payment = $payment->refresh();
             if (is_string($claim['claim_nonce'])) {
+                $payment = $this->bindScopedLocalUatProviderIdentity(
+                    $payment,
+                    $provider,
+                    $providerMode,
+                    $scopedProvider,
+                );
                 $this->messagingSettings->beginScopedLocalUatEffectDispatch($claim['claim_nonce']);
                 $payment = $payment->refresh();
             }
-            $this->stampProviderDecision($payment, $provider);
+            $this->stampProviderDecision($payment, $provider, $providerMode);
             $this->messagingSettings->assertProviderHttpOutsideTransaction();
             $this->providerForName($scopedProvider)->createPayment($payment->refresh());
             if (is_string($claim['claim_nonce'])) {
@@ -753,19 +760,68 @@ class PaymentProviderManager
         return strtolower((string) ($payment->provider ?: $this->configuredProviderName()));
     }
 
-    private function scopedProviderName(string $provider): string
+    private function providerModeForFamily(string $provider): string
     {
-        return match (strtolower(trim($provider))) {
-            'fake', 'fake_payment' => 'fake_payment',
-            'iyzico_sandbox' => 'iyzico_sandbox',
-            'iyzico_live' => 'iyzico_live',
+        return match ($this->canonicalProviderKey($provider)) {
+            'fake' => 'local',
             'iyzico' => match ($this->modeResolver->gatewayMode()) {
-                'sandbox' => 'iyzico_sandbox',
-                'live' => 'iyzico_live',
+                'sandbox' => 'sandbox',
+                'live' => 'live',
                 default => throw new InvalidArgumentException('Desteklenmeyen odeme saglayicisi modu.'),
             },
             default => throw new InvalidArgumentException('Desteklenmeyen odeme saglayicisi.'),
         };
+    }
+
+    private function canonicalProviderIdentity(string $provider, ?string $providerMode = null): string
+    {
+        $providerFamily = $this->canonicalProviderKey($provider);
+        $providerMode = strtolower(trim($providerMode ?? $this->providerModeForFamily($providerFamily)));
+
+        return match ([$providerFamily, $providerMode]) {
+            ['fake', 'local'] => 'fake_payment',
+            ['iyzico', 'sandbox'] => 'iyzico_sandbox',
+            ['iyzico', 'live'] => 'iyzico_live',
+            default => throw new ConflictHttpException('scoped_uat_provider_identity_invalid: Provider family ve mode authority canonical değil.'),
+        };
+    }
+
+    private function bindScopedLocalUatProviderIdentity(
+        TechnicalServiceMountPayment $payment,
+        string $providerFamily,
+        string $providerMode,
+        string $providerIdentity,
+    ): TechnicalServiceMountPayment {
+        return DB::transaction(function () use ($payment, $providerFamily, $providerMode, $providerIdentity): TechnicalServiceMountPayment {
+            $locked = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $storedProviderFamily = strtolower(trim((string) $locked->provider));
+            if (! hash_equals($providerFamily, $storedProviderFamily)) {
+                throw new ConflictHttpException('scoped_uat_provider_snapshot_mismatch: provider_family_mismatch; payment provider family stored authority ile eşleşmiyor.');
+            }
+
+            $expectedIdentity = $this->canonicalProviderIdentity($providerFamily, $providerMode);
+            if (! hash_equals($expectedIdentity, $providerIdentity)) {
+                throw new ConflictHttpException('scoped_uat_provider_identity_mismatch: Payment provider identity immutable run authority ile eşleşmiyor.');
+            }
+
+            $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
+            $storedMode = Arr::get($payload, 'provider_mode')
+                ?? Arr::get($payload, 'provider_decision.provider_mode')
+                ?? Arr::get($payload, 'provider_gateway.mode')
+                ?? Arr::get($payload, 'provider_gateway.provider_mode');
+            if ($storedMode !== null && (! is_scalar($storedMode)
+                || ! hash_equals($providerIdentity, $this->canonicalProviderIdentity($storedProviderFamily, (string) $storedMode)))) {
+                throw new ConflictHttpException('scoped_uat_provider_mode_mismatch: Payment provider mode stored authority ile eşleşmiyor.');
+            }
+
+            $payload['provider_mode'] = $providerMode;
+            $locked->forceFill(['raw_payload' => $payload])->save();
+
+            return $locked->fresh();
+        });
     }
 
     /**
@@ -794,13 +850,12 @@ class PaymentProviderManager
     private function stampProviderDecision(TechnicalServiceMountPayment $payment, string $provider, ?string $providerMode = null): void
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $provider = str_starts_with($provider, 'iyzico') ? 'iyzico' : $provider;
+        $provider = $this->canonicalProviderKey($provider);
         $transport = $provider === 'fake'
             ? 'fake_local'
             : $this->transportResolver->activeTransport();
-        $providerMode = $provider === 'fake'
-            ? 'local'
-            : ($providerMode ?? $this->modeResolver->gatewayMode());
+        $providerMode = $providerMode ?? $this->providerModeForFamily($provider);
+        $this->canonicalProviderIdentity($provider, $providerMode);
 
         $payload['provider_decision'] = [
             'provider' => $provider,
@@ -832,6 +887,11 @@ class PaymentProviderManager
             return null;
         }
 
-        return strtolower((string) $mode) === 'live' ? 'live' : 'sandbox';
+        return match (strtolower(trim((string) $mode))) {
+            'local' => 'local',
+            'sandbox' => 'sandbox',
+            'live' => 'live',
+            default => throw new ConflictHttpException('scoped_uat_provider_mode_invalid: Stored payment provider mode canonical değil.'),
+        };
     }
 }

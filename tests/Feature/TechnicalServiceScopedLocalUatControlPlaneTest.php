@@ -2065,6 +2065,155 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         ));
     }
 
+    public function test_sandbox_snapshot_accepts_family_plus_sandbox_mode_identity(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->expectFakeIyzicoSandboxCreate();
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        $result = app(PaymentProviderManager::class)->createPayment($payment);
+        $fresh = $payment->fresh();
+
+        $this->assertSame(PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING, $result['outcome']);
+        $this->assertSame('iyzico', $fresh->provider);
+        $this->assertSame('sandbox', data_get($fresh->raw_payload, 'provider_mode'));
+        $this->assertSame('iyzico_sandbox', data_get(
+            $fresh->raw_payload,
+            'scoped_local_uat_payment_session_authority.provider',
+        ));
+        Http::assertNothingSent();
+    }
+
+    public function test_family_only_payment_provider_is_canonicalized_with_stored_mode(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->expectFakeIyzicoSandboxCreate();
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        app(PaymentProviderManager::class)->createPayment($payment);
+        $fresh = $payment->fresh();
+
+        $this->assertSame('iyzico', $fresh->provider);
+        $this->assertSame('iyzico', data_get($fresh->raw_payload, 'provider_decision.provider'));
+        $this->assertSame('sandbox', data_get($fresh->raw_payload, 'provider_decision.provider_mode'));
+        $this->assertSame('iyzico_sandbox', data_get(
+            $fresh->raw_payload,
+            'scoped_local_uat_effect_history.0.provider',
+        ));
+        Http::assertNothingSent();
+    }
+
+    public function test_live_mode_cannot_match_sandbox_snapshot(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->forcePaymentProviderMode('live');
+        $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Live provider mode sandbox run snapshotını geçmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_snapshot_mismatch', $exception->getMessage());
+        }
+
+        $fresh = $payment->fresh();
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_mode'));
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
+        $this->assertNull($fresh->provider_reference);
+        Http::assertNothingSent();
+    }
+
+    public function test_provider_family_mismatch_is_rejected(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Payment provider family stored configuration authority ile eşleşmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_family_mismatch', $exception->getMessage());
+        }
+
+        $fresh = $payment->fresh();
+        $this->assertSame('fake', $fresh->provider);
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_mode'));
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
+        Http::assertNothingSent();
+    }
+
+    public function test_request_cannot_override_provider_family_or_mode(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId, true, [
+            'provider' => 'other_provider',
+            'provider_mode' => 'live',
+            'mode' => 'live',
+            'environment' => 'production',
+            'sandbox' => false,
+        ])->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Request provider mode stored sandbox authority yerine geçmemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_mode_mismatch', $exception->getMessage());
+        }
+
+        $fresh = $payment->fresh();
+        $this->assertSame('iyzico', $fresh->provider);
+        $this->assertSame('live', data_get($fresh->raw_payload, 'provider_mode'));
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
+        $this->assertNull($fresh->provider_reference);
+        Http::assertNothingSent();
+    }
+
+    public function test_mismatch_rejects_before_stamp_and_provider_call(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->forcePaymentProviderMode('live');
+        $this->mock(IyzicoPaymentProvider::class, fn ($mock) => $mock->shouldNotReceive('createPayment'));
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Provider identity mismatch final decision stamp öncesi reddedilmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('provider_snapshot_mismatch', $exception->getMessage());
+        }
+
+        $fresh = $payment->fresh();
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_mode'));
+        $this->assertNull(data_get($fresh->raw_payload, 'provider_decision'));
+        $this->assertNull($fresh->provider_reference);
+        Http::assertNothingSent();
+    }
+
+    public function test_matching_identity_allows_existing_provider_flow(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUatWithIyzicoSandbox();
+        $this->expectFakeIyzicoSandboxCreate();
+        $payment = $this->scopedPayment($runId)->forceFill(['provider' => 'iyzico']);
+        $payment->save();
+
+        $result = app(PaymentProviderManager::class)->createPayment($payment);
+        $fresh = $payment->fresh();
+
+        $this->assertSame((int) $fresh->getKey(), $result['payment_id']);
+        $this->assertSame('sandbox-session-reference', $fresh->provider_reference);
+        $this->assertSame('http://10.0.28.64:8000/payments/sandbox-session-reference', $fresh->payment_url);
+        $this->assertSame('completed', data_get($fresh->raw_payload, 'scoped_local_uat_effect_history.0.status'));
+        Http::assertNothingSent();
+    }
+
     /**
      * @return array{admin:User,settings:TechnicalServiceMessagingSettingsService,run_id:string}
      */
@@ -2077,6 +2226,70 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             ...$ready,
             'run_id' => (string) data_get($prepared, 'manual_e2e.active_run_id'),
         ];
+    }
+
+    /**
+     * @return array{admin:User,settings:TechnicalServiceMessagingSettingsService,run_id:string}
+     */
+    private function startScopedLocalUatWithIyzicoSandbox(): array
+    {
+        $ready = $this->readyScopedLocalUat();
+        app(TechnicalServicePaymentProviderCredentialService::class)->saveIyzicoCredentials(
+            'sandbox',
+            'TEST_SCOPED_SANDBOX_API_KEY',
+            'TEST_SCOPED_SANDBOX_SECRET_KEY',
+            $ready['admin'],
+        );
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'real_provider_enabled' => true,
+            'provider_mode' => 'sandbox',
+            'payment_notification_enabled' => true,
+            'payment_notification_recipients' => self::PAYMENT_EMAIL,
+        ]);
+        $prepared = $ready['settings']->prepareManualE2E();
+
+        $this->assertSame('iyzico_sandbox', data_get(
+            $this->persistedLifecycleSettings(),
+            'manual_e2e_run_snapshot.scoped_local_uat_sandbox_payment_provider',
+        ));
+
+        return [
+            ...$ready,
+            'run_id' => (string) data_get($prepared, 'manual_e2e.active_run_id'),
+        ];
+    }
+
+    private function expectFakeIyzicoSandboxCreate(): void
+    {
+        $this->mock(IyzicoPaymentProvider::class, function ($mock): void {
+            $mock->shouldReceive('createPayment')->once()->andReturnUsing(
+                function (TechnicalServiceMountPayment $payment): array {
+                    $payment->forceFill([
+                        'provider' => 'iyzico',
+                        'provider_reference' => 'sandbox-session-reference',
+                        'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                        'payment_url' => 'http://10.0.28.64:8000/payments/sandbox-session-reference',
+                    ])->save();
+
+                    return [
+                        'payment_id' => (int) $payment->getKey(),
+                        'provider_reference' => 'sandbox-session-reference',
+                        'payment_url' => 'http://10.0.28.64:8000/payments/sandbox-session-reference',
+                        'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                    ];
+                },
+            );
+        });
+    }
+
+    private function forcePaymentProviderMode(string $mode): void
+    {
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServicePaymentProviderSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = is_array($page->layout_json) ? $page->layout_json : [];
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::PROVIDER_MODE_KEY, $mode);
+        $page->forceFill(['layout_json' => $layout])->save();
     }
 
     private function scopedPayment(string $runId, bool $synthetic = true, array $payloadOverrides = []): TechnicalServiceMountPayment

@@ -215,6 +215,45 @@ class DirectIyzicoPaymentProviderTest extends TestCase
         Http::assertNotSent(fn ($request): bool => str_starts_with($request->url(), 'https://evil.example.test'));
     }
 
+    public function test_normal_production_provider_identity_regression_passes(): void
+    {
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('p', 32))]);
+        $this->configureDirectSandbox([
+            'payments.gateway.mode' => 'live',
+            'payments.iyzico.live_send_approved' => true,
+            'payments.iyzico.ip_whitelist_confirmed' => true,
+            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+        ], 'live');
+        Route::post('/test/iyzico-live-callback', fn () => response()->json(['ok' => true]))
+            ->name('mount-payment.callback');
+        Route::getRoutes()->refreshNameLookups();
+        Http::fake([
+            'https://api.iyzipay.com/v2/iyzilink/products' => Http::response([
+                'status' => 'success',
+                'data' => [
+                    'token' => 'live-identity-token',
+                    'url' => 'https://payment.iyzipay.com/pay/live-identity-token',
+                    'status' => 'ACTIVE',
+                ],
+            ], 200),
+        ]);
+        $payment = $this->mountPayment(['provider' => 'iyzico']);
+        $payment->forceFill(['raw_payload' => [
+            ...$payment->raw_payload,
+            'purpose' => 'mount_extra',
+        ]])->save();
+
+        app(PaymentProviderManager::class)->createPayment($payment);
+        $fresh = $payment->fresh();
+
+        $this->assertSame('iyzico', $fresh->provider);
+        $this->assertSame('live', data_get($fresh->raw_payload, 'provider_mode'));
+        $this->assertSame('iyzico', data_get($fresh->raw_payload, 'provider_decision.provider'));
+        $this->assertSame('live', data_get($fresh->raw_payload, 'provider_decision.provider_mode'));
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://api.iyzipay.com/v2/iyzilink/products');
+    }
+
     public function test_cancel_link_calls_passive_endpoint_and_marks_cancelled_not_paid(): void
     {
         $this->configureDirectSandbox();
