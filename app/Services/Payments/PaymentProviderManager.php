@@ -45,13 +45,17 @@ class PaymentProviderManager
         if ($claim['required'] && $claim['duplicate']) {
             $existing = TechnicalServiceMountPayment::query()
                 ->findOrFail((int) ($claim['duplicate_payment_id'] ?? $payment->getKey()));
-
-            return $this->existingPaymentResponse(
+            $result = $this->existingPaymentResponse(
                 $existing,
                 is_string($claim['outcome'] ?? null)
                     ? $claim['outcome']
                     : self::CREATE_OUTCOME_REUSED_PENDING,
             );
+            if ($this->createOutcome($result) === self::CREATE_OUTCOME_REUSED_PENDING) {
+                $this->canonicalPaymentFromCreateResult($result);
+            }
+
+            return $result;
         }
 
         if (! $claim['required']) {

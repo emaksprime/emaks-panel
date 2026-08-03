@@ -1663,6 +1663,7 @@ class TechnicalServiceMessagingSettingsService
                         $lockedPayment,
                         $runId,
                         $idempotencyHash,
+                        $businessIdentity,
                     );
                 }
                 if (is_array($previous)) {
@@ -1672,7 +1673,13 @@ class TechnicalServiceMessagingSettingsService
                             ->whereKey($canonicalPaymentId)
                             ->lockForUpdate()
                             ->firstOrFail();
-                        $outcome = $this->scopedLocalUatCreateReuseOutcome($canonicalPayment, $previous);
+                        $outcome = $this->scopedLocalUatCreateReuseOutcome(
+                            $canonicalPayment,
+                            $runId,
+                            $businessIdentity,
+                            $provider,
+                            $idempotencyHash,
+                        );
                         if ($canonicalPaymentId !== (int) $lockedPayment->getKey()
                             && $outcome !== self::SCOPED_PAYMENT_OUTCOME_TERMINAL_NOT_REUSABLE) {
                             $this->markScopedLocalUatDuplicatePayment(
@@ -2339,10 +2346,12 @@ class TechnicalServiceMessagingSettingsService
         ]));
     }
 
-    /** @param array<string, mixed> $previous */
     private function scopedLocalUatCreateReuseOutcome(
         TechnicalServiceMountPayment $canonicalPayment,
-        array $previous,
+        string $runId,
+        array $businessIdentity,
+        string $provider,
+        string $idempotencyHash,
     ): string {
         $status = (string) $canonicalPayment->status;
         if (in_array($status, [
@@ -2352,22 +2361,13 @@ class TechnicalServiceMessagingSettingsService
         ], true)) {
             return self::SCOPED_PAYMENT_OUTCOME_TERMINAL_NOT_REUSABLE;
         }
-        if ((string) ($previous['status'] ?? '') !== 'completed') {
-            throw new ConflictHttpException('scoped_uat_effect_replay_blocked: Payment create effecti tamamlanmadan reuse edilemez.');
-        }
-
-        $authority = data_get($canonicalPayment->raw_payload, 'scoped_local_uat_payment_session_authority');
-        $providerReference = trim((string) $canonicalPayment->provider_reference);
-        $authorityValid = is_array($authority)
-            && (string) ($authority['create_status'] ?? '') === 'completed'
-            && (int) ($authority['payment_id'] ?? 0) === (int) $canonicalPayment->getKey()
-            && $providerReference !== ''
-            && hash_equals((string) ($authority['provider_reference'] ?? ''), $providerReference)
-            && (string) ($authority['amount_minor'] ?? '') === $this->scopedLocalUatAmountMinorUnits($canonicalPayment)
-            && (string) ($authority['currency'] ?? '') === $this->scopedLocalUatCurrency($canonicalPayment);
-        if (! $authorityValid) {
-            throw new ConflictHttpException('scoped_uat_payment_session_incomplete: Canonical payment stored successful session authority taşımıyor.');
-        }
+        $this->assertScopedLocalUatPendingReuseAuthority(
+            $canonicalPayment,
+            $runId,
+            $businessIdentity,
+            $provider,
+            $idempotencyHash,
+        );
 
         if ($status === TechnicalServiceMountPayment::STATUS_PAID) {
             return self::SCOPED_PAYMENT_OUTCOME_ALREADY_PAID;
@@ -2385,6 +2385,7 @@ class TechnicalServiceMessagingSettingsService
         TechnicalServiceMountPayment $payment,
         string $runId,
         string $idempotencyHash,
+        array $businessIdentity,
     ): ?array {
         $query = TechnicalServiceMountPayment::query()
             ->where('amount', $payment->amount)
@@ -2404,19 +2405,106 @@ class TechnicalServiceMessagingSettingsService
                 ];
             }
             $authority = data_get($candidate->raw_payload, 'scoped_local_uat_payment_session_authority');
+            $candidatePayload = is_array($candidate->raw_payload) ? $candidate->raw_payload : [];
+            $candidateBusinessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($candidate, $candidatePayload);
             if (is_array($authority)
                 && (string) ($authority['create_status'] ?? '') === 'completed'
                 && (string) ($authority['run_id'] ?? '') === $runId
-                && hash_equals((string) ($authority['idempotency_hash'] ?? ''), $idempotencyHash)) {
-                return [
-                    'status' => 'completed',
-                    'payment_id' => (int) $candidate->getKey(),
-                    'idempotency_hash' => $idempotencyHash,
-                ];
+                && (
+                    hash_equals((string) ($authority['idempotency_hash'] ?? ''), $idempotencyHash)
+                    || hash_equals($candidateBusinessIdentity['identity_hash'], $businessIdentity['identity_hash'])
+                )) {
+                throw new ConflictHttpException('UNSAFE_PENDING_NOT_REUSABLE: Completed metadata exact successful create history yerine geçemez.');
             }
         }
 
         return null;
+    }
+
+    /**
+     * @param  array{entity_type:string,entity_id:int,payment_purpose:string,identity_hash:string,part_request_fingerprint:string|null,selected_serials_fingerprint:string|null,selected_serial_count:int}  $businessIdentity
+     */
+    private function assertScopedLocalUatPendingReuseAuthority(
+        TechnicalServiceMountPayment $payment,
+        string $runId,
+        array $businessIdentity,
+        string $provider,
+        string $idempotencyHash,
+    ): void {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $authority = $payload['scoped_local_uat_payment_session_authority'] ?? null;
+        $history = is_array($payload['scoped_local_uat_effect_history'] ?? null)
+            ? $payload['scoped_local_uat_effect_history']
+            : [];
+        $paymentId = (int) $payment->getKey();
+        $providerReference = trim((string) $payment->provider_reference);
+        $paymentUrl = trim((string) $payment->payment_url);
+        $amountMinor = $this->scopedLocalUatAmountMinorUnits($payment);
+        $currency = $this->scopedLocalUatCurrency($payment);
+        $providerMode = $this->scopedLocalUatProviderModeForProvider($provider);
+        $canonicalProvider = $this->scopedLocalUatCanonicalPaymentProvider($payment);
+        $canonicalBusinessIdentity = $this->scopedLocalUatPaymentBusinessIdentity($payment, $payload);
+
+        $sameEffect = static fn (mixed $entry): bool => is_array($entry)
+            && (string) ($entry['operation'] ?? '') === self::SCOPED_EFFECT_PAYMENT_CREATE
+            && (int) ($entry['payment_id'] ?? 0) === $paymentId
+            && (string) ($entry['profile_id'] ?? '') === ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
+            && (string) ($entry['run_id'] ?? '') === $runId
+            && hash_equals((string) ($entry['idempotency_hash'] ?? ''), $idempotencyHash)
+            && hash_equals((string) ($entry['business_identity_hash'] ?? ''), $businessIdentity['identity_hash'])
+            && (string) ($entry['provider'] ?? '') === $provider
+            && (string) ($entry['amount_minor'] ?? '') === $amountMinor
+            && (string) ($entry['currency'] ?? '') === $currency;
+
+        $failedHistory = collect($history)->contains(
+            static fn (mixed $entry): bool => $sameEffect($entry)
+                && (string) ($entry['status'] ?? '') === 'failed',
+        );
+        if ($failedHistory) {
+            throw new ConflictHttpException('scoped_uat_effect_replay_blocked: Failed payment create history explicit retry authority olmadan reuse edilemez.');
+        }
+
+        $successfulHistory = collect($history)->first(
+            static fn (mixed $entry): bool => $sameEffect($entry)
+                && (string) ($entry['status'] ?? '') === 'completed'
+                && (string) ($entry['outcome'] ?? '') === 'provider_accepted'
+                && (string) ($entry['provider_mode'] ?? '') === $providerMode
+                && hash_equals((string) ($entry['provider_reference_hash'] ?? ''), hash('sha256', $providerReference))
+                && hash_equals((string) ($entry['payment_url_hash'] ?? ''), hash('sha256', $paymentUrl)),
+        );
+        $configurationFingerprint = is_array($authority)
+            ? (string) ($authority['configuration_fingerprint'] ?? '')
+            : '';
+        $authorityValid = is_array($authority)
+            && (string) ($authority['create_status'] ?? '') === 'completed'
+            && (string) ($authority['profile_id'] ?? '') === ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
+            && (string) ($authority['run_id'] ?? '') === $runId
+            && (int) ($authority['payment_id'] ?? 0) === $paymentId
+            && (string) ($authority['business_entity_type'] ?? '') === $businessIdentity['entity_type']
+            && (int) ($authority['business_entity_id'] ?? 0) === $businessIdentity['entity_id']
+            && (string) ($authority['payment_purpose'] ?? '') === $businessIdentity['payment_purpose']
+            && hash_equals((string) ($authority['business_identity_hash'] ?? ''), $businessIdentity['identity_hash'])
+            && hash_equals($canonicalBusinessIdentity['identity_hash'], $businessIdentity['identity_hash'])
+            && (string) ($authority['part_request_fingerprint'] ?? '') === (string) $businessIdentity['part_request_fingerprint']
+            && (string) ($authority['selected_serials_fingerprint'] ?? '') === (string) $businessIdentity['selected_serials_fingerprint']
+            && (int) ($authority['selected_serial_count'] ?? -1) === $businessIdentity['selected_serial_count']
+            && hash_equals((string) ($authority['idempotency_hash'] ?? ''), $idempotencyHash)
+            && (string) ($authority['provider'] ?? '') === $provider
+            && (string) ($authority['provider_mode'] ?? '') === $providerMode
+            && $canonicalProvider === $provider
+            && $providerReference !== ''
+            && hash_equals((string) ($authority['provider_reference'] ?? ''), $providerReference)
+            && hash_equals((string) ($authority['provider_reference_hash'] ?? ''), hash('sha256', $providerReference))
+            && $paymentUrl !== ''
+            && hash_equals((string) ($authority['payment_url_hash'] ?? ''), hash('sha256', $paymentUrl))
+            && (string) ($authority['amount_minor'] ?? '') === $amountMinor
+            && (string) ($authority['currency'] ?? '') === $currency
+            && preg_match('/^[a-f0-9]{64}$/', $configurationFingerprint) === 1
+            && is_array($successfulHistory)
+            && hash_equals((string) ($successfulHistory['configuration_fingerprint'] ?? ''), $configurationFingerprint);
+        if (! $authorityValid) {
+            throw new ConflictHttpException('UNSAFE_PENDING_NOT_REUSABLE: Pending payment exact successful create/session history authority taşımıyor.');
+        }
     }
 
     /** @return array<string, mixed>|null */

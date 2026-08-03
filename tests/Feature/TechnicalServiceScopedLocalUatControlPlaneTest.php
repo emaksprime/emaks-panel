@@ -889,6 +889,18 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $payment = $this->scopedPayment($runId);
 
         $first = app(PaymentProviderManager::class)->createPayment($payment);
+        $payload = is_array($payment->fresh()->raw_payload) ? $payment->fresh()->raw_payload : [];
+        $history = (array) ($payload['scoped_local_uat_effect_history'] ?? []);
+        foreach (range(1, 25) as $index) {
+            $history[] = [
+                'run_id' => $runId,
+                'operation' => 'unrelated-'.$index,
+                'status' => 'completed',
+                'idempotency_hash' => hash('sha256', 'unrelated-pending-reuse-'.$index),
+            ];
+        }
+        $payload['scoped_local_uat_effect_history'] = $history;
+        $payment->forceFill(['raw_payload' => $payload])->save();
         $second = app(PaymentProviderManager::class)->createPayment($payment->fresh());
 
         $this->assertSame(PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING, $first['outcome']);
@@ -898,6 +910,122 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $creates = collect($this->effectHistory())->where('operation', TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE);
         $this->assertCount(1, $creates);
         $this->assertSame('completed', $creates->first()['status']);
+        $this->assertGreaterThan(20, count((array) data_get(
+            $payment->fresh()->raw_payload,
+            'scoped_local_uat_effect_history',
+            [],
+        )));
+    }
+
+    public function test_pending_reuse_requires_exact_successful_create_history_authority(): void
+    {
+        ['run_id' => $runId] = $this->startScopedLocalUat();
+        $mutateHistory = static function (array $payload, callable $mutation): array {
+            $history = (array) ($payload['scoped_local_uat_effect_history'] ?? []);
+            foreach ($history as $index => $entry) {
+                if (is_array($entry)
+                    && ($entry['operation'] ?? null) === TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE) {
+                    $history[$index] = $mutation($entry);
+                    $payload['scoped_local_uat_effect_history'] = $history;
+
+                    return $payload;
+                }
+            }
+
+            throw new \RuntimeException('Synthetic successful create history fixture bulunamadı.');
+        };
+        $cases = [
+            'completed_metadata_without_history' => static function (array $payload): array {
+                unset($payload['scoped_local_uat_effect_history'], $payload['scoped_local_uat_effect_claim']);
+
+                return $payload;
+            },
+            'foreign_payment_history' => static fn (array $payload, TechnicalServiceMountPayment $canonical, TechnicalServiceMountPayment $duplicate): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'payment_id' => (int) $duplicate->getKey()],
+            ),
+            'operation_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'operation' => 'sandbox_payment_other'],
+            ),
+            'business_fingerprint_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'business_identity_hash' => hash('sha256', 'wrong-business')],
+            ),
+            'idempotency_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'idempotency_hash' => hash('sha256', 'wrong-idempotency')],
+            ),
+            'provider_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'provider' => 'iyzico_sandbox'],
+            ),
+            'provider_reference_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'provider_reference_hash' => hash('sha256', 'wrong-reference')],
+            ),
+            'amount_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'amount_minor' => '999'],
+            ),
+            'currency_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'currency' => 'USD'],
+            ),
+            'run_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'run_id' => 'LOCAL-UAT-WRONG-RUN'],
+            ),
+            'profile_mismatch' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'profile_id' => 'WRONG_PROFILE'],
+            ),
+            'failed_history_without_retry_authority' => static fn (array $payload): array => $mutateHistory(
+                $payload,
+                static fn (array $entry): array => [...$entry, 'status' => 'failed', 'outcome' => 'failed_no_retry'],
+            ),
+        ];
+        $provider = $this->partialMock(FakePaymentProvider::class, function ($mock) use ($cases): void {
+            $mock->shouldReceive('createPayment')->times(count($cases))->passthru();
+        });
+        $this->app->instance(FakePaymentProvider::class, $provider);
+        $manager = app(PaymentProviderManager::class);
+
+        foreach ($cases as $case => $mutation) {
+            $canonical = $this->scopedPayment($runId);
+            $duplicate = $this->duplicateScopedPayment($canonical);
+            $created = $manager->createPayment($canonical);
+            $this->assertSame(PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING, $created['outcome'], $case);
+            $canonical = $canonical->fresh();
+            $payload = $mutation(
+                is_array($canonical->raw_payload) ? $canonical->raw_payload : [],
+                $canonical,
+                $duplicate,
+            );
+            $canonical->forceFill(['raw_payload' => $payload])->save();
+
+            $result = null;
+            try {
+                $result = $manager->createPayment($duplicate);
+                $this->fail($case.' exact successful history olmadan reused_pending üretmemeliydi.');
+            } catch (ConflictHttpException $exception) {
+                $this->assertMatchesRegularExpression(
+                    '/UNSAFE_PENDING_NOT_REUSABLE|scoped_uat_effect_replay_blocked/',
+                    $exception->getMessage(),
+                    $case,
+                );
+            }
+
+            $this->assertNull($result, $case);
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $duplicate->fresh()->status, $case);
+            $this->assertNull($duplicate->fresh()->provider_reference, $case);
+            $this->assertNull($duplicate->fresh()->payment_url, $case);
+            $this->assertNull(data_get(
+                $duplicate->fresh()->raw_payload,
+                'scoped_local_uat_duplicate_payment',
+            ), $case);
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $canonical->fresh()->status, $case);
+        }
     }
 
     public function test_duplicate_callback_produces_one_paid_transition(): void
