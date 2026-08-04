@@ -1657,17 +1657,19 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
         try {
             DB::transaction(function (): void {
-                app(EvolutionWhatsAppMessageService::class)->send(
-                    'template_test_whatsapp',
-                    'shared_test_phone',
-                    '905467647428',
-                    'Outer transaction Evolution provider mesajı.',
-                    [
-                        'provider_test' => true,
-                        'manual_ui_send' => true,
-                        'allow_unit_test_http_fake' => true,
-                    ],
-                );
+                DB::transaction(function (): void {
+                    app(EvolutionWhatsAppMessageService::class)->send(
+                        'template_test_whatsapp',
+                        'shared_test_phone',
+                        '905467647428',
+                        'Outer transaction Evolution provider mesajı.',
+                        [
+                            'provider_test' => true,
+                            'manual_ui_send' => true,
+                            'allow_unit_test_http_fake' => true,
+                        ],
+                    );
+                });
             });
             $this->fail('Evolution direct client dış transaction içinden çalışmamalıydı.');
         } catch (ValidationException) {
@@ -1676,11 +1678,13 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
         try {
             DB::transaction(function () use ($actor): void {
-                app(TechnicalServiceNacSmsTestClient::class)->sendProviderTest(
-                    '905372081633',
-                    ['real_sms_confirmed' => true],
-                    $actor,
-                );
+                DB::transaction(function () use ($actor): void {
+                    app(TechnicalServiceNacSmsTestClient::class)->sendProviderTest(
+                        '905372081633',
+                        ['real_sms_confirmed' => true],
+                        $actor,
+                    );
+                });
             });
             $this->fail('NAC direct client dış transaction içinden çalışmamalıydı.');
         } catch (ValidationException) {

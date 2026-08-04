@@ -564,6 +564,21 @@ class TechnicalServicePartRequestService
                 $customerCharge = $this->customerChargePayload($payment);
             }
         }
+        $providerReference = $this->nullableReference(
+            $customerCharge['provider_reference'] ?? $metadata['provider_reference'] ?? null,
+        );
+        $providerReceiptReference = $this->nullableReference(
+            $customerCharge['provider_receipt_reference'] ?? $metadata['provider_receipt_reference'] ?? null,
+        );
+        $legacyPaymentReference = $this->nullableReference(
+            $customerCharge['payment_reference'] ?? $metadata['payment_reference'] ?? null,
+        );
+        $paymentReference = $providerReceiptReference;
+        if ($paymentReference === null
+            && $legacyPaymentReference !== null
+            && ($providerReference === null || $legacyPaymentReference !== $providerReference)) {
+            $paymentReference = $legacyPaymentReference;
+        }
 
         return [
             'id' => $partRequest->id,
@@ -606,8 +621,11 @@ class TechnicalServicePartRequestService
             ], true),
             'payment_id' => $paymentId,
             'payment_url' => $forPartner ? null : ($customerCharge['payment_url'] ?? $metadata['payment_url'] ?? null),
-            'payment_reference' => $customerCharge['payment_reference'] ?? $metadata['payment_reference'] ?? $metadata['provider_reference'] ?? null,
-            'provider_reference' => $customerCharge['provider_reference'] ?? $metadata['provider_reference'] ?? null,
+            'payment_reference' => $paymentReference,
+            'provider_reference' => $providerReference,
+            'provider_payment_reference' => $customerCharge['provider_payment_reference'] ?? $metadata['provider_payment_reference'] ?? null,
+            'provider_transaction_reference' => $customerCharge['provider_transaction_reference'] ?? $metadata['provider_transaction_reference'] ?? null,
+            'provider_receipt_reference' => $providerReceiptReference,
             'payment_provider' => $customerCharge['provider'] ?? $metadata['payment_provider'] ?? null,
             'paid_at' => $customerCharge['paid_at'] ?? $metadata['paid_at'] ?? null,
             'paid_amount' => $customerCharge['total_amount'] ?? $metadata['paid_amount'] ?? null,
@@ -742,10 +760,24 @@ class TechnicalServicePartRequestService
             'payment_url' => $payment->payment_url,
             'provider' => $payment->provider,
             'provider_reference' => $payment->provider_reference,
-            'payment_reference' => $payment->provider_reference,
+            'payment_reference' => $payment->provider_receipt_reference,
+            'provider_payment_reference' => $payment->provider_payment_reference,
+            'provider_transaction_reference' => $payment->provider_transaction_reference,
+            'provider_receipt_reference' => $payment->provider_receipt_reference,
             'paid_at' => $payment->paid_at?->toIso8601String(),
             'currency' => $payment->currency,
         ];
+    }
+
+    private function nullableReference(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $reference = trim((string) $value);
+
+        return $reference !== '' ? $reference : null;
     }
 
     private function paymentStatusLabel(?string $status): string

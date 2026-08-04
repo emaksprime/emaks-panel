@@ -6176,8 +6176,14 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('raw_payload->part_request_id', $partRequest->id)
             ->firstOrFail();
         $this->assertStringStartsWith(self::PUBLIC_ORIGIN_TEST_URL.'/mount-payment/', (string) $payment->payment_url);
+        $providerSessionReference = (string) $payment->provider_reference;
+        $this->assertNotSame('', $providerSessionReference);
         app(TechnicalServicePaymentSettlementService::class)
             ->markPaid($payment, ['receipt_no' => 'DEKONT-PART-55']);
+        $paidPayment = $payment->fresh();
+        $this->assertSame($providerSessionReference, $paidPayment->provider_reference);
+        $this->assertSame('DEKONT-PART-55', $paidPayment->provider_receipt_reference);
+        $this->assertNotSame($paidPayment->provider_reference, $paidPayment->provider_receipt_reference);
         $child = $this->serviceRequestForTechnician($technician, 'SRV-PART-PAYMENT-REF-001', [
             'parent_request_id' => $job->id,
             'root_mrn' => $job->mrn,
@@ -6190,6 +6196,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $partRequest->refresh();
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $partRequest->metadata['charge_status'] ?? null);
         $this->assertSame('DEKONT-PART-55', $partRequest->metadata['payment_reference'] ?? null);
+        $this->assertSame($providerSessionReference, $partRequest->metadata['provider_reference'] ?? null);
+        $this->assertSame('DEKONT-PART-55', $partRequest->metadata['provider_receipt_reference'] ?? null);
         $this->assertSame(1750.0, (float) ($partRequest->metadata['paid_amount'] ?? 0));
         $this->assertNotEmpty($partRequest->metadata['paid_at'] ?? null);
 
@@ -6199,7 +6207,11 @@ class B2BPartnerPanelAccessTest extends TestCase
         $partPayload = collect($response->json('request.part_requests'))->firstWhere('id', $partRequest->id);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $partPayload['charge_status'] ?? null);
         $this->assertSame('DEKONT-PART-55', $partPayload['payment_reference'] ?? null);
+        $this->assertSame($providerSessionReference, $partPayload['provider_reference'] ?? null);
+        $this->assertSame('DEKONT-PART-55', $partPayload['provider_receipt_reference'] ?? null);
         $this->assertSame('DEKONT-PART-55', data_get($partPayload, 'customer_charge.payment_reference'));
+        $this->assertSame($providerSessionReference, data_get($partPayload, 'customer_charge.provider_reference'));
+        $this->assertSame('DEKONT-PART-55', data_get($partPayload, 'customer_charge.provider_receipt_reference'));
         $this->assertNotEmpty($partPayload['paid_at'] ?? null);
 
         $historyResponse = $this->actingAs($admin)
@@ -6213,6 +6225,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'event_type' => 'part_request_payment_paid',
             'title' => 'Parça ödemesi alındı',
+            'note' => 'Dekont / referans: DEKONT-PART-55',
         ]);
     }
 

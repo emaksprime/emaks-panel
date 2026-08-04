@@ -2496,7 +2496,7 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $response = $this->actingAs($this->adminUser())
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
-                'amount' => 450,
+                'amount' => '450.00',
                 'currency' => 'TRY',
                 'purpose' => 'manual_mount_payment',
                 'reason' => 'manual_extra',
@@ -2546,7 +2546,7 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $response = $this->actingAs($this->adminUser())
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
-                'amount' => 140,
+                'amount' => '140.00',
                 'currency' => 'TRY',
                 'purpose' => 'manual_mount_payment',
                 'reason' => 'manual_extra',
@@ -2579,7 +2579,7 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->actingAs($this->adminUser())
             ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
-                'amount' => 140,
+                'amount' => '140.00',
                 'currency' => 'TRY',
                 'purpose' => 'manual_mount_payment',
                 'reason' => 'manual_extra',

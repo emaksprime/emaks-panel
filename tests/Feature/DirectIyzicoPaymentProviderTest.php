@@ -423,7 +423,12 @@ class DirectIyzicoPaymentProviderTest extends TestCase
             $payment->refresh();
             $this->assertSame('iyzico', $payment->provider);
             $this->assertNull($payment->payment_url);
-            $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+            $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
+            $this->assertTrue(collect((array) data_get($payment->raw_payload, 'canonical_payment_create_history', []))
+                ->contains(fn (mixed $entry): bool => is_array($entry)
+                    && ($entry['status'] ?? null) === 'failed'
+                    && ($entry['replay_blocked'] ?? false) === true));
+            Http::assertSentCount(1);
         }
     }
 
@@ -494,6 +499,8 @@ class DirectIyzicoPaymentProviderTest extends TestCase
             'currency' => 'TRY',
             'raw_payload' => [
                 'source' => 'operation_extra_mount_fee',
+                'purpose' => 'mount_extra',
+                'charge_type' => 'mount_extra',
                 'technical_service_request_id' => $request->id,
                 'request_code' => $request->mrn,
                 'root_mrn' => $request->root_mrn ?: $request->mrn,

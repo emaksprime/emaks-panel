@@ -251,11 +251,12 @@ class TechnicalServicePaymentSettlementService
             $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
             $customerCharge = is_array($metadata['customer_charge'] ?? null) ? $metadata['customer_charge'] : [];
             $paidAt = $payment->paid_at ?? now();
+            $receiptReference = trim((string) $payment->provider_receipt_reference) ?: null;
             $metadata['charge_status'] = TechnicalServiceMountPayment::STATUS_PAID;
             $metadata['payment_status'] = TechnicalServiceMountPayment::STATUS_PAID;
             $metadata['paid_amount'] = round((float) $payment->amount, 2);
             $metadata['paid_at'] = $paidAt->toISOString();
-            $metadata['payment_reference'] = $payment->provider_reference;
+            $metadata['payment_reference'] = $receiptReference;
             $metadata['provider_reference'] = $payment->provider_reference;
             $metadata['provider_payment_reference'] = $payment->provider_payment_reference;
             $metadata['provider_transaction_reference'] = $payment->provider_transaction_reference;
@@ -270,7 +271,7 @@ class TechnicalServicePaymentSettlementService
                 'total_amount_label' => number_format((float) $payment->amount, 0, ',', '.').' TL',
                 'provider' => $payment->provider,
                 'provider_reference' => $payment->provider_reference,
-                'payment_reference' => $payment->provider_reference,
+                'payment_reference' => $receiptReference,
                 'provider_payment_reference' => $payment->provider_payment_reference,
                 'provider_transaction_reference' => $payment->provider_transaction_reference,
                 'provider_receipt_reference' => $payment->provider_receipt_reference,
@@ -306,8 +307,8 @@ class TechnicalServicePaymentSettlementService
             $request->events()->create([
                 'event_type' => 'part_request_payment_paid',
                 'title' => 'Parça ödemesi alındı',
-                'note' => $payment->provider_reference
-                    ? 'Dekont / referans: '.$payment->provider_reference
+                'note' => $receiptReference
+                    ? 'Dekont / referans: '.$receiptReference
                     : 'Müşteri ödeme linki üzerinden parça tahsilatı onaylandı.',
                 'from_status' => $request->workflow_status,
                 'to_status' => $request->workflow_status,

@@ -1519,53 +1519,53 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_public_iyzico_payment_action_opens_provider_url_and_never_marks_paid_locally(): void
     {
+        $this->enablePreFormPayment();
         config([
-            'payments.provider' => 'fake',
-            'payments.enable_fake_approve' => true,
+            'payments.real_provider_enabled' => true,
+            'payments.provider_name' => 'iyzico',
+            'payments.provider_transport' => 'direct_laravel',
+            'payments.gateway.mode' => 'sandbox',
             'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox-payment.iyzipay.com'],
         ]);
-        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_QR_ACTION_API_KEY', 'TEST_QR_ACTION_SECRET_KEY');
+        $client = new class implements PaymentProviderGatewayClient
+        {
+            public function send(PaymentProviderGatewayRequest $request): PaymentProviderGatewayResponse
+            {
+                return PaymentProviderGatewayResponse::fromArray([
+                    'ok' => true,
+                    'provider' => 'iyzico',
+                    'mode' => 'sandbox',
+                    'operation' => $request->operation(),
+                    'provider_token' => 'iyzico-public-action-token',
+                    'payment_url' => 'https://sandbox-payment.iyzipay.com/pay/iyzico-public-action-token',
+                    'provider_status' => 'ACTIVE',
+                    'provider_response_redacted' => ['status' => 'success'],
+                ]);
+            }
+        };
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_NOT_FOUND,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token.'/form')->assertOk();
-        $session = TechnicalServiceMountSession::query()->firstOrFail();
-        $session->forceFill([
-            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
-        ])->save();
-        $payment = TechnicalServiceMountPayment::query()->create([
-            'technical_service_mount_session_id' => $session->id,
-            'provider' => 'iyzico',
-            'provider_reference' => 'iyzico-public-action-token',
-            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
-            'amount' => 3500,
-            'currency' => 'TRY',
-            'payment_url' => 'https://sandbox-payment.iyzipay.com/pay/iyzico-public-action-token',
-            'raw_payload' => [
-                'source' => 'public_mount_payment',
-                'provider_mode' => 'sandbox',
-                'provider_transport' => 'direct_laravel',
-                'provider_decision' => [
-                    'provider' => 'iyzico',
-                    'provider_mode' => 'sandbox',
-                    'provider_transport' => 'direct_laravel',
-                ],
-                'provider_gateway' => [
-                    'provider_status' => 'ACTIVE',
-                ],
-            ],
-        ]);
-        $paymentUrl = (string) $payment->payment_url;
-        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $payload['canonical_payment_session_authority'] = [
-            'schema_version' => 1,
-            'create_status' => 'completed',
-            'payment_id' => (int) $payment->id,
-            'provider_reference_hash' => hash('sha256', (string) $payment->provider_reference),
-            'payment_url_hash' => hash('sha256', $paymentUrl),
-            'amount_minor' => '350000',
-            'currency' => 'TRY',
-        ];
-        $payment->forceFill(['raw_payload' => $payload])->save();
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('viewState', 'payment_required'));
+        $this->post('/mount-request/'.$token.'/payment')
+            ->assertRedirect('/mount-payment/iyzico-public-action-token');
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $successfulHistory = collect((array) data_get($payment->raw_payload, 'canonical_payment_create_history', []))
+            ->where('operation', 'payment_create')
+            ->where('status', 'completed');
+        $this->assertCount(1, $successfulHistory);
+        $this->assertSame($payment->id, (int) $successfulHistory->first()['payment_id']);
+        $this->assertSame($payment->provider, $successfulHistory->first()['provider']);
 
         $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
@@ -1618,7 +1618,15 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertRedirect('/mount-request/'.$token.'/payment')
             ->assertSessionHasErrors('payment');
 
-        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
+        $this->assertSame(1, TechnicalServiceMountPayment::query()->count());
+        $payment = TechnicalServiceMountPayment::query()->sole();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
+        $this->assertNull($payment->provider_reference);
+        $this->assertNull($payment->payment_url);
+        $this->assertTrue(collect((array) data_get($payment->raw_payload, 'canonical_payment_create_history', []))
+            ->contains(fn (mixed $entry): bool => is_array($entry)
+                && ($entry['status'] ?? null) === 'failed'
+                && ($entry['replay_blocked'] ?? false) === true));
     }
 
     public function test_mrn_generator_uses_date_initials_and_daily_sequence(): void

@@ -33,6 +33,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -1757,10 +1758,10 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         ['run_id' => $runId] = $this->startScopedLocalUat();
         Mail::fake();
         $canonical = $this->scopedPayment($runId);
-        $duplicate = $this->duplicateScopedPayment($canonical);
+        $duplicate = $this->duplicateScopedPayment($canonical, ['provider_mode' => 'local']);
         app(PaymentProviderManager::class)->createPayment($canonical);
-        app(PaymentProviderManager::class)->createPayment($duplicate);
         app(TechnicalServicePaymentSettlementService::class)->markPaid($canonical->fresh(), ['fake_approved' => true]);
+        app(PaymentProviderManager::class)->createPayment($duplicate);
 
         try {
             app(TechnicalServicePaymentSettlementService::class)->markPaid($duplicate->fresh(), [
@@ -3134,24 +3135,23 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
 
     public function test_locked_uat_message_bodies_pass_final_gate_and_fake_providers_once(): void
     {
-        Http::fake([
-            'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-LOCKED-TOKEN-ACK'], 200),
-            'https://nac.example.test/*' => Http::response(['err' => null, 'data' => ['pkgID' => 654321]], 200),
-        ]);
-        ['settings' => $settings] = $this->readyScopedLocalUat();
-        $prepared = $settings->prepareManualE2E();
-        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
-        $createdAfter = (string) data_get($prepared, 'manual_e2e.created_after');
-        $cases = [
-            ['appointment_approved_customer', 'evo_whatsapp', 'whatsapp', self::CUSTOMER_PHONE, 'customer'],
-            ['appointment_approved_technician', 'evo_whatsapp', 'whatsapp', self::TECHNICIAN_PHONE, 'technician'],
-            ['appointment_approved_customer', 'nac_sms', 'sms', self::CUSTOMER_PHONE, 'customer'],
-        ];
-        $connection = DB::connection();
-        $this->assertSame(1, $connection->transactionLevel());
-        $connection->commit();
+        $this->assertSame(1, DB::connection()->transactionLevel());
 
-        try {
+        $this->withIsolatedProviderDatabase(function (): void {
+            Http::fake([
+                'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-LOCKED-TOKEN-ACK'], 200),
+                'https://nac.example.test/*' => Http::response(['err' => null, 'data' => ['pkgID' => 654321]], 200),
+            ]);
+            ['settings' => $settings] = $this->readyScopedLocalUat();
+            $prepared = $settings->prepareManualE2E();
+            $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+            $createdAfter = (string) data_get($prepared, 'manual_e2e.created_after');
+            $cases = [
+                ['appointment_approved_customer', 'evo_whatsapp', 'whatsapp', self::CUSTOMER_PHONE, 'customer'],
+                ['appointment_approved_technician', 'evo_whatsapp', 'whatsapp', self::TECHNICIAN_PHONE, 'technician'],
+                ['appointment_approved_customer', 'nac_sms', 'sms', self::CUSTOMER_PHONE, 'customer'],
+            ];
+
             foreach ($cases as $index => [$event, $provider, $channel, $phone, $role]) {
                 $dispatch = $this->scopedDispatch($settings, $event, $provider, $channel, $phone, $role);
                 $settings->openManualE2ESendWindow($runId, $dispatch->id);
@@ -3174,11 +3174,57 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             }
 
             Http::assertSentCount(3);
+        });
+
+        $this->assertSame(1, DB::connection()->transactionLevel());
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+    }
+
+    private function withIsolatedProviderDatabase(callable $callback): mixed
+    {
+        $originalConnection = DB::getDefaultConnection();
+        $originalTransactionLevel = DB::connection($originalConnection)->transactionLevel();
+        $connectionName = 'scoped_uat_provider_'.bin2hex(random_bytes(6));
+        $databasePath = storage_path('framework/testing/'.$connectionName.'.sqlite');
+        $sqliteConfig = (array) config('database.connections.sqlite', []);
+
+        $this->assertSame('sqlite', $sqliteConfig['driver'] ?? null);
+        File::ensureDirectoryExists(dirname($databasePath));
+        File::put($databasePath, '');
+        config([
+            'database.default' => $connectionName,
+            'database.connections.'.$connectionName => [
+                ...$sqliteConfig,
+                'database' => $databasePath,
+            ],
+        ]);
+        DB::setDefaultConnection($connectionName);
+        DB::purge($connectionName);
+
+        try {
+            $exitCode = Artisan::call('migrate:fresh', [
+                '--database' => $connectionName,
+                '--force' => true,
+                '--no-interaction' => true,
+            ]);
+            $this->assertSame(0, $exitCode, Artisan::output());
+            $this->assertSame(0, DB::connection($connectionName)->transactionLevel());
+
+            return $callback();
         } finally {
-            while ($connection->transactionLevel() > 0) {
-                $connection->rollBack();
-            }
-            $connection->beginTransaction();
+            DB::purge($connectionName);
+            DB::setDefaultConnection($originalConnection);
+            config([
+                'database.default' => $originalConnection,
+                'database.connections.'.$connectionName => null,
+            ]);
+            Cache::flush();
+            File::delete($databasePath);
+            $this->assertFileDoesNotExist($databasePath);
+            $this->assertSame(
+                $originalTransactionLevel,
+                DB::connection($originalConnection)->transactionLevel(),
+            );
         }
     }
 
