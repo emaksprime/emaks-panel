@@ -12,10 +12,13 @@ use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
+use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\ExternalEffects\ExternalEffectCapabilityRegistry;
 use App\Services\ExternalEffects\ExternalExecutionControlPlaneService;
 use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
+use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
+use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Payments\FakePaymentProvider;
 use App\Services\Payments\IyzicoPaymentProvider;
@@ -349,6 +352,151 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         $this->assertSame($localContract['effect_window_fingerprint'], $window['effect_window_fingerprint']);
         $this->assertSame(900, (int) Carbon::parse($window['opened_at'])->diffInSeconds(Carbon::parse($window['expires_at'])));
         $this->assertStringContainsString('--max-seconds=900', $workerCommand);
+        Http::assertNothingSent();
+    }
+
+    public function test_locked_uat_message_body_token_is_snapshot_bound_and_rendered_once_for_exact_matrix(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $settings->prepareManualE2E();
+        $snapshot = (array) data_get($this->persistedLifecycleSettings(), 'manual_e2e_run_snapshot', []);
+        $token = (string) ($snapshot['expected_body_token'] ?? '');
+        $fingerprint = (string) ($snapshot['expected_body_token_fingerprint'] ?? '');
+
+        $this->assertMatchesRegularExpression('/^UAT-[A-F0-9]{24}$/', $token);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $fingerprint);
+
+        $cases = [
+            ['appointment_approved_customer', 'evo_whatsapp', 'whatsapp', self::CUSTOMER_PHONE, 'customer', 'UAT doğrulama: '.$token],
+            ['appointment_approved_technician', 'evo_whatsapp', 'whatsapp', self::TECHNICIAN_PHONE, 'technician', 'UAT doğrulama: '.$token],
+            ['appointment_approved_customer', 'nac_sms', 'sms', self::CUSTOMER_PHONE, 'customer', 'UAT '.$token],
+        ];
+
+        foreach ($cases as [$event, $provider, $channel, $phone, $role, $expectedLine]) {
+            $dispatch = $this->scopedDispatch($settings, $event, $provider, $channel, $phone, $role);
+            $body = $dispatch->bodyForProvider();
+
+            $this->assertSame(1, substr_count($body, $token));
+            $this->assertStringEndsWith($expectedLine, $body);
+            $this->assertSame($dispatch->mrn, data_get($dispatch->metadata, 'expected_body_token'));
+            $this->assertNotSame($token, data_get($dispatch->metadata, 'expected_body_token'));
+            $this->assertSame($fingerprint, data_get($dispatch->metadata, 'expected_body_token_fingerprint'));
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_locked_uat_message_token_request_overrides_are_rejected_before_dispatch_persistence(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $settings->prepareManualE2E();
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-UAT-OVERRIDE-REJECT',
+            'customer_name' => 'Scoped UAT Override Fixture',
+            'customer_phone' => self::CUSTOMER_PHONE,
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Synthetic test address',
+            'product_name' => 'Synthetic product',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+        $request->events()->create([
+            'event_type' => 'synthetic_uat_context_created',
+            'title' => 'Synthetic scoped UAT context created.',
+            'metadata' => ['synthetic_uat' => true],
+        ]);
+        $base = [
+            'message_type' => 'appointment_approved_customer',
+            'request_id' => $request->id,
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'sample_context' => false,
+            'body' => 'EMAKS Prime synthetic customer body http://10.0.28.64:8000/customer/test',
+            'context' => [],
+        ];
+
+        foreach (['expected_body_token', 'body_token', 'smoke_token', 'uat_token'] as $key) {
+            try {
+                app(TechnicalServiceMessageTemplateService::class)->preview([...$base, $key => 'CALLER-OVERRIDE']);
+                $this->fail("{$key} override reddedilmeliydi.");
+            } catch (ValidationException) {
+                $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+            }
+        }
+
+        try {
+            app(TechnicalServiceMessageTemplateService::class)->preview([
+                ...$base,
+                'context' => ['uat_token' => 'CONTEXT-OVERRIDE'],
+            ]);
+            $this->fail('Nested UAT token override reddedilmeliydi.');
+        } catch (ValidationException) {
+            $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_missing_locked_uat_message_token_rejects_without_claim_or_history_delta(): void
+    {
+        $this->assertLockedUatMessageTokenRejectedWithoutMutation('missing');
+    }
+
+    public function test_wrong_locked_uat_message_token_rejects_without_claim_or_history_delta(): void
+    {
+        $this->assertLockedUatMessageTokenRejectedWithoutMutation('wrong');
+    }
+
+    public function test_production_and_receipt_bodies_do_not_receive_scoped_uat_token(): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $settings->prepareManualE2E();
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-NON-UAT-TOKEN-REGRESSION',
+            'customer_name' => 'Normal production fixture',
+            'customer_phone' => self::CUSTOMER_PHONE,
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Normal production address',
+            'product_name' => 'Normal product',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+        $normalBodies = [
+            ['appointment_approved_customer', 'evo_whatsapp', 'whatsapp', 'customer', 'Normal production customer WhatsApp body.'],
+            ['appointment_approved_technician', 'evo_whatsapp', 'whatsapp', 'technician', 'Normal production technician WhatsApp body.'],
+            ['appointment_approved_customer', 'nac_sms', 'sms', 'customer', 'Normal production customer SMS body.'],
+        ];
+
+        foreach ($normalBodies as [$event, $provider, $channel, $role, $body]) {
+            $preview = app(TechnicalServiceMessageTemplateService::class)->preview([
+                'message_type' => $event,
+                'provider_key' => $provider,
+                'channel' => $channel,
+                'request_id' => $request->id,
+                'sample_context' => false,
+                'body' => $body,
+                'context' => [],
+            ]);
+            $this->assertSame($body, $preview['rendered_body'], $role);
+            $this->assertStringNotContainsString('UAT doğrulama:', (string) $preview['rendered_body']);
+        }
+
+        $receiptBody = 'Existing payment receipt body remains byte-exact.';
+        $receipt = $settings->bindLockedScopedLocalUatRenderedBody([
+            'event' => 'sandbox_payment_notification',
+            'message_type' => 'sandbox_payment_notification',
+            'provider_key' => 'smtp',
+            'channel' => 'email',
+            'recipient_role' => 'customer',
+            'rendered_body' => $receiptBody,
+            'request_id' => $request->id,
+            'sample_context' => false,
+        ]);
+        $this->assertSame($receiptBody, $receipt['rendered_body']);
         Http::assertNothingSent();
     }
 
@@ -2839,6 +2987,57 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         return (array) data_get($layout, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY, []);
     }
 
+    private function assertLockedUatMessageTokenRejectedWithoutMutation(string $variant): void
+    {
+        Http::fake();
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $prepared = $settings->prepareManualE2E();
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $dispatch = $this->scopedDispatch($settings);
+        $token = (string) data_get(
+            $this->persistedLifecycleSettings(),
+            'manual_e2e_run_snapshot.expected_body_token',
+        );
+        $payload = (array) $dispatch->request_payload;
+        $tamperedBody = str_replace($token, $variant === 'missing' ? '' : 'UAT-WRONG-TOKEN', $dispatch->bodyForProvider());
+        $dispatch->forceFill([
+            'request_payload' => [
+                ...$payload,
+                'body' => $tamperedBody,
+                'rendered_body' => $tamperedBody,
+                'message_text' => $tamperedBody,
+            ],
+            'rendered_body_hash' => hash('sha256', $tamperedBody),
+        ])->save();
+
+        $dispatchBefore = $dispatch->fresh()->getRawOriginal();
+        $lifecycleBefore = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail()
+            ->getRawOriginal();
+        $eventCountBefore = DB::table('technical_service_request_events')->count();
+
+        try {
+            $settings->openManualE2ESendWindow($runId, $dispatch->id);
+            $this->fail("{$variant} locked token provider claiminden önce reddedilmeliydi.");
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('locked UAT smoke token', $exception->getMessage());
+        }
+
+        $this->assertSame($dispatchBefore, $dispatch->fresh()->getRawOriginal());
+        $this->assertSame(
+            $lifecycleBefore,
+            PageConfig::query()
+                ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+                ->firstOrFail()
+                ->getRawOriginal(),
+        );
+        $this->assertSame($eventCountBefore, DB::table('technical_service_request_events')->count());
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
     private function scopedDispatch(
         TechnicalServiceMessagingSettingsService $settings,
         string $event = 'appointment_approved_customer',
@@ -2848,6 +3047,16 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
         string $role = 'customer',
         ?string $idempotencyKey = null,
     ): TechnicalServiceMessageDispatch {
+        $technicianId = $role === 'technician'
+            ? TechnicalServiceTechnician::query()->create([
+                'name' => 'Scoped UAT Technician',
+                'technician_type' => 'locksmith',
+                'phone' => self::TECHNICIAN_PHONE,
+                'city' => 'Istanbul',
+                'district' => 'Kadikoy',
+                'active' => true,
+            ])->id
+            : null;
         $request = TechnicalServiceRequest::query()->create([
             'mrn' => 'MRN-SCOPED-UAT-'.strtoupper(substr(hash('sha256', uniqid('', true)), 0, 8)),
             'customer_name' => 'Scoped UAT Fixture',
@@ -2857,13 +3066,47 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             'service_address' => 'Synthetic test address',
             'product_name' => 'Synthetic product',
             'service_type' => 'Montaj',
+            'technical_service_technician_id' => $technicianId,
             'status' => 'Yeni',
         ]);
+        $request->events()->create([
+            'event_type' => 'synthetic_uat_context_created',
+            'title' => 'Synthetic scoped UAT context created.',
+            'metadata' => ['synthetic_uat' => true],
+        ]);
         $token = (string) $request->mrn;
-        $body = 'EMAKS Prime '.$token.' appointment message http://10.0.28.64:8000/partner/job-card/test';
+        $body = $role === 'technician'
+            ? 'EMAKS Prime '.$token.' Yeni iş kartı hazır. İş Kartı http://10.0.28.64:8000/partner/job-card/test'
+            : 'EMAKS Prime '.$token.' appointment message http://10.0.28.64:8000/partner/job-card/test';
+        $render = app(TechnicalServiceMessageTemplateService::class)->preview([
+            'message_type' => $event,
+            'channel' => $channel,
+            'provider_key' => $provider,
+            'request_id' => $request->id,
+            'sample_context' => false,
+            'body' => $body,
+            'context' => [],
+        ]);
+        $body = (string) $render['rendered_body'];
         $metadata = [
-            ...$settings->executionModeSnapshot(),
+            ...$settings->executionModeSnapshot($provider),
             ...$settings->manualE2EContext()->dispatchMetadata($token, $phone, $role),
+        ];
+        $input = [
+            'event' => $event,
+            'message_type' => $event,
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'provider_key' => $provider,
+            'channel' => $channel,
+            'recipient_role' => $role,
+            'target_type' => $role,
+            'target_phone' => $phone,
+            'rendered_body' => $body,
+            'payload' => ['body' => $body, 'rendered_body' => $body, 'message_text' => $body],
+            'metadata' => $metadata,
+            'idempotency_key' => $idempotencyKey ?? hash('sha256', uniqid('scoped-window-', true)),
         ];
 
         return TechnicalServiceMessageDispatch::query()->create([
@@ -2881,11 +3124,62 @@ class TechnicalServiceScopedLocalUatControlPlaneTest extends TestCase
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
             'attempt_count' => 0,
             'max_attempts' => 1,
-            'idempotency_key' => $idempotencyKey ?? hash('sha256', uniqid('scoped-window-', true)),
+            'idempotency_key' => $input['idempotency_key'],
             'queued_at' => now(),
-            'request_payload' => ['body' => $body],
-            'metadata' => $metadata,
+            'rendered_body_hash' => hash('sha256', (string) $input['rendered_body']),
+            'request_payload' => $input['payload'],
+            'metadata' => $input['metadata'],
         ]);
+    }
+
+    public function test_locked_uat_message_bodies_pass_final_gate_and_fake_providers_once(): void
+    {
+        Http::fake([
+            'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-LOCKED-TOKEN-ACK'], 200),
+            'https://nac.example.test/*' => Http::response(['err' => null, 'data' => ['pkgID' => 654321]], 200),
+        ]);
+        ['settings' => $settings] = $this->readyScopedLocalUat();
+        $prepared = $settings->prepareManualE2E();
+        $runId = (string) data_get($prepared, 'manual_e2e.active_run_id');
+        $createdAfter = (string) data_get($prepared, 'manual_e2e.created_after');
+        $cases = [
+            ['appointment_approved_customer', 'evo_whatsapp', 'whatsapp', self::CUSTOMER_PHONE, 'customer'],
+            ['appointment_approved_technician', 'evo_whatsapp', 'whatsapp', self::TECHNICIAN_PHONE, 'technician'],
+            ['appointment_approved_customer', 'nac_sms', 'sms', self::CUSTOMER_PHONE, 'customer'],
+        ];
+        $connection = DB::connection();
+        $this->assertSame(1, $connection->transactionLevel());
+        $connection->commit();
+
+        try {
+            foreach ($cases as $index => [$event, $provider, $channel, $phone, $role]) {
+                $dispatch = $this->scopedDispatch($settings, $event, $provider, $channel, $phone, $role);
+                $settings->openManualE2ESendWindow($runId, $dispatch->id);
+                $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne($dispatch->id, options: [
+                    'manual_e2e_only' => true,
+                    'dispatch_id' => $dispatch->id,
+                    'smoke_run_id' => $runId,
+                    'created_after' => $createdAfter,
+                ]);
+
+                $this->assertContains(
+                    $result['status'],
+                    TechnicalServiceMessageDispatch::SUCCESS_STATUSES,
+                    json_encode($result, JSON_THROW_ON_ERROR),
+                );
+                $this->assertSame(1, $dispatch->fresh()->attempt_count);
+                if ($index < count($cases) - 1) {
+                    $this->travel(91)->seconds();
+                }
+            }
+
+            Http::assertSentCount(3);
+        } finally {
+            while ($connection->transactionLevel() > 0) {
+                $connection->rollBack();
+            }
+            $connection->beginTransaction();
+        }
     }
 
     private function admin(): User

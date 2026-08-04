@@ -13,6 +13,7 @@ class TechnicalServiceMessageTemplateService
         private readonly TechnicalServiceMessageVariableRegistry $variables,
         private readonly TechnicalServiceMessageContextBuilder $contextBuilder,
         private readonly TechnicalServiceMessageTemplateRenderer $renderer,
+        private readonly TechnicalServiceMessagingSettingsService $settings,
     ) {}
 
     /**
@@ -180,10 +181,20 @@ class TechnicalServiceMessageTemplateService
         $template = $this->resolveTemplate($input, $messageType, $channel, $providerKey);
         $contextPayload = $this->contextBuilder->build($messageType, $channel, $input);
         $render = $this->renderer->render($template, $contextPayload['context']);
+        $lockedRender = $this->settings->bindLockedScopedLocalUatRenderedBody([
+            ...$input,
+            'event' => $messageType,
+            'message_type' => $messageType,
+            'channel' => $channel,
+            'provider_key' => $providerKey,
+            'recipient_role' => $contextPayload['recipient_role'],
+            'technical_service_request_id' => $input['request_id'] ?? null,
+            'rendered_body' => $render['rendered_body'],
+        ]);
 
         return [
             'template' => $this->templatePayload($template, ! isset($template['id'])),
-            'rendered_body' => $render['rendered_body'],
+            'rendered_body' => $lockedRender['rendered_body'],
             'missing_variables' => $render['missing_variables'],
             'unresolved_variables' => $render['unresolved_variables'],
             'forbidden_variables' => array_values(array_intersect($render['placeholders'], $this->variables->forbiddenVariables())),

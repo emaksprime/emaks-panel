@@ -58,6 +58,19 @@ class TechnicalServiceMessagingSettingsService
 
     public const SCOPED_LOCAL_UAT_MAX_TTL_SECONDS = 3600;
 
+    private const SCOPED_LOCAL_UAT_MESSAGE_BODY_MATRIX = [
+        'appointment_approved_customer|whatsapp|customer|evo_whatsapp' => 'whatsapp',
+        'appointment_approved_technician|whatsapp|technician|evo_whatsapp' => 'whatsapp',
+        'appointment_approved_customer|sms|customer|nac_sms' => 'sms',
+    ];
+
+    private const SCOPED_LOCAL_UAT_TOKEN_OVERRIDE_KEYS = [
+        'expected_body_token',
+        'body_token',
+        'smoke_token',
+        'uat_token',
+    ];
+
     public const SCOPED_EFFECT_PAYMENT_CREATE = 'sandbox_payment_create';
 
     public const SCOPED_EFFECT_PAYMENT_CALLBACK = 'sandbox_payment_callback';
@@ -699,6 +712,9 @@ class TechnicalServiceMessagingSettingsService
                 'scoped_local_uat_sandbox_payment',
                 'scoped_local_uat_real_payment',
                 'scoped_local_uat_ops_sms',
+                'scoped_local_uat_run_id',
+                'expected_body_token',
+                'expected_body_token_fingerprint',
                 'global_execution_mode',
                 'global_execution_state',
                 'global_execution_epoch',
@@ -712,6 +728,84 @@ class TechnicalServiceMessagingSettingsService
             ...app(ExternalExecutionControlPlaneService::class)->messagingSnapshot($provider),
             ...$scopedSnapshot,
             'messaging_enabled' => (bool) ($settings['messaging_enabled'] ?? false),
+        ];
+    }
+
+    /**
+     * Bind the server-owned token only while rendering the three synthetic
+     * messages authorized by the active scoped UAT profile.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    public function bindLockedScopedLocalUatRenderedBody(array $input): array
+    {
+        $settings = $this->settings();
+        if (! $this->isScopedLocalUatSettings($settings)) {
+            return $input;
+        }
+
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $runId = $context->activeRunId();
+        if (! $context->enabled() || $runId === null) {
+            return $input;
+        }
+
+        $matrixKey = implode('|', [
+            (string) ($input['message_type'] ?? $input['event'] ?? ''),
+            (string) ($input['channel'] ?? ''),
+            (string) ($input['recipient_role'] ?? $input['target_type'] ?? ''),
+            (string) ($input['provider_key'] ?? ''),
+        ]);
+        $presentation = self::SCOPED_LOCAL_UAT_MESSAGE_BODY_MATRIX[$matrixKey] ?? null;
+        if ($presentation === null || ($input['sample_context'] ?? null) !== false) {
+            return $input;
+        }
+
+        $requestId = (int) ($input['technical_service_request_id'] ?? $input['request_id'] ?? 0);
+        if (! $this->isSyntheticScopedLocalUatMessageRequest($requestId)) {
+            return $input;
+        }
+
+        if ($this->scopedLocalUatTokenOverridePresent($input)) {
+            throw ValidationException::withMessages([
+                'expected_body_token' => 'Allowlistli Yerel UAT mesaj tokenı caller veya request tarafından değiştirilemez.',
+            ]);
+        }
+
+        $runSnapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+            ? $settings['manual_e2e_run_snapshot']
+            : [];
+        $contract = self::resolvedScopedLocalUatMessageBodyContract($runSnapshot, $runId);
+        if ($context->contextBlockingReason() !== null || $contract === null) {
+            throw new ConflictHttpException('Allowlistli Yerel UAT mesaj token snapshotı doğrulanamadı.');
+        }
+
+        $body = $input['rendered_body'] ?? null;
+        if (! is_scalar($body) || trim((string) $body) === '') {
+            throw ValidationException::withMessages([
+                'rendered_body' => 'Allowlistli Yerel UAT mesaj gövdesi token bağlamak için hazır değil.',
+            ]);
+        }
+
+        $body = rtrim((string) $body);
+        $token = $contract['expected_body_token'];
+        if (str_contains($body, $token)
+            || preg_match('/(?:^|\R)UAT(?: doğrulama:)?\s+\S+/u', $body) === 1) {
+            throw ValidationException::withMessages([
+                'rendered_body' => 'Allowlistli Yerel UAT mesaj gövdesi caller-owned smoke token içeremez.',
+            ]);
+        }
+
+        $tokenLine = $presentation === 'sms'
+            ? 'UAT '.$token
+            : 'UAT doğrulama: '.$token;
+
+        return [
+            ...$input,
+            'rendered_body' => $body.($presentation === 'sms' ? "\n" : "\n\n").$tokenLine,
+            'expected_body_token_fingerprint' => $contract['expected_body_token_fingerprint'],
+            'expected_body_token_source' => 'locked_run_snapshot',
         ];
     }
 
@@ -3656,6 +3750,9 @@ class TechnicalServiceMessagingSettingsService
                 while ($runId === ($current['manual_e2e_last_run_id'] ?? null)) {
                     $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
                 }
+                $messageBodyContract = $scopedLocalUat
+                    ? self::scopedLocalUatMessageBodyContract($runId)
+                    : null;
 
                 $runSnapshot = $scopedLocalUat
                     ? app(ExternalExecutionControlPlaneService::class)->scopedLocalUatSnapshot()
@@ -3671,6 +3768,8 @@ class TechnicalServiceMessagingSettingsService
                         'scoped_local_uat_sandbox_payment_provider' => (string) $scopedState['sandbox_payment_provider'],
                         'scoped_local_uat_limits' => app(ExternalEffectCapabilityRegistry::class)
                             ->localAllowlistedUatProfile()['limits'],
+                        'expected_body_token' => $messageBodyContract['expected_body_token'],
+                        'expected_body_token_fingerprint' => $messageBodyContract['expected_body_token_fingerprint'],
                     ];
                 }
                 $effectWindowContract = self::manualE2EEffectWindowContract(
@@ -4037,7 +4136,7 @@ class TechnicalServiceMessagingSettingsService
 
                 $dispatch = TechnicalServiceMessageDispatch::query()->whereKey($dispatchId)->lockForUpdate()->first();
                 $authoritative = $dispatch instanceof TechnicalServiceMessageDispatch
-                    ? $this->manualE2EDispatchSecurityTuple($dispatch)
+                    ? $this->manualE2EDispatchSecurityTuple($dispatch, $current)
                     : null;
                 if (! $dispatch instanceof TechnicalServiceMessageDispatch
                     || $dispatch->status !== TechnicalServiceMessageDispatch::STATUS_SENDING
@@ -4636,7 +4735,7 @@ class TechnicalServiceMessagingSettingsService
         TechnicalServiceMessageDispatch $dispatch,
     ): array {
         $metadata = (array) $dispatch->metadata;
-        $authoritative = $this->manualE2EDispatchSecurityTuple($dispatch);
+        $authoritative = $this->manualE2EDispatchSecurityTuple($dispatch, $settings);
         $provider = $authoritative['provider'];
         $channel = $authoritative['channel'];
         $recipientRole = (string) $dispatch->recipient_role;
@@ -4784,8 +4883,10 @@ class TechnicalServiceMessagingSettingsService
     /**
      * @return array{provider:string,channel:string,recipient_fingerprint:string,role_target:string,request_id:int,offer_cycle_id:int|null,idempotency_fingerprint:string,body_fingerprint:string}
      */
-    private function manualE2EDispatchSecurityTuple(TechnicalServiceMessageDispatch $dispatch): array
-    {
+    private function manualE2EDispatchSecurityTuple(
+        TechnicalServiceMessageDispatch $dispatch,
+        array $settings,
+    ): array {
         $metadata = (array) $dispatch->metadata;
         $recipientRole = (string) $dispatch->recipient_role;
         $target = $this->normalizePhone((string) $dispatch->target_phone);
@@ -4810,9 +4911,40 @@ class TechnicalServiceMessagingSettingsService
             throw new ConflictHttpException('Dispatch recipient rolü authoritative hedefe bağlanamadı.');
         }
 
-        $expectedBodyToken = trim((string) ($metadata['expected_body_token'] ?? ''));
         $body = $dispatch->bodyForProvider();
         $bodyErrors = [...$dispatch->providerBodyValidationErrors(), ...$dispatch->roleBodyValidationErrors()];
+        $expectedBodyToken = trim((string) ($metadata['expected_body_token'] ?? ''));
+        if ($this->isScopedLocalUatSettings($settings)) {
+            $runId = TechnicalServiceManualE2ERunContext::dispatchRunId($metadata);
+            $snapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
+                ? $settings['manual_e2e_run_snapshot']
+                : [];
+            $contract = $runId === null
+                ? null
+                : self::resolvedScopedLocalUatMessageBodyContract($snapshot, $runId);
+            $metadataFingerprint = trim((string) ($metadata['expected_body_token_fingerprint'] ?? ''));
+            $legacyReferences = array_values(array_unique(array_filter(array_map(
+                static fn (mixed $value): string => is_scalar($value) ? trim((string) $value) : '',
+                [
+                    $contract['expected_body_token'] ?? null,
+                    $request->mrn,
+                    $request->root_mrn,
+                    $request->service_code,
+                    $requestId,
+                ],
+            ))));
+            if ($contract === null
+                || $this->scopedLocalUatTokenOverridePresent([
+                    'payload' => (array) $dispatch->request_payload,
+                    'metadata' => $metadata,
+                ])
+                || ! in_array($expectedBodyToken, $legacyReferences, true)
+                || ! hash_equals($contract['expected_body_token_fingerprint'], $metadataFingerprint)
+                || substr_count($body, $contract['expected_body_token']) !== 1) {
+                throw new ConflictHttpException('Dispatch mesaj gövdesi locked UAT smoke tokenını doğrulamıyor.');
+            }
+            $expectedBodyToken = $contract['expected_body_token'];
+        }
         if ($expectedBodyToken === '' || ! str_contains($body, $expectedBodyToken) || $bodyErrors !== []) {
             throw new ConflictHttpException('Dispatch mesaj gövdesi authoritative smoke referansını doğrulamıyor.');
         }
@@ -4869,6 +5001,97 @@ class TechnicalServiceMessagingSettingsService
             && $storedOfferCycleId === $authoritative['offer_cycle_id']
             && (string) ($stored['idempotency_fingerprint'] ?? '') === $authoritative['idempotency_fingerprint']
             && (string) ($stored['body_fingerprint'] ?? '') === $authoritative['body_fingerprint'];
+    }
+
+    private function isSyntheticScopedLocalUatMessageRequest(int $requestId): bool
+    {
+        if ($requestId <= 0) {
+            return false;
+        }
+
+        $request = TechnicalServiceRequest::query()->find($requestId);
+        if (! $request instanceof TechnicalServiceRequest) {
+            return false;
+        }
+
+        return $request->events()
+            ->where('event_type', 'synthetic_uat_context_created')
+            ->get(['metadata'])
+            ->contains(fn ($event): bool => filter_var(
+                data_get($event->metadata, 'synthetic_uat', false),
+                FILTER_VALIDATE_BOOL,
+            ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    private function scopedLocalUatTokenOverridePresent(array $input): bool
+    {
+        $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
+        $context = is_array($input['context'] ?? null)
+            ? $input['context']
+            : (is_array($payload['context'] ?? null) ? $payload['context'] : []);
+        foreach (self::SCOPED_LOCAL_UAT_TOKEN_OVERRIDE_KEYS as $key) {
+            if (array_key_exists($key, $input)
+                || array_key_exists($key, $payload)
+                || array_key_exists($key, $context)) {
+                return true;
+            }
+        }
+
+        $metadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
+
+        return collect(['body_token', 'smoke_token', 'uat_token'])
+            ->contains(fn (string $key): bool => array_key_exists($key, $metadata));
+    }
+
+    /**
+     * @return array{expected_body_token:string,expected_body_token_fingerprint:string}
+     */
+    private static function scopedLocalUatMessageBodyContract(string $runId): array
+    {
+        $token = 'UAT-'.strtoupper(substr(hash('sha256', implode("\0", [
+            ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+            trim($runId),
+            'locked-message-body-v1',
+        ])), 0, 24));
+        $fingerprint = hash('sha256', json_encode([
+            'profile_id' => ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+            'run_id' => trim($runId),
+            'expected_body_token' => $token,
+            'message_matrix' => array_keys(self::SCOPED_LOCAL_UAT_MESSAGE_BODY_MATRIX),
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+
+        return [
+            'expected_body_token' => $token,
+            'expected_body_token_fingerprint' => $fingerprint,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runSnapshot
+     * @return array{expected_body_token:string,expected_body_token_fingerprint:string}|null
+     */
+    private static function resolvedScopedLocalUatMessageBodyContract(array $runSnapshot, string $runId): ?array
+    {
+        $runId = trim($runId);
+        if ($runId === ''
+            || ($runSnapshot['scoped_local_uat_profile_id'] ?? null) !== ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE
+            || (string) ($runSnapshot['scoped_local_uat_run_id'] ?? '') !== $runId) {
+            return null;
+        }
+
+        $contract = self::scopedLocalUatMessageBodyContract($runId);
+        if (! hash_equals($contract['expected_body_token'], (string) ($runSnapshot['expected_body_token'] ?? ''))
+            || ! hash_equals(
+                $contract['expected_body_token_fingerprint'],
+                (string) ($runSnapshot['expected_body_token_fingerprint'] ?? ''),
+            )) {
+            return null;
+        }
+
+        return $contract;
     }
 
     /**
@@ -6496,6 +6719,7 @@ class TechnicalServiceMessagingSettingsService
             || $ttlSeconds > self::SCOPED_LOCAL_UAT_MAX_TTL_SECONDS
             || $effectWindowContract === null
             || $effectWindowContract['effect_window_seconds'] !== self::SCOPED_LOCAL_UAT_EFFECT_WINDOW_SECONDS
+            || self::resolvedScopedLocalUatMessageBodyContract($snapshot, $runId) === null
             || (array) ($snapshot['scoped_local_uat_limits'] ?? []) !== (array) $profile['limits']
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($snapshot['scoped_local_uat_email_allowlist_fingerprint'] ?? ''))
             || ! preg_match('/^[a-f0-9]{64}$/', (string) ($snapshot['scoped_local_uat_event_policy_fingerprint'] ?? ''));
