@@ -70,6 +70,11 @@ class TechnicalServiceMessageTypeRegistry
     public function requiredVariables(string $messageType): array
     {
         return match ($messageType) {
+            'mount_request_created_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'product_name',
+            ],
             'new_request_created_ops' => [
                 'internal_job_reference',
                 'actor_name',
@@ -488,6 +493,7 @@ class TechnicalServiceMessageTypeRegistry
     {
         if ($channel === TechnicalServiceMessageTemplate::CHANNEL_VOICE_SCRIPT) {
             return match ($messageType) {
+                'mount_request_created_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} montaj talebiniz alınmıştır. Ürün {product_name}. Operasyon ekibimiz süreci takip edecektir. Bu sadece sesli arama script önizlemesidir.',
                 'appointment_approved_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_appointment_action_phrase} Randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. {payment_instruction_text} Bu sadece sesli arama script önizlemesidir.',
                 'appointment_updated_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_update_action_phrase} Yeni randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. Bu sadece sesli arama script önizlemesidir.',
                 'appointment_approved_technician' => 'Merhaba {technician_name}. Yeni iş kartı hazır. İş {internal_job_reference}. Müşteri {customer_name}. Randevu {appointment_date_formatted} {appointment_exact_time_range}. İş kartı bağlantısı {technician_job_card_url}. Bu sadece sesli arama script önizlemesidir.',
@@ -509,6 +515,9 @@ class TechnicalServiceMessageTypeRegistry
         }
 
         return match ($messageType) {
+            'mount_request_created_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} montaj talebiniz alındı.\nÜrün: {product_name}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} montaj talebiniz alınmıştır.\n\nÜrün: {product_name}\n\nOperasyon ekibimiz talebinizi inceleyerek sonraki adım için sizinle iletişime geçecektir.",
             'new_request_created_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nYeni teknik servis talebi.\nİş: {internal_job_reference}\nMüşteri: {customer_name}\nÜrün: {product_name}\nAksiyon: {next_action_text}"
                 : "EMAKS Prime Teknik Servis\n\nYeni teknik servis talebi oluşturuldu.\n\nİş: {internal_job_reference}\nTalebi Açan: {actor_name}\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nÜrün: {product_name}\nAdres / Bölge: {address}\n\nSonraki Aksiyon: {next_action_text}",
@@ -599,6 +608,7 @@ class TechnicalServiceMessageTypeRegistry
         $channelLabel = self::CHANNELS[$channel] ?? $channel;
 
         return match ($messageType) {
+            'mount_request_created_customer' => "Müşteri montaj talebi alındı - {$channelLabel}",
             'new_request_created_ops' => "OPS yeni teknik servis talebi - {$channelLabel}",
             'appointment_approved_customer' => "Müşteri randevu onayı - {$channelLabel}",
             'appointment_updated_customer' => "Müşteri randevu güncelleme - {$channelLabel}",

@@ -33,7 +33,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         ?TechnicalServicePartnerJobAction $sourceAction = null,
         array $options = [],
     ): array {
-        $settings = $this->settings->payload();
+        $settings = $this->settings->workflowDispatchSnapshot();
         $global = (array) ($settings['global'] ?? []);
         $summary = $this->emptySummary($messageType, $recipientRole);
         $jobCardContext = null;
@@ -118,6 +118,7 @@ class TechnicalServiceWorkflowMessageDispatchService
                 $options,
                 (array) ($plan['metadata'] ?? []),
                 $manualE2eMetadata ?? [],
+                (bool) ($global['real_send_enabled'] ?? false),
             );
 
             if ($recipientPhone === '') {
@@ -162,7 +163,7 @@ class TechnicalServiceWorkflowMessageDispatchService
             if (! $testMode
                 && $publicUrl !== null
                 && ! $guardedManualTechnicianUrl
-                && ! PartnerPortalPublicUrl::isPublicHttpsUrl($publicUrl)
+                && ! $this->publicUrlReadyForDispatch($publicUrl)
             ) {
                 $summary = $this->addBlockedDispatch($summary, $baseInput, $actor, 'public_url_missing', 'Mesajdaki bağlantı gerçek gönderim için public URL olmalıdır. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.');
 
@@ -255,6 +256,40 @@ class TechnicalServiceWorkflowMessageDispatchService
         }
 
         return $summary;
+    }
+
+    public function publicUrlReadyForDispatch(?string $publicUrl): bool
+    {
+        if (PartnerPortalPublicUrl::isPublicHttpsUrl($publicUrl)) {
+            return true;
+        }
+
+        $normalizedUrl = PartnerPortalPublicUrl::normalizeBaseUrl($publicUrl);
+        if ($normalizedUrl === null) {
+            return false;
+        }
+        $scheme = parse_url($normalizedUrl, PHP_URL_SCHEME);
+        $host = parse_url($normalizedUrl, PHP_URL_HOST);
+        $port = parse_url($normalizedUrl, PHP_URL_PORT);
+        if (! is_string($scheme) || ! is_string($host) || $scheme === '' || $host === '') {
+            return false;
+        }
+        $urlOrigin = PartnerPortalPublicUrl::normalizeOrigin(
+            strtolower($scheme).'://'.strtolower($host).(is_int($port) ? ':'.$port : ''),
+        );
+        $profile = PartnerPortalPublicUrl::profile();
+        $profileOrigin = PartnerPortalPublicUrl::normalizeOrigin(
+            is_string($profile['origin'] ?? null) ? $profile['origin'] : null,
+        );
+
+        return ($profile['profile'] ?? null) === PartnerPortalPublicUrl::PROFILE_LOCAL
+            && (bool) ($profile['ready'] ?? false)
+            && (bool) ($profile['private_lan'] ?? false)
+            && ! (bool) ($profile['loopback'] ?? true)
+            && (bool) ($profile['phone_reachable'] ?? false)
+            && $urlOrigin !== null
+            && $profileOrigin !== null
+            && hash_equals($profileOrigin, $urlOrigin);
     }
 
     /**
@@ -440,6 +475,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         array $options,
         array $planMetadata,
         array $manualE2eMetadata,
+        bool $realSendEnabledAtEnqueue,
     ): array {
         return [
             'event' => $messageType,
@@ -480,7 +516,7 @@ class TechnicalServiceWorkflowMessageDispatchService
                 'source_partner_job_action_id' => $sourceAction?->id,
                 'source_action' => $sourceAction?->action,
                 'context_keys' => array_keys($context),
-                'real_send_enabled_at_enqueue' => (bool) data_get($this->settings->payload(), 'global.real_send_enabled', false),
+                'real_send_enabled_at_enqueue' => $realSendEnabledAtEnqueue,
                 'test_redirect_applied' => $testRedirectApplied,
             ],
         ];

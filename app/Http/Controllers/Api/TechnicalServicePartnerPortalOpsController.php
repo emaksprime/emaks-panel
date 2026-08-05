@@ -9,11 +9,14 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
+use App\Models\TechnicalServiceRouteQuote;
+use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
+use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
@@ -38,6 +41,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         private readonly TechnicalServiceAppointmentMessageDispatchService $appointmentMessages,
         private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
         private readonly TechnicalServiceServiceVisitService $serviceVisits,
+        private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
         private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
     ) {}
 
@@ -56,7 +60,34 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         ]);
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
-            $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
+            $action = TechnicalServicePartnerJobAction::query()
+                ->whereKey($partnerJobAction->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $job = TechnicalServiceRequest::query()
+                ->whereKey($technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertProposalBelongsToRequest($job, $action);
+            $payload = is_array($action->payload) ? $action->payload : [];
+            if ($action->status === TechnicalServicePartnerJobAction::STATUS_APPLIED
+                && is_array($payload['approval'] ?? null)) {
+                $storedSummary = is_array($payload['approval']['message_dispatch_summary'] ?? null)
+                    ? $payload['approval']['message_dispatch_summary']
+                    : [];
+
+                return [
+                    'status' => 'duplicate_noop',
+                    'message_payloads' => $storedSummary,
+                    'message_dispatch_summary' => $storedSummary,
+                    'request' => $this->workflow->serialize($job->refresh(), true),
+                ];
+            }
+            if ($action->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+                throw ValidationException::withMessages([
+                    'partner_job_action' => 'Randevu önerisi operasyon incelemesinde değil.',
+                ]);
+            }
             $slot = $this->selectedAppointmentSlot($payload, (int) ($validated['selected_slot_index'] ?? 0));
             $scheduledDate = $validated['scheduled_date'] ?? ($slot['date'] ?? null);
             $scheduledTime = $validated['scheduled_time'] ?? ($slot['start_time'] ?? null);
@@ -67,10 +98,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ]);
             }
 
-            $from = $technicalServiceRequest->workflow_status;
-            $hadAppointment = $technicalServiceRequest->scheduled_at !== null
-                || ($technicalServiceRequest->scheduled_date !== null && filled($technicalServiceRequest->scheduled_time));
-            $job = $this->workflow->updateSchedule($technicalServiceRequest, [
+            $from = $job->workflow_status;
+            $hadAppointment = $job->scheduled_at !== null
+                || ($job->scheduled_date !== null && filled($job->scheduled_time));
+            $job = $this->workflow->updateSchedule($job, [
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
                 'approve_technician' => true,
@@ -79,7 +110,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             $messageDispatchSummary = $this->appointmentMessages->dispatchApproval(
                 $job->refresh(),
-                $partnerJobAction,
+                $action,
                 $request->user(),
                 [
                     'appointment_updated' => $hadAppointment,
@@ -98,7 +129,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'message_dispatch_summary' => $messageDispatchSummary,
                 'message_dispatches' => $messageDispatchSummary['dispatches'] ?? [],
             ];
-            $partnerJobAction->forceFill([
+            $action->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
                 'payload' => $payload,
             ])->save();
@@ -111,7 +142,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'to_status' => $job->workflow_status,
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
-                    'partner_job_action_id' => $partnerJobAction->id,
+                    'partner_job_action_id' => $action->id,
                     'proposal' => $slot,
                     'message_dispatch_summary' => $messageDispatchSummary,
                 ],
@@ -213,6 +244,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 [
                     'source_partner_action' => $partnerJobAction,
                     'description' => 'Tekrar ziyaret servisi: '.$reason,
+                    'copy_operation_control' => false,
                     'parent_event_type' => 'revisit_srv_created',
                     'parent_event_title' => 'Tekrar ziyaret SRV kaydı oluşturuldu',
                 ],
@@ -262,27 +294,59 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'approved_visit_ids.*' => ['integer'],
         ]);
 
-        $blockers = $this->completionApprovalBlockers($technicalServiceRequest->refresh(), $partnerJobAction);
-        if ($blockers !== []) {
-            throw ValidationException::withMessages([
-                'completion' => $blockers,
-            ]);
-        }
-        $payoutApproval = $this->completionPayoutApprovalContext(
-            $technicalServiceRequest->refresh(),
-            $validated['approved_visit_ids'] ?? null,
-        );
+        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
+            $action = TechnicalServicePartnerJobAction::query()
+                ->whereKey($partnerJobAction->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $job = TechnicalServiceRequest::query()
+                ->whereKey($technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            abort_unless((int) $action->technical_service_request_id === (int) $job->id, 404);
+            if ($action->action !== TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED) {
+                throw ValidationException::withMessages([
+                    'partner_job_action' => 'Bu kayıt tamamlama gönderimi değildir.',
+                ]);
+            }
+            $actionPayload = is_array($action->payload) ? $action->payload : [];
+            if ($action->status === TechnicalServicePartnerJobAction::STATUS_APPLIED
+                && is_array($actionPayload['ops_final_check'] ?? null)) {
+                return [
+                    'status' => 'duplicate_noop',
+                    'message_dispatches' => [],
+                    'request' => $this->workflow->serialize($job->refresh(), true),
+                ];
+            }
+            $customerApprovedFinalCheckPending = $action->status === TechnicalServicePartnerJobAction::STATUS_APPLIED
+                && ($actionPayload['ops_final_check_required'] ?? false) === true
+                && (! array_key_exists('ops_final_check', $actionPayload) || $actionPayload['ops_final_check'] === null);
+            if ($action->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+                && ! $customerApprovedFinalCheckPending) {
+                throw ValidationException::withMessages([
+                    'partner_job_action' => 'Tamamlama gönderimi operasyon incelemesinde değil.',
+                ]);
+            }
 
-        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request, $payoutApproval): array {
-            $from = $technicalServiceRequest->workflow_status;
-            $technicalServiceRequest->forceFill([
+            $blockers = $this->completionApprovalBlockers($job, $action);
+            if ($blockers !== []) {
+                throw ValidationException::withMessages([
+                    'completion' => $blockers,
+                ]);
+            }
+            $payoutApproval = $this->completionPayoutApprovalContext(
+                $job,
+                $validated['approved_visit_ids'] ?? null,
+            );
+            $from = $job->workflow_status;
+            $job->forceFill([
                 'photo_status' => 'tamamlandı',
                 'document_status' => 'tamamlandı',
                 'checklist_status' => 'tamamlandı',
                 'checklist_completed_at' => now(),
             ])->save();
 
-            $readyRequest = $technicalServiceRequest->refresh();
+            $readyRequest = $job->refresh();
             if ($readyRequest->workflow_status === 'Planlı') {
                 $readyRequest = $this->workflow->updateFieldWorkflow($readyRequest, 'arrive', [
                     'technician_arrived_at' => $readyRequest->technician_arrived_at ?? now(),
@@ -313,7 +377,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $storedPayoutApproval = $payoutApproval;
             unset($storedPayoutApproval['rows']);
 
-            $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
+            $payload = is_array($action->payload) ? $action->payload : [];
             $payload['ops_final_check'] = [
                 'approved_at' => now()->toISOString(),
                 'approved_by_user_id' => $request->user()?->id,
@@ -321,7 +385,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'closed_parent_request_id' => $closedParent?->id,
                 'payout_approval' => ($payoutApproval['required'] ?? false) === true ? $storedPayoutApproval : null,
             ];
-            $partnerJobAction->forceFill([
+            $action->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
                 'payload' => $payload,
             ])->save();
@@ -334,7 +398,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'to_status' => $job->workflow_status,
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
-                    'partner_job_action_id' => $partnerJobAction->id,
+                    'partner_job_action_id' => $action->id,
                     'payout_approval' => ($payoutApproval['required'] ?? false) === true ? $storedPayoutApproval : null,
                 ],
             ]);
@@ -391,13 +455,13 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                         'survey_link' => $surveyLink,
                     ],
                     $request->user(),
-                    $partnerJobAction,
+                    $action,
                     [
                         'recipient_phone' => $job->customer_phone,
                         'triggered_by' => 'ops_activation_warranty_ready',
-                        'event_version' => 'activation-warranty:'.$partnerJobAction->id.':'.$completionVersion.':'.($job->activation_code ?: 'missing').':'.$warrantyVersion,
+                        'event_version' => 'activation-warranty:'.$action->id.':'.$completionVersion.':'.($job->activation_code ?: 'missing').':'.$warrantyVersion,
                         'metadata' => [
-                            'partner_job_action_id' => $partnerJobAction->id,
+                            'partner_job_action_id' => $action->id,
                             'workflow_event' => 'activation_warranty_customer',
                             'survey_link_logged' => $surveyLink !== null,
                         ],
@@ -447,7 +511,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         $serviceRows = $rows
             ->filter(fn (array $row): bool => ($row['kind'] ?? null) === 'service')
             ->values();
-        $required = $serviceRows->count() > 1;
+        $required = $serviceRows->isNotEmpty();
 
         if (! $required) {
             return [
@@ -472,7 +536,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         if ($approved->isEmpty()) {
             throw ValidationException::withMessages([
-                'approved_visit_ids' => 'Birden fazla SRV varsa hakedişe dahil edilecek işler işaretlenmelidir.',
+                'approved_visit_ids' => 'Mevcut SRV kapanmadan önce hakedişe dahil edilecek iş açıkça onaylanmalıdır.',
             ]);
         }
 
@@ -480,6 +544,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         if ($invalid->isNotEmpty()) {
             throw ValidationException::withMessages([
                 'approved_visit_ids' => 'Hakediş onayı bu MRN/SRV grubuna ait olmayan iş içeriyor.',
+            ]);
+        }
+
+        $currentVisitRequiresApproval = $serviceRows
+            ->contains(fn (array $row): bool => (int) ($row['id'] ?? 0) === (int) $request->id);
+        if ($currentVisitRequiresApproval && ! $approved->contains((int) $request->id)) {
+            throw ValidationException::withMessages([
+                'approved_visit_ids' => 'Mevcut SRV hakedişi açıkça onaylanmadan iş kapatılamaz.',
             ]);
         }
 
@@ -559,25 +631,129 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         ]);
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $assignmentOffer, $validated, $request): array {
-            $assignmentOffer->refresh()->loadMissing('technician');
-            $job = $technicalServiceRequest->refresh();
+            $offer = TechnicalServiceAssignmentOffer::query()
+                ->whereKey($assignmentOffer->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $job = TechnicalServiceRequest::query()
+                ->whereKey($technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            abort_unless((int) $offer->technical_service_request_id === (int) $job->id, 404);
+            $offer->loadMissing('technician');
+            if (! $offer->technician instanceof TechnicalServiceTechnician) {
+                throw ValidationException::withMessages([
+                    'assignment_offer' => 'Hakediş teklifi geçerli bir ustaya bağlı değil.',
+                ]);
+            }
+
             $laborAmount = round((float) $validated['labor_amount'], 2);
             $routeFeeAmount = round((float) $validated['route_fee_amount'], 2);
-            $totalAmount = isset($validated['total_amount'])
-                ? round((float) $validated['total_amount'], 2)
-                : round($laborAmount + $routeFeeAmount, 2);
-            $metadata = is_array($assignmentOffer->metadata) ? $assignmentOffer->metadata : [];
-            $metadata['message_payload'] = $this->assignmentOfferMessagePayload($job, $assignmentOffer->technician, [
+            $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+            $note = isset($validated['note']) ? trim((string) $validated['note']) : null;
+            $note = $note !== '' ? $note : null;
+            $hasPendingRevision = TechnicalServicePartnerJobAction::query()
+                ->where('technical_service_request_id', $job->id)
+                ->where('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED)
+                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+                ->where(function ($query) use ($offer): void {
+                    $query->whereNull('technical_service_technician_id')
+                        ->orWhere('technical_service_technician_id', $offer->technical_service_technician_id);
+                })
+                ->lockForUpdate()
+                ->exists();
+
+            if (! $hasPendingRevision
+                && abs((float) $offer->labor_amount - $laborAmount) < 0.005
+                && abs((float) $offer->route_fee_amount - $routeFeeAmount) < 0.005
+                && abs((float) $offer->total_amount - $totalAmount) < 0.005
+                && (($offer->note !== null ? trim((string) $offer->note) : null) === $note)) {
+                return [
+                    'status' => 'duplicate_noop',
+                    'request' => $this->workflow->serialize($job->refresh(), true),
+                ];
+            }
+
+            $routeQuote = null;
+            if (is_numeric($offer->route_quote_id)) {
+                $routeQuote = TechnicalServiceRouteQuote::query()
+                    ->whereKey((int) $offer->route_quote_id)
+                    ->where('technical_service_request_id', $job->id)
+                    ->where('technician_id', $offer->technical_service_technician_id)
+                    ->first();
+                if (! $routeQuote instanceof TechnicalServiceRouteQuote) {
+                    throw ValidationException::withMessages([
+                        'assignment_offer' => 'Hakediş teklifinin yol hesabı bu iş ve ustayla eşleşmiyor.',
+                    ]);
+                }
+            }
+
+            $existingSettlement = TechnicalServiceSettlement::query()
+                ->where('technical_service_request_id', $job->id)
+                ->lockForUpdate()
+                ->first();
+            $oldTotalAmount = round((float) $offer->total_amount, 2);
+            $customerDirectAmount = null;
+            if ($existingSettlement instanceof TechnicalServiceSettlement) {
+                $storedDirectAmount = round((float) $existingSettlement->customer_direct_to_technician_amount, 2);
+                $storedCollectionAmount = round((float) $existingSettlement->customer_collection_amount, 2);
+                $customerDirectAmount = $storedCollectionAmount > 0
+                    ? 0.0
+                    : (abs($storedDirectAmount - $oldTotalAmount) < 0.005 ? null : $storedDirectAmount);
+            }
+
+            $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+            $metadata['message_payload'] = $this->assignmentOfferMessagePayload($job, $offer->technician, [
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
                 'total_amount' => $totalAmount,
-                'currency' => $assignmentOffer->currency,
-                'note' => $validated['note'] ?? null,
+                'currency' => $offer->currency,
+                'note' => $note,
             ]);
             $metadata['revised_at'] = now()->toISOString();
             $metadata['revised_by_user_id'] = $request->user()?->id;
-            $technicianPhone = $assignmentOffer->technician?->phone_e164
-                ?: ($assignmentOffer->technician?->phone_display ?: $assignmentOffer->technician?->phone);
+
+            $offer->forceFill([
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => $totalAmount,
+                'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
+                'note' => $note,
+                'metadata' => $metadata,
+            ])->save();
+            $job->forceFill([
+                'technician_payment_amount' => $laborAmount,
+                'travel_fee_amount' => $routeFeeAmount,
+            ])->save();
+            $this->assignmentSettlements->persistForAssignment(
+                $job->refresh(),
+                $offer->technician,
+                $offer,
+                $routeQuote,
+                $laborAmount,
+                $routeFeeAmount,
+                $customerDirectAmount,
+                $request->user(),
+            );
+
+            $resolvedPriceRevisionActionIds = $this->resolvePendingPriceRevisionActions(
+                $job,
+                $offer,
+                $request,
+                [
+                    'labor_amount' => $laborAmount,
+                    'route_fee_amount' => $routeFeeAmount,
+                    'total_amount' => $totalAmount,
+                    'note' => $note,
+                ],
+            );
+            if ($resolvedPriceRevisionActionIds !== []) {
+                $metadata['resolved_price_revision_action_ids'] = $resolvedPriceRevisionActionIds;
+                $metadata['revision_response_status'] = 'resolved';
+            }
+
+            $technicianPhone = $offer->technician->phone_e164
+                ?: ($offer->technician->phone_display ?: $offer->technician->phone);
             $dispatch = $this->workflowMessages->queueSystemMessage(
                 $job,
                 'price_revision_response_technician',
@@ -593,7 +769,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     'recipient_phone' => $technicianPhone,
                     'triggered_by' => 'ops_price_revision_response',
                     'metadata' => [
-                        'assignment_offer_id' => $assignmentOffer->id,
+                        'assignment_offer_id' => $offer->id,
                         'manual_ui_send' => true,
                     ],
                 ],
@@ -602,44 +778,19 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'id' => $dispatch->id,
                 'status' => $dispatch->status,
             ];
-
-            $assignmentOffer->forceFill([
-                'labor_amount' => $laborAmount,
-                'route_fee_amount' => $routeFeeAmount,
-                'total_amount' => $totalAmount,
-                'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
-                'note' => $validated['note'] ?? null,
-                'metadata' => $metadata,
-            ])->save();
-
-            $resolvedPriceRevisionActionIds = $this->resolvePendingPriceRevisionActions(
-                $job,
-                $assignmentOffer,
-                $request,
-                [
-                    'labor_amount' => $laborAmount,
-                    'route_fee_amount' => $routeFeeAmount,
-                    'total_amount' => $totalAmount,
-                    'note' => $validated['note'] ?? null,
-                ],
-            );
-            if ($resolvedPriceRevisionActionIds !== []) {
-                $metadata['resolved_price_revision_action_ids'] = $resolvedPriceRevisionActionIds;
-                $metadata['revision_response_status'] = 'resolved';
-                $assignmentOffer->forceFill(['metadata' => $metadata])->save();
-            }
+            $offer->forceFill(['metadata' => $metadata])->save();
 
             $job->events()->create([
                 'event_type' => 'assignment_offer_revised',
                 'title' => $resolvedPriceRevisionActionIds === []
                     ? 'Usta hakediş bilgisi revize edildi'
                     : 'Hakediş revize talebi yanıtlandı',
-                'note' => $validated['note'] ?? null,
+                'note' => $note,
                 'from_status' => $job->workflow_status,
                 'to_status' => $job->workflow_status,
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
-                    'assignment_offer_id' => $assignmentOffer->id,
+                    'assignment_offer_id' => $offer->id,
                     'labor_amount' => $laborAmount,
                     'route_fee_amount' => $routeFeeAmount,
                     'total_amount' => $totalAmount,
@@ -862,7 +1013,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             ]);
 
             $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
-            $publicUrlWarning = PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
+            $publicUrlWarning = ! $this->workflowMessages->publicUrlReadyForDispatch($approvalUrl)
                 ? 'Müşteri onay linki telefondan açılabilir public URL gerektirir. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.'
                 : null;
             $messageText = $this->customerApprovalMessageText($job, $approvalUrl);

@@ -194,6 +194,24 @@ class MountRequestSubmitService
             ],
         );
 
+        $this->workflowMessages->queueWorkflowDispatches(
+            $request->refresh(),
+            'mount_request_created_customer',
+            'customer',
+            [],
+            null,
+            null,
+            [
+                'recipient_phone' => $request->customer_phone,
+                'triggered_by' => 'public_mount_request_created',
+                'event_version' => 'mount-request-customer:'.$request->id,
+                'metadata' => [
+                    'workflow_event' => 'mount_request_created_customer',
+                    'source' => 'public_mount_request',
+                ],
+            ],
+        );
+
         return $request->fresh(['requestSerials', 'uploads']);
     }
 

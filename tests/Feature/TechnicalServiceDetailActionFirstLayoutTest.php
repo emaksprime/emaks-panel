@@ -318,6 +318,109 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('<DialogTitle>Talebi iptal et</DialogTitle>', $pageSource);
     }
 
+    public function test_positive_flow_mutations_use_synchronous_in_flight_guards_and_preserve_selected_detail(): void
+    {
+        $source = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        foreach ([
+            'assignMutationInFlightRef',
+            'extraPaymentCreateInFlightRef',
+            'appointmentApprovalInFlightRef',
+            'assignmentOfferUpdateInFlightRef',
+        ] as $guard) {
+            $this->assertStringContainsString($guard, $source);
+        }
+
+        $this->assertStringContainsString('if (!selectedId || assignMutationInFlightRef.current)', $source);
+        $this->assertStringContainsString('if (!selectedId || extraPaymentCreateInFlightRef.current)', $source);
+        $this->assertStringContainsString('if (!selectedId || appointmentApprovalInFlightRef.current !== null)', $source);
+        $this->assertStringContainsString('if (!selectedId || assignmentOfferUpdateInFlightRef.current)', $source);
+        $this->assertStringContainsString('selectedIdRef.current === requestId', $source);
+        $this->assertStringContainsString('const requestId = selectedId', $source);
+        $this->assertStringContainsString('preserveDetailScroll(() => {', $source);
+        $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $source);
+        $this->assertStringContainsString("setAssignSuccess('Usta atandı; hakediş, iş kartı ve bildirim kaydı hazırlandı.')", $source);
+        $this->assertStringContainsString("setAppointmentApprovalSuccess(response.status === 'duplicate_noop'", $source);
+        $this->assertStringContainsString("setAssignmentOfferUpdateSuccess(response.status === 'duplicate_noop'", $source);
+        $this->assertStringContainsString('setAppointmentApprovalSuccess(null)', $source);
+        $this->assertStringContainsString('setAssignmentOfferUpdateSuccess(null)', $source);
+
+        $appointmentStart = strpos($source, 'const handlePartnerAppointmentProposalApprove = async');
+        $appointmentEnd = strpos($source, 'const handlePartnerAppointmentProposalReject = async', $appointmentStart);
+        $earningStart = strpos($source, 'const handleAssignmentOfferUpdate = async');
+        $earningEnd = strpos($source, 'const handlePartnerActionReview = async', $earningStart);
+        $this->assertIsInt($appointmentStart);
+        $this->assertIsInt($appointmentEnd);
+        $this->assertIsInt($earningStart);
+        $this->assertIsInt($earningEnd);
+
+        foreach ([
+            substr($source, $appointmentStart, $appointmentEnd - $appointmentStart),
+            substr($source, $earningStart, $earningEnd - $earningStart),
+        ] as $responseAuthoritativeHandler) {
+            $this->assertStringNotContainsString('loadRequests(', $responseAuthoritativeHandler);
+            $this->assertStringNotContainsString('loadSummary(', $responseAuthoritativeHandler);
+            $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $responseAuthoritativeHandler);
+        }
+    }
+
+    public function test_appointment_success_feedback_survives_the_consumed_proposal_row(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $successIndex = strpos($source, '{appointmentApprovalSuccess ? (');
+        $portalBlockIndex = strpos($source, '{showAssignmentPortalActionBlock ? (');
+        $proposalLoopIndex = strpos($source, '{openAppointmentProposals.map((action) => {');
+
+        $this->assertIsInt($successIndex);
+        $this->assertIsInt($portalBlockIndex);
+        $this->assertIsInt($proposalLoopIndex);
+        $this->assertLessThan($portalBlockIndex, $successIndex);
+        $this->assertLessThan($proposalLoopIndex, $successIndex);
+        $this->assertSame(1, substr_count($source, '{appointmentApprovalSuccess ? ('));
+    }
+
+    public function test_assignment_job_card_actions_are_sticky_and_outside_earning_message_preview(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $opsActionIndex = strpos($source, 'Usta İş Kartını OPS Olarak Yönet');
+        $previewActionIndex = strpos($source, 'Usta Portalını Önizle');
+        $messagePreviewIndex = strpos($source, '<summary className="cursor-pointer font-semibold">Hakediş mesajını göster</summary>');
+
+        $this->assertIsInt($opsActionIndex);
+        $this->assertIsInt($previewActionIndex);
+        $this->assertIsInt($messagePreviewIndex);
+        $this->assertLessThan($messagePreviewIndex, $opsActionIndex);
+        $this->assertLessThan($messagePreviewIndex, $previewActionIndex);
+        $this->assertStringContainsString('sticky bottom-0 z-10', $source);
+        $this->assertStringContainsString('border-t border-slate-200 bg-white/95', $source);
+        $this->assertStringContainsString('grid w-full max-w-full grid-cols-2', $source);
+        $this->assertStringContainsString('İş kartı aksiyonları usta ataması tamamlandığında kullanılabilir.', $source);
+        $this->assertStringContainsString("{technicianEarningMessageLoading ? 'Hazırlanıyor...' : 'Hakediş bilgisini gönder'}", $source);
+    }
+
+    public function test_terminal_payment_retry_ui_requires_reason_and_never_renders_raw_contract_code(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const terminalPaymentRetryRequired = cancelledOnlinePaymentLink && !pendingOnlinePaymentLink', $source);
+        $this->assertStringContainsString('terminalPaymentRetryReason.trim().length >= 3', $source);
+        $this->assertStringContainsString('Yeni ödeme bağlantısı oluştur', $source);
+        $this->assertStringContainsString('Yeniden deneme nedeni', $source);
+        $this->assertStringNotContainsString('TERMINAL_PAYMENT_NOT_REUSABLE', $source);
+    }
+
+    public function test_current_srv_earning_must_be_selected_before_completion(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const currentVisitPayoutSelected = !finalPayoutApprovalRequired', $source);
+        $this->assertStringContainsString('Kapanacak SRV açıkça seçili olmalıdır.', $source);
+        $this->assertStringContainsString('Mevcut SRV hakedişi seçilmeden iş kapatılamaz.', $source);
+        $this->assertStringContainsString('finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected', $source);
+        $this->assertStringContainsString('action.payload?.ops_final_check_required === true', $source);
+        $this->assertStringContainsString('action.payload?.ops_final_check === undefined || action.payload?.ops_final_check === null', $source);
+    }
+
     private function source(string $relativePath): string
     {
         $path = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relativePath);

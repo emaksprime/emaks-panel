@@ -141,6 +141,7 @@ type ServiceRequestDetailsProps = {
   assignLoading?: boolean
   canSubmitAssign?: boolean
   assignError?: string | null
+  assignSuccess?: string | null
   mountExclusionAcknowledged?: boolean
   mountExclusionNote?: string
   onMountExclusionAcknowledgedChange?: (checked: boolean) => void
@@ -148,7 +149,7 @@ type ServiceRequestDetailsProps = {
   onTechnicianSelect?: (technicianId: string, estimatedRoundTripKm?: number | null) => void
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
-  onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
+  onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSend?: (paymentId: number | string, payload?: { resend_reason?: string | null }) => void | Promise<void>
@@ -172,6 +173,12 @@ type ServiceRequestDetailsProps = {
   customerApprovalResendError?: string | null
   partnerActionReviewInFlight?: string | null
   partnerActionReviewError?: string | null
+  appointmentApprovalInFlight?: string | null
+  appointmentApprovalError?: string | null
+  appointmentApprovalSuccess?: string | null
+  assignmentOfferUpdateInFlight?: boolean
+  assignmentOfferUpdateError?: string | null
+  assignmentOfferUpdateSuccess?: string | null
 }
 
 type OpsDetailVisibilitySettings = {
@@ -1500,6 +1507,7 @@ export function ServiceRequestDetails({
   assignLoading = false,
   canSubmitAssign = false,
   assignError = null,
+  assignSuccess = null,
   mountExclusionAcknowledged = false,
   mountExclusionNote = '',
   onMountExclusionAcknowledgedChange,
@@ -1531,6 +1539,12 @@ export function ServiceRequestDetails({
   customerApprovalResendError = null,
   partnerActionReviewInFlight = null,
   partnerActionReviewError = null,
+  appointmentApprovalInFlight = null,
+  appointmentApprovalError = null,
+  appointmentApprovalSuccess = null,
+  assignmentOfferUpdateInFlight = false,
+  assignmentOfferUpdateError = null,
+  assignmentOfferUpdateSuccess = null,
 }: ServiceRequestDetailsProps) {
   const basePaymentInfo = getServicePaymentInfo(
     request.serviceType,
@@ -1584,7 +1598,19 @@ export function ServiceRequestDetails({
         : 'Garanti kapsam\u0131 aktif. M\u00fc\u015fteri servis \u00fccreti istenmez.')
     : 'Servis/par\u00e7a tahsilat\u0131 yaln\u0131zca \u00fccretli par\u00e7a veya servis karar\u0131 varsa a\u00e7\u0131l\u0131r.'
   const serviceVisitHistoryRecords = request.serviceVisitHistory?.history_records ?? []
-  const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
+  const completionSubmissions = partnerPortalActions.filter((action) => {
+    if (action.action !== 'completion_submitted') {
+      return false
+    }
+
+    if (action.status === 'ops_review') {
+      return true
+    }
+
+    return action.status === 'applied'
+      && action.payload?.ops_final_check_required === true
+      && (action.payload?.ops_final_check === undefined || action.payload?.ops_final_check === null)
+  })
   const latestCustomerApprovalRequest = [...partnerPortalActions]
     .filter((action) => action.action === 'customer_otp_requested')
     .sort((a, b) => Date.parse(b.created_at ?? '') - Date.parse(a.created_at ?? ''))[0] ?? null
@@ -1722,6 +1748,7 @@ export function ServiceRequestDetails({
   const [paymentSyncInFlight, setPaymentSyncInFlight] = useState<number | string | null>(null)
   const [paymentSendInFlight, setPaymentSendInFlight] = useState<number | string | null>(null)
   const [paymentResendReasons, setPaymentResendReasons] = useState<Record<string, string>>({})
+  const [terminalPaymentRetryReasons, setTerminalPaymentRetryReasons] = useState<Record<string, string>>({})
   const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
   const [paymentLinkCopyMessage, setPaymentLinkCopyMessage] = useState<string | null>(null)
   const [paymentLinkManualCopyValue, setPaymentLinkManualCopyValue] = useState<string | null>(null)
@@ -2002,6 +2029,8 @@ export function ServiceRequestDetails({
   const pendingOnlinePaymentLink = pendingMountPaymentRecords.length > 0
   const paidOnlinePaymentLink = paidMountPaymentRecords.length > 0
   const cancelledOnlinePaymentLink = cancelledMountPaymentRecords.length > 0
+  const terminalPaymentRetryRequired = cancelledOnlinePaymentLink && !pendingOnlinePaymentLink
+  const terminalPaymentRetryReason = terminalPaymentRetryReasons[String(request.id)] ?? ''
   const paymentLinkActionLabel = paidOnlinePaymentLink
     ? 'Ödeme Düzenle'
     : pendingOnlinePaymentLink
@@ -2016,7 +2045,7 @@ export function ServiceRequestDetails({
       ? pendingOnlinePaymentLink ? 'Ek ödeme linki oluştur / bekleyen linki kullan' : 'Ek ödeme linki oluştur'
       : pendingOnlinePaymentLink
       ? 'Bekleyen linki güncelle / yeniden kullan'
-      : 'Link oluştur'
+      : terminalPaymentRetryRequired ? 'Yeni ödeme bağlantısı oluştur' : 'Link oluştur'
   const existingPendingPaymentAmountInput = numericInputValue(existingPendingPaymentAmount)
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
   const paymentLinkAmountSourceLabel = routeFeeExtraPaymentInput.trim() === ''
@@ -2049,6 +2078,7 @@ export function ServiceRequestDetails({
     && extraPaymentAmount !== null
     && extraPaymentAmount > 0
     && (routeFeeEditorMode === 'payment_link' || selectedTechnician)
+    && (!terminalPaymentRetryRequired || terminalPaymentRetryReason.trim().length >= 3)
   )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
     selectedTechnician?.latitude ?? selectedTechnician?.startLatitude,
@@ -2403,7 +2433,9 @@ export function ServiceRequestDetails({
   const earningTotalOverride = earningTotalOverrideByRequest[requestStateKey] ?? ''
   const earningTotalOverrideTouched = Boolean(earningTotalOverrideTouchedByRequest[requestStateKey])
   const parsedEarningTotalOverride = parseNumericInput(earningTotalOverride)
-  const earningTotalAmount = earningTotalOverrideTouched ? parsedEarningTotalOverride : totalTechnicianCostAmount
+  const earningLaborAmount = earningTotalOverrideTouched ? parsedEarningTotalOverride : technicianLaborCostAmount
+  const earningRouteAmount = hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0
+  const earningTotalAmount = earningLaborAmount === null ? null : roundTwo(earningLaborAmount + earningRouteAmount)
   const totalTechnicianCostLabel = !hasPayoutTechnicianContext
     ? 'Usta seçilmedi'
     : hasCanonicalPayout
@@ -2764,7 +2796,7 @@ export function ServiceRequestDetails({
       ?.map((serial) => serial.id)
       .filter((id): id is number | string => id !== null && id !== undefined) ?? []
 
-    const payload: ServiceRequestExtraMountPaymentPayload = {
+    const payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null } = {
       route_quote_id: activeRouteQuote?.id ?? null,
       technician_id: selectedTechnician?.id ?? null,
       selected_serial_ids: selectedSerialIds,
@@ -2773,6 +2805,7 @@ export function ServiceRequestDetails({
       reason: routeFeeEditorMode === 'payment_link' ? 'manual_extra' : 'route_fee',
       purpose: routeFeeEditorMode === 'payment_link' ? 'manual_mount_payment' : 'route_fee',
       note: routeFeeNote.trim() || null,
+      terminal_retry_reason: terminalPaymentRetryRequired ? terminalPaymentRetryReason.trim() : null,
     }
 
     try {
@@ -2782,8 +2815,8 @@ export function ServiceRequestDetails({
       setPaymentLinkManualCopyValue(null)
       setPaymentLinkCopyTarget(null)
       setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
-    } catch (caught) {
-      setRouteFeeEditorMessage(caught instanceof Error ? caught.message : 'Ödeme linki oluşturulamadı.')
+    } catch {
+      setRouteFeeEditorMessage(null)
     }
   }
   const handlePendingPaymentCancel = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
@@ -3162,8 +3195,8 @@ export function ServiceRequestDetails({
 
     const response = await onTechnicianEarningMessageCreate({
       technician_id: selectedTechnician.id,
-      labor_amount: technicianLaborCostAmount,
-      route_fee_amount: hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0,
+      labor_amount: earningLaborAmount,
+      route_fee_amount: earningRouteAmount,
       total_amount: earningTotalAmount,
       note: earningNoteInput.trim() || null,
       message_text: earningMessageText.trim() || null,
@@ -3523,6 +3556,21 @@ export function ServiceRequestDetails({
               placeholder="Ödeme linki için operasyon notu"
             />
           </label>
+          {terminalPaymentRetryRequired ? (
+            <label className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-950">
+              Önceki ödeme bağlantısı iptal edildi. Yeni bir ödeme bağlantısı oluşturmak için yeniden deneme nedeni girin.
+              <Input
+                value={terminalPaymentRetryReason}
+                onChange={(event) => setTerminalPaymentRetryReasons((current) => ({
+                  ...current,
+                  [String(request.id)]: event.target.value,
+                }))}
+                minLength={3}
+                maxLength={500}
+                placeholder="Yeniden deneme nedeni"
+              />
+            </label>
+          ) : null}
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               type="button"
@@ -3976,6 +4024,7 @@ export function ServiceRequestDetails({
   const finalPayoutSelectedIds = finalPayoutSelectionByRequest[finalPayoutSelectionKey] ?? defaultFinalPayoutSelection
   const finalPayoutSelectedSet = new Set(finalPayoutSelectedIds)
   const finalPayoutSelectedRows = finalPayoutRows.filter((row) => finalPayoutSelectedSet.has(String(row.id)))
+  const currentVisitPayoutSelected = !finalPayoutApprovalRequired || finalPayoutSelectedSet.has(String(request.id))
   const finalPayoutSelectedTotal = finalPayoutSelectedRows.reduce((total, row) => total + Number(row.total_amount ?? 0), 0)
   const toggleFinalPayoutRow = (rowId: number | string) => {
     const id = String(rowId)
@@ -5522,6 +5571,11 @@ export function ServiceRequestDetails({
                 {assignError}
               </div>
             ) : null}
+            {assignSuccess ? (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
+                {assignSuccess}
+              </div>
+            ) : null}
             {hasAssignedTechnician ? (
               <div className="grid gap-3 rounded-2xl border border-sky-100 bg-white p-3 text-sm text-slate-800">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -5678,6 +5732,12 @@ export function ServiceRequestDetails({
                 })}
               </div>
             ) : null}
+            {appointmentApprovalError ? (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{appointmentApprovalError}</p>
+            ) : null}
+            {appointmentApprovalSuccess ? (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">{appointmentApprovalSuccess}</p>
+            ) : null}
             {showAssignmentPortalActionBlock ? (
               <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
                 <div>
@@ -5737,11 +5797,11 @@ export function ServiceRequestDetails({
                         <Input value={appointmentReviewNote} onChange={(event) => setAppointmentReviewNote(event.target.value)} placeholder="Müşteri ve usta mesajına eklenecek operasyon notu" />
                       </label>
                       <div className="flex flex-wrap justify-end gap-2">
-                        <Button type="button" variant="outline" onClick={() => void onPartnerAppointmentProposalReject?.(action.id, { note: appointmentReviewNote || 'Randevu önerisi revize istendi.', status: 'revision_requested' })}>
+                        <Button type="button" variant="outline" disabled={appointmentApprovalInFlight !== null} onClick={() => void onPartnerAppointmentProposalReject?.(action.id, { note: appointmentReviewNote || 'Randevu önerisi revize istendi.', status: 'revision_requested' })}>
                           Revize iste
                         </Button>
-                        <Button type="button" onClick={() => void onPartnerAppointmentProposalApprove?.(action.id, { note: appointmentReviewNote || null, selected_slot_index: selectedSlotIndex })}>
-                          Randevuyu onayla
+                        <Button type="button" disabled={appointmentApprovalInFlight !== null} onClick={() => void onPartnerAppointmentProposalApprove?.(action.id, { note: appointmentReviewNote || null, selected_slot_index: selectedSlotIndex })}>
+                          {appointmentApprovalInFlight === String(action.id) ? 'Randevu onaylanıyor...' : 'Randevuyu onayla'}
                         </Button>
                       </div>
                     </div>
@@ -5878,7 +5938,7 @@ export function ServiceRequestDetails({
                           </Button>
                           <Button
                             type="button"
-                            disabled={!assignmentOffer || !onAssignmentOfferUpdate}
+                            disabled={!assignmentOffer || !onAssignmentOfferUpdate || assignmentOfferUpdateInFlight}
                             onClick={() => assignmentOffer && void onAssignmentOfferUpdate?.(assignmentOffer.id, {
                               labor_amount: technicianRevisionOffer.labor_earning ?? assignmentOffer.labor_amount,
                               route_fee_amount: technicianRevisionOffer.route_earning ?? assignmentOffer.route_fee_amount,
@@ -5886,7 +5946,7 @@ export function ServiceRequestDetails({
                               note: offerNoteInput || null,
                             })}
                           >
-                            Teklifi onayla
+                            {assignmentOfferUpdateInFlight ? 'Kaydediliyor...' : 'Teklifi onayla'}
                           </Button>
                         </div>
                       </div>
@@ -5948,10 +6008,17 @@ export function ServiceRequestDetails({
                       <Input type="number" min="0" step="1" value={offerRouteInput} onChange={(event) => setOfferRouteInput(event.target.value)} placeholder={String(assignmentOffer.route_fee_amount)} />
                       <Input value={offerNoteInput} onChange={(event) => setOfferNoteInput(event.target.value)} placeholder="Revize notu" />
                     </div>
+                    {assignmentOfferUpdateError ? (
+                      <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{assignmentOfferUpdateError}</p>
+                    ) : null}
+                    {assignmentOfferUpdateSuccess ? (
+                      <p className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-700">{assignmentOfferUpdateSuccess}</p>
+                    ) : null}
                     <div className="flex justify-end">
                       <Button
                         type="button"
                         variant="outline"
+                        disabled={!onAssignmentOfferUpdate || assignmentOfferUpdateInFlight}
                         onClick={() => {
                           const labor = parseNumericInput(offerLaborInput) ?? assignmentOffer.labor_amount
                           const route = parseNumericInput(offerRouteInput) ?? assignmentOffer.route_fee_amount
@@ -5964,7 +6031,7 @@ export function ServiceRequestDetails({
                           })
                         }}
                       >
-                        Hakedişi revize et
+                        {assignmentOfferUpdateInFlight ? 'Hakediş güncelleniyor...' : 'Hakedişi revize et'}
                       </Button>
                     </div>
                   </div>
@@ -6440,19 +6507,19 @@ export function ServiceRequestDetails({
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <div className="grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)]">
                   <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                    Toplam hakediş
+                    İşçilik hakedişi
                     <Input
                       type="number"
                       inputMode="decimal"
                       min="0"
                       step="1"
-                      value={earningTotalOverrideTouched ? earningTotalOverride : earningTotalAmount !== null ? numericInputValue(earningTotalAmount) : ''}
+                      value={earningTotalOverrideTouched ? earningTotalOverride : earningLaborAmount !== null ? numericInputValue(earningLaborAmount) : ''}
                       onChange={(event) => {
                         const nextValue = event.target.value
                         setEarningTotalOverrideByRequest((current) => ({ ...current, [requestStateKey]: nextValue }))
                         setEarningTotalOverrideTouchedByRequest((current) => ({ ...current, [requestStateKey]: true }))
                       }}
-                      placeholder={totalTechnicianCostAmount !== null ? String(totalTechnicianCostAmount) : '0'}
+                      placeholder={technicianLaborCostAmount !== null ? String(technicianLaborCostAmount) : '0'}
                     />
                   </label>
                   <label className="grid gap-1 text-xs font-semibold text-slate-600">
@@ -6464,6 +6531,33 @@ export function ServiceRequestDetails({
                     />
                   </label>
                 </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />
+                  <MiniMetric label="Yol" value={formatMoneyValue(earningRouteAmount)} />
+                  <MiniMetric label="Toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
+                </div>
+                {(technicianJobCard?.ops_support_url || technicianJobCard?.preview_url) ? (
+                  <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t border-slate-200 bg-white/95 py-2 backdrop-blur">
+                    {technicianJobCard?.ops_support_url ? (
+                      <Button asChild type="button" size="sm" variant="outline">
+                        <a href={technicianJobCard.ops_support_url} target="_blank" rel="noreferrer">
+                          <Wrench className="mr-1 h-4 w-4" />
+                          Usta İş Kartını OPS Olarak Yönet
+                        </a>
+                      </Button>
+                    ) : null}
+                    {technicianJobCard?.preview_url ? (
+                      <Button asChild type="button" size="sm" variant="outline">
+                        <a href={technicianJobCard.preview_url} target="_blank" rel="noreferrer">
+                          <Eye className="mr-1 h-4 w-4" />
+                          Usta Portalını Önizle
+                        </a>
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-xs font-medium text-slate-500">İş kartı aksiyonları usta ataması tamamlandığında kullanılabilir.</p>
+                )}
                 {displayedEarningMessageText ? (
                   <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
                     <summary className="cursor-pointer font-semibold">Hakediş mesajını göster</summary>
@@ -6476,22 +6570,6 @@ export function ServiceRequestDetails({
                         <Button asChild type="button" size="sm" variant="outline">
                           <a href={displayedEarningWhatsappUrl} target="_blank" rel="noreferrer">
                             WhatsApp Aç
-                          </a>
-                        </Button>
-                      ) : null}
-                      {technicianJobCard?.ops_support_url ? (
-                        <Button asChild type="button" size="sm" variant="outline">
-                          <a href={technicianJobCard.ops_support_url} target="_blank" rel="noreferrer">
-                            <Wrench className="mr-1 h-4 w-4" />
-                            Usta İş Kartını OPS Olarak Yönet
-                          </a>
-                        </Button>
-                      ) : null}
-                      {technicianJobCard?.preview_url ? (
-                        <Button asChild type="button" size="sm" variant="outline">
-                          <a href={technicianJobCard.preview_url} target="_blank" rel="noreferrer">
-                            <Eye className="mr-1 h-4 w-4" />
-                            Usta Portalını Önizle
                           </a>
                         </Button>
                       ) : null}
@@ -6943,7 +7021,7 @@ export function ServiceRequestDetails({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <p className="text-sm font-semibold text-slate-950">İş bazlı hakediş onayı</p>
-                        <p className="mt-1 text-xs text-slate-600">MRN altında birden fazla SRV var. Hakedişe dahil edilecek işleri işaretleyin.</p>
+                        <p className="mt-1 text-xs text-slate-600">Mevcut SRV ve geçmiş visit hakedişlerini kontrol edin. Kapanacak SRV açıkça seçili olmalıdır.</p>
                       </div>
                       <Badge variant={finalPayoutSelectedRows.length > 0 ? 'secondary' : 'warning'}>
                         {finalPayoutSelectedRows.length} iş seçili
@@ -6976,6 +7054,11 @@ export function ServiceRequestDetails({
                     <p className="text-xs font-semibold text-violet-900">
                       Onaylanacak hakediş toplamı: {formatMoneyValue(finalPayoutSelectedTotal)}
                     </p>
+                    {!currentVisitPayoutSelected ? (
+                      <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+                        Mevcut SRV hakedişi seçilmeden iş kapatılamaz.
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
                 <label className="grid gap-1 text-xs font-semibold text-violet-900">
@@ -7384,10 +7467,10 @@ export function ServiceRequestDetails({
 
         return showFooterBar ? (
       <div
-        className="sticky bottom-0 z-10 mt-2 flex justify-end bg-transparent px-2 py-2"
+        className="sticky bottom-0 z-10 -mx-2 mt-2 flex justify-end border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur"
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
-        <div className="grid max-w-full gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center lg:justify-end">
+        <div className="grid w-full max-w-full grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:w-auto lg:flex lg:flex-wrap lg:items-center lg:justify-end">
           {visibleFooterWorkflowActions.map(([actionKey, action]) => (
             <Button
               key={actionKey}
@@ -7416,8 +7499,8 @@ export function ServiceRequestDetails({
             <Button
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
-              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || (finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0)}
-              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
+              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
+              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : finalPayoutApprovalRequired && !currentVisitPayoutSelected ? 'Mevcut SRV hakedişi açıkça seçilmelidir.' : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
               onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, {
                 note: completionReviewNote || null,
                 approved_visit_ids: finalPayoutApprovalRequired ? finalPayoutSelectedIds : undefined,

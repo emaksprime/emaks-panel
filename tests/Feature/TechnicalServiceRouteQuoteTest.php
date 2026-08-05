@@ -204,6 +204,50 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame(150.0, $payload['fee_amount']);
     }
 
+    public function test_route_service_geocodes_existing_technician_address_before_reporting_missing_location(): void
+    {
+        config([
+            'services.google.geocoding_api_key' => 'test-google-geocoding-key',
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_GEOCODING_PATTERN => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Kadıköy, İstanbul, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 41.018, 'lng' => 29.012],
+                    ],
+                ]],
+            ], 200),
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        ], expectedRequests: 2);
+
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Adresli Usta',
+            'phone' => '+905555555551',
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'address' => 'Rıhtım Caddesi No: 1',
+            'active' => true,
+        ]);
+
+        $payload = app(TechnicalServiceRouteCostService::class)->quote(
+            $this->technicalServiceRequestWithLocation(),
+            $technician,
+        );
+
+        $this->assertSame(TechnicalServiceRouteQuote::STATUS_CALCULATED, $payload['status']);
+        $this->assertSame(41.018, $payload['origin_latitude']);
+        $this->assertSame(29.012, $payload['origin_longitude']);
+        $this->assertSame(45.0, $payload['round_trip_distance_km']);
+        $this->assertSame('30 km üstü yol ücreti gerekli.', $payload['message']);
+        $this->assertNull($technician->fresh()->latitude);
+        $this->assertNull($technician->fresh()->longitude);
+    }
+
     public function test_route_service_reuses_cached_quote_for_same_coordinates(): void
     {
         config([
@@ -407,7 +451,10 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertIsString($pageSource);
         $this->assertStringContainsString('routeQuoteLatestSelection.current = {', $pageSource);
         $this->assertStringContainsString('const autoKey = [', $pageSource);
-        $this->assertStringContainsString('window.setTimeout(() =>', $pageSource);
+        $this->assertStringContainsString('|| !assignDialogOpen', $pageSource);
+        $this->assertStringContainsString('assignDialogOpen,', $pageSource);
+        $this->assertStringContainsString('queueMicrotask(() =>', $pageSource);
+        $this->assertStringNotContainsString('window.setTimeout(() =>', $pageSource);
         $this->assertStringContainsString('routeQuoteLastAutoKey.current = autoKey', $pageSource);
         $this->assertStringContainsString('routeQuoteAutoRequestSeq.current', $pageSource);
         $this->assertStringContainsString('requestRouteCoordinatePair', $pageSource);
@@ -884,7 +931,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonValidationErrors('payment')
             ->assertJsonPath(
                 'errors.payment.0',
-                'PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE: Pending payment successful provider session authority taşımıyor.',
+                'Mevcut ödeme bağlantısı güvenli biçimde kullanılamıyor. Ödeme geçmişini kontrol edip açıklamalı yeni bağlantı oluşturun.',
             );
 
         $this->assertSame(1, TechnicalServiceMountPayment::query()->count());
@@ -1302,7 +1349,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             "setTravelRoundTripKm('')",
             'setRouteQuoteLoading(true)',
             'setRouteQuoteLoading(false)',
-            'window.setTimeout(() =>',
+            'queueMicrotask(() =>',
             'routeQuoteLatestSelection.current.requestId !== submittedRequestId',
             'routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId',
             'const responseStatus = typeof response.status',
@@ -1314,6 +1361,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);
         }
+
+        $this->assertStringNotContainsString('window.setTimeout(() =>', $pageSource);
 
         foreach ([
             'hasRealCoordinates',

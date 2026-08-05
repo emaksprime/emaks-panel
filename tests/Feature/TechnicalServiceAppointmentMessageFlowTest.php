@@ -1001,6 +1001,65 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
     }
 
+    public function test_configured_local_lan_origin_is_ready_for_guarded_customer_confirmation_dispatch(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'local');
+        config([
+            'services.partner_portal.public_url' => 'http://10.0.28.64:8000',
+            'services.public_urls.app_url' => null,
+            'services.public_urls.qr_base_url' => null,
+            'services.public_urls.payment_base_url' => null,
+        ]);
+
+        $service = app(TechnicalServiceWorkflowMessageDispatchService::class);
+
+        $this->assertTrue($service->publicUrlReadyForDispatch(
+            'http://10.0.28.64:8000/service-job-confirmation/local-proof',
+        ));
+        $this->assertFalse($service->publicUrlReadyForDispatch(
+            'http://127.0.0.1:8000/service-job-confirmation/local-proof',
+        ));
+        $this->assertFalse($service->publicUrlReadyForDispatch(
+            'http://10.0.28.65:8000/service-job-confirmation/local-proof',
+        ));
+    }
+
+    public function test_workflow_dispatch_reuses_one_settings_snapshot_for_enqueue_metadata(): void
+    {
+        $source = file_get_contents(app_path('Services/Messaging/TechnicalServiceWorkflowMessageDispatchService.php'));
+
+        $this->assertIsString($source);
+        $this->assertMatchesRegularExpression(
+            '/public function queueWorkflowDispatches\(.*?public function queueSystemMessage\(/s',
+            $source,
+        );
+        preg_match(
+            '/public function queueWorkflowDispatches\((.*?)public function queueSystemMessage\(/s',
+            $source,
+            $method,
+        );
+
+        $this->assertSame(0, substr_count($method[1], '$this->settings->payload()'));
+        $this->assertSame(1, substr_count($method[1], '$this->settings->workflowDispatchSnapshot()'));
+        $this->assertStringContainsString("'real_send_enabled_at_enqueue' => \$realSendEnabledAtEnqueue", $source);
+    }
+
+    public function test_appointment_dispatch_uses_workflow_snapshot_without_full_admin_readiness(): void
+    {
+        $source = file_get_contents(app_path('Services/Messaging/TechnicalServiceAppointmentMessageDispatchService.php'));
+
+        $this->assertIsString($source);
+        preg_match(
+            '/private function createDispatches\((.*?)private function createPlannedDispatch\(/s',
+            $source,
+            $method,
+        );
+
+        $this->assertArrayHasKey(1, $method);
+        $this->assertSame(1, substr_count($method[1], '$this->settings->workflowDispatchSnapshot()'));
+        $this->assertSame(0, substr_count($method[1], '$this->settings->payload()'));
+    }
+
     public function test_part_request_creates_ops_dispatch_without_automatically_sending_part_fee_link(): void
     {
         Http::fake();

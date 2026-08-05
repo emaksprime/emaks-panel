@@ -2,15 +2,18 @@
 
 namespace Tests\Feature;
 
+use App\Models\PageConfig;
+use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
-use App\Models\PageConfig;
 use App\Models\User;
-use App\Services\TechnicalService\MountRequestSubmitService;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
+use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -69,8 +72,8 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
             'getDistrictOptionsForProvince(form.data.city)',
             "const [districtSearch, setDistrictSearch] = useState('');",
             'filteredDistrictOptions',
-            "handleCityChange(event.target.value)",
-            "disabled={!form.data.city}",
+            'handleCityChange(event.target.value)',
+            'disabled={!form.data.city}',
             "placeholder={form.data.city ? 'İlçe ara' : 'Önce il seçin'}",
             'role="combobox"',
             'role="listbox"',
@@ -144,6 +147,42 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->assertSame('SIP/456', $request->order_display_no);
     }
 
+    public function test_mount_request_created_customer_message_event_is_recorded_once_per_channel_without_provider_call(): void
+    {
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS PRIME',
+            ],
+            'message_types' => [
+                'mount_request_created_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
+            ],
+        ]);
+
+        $request = $this->submitForSaleMountStatus(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'mount_request_created_customer')
+            ->orderBy('channel')
+            ->get();
+
+        $this->assertCount(2, $dispatches);
+        $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->all());
+        $this->assertSame(['customer'], $dispatches->pluck('recipient_role')->unique()->values()->all());
+        $this->assertSame(['905372081655'], $dispatches->pluck('original_phone')->unique()->values()->all());
+        $this->assertSame(2, $dispatches->pluck('idempotency_key')->unique()->count());
+        $this->assertSame(2, $dispatches->where('status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)->count());
+        $this->assertSame(['outbound_execution_mode_local'], $dispatches->pluck('last_error_code')->unique()->values()->all());
+        $this->assertSame(0, $dispatches->where('status', TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED)->count());
+        Http::assertNothingSent();
+    }
+
     public function test_montaj_haric_unpaid_submit_creates_request_when_pre_payment_setting_is_off(): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
@@ -189,7 +228,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
 
         $this->get('/mount-request/'.$token.'/form')->assertOk();
         $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
-        $payment = \App\Models\TechnicalServiceMountPayment::query()->firstOrFail();
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
         $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
         $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
             ->assertRedirect('/mount-request/'.$token.'/form');
@@ -629,7 +668,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
     private function validPayload(array $overrides = []): array
@@ -662,7 +701,8 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->app->instance(
             MikroInvoiceSerialsService::class,
-            new class extends MikroInvoiceSerialsService {
+            new class extends MikroInvoiceSerialsService
+            {
                 public function forSerial(string $serialNo): array
                 {
                     $rows = $this->normalizeRows([
@@ -733,10 +773,9 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->app->instance(
             SerialProductContextResolver::class,
-            new class($saleMountStatus) extends SerialProductContextResolver {
-                public function __construct(private readonly string $saleMountStatus)
-                {
-                }
+            new class($saleMountStatus) extends SerialProductContextResolver
+            {
+                public function __construct(private readonly string $saleMountStatus) {}
 
                 public function resolve(string $serialNumber, array $knownContext = []): array
                 {

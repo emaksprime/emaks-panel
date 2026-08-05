@@ -21,6 +21,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
+use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
@@ -2418,6 +2419,84 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame($request->serial_number, $payload['sale_and_payment']['mount_payments']['cancelled_rows'][0]['serial_number']);
     }
 
+    public function test_cancelled_payment_requires_explicit_retry_reason_and_creates_one_fresh_session(): void
+    {
+        config([
+            'services.partner_portal.public_url' => 'https://dashboard.test',
+            'services.public_urls.payment_base_url' => 'https://dashboard.test',
+        ]);
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'company_recipient' => [
+                'company_address' => 'Firma tahsilat test adresi',
+            ],
+        ]);
+
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+        ]);
+        $this->mountSessionForRequest($request);
+        $payload = [
+            'amount' => '400.00',
+            'currency' => 'TRY',
+            'purpose' => 'manual_mount_payment',
+            'reason' => 'manual_extra',
+        ];
+
+        $first = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", $payload)
+            ->assertCreated();
+        $terminal = TechnicalServiceMountPayment::query()->findOrFail($first->json('payment.id'));
+        $terminalReference = (string) $terminal->provider_reference;
+
+        $this->postJson("/api/technical-service/requests/{$request->id}/payments/{$terminal->id}/cancel", [
+            'reason' => 'Sentetik iptal',
+        ])->assertOk();
+
+        $withoutReason = $this->postJson(
+            "/api/technical-service/requests/{$request->id}/payments/mount-extra-payment",
+            $payload,
+        )
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['payment']);
+
+        $this->assertSame(
+            'Önceki ödeme bağlantısı iptal edildi. Yeni bir ödeme bağlantısı oluşturmak için yeniden deneme nedeni girin.',
+            $withoutReason->json('errors.payment.0'),
+        );
+        $this->assertStringNotContainsString('TERMINAL_PAYMENT_NOT_REUSABLE', $withoutReason->getContent());
+        $this->assertSame(0, TechnicalServiceMountPayment::query()->where('status', TechnicalServiceMountPayment::STATUS_PENDING)->count());
+
+        $retryPayload = [
+            ...$payload,
+            'terminal_retry_reason' => 'Müşteri yeni bağlantı istedi',
+        ];
+        $retry = $this->postJson(
+            "/api/technical-service/requests/{$request->id}/payments/mount-extra-payment",
+            $retryPayload,
+        )->assertCreated();
+        $fresh = TechnicalServiceMountPayment::query()->findOrFail($retry->json('payment.id'));
+
+        $this->assertNotSame($terminal->id, $fresh->id);
+        $this->assertNotSame($terminalReference, (string) $fresh->provider_reference);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $terminal->fresh()->status);
+        $this->assertSame('consumed', data_get($fresh->raw_payload, 'canonical_payment_terminal_retry.status'));
+        $this->assertContains($terminal->id, data_get($fresh->raw_payload, 'canonical_payment_terminal_retry.terminal_payment_ids'));
+
+        $duplicate = $this->postJson(
+            "/api/technical-service/requests/{$request->id}/payments/mount-extra-payment",
+            $retryPayload,
+        )->assertOk();
+
+        $this->assertSame($fresh->id, $duplicate->json('payment.id'));
+        $this->assertSame('reused_pending', $duplicate->json('payment.create_outcome'));
+        $this->assertSame(1, TechnicalServiceMountPayment::query()->where('status', TechnicalServiceMountPayment::STATUS_PENDING)->count());
+        $this->assertSame(2, TechnicalServiceMountPayment::query()
+            ->get()
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => collect(data_get($payment->raw_payload, 'canonical_payment_create_history', []))
+                ->contains(fn (mixed $entry): bool => is_array($entry) && ($entry['status'] ?? null) === 'completed'))
+            ->count());
+    }
+
     public function test_cancelling_paid_payment_is_rejected_without_mutating_paid_total(): void
     {
         $request = $this->technicalServiceRequest([
@@ -4352,6 +4431,67 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_srv_assignment_requires_explicit_labor_before_any_assignment_mutation(): void
+    {
+        $user = $this->adminUser();
+        $parent = $this->technicalServiceRequest(['mrn' => 'MRN-SRV-LABOR-GATE']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'SRV İşçilik Ustası',
+            'phone_e164' => '+905551234567',
+            'city' => 'Sentetik Sehir 001',
+            'active' => true,
+        ]);
+        $serviceVisit = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-LABOR-GATE-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SRV-LABOR-GATE-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Yeni Talep',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $before = $serviceVisit->fresh()->getRawOriginal();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$serviceVisit->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 0,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('assignment_offer.labor_amount');
+
+        $this->assertSame($before, $serviceVisit->fresh()->getRawOriginal());
+        $this->assertSame(0, TechnicalServiceAssignmentOffer::query()->where('technical_service_request_id', $serviceVisit->id)->count());
+        $this->assertSame(0, $serviceVisit->events()->count());
+
+        $this->postJson("/api/technical-service/requests/{$serviceVisit->id}/assign", [
+            'technical_service_technician_id' => $technician->id,
+            'travel_round_trip_km' => 0,
+            'assignment_offer' => [
+                'labor_amount' => 3000,
+                'route_fee_amount' => 150,
+                'currency' => 'TRY',
+            ],
+        ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.labor_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 150)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3150);
+
+        $this->assertDatabaseHas('technical_service_assignment_offers', [
+            'technical_service_request_id' => $serviceVisit->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => '3000.00',
+            'route_fee_amount' => '150.00',
+            'total_amount' => '3150.00',
+        ]);
+    }
+
     public function test_review_job_can_be_reassigned_from_closure_pending_without_invalid_transition(): void
     {
         $user = $this->adminUser();
@@ -4700,6 +4840,9 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount', 3150)
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.submitted_total_amount', 3200)
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount_corrected', true)
+            ->assertJsonPath('request.settlement.labor_earning_amount', 3000)
+            ->assertJsonPath('request.settlement.route_earning_amount', 150)
+            ->assertJsonPath('request.settlement.technician_earning_total', 3150)
             ->assertJsonPath('request.sale_and_payment.mount_payment_status', 'paid')
             ->assertJsonPath('request.mount_payment_status', 'paid')
             ->assertJson(fn ($json) => $json
@@ -4732,6 +4875,13 @@ class TechnicalServiceWorkflowTest extends TestCase
             'entity_type' => 'technical_service_request',
             'entity_id' => $request->id,
             'action_type' => 'technician_earning_message_sent',
+        ]);
+        $this->assertDatabaseHas('technical_service_settlements', [
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_earning_amount' => '3000.00',
+            'route_earning_amount' => '150.00',
+            'technician_earning_total' => '3150.00',
         ]);
     }
 
@@ -4873,7 +5023,11 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'note' => 'Revize yanıtlandı.',
             ])
             ->assertOk()
+            ->assertJsonPath('status', 'revised')
             ->assertJsonPath('request.assignment_offer.total_amount', 4967.4)
+            ->assertJsonPath('request.settlement.labor_earning_amount', 3000)
+            ->assertJsonPath('request.settlement.route_earning_amount', 1967.4)
+            ->assertJsonPath('request.settlement.technician_earning_total', 4967.4)
             ->assertJsonPath('request.technician_revision_offer.status', 'resolved');
 
         $this->assertSame('appointment_proposed', $response->json('request.operational_state.attention.action'));
@@ -4900,6 +5054,34 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('Randevu önerildi', $partnerPayload['next_action']);
         $this->assertNotSame('price_revision_requested', $partnerPayload['action_state']);
         $this->assertSame(TechnicalServicePartnerJobAction::STATUS_APPLIED, $partnerPayload['price_revision_request']['status']);
+
+        $eventCount = $request->events()->where('event_type', 'assignment_offer_revised')->count();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'price_revision_response_technician')
+            ->count();
+        $settlementId = TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->sole()
+            ->id;
+
+        $this->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1967.40,
+            'total_amount' => 4967.40,
+            'note' => 'Revize yanıtlandı.',
+        ])
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop')
+            ->assertJsonPath('request.settlement.id', $settlementId)
+            ->assertJsonPath('request.settlement.technician_earning_total', 4967.4);
+
+        $this->assertSame($eventCount, $request->events()->where('event_type', 'assignment_offer_revised')->count());
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'price_revision_response_technician')
+            ->count());
+        $this->assertSame(1, TechnicalServiceSettlement::query()->where('technical_service_request_id', $request->id)->count());
     }
 
     public function test_resolved_earning_revision_is_not_ops_action_without_new_pending_review(): void

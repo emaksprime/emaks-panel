@@ -59,7 +59,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         string $eventType,
         array $options,
     ): array {
-        $settings = $this->settings->payload();
+        $settings = $this->settings->workflowDispatchSnapshot();
         $global = (array) ($settings['global'] ?? []);
         $summary = $this->emptySummary($eventType);
 

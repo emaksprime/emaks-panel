@@ -5938,6 +5938,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($admin)
             ->postJson("/api/technical-service/requests/{$child->id}/partner-completions/{$completionAction->id}/approve", [
                 'note' => 'SRV son kontrol tamamlandı.',
+                'approved_visit_ids' => [$child->id],
             ])
             ->assertOk()
             ->assertJsonPath('request.workflow_status', 'Tamamlandı')
@@ -6583,6 +6584,123 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertFalse($rows->firstWhere('id', $secondSrv->id)['payout_included']);
         $this->assertSame('Hakedişten çıkarıldı', $rows->firstWhere('id', $secondSrv->id)['payout_approval_status_label']);
         $this->assertSame([$parent->id, $firstSrv->id], $parent->refresh()->operation_control_payload['ops_final_payout_approval']['approved_request_ids'] ?? []);
+    }
+
+    public function test_current_single_srv_completion_requires_earning_confirmation_and_preserves_completed_visit_earning(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Tek SRV Hakediş Partner',
+        ]);
+        $technician = $this->technician(['name' => 'Tek SRV Hakediş Ustası']);
+        $completedVisit = $this->serviceRequestForTechnician($technician, 'MRN-SINGLE-SRV-EARNING', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now()->subDay(),
+        ]);
+        $currentSrv = $this->serviceRequestForTechnician($technician, 'SRV-SINGLE-SRV-EARNING-001', [
+            'parent_request_id' => $completedVisit->id,
+            'root_mrn' => $completedVisit->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SINGLE-SRV-EARNING-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => now(),
+        ]);
+
+        foreach ([[$completedVisit, 2000, 100], [$currentSrv, 1500, 300]] as [$job, $labor, $route]) {
+            TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $job->id,
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => $labor,
+                'route_fee_amount' => $route,
+                'total_amount' => $labor + $route,
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+        }
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($currentSrv, $fieldCode)
+                ->forceFill(['review_status' => 'accepted', 'reviewed_at' => now(), 'reviewed_by' => $admin->id])
+                ->save();
+        }
+
+        $completionAction = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $currentSrv->id,
+            'partner_id' => $partner->id,
+            'user_id' => $admin->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'checklist_gate' => 'server_checked',
+                'checklist' => ['job_completed' => true],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$currentSrv->id}/partner-completions/{$completionAction->id}/approve")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('approved_visit_ids');
+
+        $this->postJson(
+            "/api/technical-service/requests/{$currentSrv->id}/partner-completions/{$completionAction->id}/approve",
+            ['approved_visit_ids' => [$completedVisit->id]],
+        )
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('approved_visit_ids')
+            ->assertJsonPath('errors.approved_visit_ids.0', 'Mevcut SRV hakedişi açıkça onaylanmadan iş kapatılamaz.');
+
+        $response = $this->postJson(
+            "/api/technical-service/requests/{$currentSrv->id}/partner-completions/{$completionAction->id}/approve",
+            [
+                'note' => 'Tamamlanan visit ve mevcut SRV hakedişi onaylandı.',
+                'approved_visit_ids' => [$completedVisit->id, $currentSrv->id],
+            ],
+        )
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('request.earning_breakdown.root_total.total_amount', 3900)
+            ->assertJsonPath('request.earning_breakdown.root_total.approved_job_count', 2);
+
+        $historicalSnapshot = data_get($completedVisit->refresh()->operation_control_payload, 'completed_earning_snapshot');
+        $currentSnapshot = data_get($currentSrv->refresh()->operation_control_payload, 'completed_earning_snapshot');
+        $this->assertSame($technician->id, $historicalSnapshot['technical_service_technician_id'] ?? null);
+        $this->assertSame($completedVisit->mrn, $historicalSnapshot['mrn'] ?? null);
+        $this->assertSame(2100.0, (float) ($historicalSnapshot['total_amount'] ?? 0));
+        $this->assertSame('confirmed', $historicalSnapshot['payout_status'] ?? null);
+        $this->assertSame($currentSrv->service_code, $currentSnapshot['service_code'] ?? null);
+        $this->assertSame(1800.0, (float) ($currentSnapshot['total_amount'] ?? 0));
+        $this->assertSame('confirmed', $currentSnapshot['payout_status'] ?? null);
+
+        $eventCount = $currentSrv->events()->count();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $currentSrv->id)
+            ->count();
+
+        $this->postJson(
+            "/api/technical-service/requests/{$currentSrv->id}/partner-completions/{$completionAction->id}/approve",
+            ['approved_visit_ids' => [$completedVisit->id, $currentSrv->id]],
+        )
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop')
+            ->assertJsonPath('message_dispatches', []);
+
+        $this->assertSame($eventCount, $currentSrv->events()->count());
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $currentSrv->id)
+            ->count());
+        $this->assertSame(2, TechnicalServiceAssignmentOffer::query()
+            ->whereIn('technical_service_request_id', [$completedVisit->id, $currentSrv->id])
+            ->count());
     }
 
     public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void
@@ -8517,6 +8635,56 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('tamamlandı', $job->checklist_status);
     }
 
+    public function test_customer_approved_completion_remains_available_for_ops_final_check(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Customer Approved Completion Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Customer Approved Completion Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-CUSTOMER-APPROVED-FINAL-CHECK', [
+            'workflow_status' => 'Son Kontrol',
+            'status' => 'Son Kontrol',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => now(),
+        ]);
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode)
+                ->forceFill(['review_status' => 'accepted'])
+                ->save();
+        }
+
+        $action = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $admin->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => [
+                'checklist_gate' => 'server_checked',
+                'checklist' => ['job_completed' => true],
+                'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+                'ops_final_check_required' => true,
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$action->id}/approve", [
+                'note' => 'Müşteri onayı sonrası OPS son kontrolü tamamlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı');
+
+        $this->assertIsArray(data_get($action->refresh()->payload, 'ops_final_check'));
+        $this->assertSame(1, $job->events()->where('event_type', 'partner_completion_approved')->count());
+    }
+
     public function test_partner_customer_approval_sheet_has_mobile_editable_message_contract(): void
     {
         $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
@@ -9150,6 +9318,21 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('message_payloads.dispatches.0.test_redirect_applied', false)
             ->assertJsonPath('message_payloads.dispatches.1.message_type', 'appointment_approved_technician')
             ->assertJsonPath('message_payloads.dispatches.1.status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-appointment-proposals/{$action->id}/approve", [
+                'note' => 'İkinci tıklama yeni işlem üretmemeli.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop')
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('message_payloads.queued', 2);
+
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->whereIn('message_type', ['appointment_approved_customer', 'appointment_approved_technician'])
+            ->count());
+        $this->assertSame(1, $job->events()->where('event_type', 'partner_appointment_approved')->count());
 
         $portalJobResponse = $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")

@@ -315,12 +315,26 @@ class PaymentProviderManager
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
-            foreach ($candidates as $candidate) {
-                if (! $candidate instanceof TechnicalServiceMountPayment
-                    || ! $this->sameCanonicalBusinessEffect($candidate, $identity['identity_hash'], $amountMinor, $currency, $provider)) {
-                    continue;
-                }
+            $matchingCandidates = $candidates
+                ->filter(fn (mixed $candidate): bool => $candidate instanceof TechnicalServiceMountPayment
+                    && $this->sameCanonicalBusinessEffect($candidate, $identity['identity_hash'], $amountMinor, $currency, $provider))
+                ->values();
 
+            $paidCandidate = $matchingCandidates
+                ->filter(fn (TechnicalServiceMountPayment $candidate): bool => $candidate->status === TechnicalServiceMountPayment::STATUS_PAID)
+                ->last();
+            if ($paidCandidate instanceof TechnicalServiceMountPayment) {
+                $this->markCanonicalDuplicate($locked, $paidCandidate, $idempotencyHash, $identity['identity_hash'], $provider);
+
+                return [
+                    'duplicate_payment_id' => (int) $paidCandidate->getKey(),
+                    'outcome' => self::CREATE_OUTCOME_ALREADY_PAID,
+                    'idempotency_hash' => $idempotencyHash,
+                    'business_identity_hash' => $identity['identity_hash'],
+                ];
+            }
+
+            foreach ($matchingCandidates->where('status', TechnicalServiceMountPayment::STATUS_PENDING) as $candidate) {
                 $outcome = $this->canonicalCandidateOutcome($candidate, $idempotencyHash);
                 $this->markCanonicalDuplicate($locked, $candidate, $idempotencyHash, $identity['identity_hash'], $provider);
 
@@ -330,6 +344,43 @@ class PaymentProviderManager
                     'idempotency_hash' => $idempotencyHash,
                     'business_identity_hash' => $identity['identity_hash'],
                 ];
+            }
+
+            $terminalCandidates = $matchingCandidates
+                ->filter(fn (TechnicalServiceMountPayment $candidate): bool => in_array($candidate->status, [
+                    TechnicalServiceMountPayment::STATUS_FAILED,
+                    TechnicalServiceMountPayment::STATUS_CANCELLED,
+                    TechnicalServiceMountPayment::STATUS_EXPIRED,
+                ], true))
+                ->values();
+            if ($terminalCandidates->isNotEmpty()) {
+                $terminalCandidate = $terminalCandidates->last();
+                $retryAuthority = $this->terminalRetryAuthority($locked);
+                if (! $terminalCandidate instanceof TechnicalServiceMountPayment || $retryAuthority === null) {
+                    $terminalCandidate ??= $terminalCandidates->first();
+                    if (! $terminalCandidate instanceof TechnicalServiceMountPayment) {
+                        throw new ConflictHttpException('TERMINAL_PAYMENT_NOT_REUSABLE: Terminal ödeme authority çözülemedi.');
+                    }
+                    $this->markCanonicalDuplicate($locked, $terminalCandidate, $idempotencyHash, $identity['identity_hash'], $provider);
+
+                    return [
+                        'duplicate_payment_id' => (int) $terminalCandidate->getKey(),
+                        'outcome' => self::CREATE_OUTCOME_TERMINAL_NOT_REUSABLE,
+                        'idempotency_hash' => $idempotencyHash,
+                        'business_identity_hash' => $identity['identity_hash'],
+                    ];
+                }
+
+                $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
+                $payload['canonical_payment_terminal_retry'] = [
+                    ...$retryAuthority,
+                    'status' => 'consumed',
+                    'terminal_payment_ids' => $terminalCandidates
+                        ->map(fn (TechnicalServiceMountPayment $candidate): int => (int) $candidate->getKey())
+                        ->all(),
+                    'consumed_at' => now()->toIso8601String(),
+                ];
+                $locked->forceFill(['raw_payload' => $payload])->save();
             }
 
             $payload = is_array($locked->raw_payload) ? $locked->raw_payload : [];
@@ -495,6 +546,33 @@ class PaymentProviderManager
         }
 
         return self::CREATE_OUTCOME_REUSED_PENDING;
+    }
+
+    /** @return array{schema_version:int,source:string,reason:string,requested_by_user_id:int,requested_at:string}|null */
+    private function terminalRetryAuthority(TechnicalServiceMountPayment $payment): ?array
+    {
+        $retry = data_get($payment->raw_payload, 'canonical_payment_terminal_retry');
+        if (! is_array($retry)
+            || (int) ($retry['schema_version'] ?? 0) !== 1
+            || (string) ($retry['source'] ?? '') !== 'ops_explicit_terminal_retry'
+            || ! is_numeric($retry['requested_by_user_id'] ?? null)
+            || (int) $retry['requested_by_user_id'] < 1
+            || trim((string) ($retry['requested_at'] ?? '')) === '') {
+            return null;
+        }
+
+        $reason = trim((string) ($retry['reason'] ?? ''));
+        if (mb_strlen($reason) < 3 || mb_strlen($reason) > 500) {
+            return null;
+        }
+
+        return [
+            'schema_version' => 1,
+            'source' => 'ops_explicit_terminal_retry',
+            'reason' => $reason,
+            'requested_by_user_id' => (int) $retry['requested_by_user_id'],
+            'requested_at' => (string) $retry['requested_at'],
+        ];
     }
 
     private function markCanonicalDuplicate(

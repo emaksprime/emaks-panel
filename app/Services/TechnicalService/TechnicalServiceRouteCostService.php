@@ -11,10 +11,19 @@ use Throwable;
 class TechnicalServiceRouteCostService
 {
     private const ROUTES_ENDPOINT = 'https://routes.googleapis.com/directions/v2:computeRoutes';
+
     private const THRESHOLD_KM = 30.0;
+
     private const SAME_LOCATION_GUARD_KM = 0.1;
+
     private const SUSPICIOUS_STRAIGHT_LINE_MAX_KM = 2.0;
+
     private const SUSPICIOUS_ROUTE_MIN_ONE_WAY_KM = 5.0;
+
+    public function __construct(
+        private readonly TechnicianGeocodingService $technicianGeocoding,
+        private readonly TechnicalServiceGeocodingService $geocoding,
+    ) {}
 
     /**
      * @return array{threshold_km:float,fee_per_km:?float}
@@ -223,8 +232,7 @@ class TechnicalServiceRouteCostService
     }
 
     /**
-     * @param array<string, mixed> $payload
-     *
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function manualQuote(TechnicalServiceRequest $request, ?TechnicalServiceTechnician $technician, array $payload): array
@@ -312,8 +320,18 @@ class TechnicalServiceRouteCostService
      */
     private function technicianCoordinates(TechnicalServiceTechnician $technician): ?array
     {
-        $coordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->latitude, $technician->longitude)
-            ?? app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->start_latitude, $technician->start_longitude);
+        $coordinates = $this->geocoding->validCoordinatePair($technician->latitude, $technician->longitude)
+            ?? $this->geocoding->validCoordinatePair($technician->start_latitude, $technician->start_longitude);
+
+        if ($coordinates === null && $this->technicianGeocoding->bestQueryFor($technician) !== null) {
+            $geocoded = $this->technicianGeocoding->geocode($technician);
+            if (($geocoded['ok'] ?? false) === true) {
+                $coordinates = $this->geocoding->validCoordinatePair(
+                    $geocoded['latitude'] ?? null,
+                    $geocoded['longitude'] ?? null,
+                );
+            }
+        }
 
         if ($coordinates === null) {
             return null;
@@ -330,7 +348,7 @@ class TechnicalServiceRouteCostService
      */
     private function requestCoordinates(TechnicalServiceRequest $request): ?array
     {
-        $coordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair(
+        $coordinates = $this->geocoding->validCoordinatePair(
             $request->location_latitude,
             $request->location_longitude,
         );
@@ -347,7 +365,7 @@ class TechnicalServiceRouteCostService
             $parent = $request->parentRequest;
 
             if ($parent instanceof TechnicalServiceRequest) {
-                $parentCoordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair(
+                $parentCoordinates = $this->geocoding->validCoordinatePair(
                     $parent->location_latitude,
                     $parent->location_longitude,
                 );
@@ -372,10 +390,9 @@ class TechnicalServiceRouteCostService
     }
 
     /**
-     * @param array{latitude:float,longitude:float}|null $origin
-     * @param array{latitude:float,longitude:float}|null $destination
-     * @param array<string, mixed>|null $rawPayload
-     *
+     * @param  array{latitude:float,longitude:float}|null  $origin
+     * @param  array{latitude:float,longitude:float}|null  $destination
+     * @param  array<string, mixed>|null  $rawPayload
      * @return array<string, mixed>
      */
     private function storeSafeQuote(
@@ -467,8 +484,8 @@ class TechnicalServiceRouteCostService
     }
 
     /**
-     * @param array{latitude:float,longitude:float} $origin
-     * @param array{latitude:float,longitude:float} $destination
+     * @param  array{latitude:float,longitude:float}  $origin
+     * @param  array{latitude:float,longitude:float}  $destination
      */
     private function haversineKm(array $origin, array $destination): float
     {
@@ -621,7 +638,7 @@ class TechnicalServiceRouteCostService
     }
 
     /**
-     * @param array{one_way_distance_km:?float,round_trip_distance_km:?float,threshold_km:float,billable_km:?float,fee_per_km:?float,fee_amount:?float} $canonical
+     * @param  array{one_way_distance_km:?float,round_trip_distance_km:?float,threshold_km:float,billable_km:?float,fee_per_km:?float,fee_amount:?float}  $canonical
      */
     private function isDirtyZeroDistanceQuote(TechnicalServiceRouteQuote $quote, array $canonical): bool
     {

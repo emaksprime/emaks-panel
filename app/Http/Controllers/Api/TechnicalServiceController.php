@@ -25,6 +25,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
+use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
@@ -716,12 +717,43 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        $result = $this->workflowService->recordTechnicianEarningsMessage(
-            $technicalServiceRequest,
-            $technician,
-            $validated,
-            $request->user(),
-        );
+        $result = DB::transaction(function () use ($technicalServiceRequest, $technician, $validated, $request): array {
+            $job = TechnicalServiceRequest::query()
+                ->whereKey($technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $result = $this->workflowService->recordTechnicianEarningsMessage(
+                $job,
+                $technician,
+                $validated,
+                $request->user(),
+            );
+            $offer = $result['assignment_offer'];
+            $routeQuote = is_numeric($offer->route_quote_id)
+                ? TechnicalServiceRouteQuote::query()->find((int) $offer->route_quote_id)
+                : null;
+            $existingSettlement = TechnicalServiceSettlement::query()
+                ->where('technical_service_request_id', $job->id)
+                ->lockForUpdate()
+                ->first();
+            $this->assignmentSettlementService->persistForAssignment(
+                $result['request']->refresh(),
+                $technician,
+                $offer,
+                $routeQuote,
+                (float) $offer->labor_amount,
+                (float) $offer->route_fee_amount,
+                $existingSettlement instanceof TechnicalServiceSettlement
+                    ? (float) $existingSettlement->customer_direct_to_technician_amount
+                    : null,
+                $request->user(),
+            );
+
+            return [
+                ...$result,
+                'request' => $result['request']->refresh(),
+            ];
+        });
         $operationControl = is_array($result['request']->operation_control_payload) ? $result['request']->operation_control_payload : [];
         $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
             ? $operationControl['technician_earning_message']
@@ -756,6 +788,28 @@ class TechnicalServiceController extends Controller
             'whatsapp_url' => $result['whatsapp_url'],
             'request' => $this->workflowService->serialize($result['request'], true),
         ]);
+    }
+
+    private function paymentCreateFailureMessage(Throwable $exception): string
+    {
+        $message = $exception->getMessage();
+
+        if (str_contains($message, 'TERMINAL_PAYMENT_NOT_REUSABLE')) {
+            return 'Önceki ödeme bağlantısı iptal edildi. Yeni bir ödeme bağlantısı oluşturmak için yeniden deneme nedeni girin.';
+        }
+        if (str_contains($message, 'PAYMENT_CREATE_IN_PROGRESS')) {
+            return 'Ödeme bağlantısı oluşturuluyor. Lütfen kısa süre sonra tekrar deneyin.';
+        }
+        if (str_contains($message, 'PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE')) {
+            return 'Mevcut ödeme bağlantısı güvenli biçimde kullanılamıyor. Ödeme geçmişini kontrol edip açıklamalı yeni bağlantı oluşturun.';
+        }
+        if (str_contains($message, 'PUBLIC_ORIGIN_')) {
+            return 'Ödeme bağlantısı için public/LAN adresi hazır değil. Teknik Servis Admin > Entegrasyonlar ayarını kontrol edin.';
+        }
+
+        report($exception);
+
+        return 'Ödeme bağlantısı güvenli biçimde oluşturulamadı. Ödeme sağlayıcısı ayarlarını kontrol edip tekrar deneyin.';
     }
 
     public function manualRouteQuote(
@@ -806,6 +860,7 @@ class TechnicalServiceController extends Controller
             'part_request_id' => ['nullable', 'integer', 'exists:technical_service_part_requests,id'],
             'note' => ['nullable', 'string', 'max:2000'],
             'message_template' => ['nullable', 'string', 'max:4000'],
+            'terminal_retry_reason' => ['nullable', 'string', 'min:3', 'max:500'],
         ]);
         $this->assertStrictPaymentDecimalInputs($request, ['amount', 'service_amount', 'part_amount']);
         if (isset($validated['purpose'], $validated['charge_type'])
@@ -939,6 +994,15 @@ class TechnicalServiceController extends Controller
             'message_template' => $validated['message_template'] ?? null,
             'note' => $validated['note'] ?? null,
         ];
+        if (filled($validated['terminal_retry_reason'] ?? null)) {
+            $paymentPayload['canonical_payment_terminal_retry'] = [
+                'schema_version' => 1,
+                'source' => 'ops_explicit_terminal_retry',
+                'reason' => trim((string) $validated['terminal_retry_reason']),
+                'requested_by_user_id' => $request->user()?->id,
+                'requested_at' => now()->toIso8601String(),
+            ];
+        }
 
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
@@ -959,7 +1023,7 @@ class TechnicalServiceController extends Controller
             $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
 
             throw ValidationException::withMessages([
-                'payment' => $exception->getMessage(),
+                'payment' => $this->paymentCreateFailureMessage($exception),
             ]);
         }
         if ($createOutcome === PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID) {
@@ -988,7 +1052,7 @@ class TechnicalServiceController extends Controller
         }
         if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
             throw ValidationException::withMessages([
-                'payment' => 'Terminal ödeme kaydı pending akışına geri alınamaz.',
+                'payment' => 'Önceki ödeme bağlantısı iptal edildi. Yeni bir ödeme bağlantısı oluşturmak için yeniden deneme nedeni girin.',
             ]);
         }
 
@@ -1831,6 +1895,38 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $assignmentOfferPayload = is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [];
+
+        if (array_key_exists('labor_amount', $payload)) {
+            $assignmentOfferPayload['labor_amount'] = $payload['labor_amount'];
+        }
+
+        if (array_key_exists('travel_amount', $payload)) {
+            $assignmentOfferPayload['route_fee_amount'] = $payload['travel_amount'];
+        }
+
+        if (array_key_exists('customer_direct_to_technician_amount', $payload)) {
+            $assignmentOfferPayload['customer_direct_to_technician_amount'] = $payload['customer_direct_to_technician_amount'];
+        }
+
+        if (array_key_exists('earning_note', $payload)) {
+            $assignmentOfferPayload['note'] = $payload['earning_note'];
+        }
+
+        if (array_key_exists('confirm_assignment', $payload)) {
+            $assignmentOfferPayload['confirmed_by_ops'] = (bool) $payload['confirm_assignment'];
+        }
+
+        $isServiceVisit = $technicalServiceRequest->parent_request_id !== null
+            || filled($technicalServiceRequest->service_code)
+            || mb_strtolower(trim((string) $technicalServiceRequest->service_type)) === 'servis';
+        $submittedLaborAmount = $this->nullableMoney($assignmentOfferPayload['labor_amount'] ?? null);
+        if ($isServiceVisit && ($submittedLaborAmount === null || $submittedLaborAmount <= 0)) {
+            throw ValidationException::withMessages([
+                'assignment_offer.labor_amount' => 'SRV ataması için işçilik hakedişi 0 TL üzerinde açıkça girilmelidir.',
+            ]);
+        }
+
         $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
         $mountExclusionAcknowledged = (bool) ($payload['mount_exclusion_acknowledged'] ?? false);
         if ($mountExclusionAcknowledged || $mountExclusionNote !== '') {
@@ -1966,28 +2062,6 @@ class TechnicalServiceController extends Controller
         if (! $routeQuote instanceof TechnicalServiceRouteQuote && isset($payload['travel_round_trip_km'])) {
             $technicalServiceRequest->fill($this->calculateTravelCosts((float) $payload['travel_round_trip_km']));
             $technicalServiceRequest->save();
-        }
-
-        $assignmentOfferPayload = is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [];
-
-        if (array_key_exists('labor_amount', $payload)) {
-            $assignmentOfferPayload['labor_amount'] = $payload['labor_amount'];
-        }
-
-        if (array_key_exists('travel_amount', $payload)) {
-            $assignmentOfferPayload['route_fee_amount'] = $payload['travel_amount'];
-        }
-
-        if (array_key_exists('customer_direct_to_technician_amount', $payload)) {
-            $assignmentOfferPayload['customer_direct_to_technician_amount'] = $payload['customer_direct_to_technician_amount'];
-        }
-
-        if (array_key_exists('earning_note', $payload)) {
-            $assignmentOfferPayload['note'] = $payload['earning_note'];
-        }
-
-        if (array_key_exists('confirm_assignment', $payload)) {
-            $assignmentOfferPayload['confirmed_by_ops'] = (bool) $payload['confirm_assignment'];
         }
 
         if ($technician instanceof TechnicalServiceTechnician) {
@@ -2360,9 +2434,17 @@ class TechnicalServiceController extends Controller
         mixed $user,
         ?B2BPartnerTechnician $assignmentLink,
     ): TechnicalServiceAssignmentOffer {
-        $laborAmount = $this->nullableMoney($offerPayload['labor_amount'] ?? null)
-            ?? $this->nullableMoney($request->technician_payment_amount)
-            ?? 0.0;
+        $submittedLaborAmount = $this->nullableMoney($offerPayload['labor_amount'] ?? null);
+        $laborAmount = $submittedLaborAmount ?? $this->nullableMoney($request->technician_payment_amount);
+        $isServiceVisit = $request->parent_request_id !== null
+            || filled($request->service_code)
+            || mb_strtolower(trim((string) $request->service_type)) === 'servis';
+        if ($isServiceVisit && ($submittedLaborAmount === null || $submittedLaborAmount <= 0)) {
+            throw ValidationException::withMessages([
+                'assignment_offer.labor_amount' => 'SRV ataması için işçilik hakedişi 0 TL üzerinde açıkça girilmelidir.',
+            ]);
+        }
+        $laborAmount ??= 0.0;
         $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount'] ?? null)
             ?? $this->nullableMoney($routeQuote?->fee_amount)
             ?? $this->nullableMoney($request->travel_fee_amount)

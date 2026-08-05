@@ -903,7 +903,7 @@ class TechnicalServiceWorkflowService
 
     /**
      * @param  array<string, mixed>  $payload
-     * @return array{request:TechnicalServiceRequest,message_text:string,copy_text:string,whatsapp_url:string}
+     * @return array{request:TechnicalServiceRequest,assignment_offer:TechnicalServiceAssignmentOffer,message_text:string,copy_text:string,whatsapp_url:string}
      */
     public function recordTechnicianEarningsMessage(
         TechnicalServiceRequest $request,
@@ -998,6 +998,7 @@ class TechnicalServiceWorkflowService
 
         return [
             'request' => $request->refresh(),
+            'assignment_offer' => $offer->refresh(),
             'message_text' => $messageText,
             'copy_text' => $messageText,
             'whatsapp_url' => $whatsappUrl,
@@ -2852,7 +2853,7 @@ class TechnicalServiceWorkflowService
         $serviceVisitCount = $requests
             ->filter(fn (TechnicalServiceRequest $related): bool => $related->parent_request_id !== null || filled($related->service_code))
             ->count();
-        $required = $serviceVisitCount > 1;
+        $required = $serviceVisitCount > 0;
 
         if (! $required) {
             return [

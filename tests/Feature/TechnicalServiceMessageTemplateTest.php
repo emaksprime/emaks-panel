@@ -1389,6 +1389,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
         $templates = collect($payload['templates']);
         foreach ([
+            'mount_request_created_customer',
             'appointment_approved_customer',
             'appointment_updated_customer',
             'payment_link_customer',
@@ -1411,6 +1412,31 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         }
 
         $this->assertTrue($templates->every(fn (array $template): bool => trim((string) $template['body']) !== ''));
+    }
+
+    public function test_mount_request_customer_template_uses_business_context_without_internal_reference_labels(): void
+    {
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'mount_request_created_customer',
+                    'channel' => $channel,
+                    'sample_context' => false,
+                    'context' => [
+                        'customer_name' => 'Montaj Müşterisi',
+                        'customer_reference_phrase' => 'MNJ-TEST-001 numaralı',
+                        'product_name' => 'Akıllı Kilit',
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            $this->assertStringContainsString('MNJ-TEST-001 numaralı', $body);
+            $this->assertStringContainsString('Akıllı Kilit', $body);
+            $this->assertStringNotContainsString('MRN:', $body);
+            $this->assertStringNotContainsString('SRV:', $body);
+        }
     }
 
     public function test_customer_language_policy_all_customer_templates(): void

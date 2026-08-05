@@ -388,6 +388,11 @@ class TechnicalServiceMessagingSettingsService
             'recipient_role' => 'ops',
             'description' => 'Yeni teknik servis talebi oluştuğunda OPS WhatsApp bilgilendirmesi.',
         ],
+        'mount_request_created_customer' => [
+            'label' => 'Müşteri montaj talebi alındı',
+            'recipient_role' => 'customer',
+            'description' => 'Müşteri montaj talebini gönderdiğinde alındı teyidi verir.',
+        ],
         'appointment_approved_customer' => [
             'label' => 'Müşteri randevu onayı',
             'recipient_role' => 'customer',
@@ -536,47 +541,7 @@ class TechnicalServiceMessagingSettingsService
                 'root' => self::ROOT_KEY,
             ],
             'execution_mode' => $this->executionModePayloadForSettings($settings, true),
-            'global' => [
-                'messaging_enabled' => (bool) $settings['messaging_enabled'],
-                'real_send_enabled' => (bool) $settings['real_send_enabled'],
-                'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
-                'manual_e2e_enabled' => (bool) ($settings['manual_e2e_enabled'] ?? false),
-                'manual_e2e_active_run_id' => $manualE2e['active_run_id'],
-                'manual_e2e_started_at' => $manualE2e['started_at'],
-                'manual_e2e_created_after' => $manualE2e['created_after'],
-                'manual_e2e_expires_at' => $manualE2e['expires_at'],
-                'manual_e2e_last_run_id' => $manualE2e['last_run_id'],
-                'manual_e2e_last_stopped_at' => $manualE2e['last_stopped_at'],
-                'manual_e2e_phase' => $manualE2e['phase'],
-                'manual_e2e_ttl_seconds' => (int) ($settings['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
-                'manual_e2e_allowlisted_phones' => $settings['manual_e2e_allowlisted_phones'] ?? [],
-                'manual_e2e_partner_portal_origin_enabled' => (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false),
-                'manual_e2e_partner_portal_origin' => $settings['manual_e2e_partner_portal_origin'] ?? null,
-                'manual_e2e_allowlisted_phone_masks' => array_map(
-                    fn (string $phone): string => $this->maskPhone($phone),
-                    $settings['manual_e2e_allowlisted_phones'] ?? [],
-                ),
-                'ops_whatsapp_enabled' => (bool) ($settings['ops_whatsapp_enabled'] ?? false),
-                'ops_whatsapp_phone' => $settings['ops_whatsapp_phone'] ?? null,
-                'ops_whatsapp_phone_masked' => $this->maskPhone((string) ($settings['ops_whatsapp_phone'] ?? '')),
-                'shared_test_phone' => $settings['test_phone'],
-                'shared_test_phone_masked' => $this->maskPhone($settings['test_phone']),
-                'test_phone' => $settings['test_phone'],
-                'test_phone_masked' => $this->maskPhone($settings['test_phone']),
-                'queue_paused' => (bool) $settings['queue_paused'],
-                'provider_key' => $settings['provider_key'],
-                'active_provider' => $settings['active_provider'],
-                'default_provider' => $settings['default_provider'],
-                'fallback_provider' => $settings['fallback_provider'],
-                'provider_priority' => $settings['provider_priority'],
-                'send_delay_seconds' => (int) $settings['send_delay_seconds'],
-                'duplicate_cooldown_minutes' => (int) $settings['duplicate_cooldown_minutes'],
-                'hourly_limit' => (int) $settings['hourly_limit'],
-                'daily_limit' => (int) $settings['daily_limit'],
-                'max_auto_retries' => (int) $settings['max_auto_retries'],
-                'allow_browser_smoke_send' => (bool) $settings['allow_browser_smoke_send'],
-                'allow_test_fixture_send' => (bool) $settings['allow_test_fixture_send'],
-            ],
+            'global' => $this->globalPayload($settings, $manualE2e),
             'readiness' => $readiness,
             'portal_origins' => $this->portalOriginReadiness($settings),
             'manual_e2e' => $manualE2e,
@@ -618,6 +583,24 @@ class TechnicalServiceMessagingSettingsService
                 'fallback_provider' => 'Otomatik provider fallback bu kontrollü akışta kapalıdır; kanal politikası açık provider seçimini kullanır.',
                 'channel_policy' => 'Kanal politikası WhatsApp/SMS seçimini tanımlar; birlikte gönderim güvenli queue ve idempotency kontrolleriyle yürür.',
             ],
+        ];
+    }
+
+    /**
+     * Queue planning needs stored policy, not the expensive provider-readiness report.
+     * Transport workers still enforce the canonical execution-mode and readiness gates.
+     *
+     * @return array<string, mixed>
+     */
+    public function workflowDispatchSnapshot(): array
+    {
+        $settings = $this->settings();
+        $manualE2e = TechnicalServiceManualE2ERunContext::fromSettings($settings)->payload();
+
+        return [
+            'global' => $this->globalPayload($settings, $manualE2e),
+            'providers' => $this->workflowProviderPayload($settings),
+            'message_types' => $this->messageTypePayload($settings['message_types']),
         ];
     }
 
@@ -5955,6 +5938,12 @@ class TechnicalServiceMessagingSettingsService
                 'whatsapp_mode' => 'test',
                 'sms_mode' => 'disabled',
             ],
+            'mount_request_created_customer' => [
+                'enabled' => true,
+                'channel_policy' => 'whatsapp_and_sms',
+                'whatsapp_mode' => 'test',
+                'sms_mode' => 'test',
+            ],
             'payment_received_ops' => [
                 'enabled' => true,
                 'channel_policy' => 'whatsapp_only',
@@ -7090,6 +7079,76 @@ class TechnicalServiceMessagingSettingsService
         }
 
         return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<int, array<string, mixed>>
+     */
+    private function workflowProviderPayload(array $settings): array
+    {
+        $payload = [];
+
+        foreach (self::PROVIDERS as $key => $definition) {
+            $payload[] = [
+                'key' => $key,
+                'enabled' => $this->providerEnabled($key, $settings),
+                'contract_confirmed' => (bool) ($definition['contract_confirmed'] ?? false),
+                'capabilities' => $this->providerCapabilities($key),
+            ];
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @param  array<string, mixed>  $manualE2e
+     * @return array<string, mixed>
+     */
+    private function globalPayload(array $settings, array $manualE2e): array
+    {
+        return [
+            'messaging_enabled' => (bool) $settings['messaging_enabled'],
+            'real_send_enabled' => (bool) $settings['real_send_enabled'],
+            'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
+            'manual_e2e_enabled' => (bool) ($settings['manual_e2e_enabled'] ?? false),
+            'manual_e2e_active_run_id' => $manualE2e['active_run_id'],
+            'manual_e2e_started_at' => $manualE2e['started_at'],
+            'manual_e2e_created_after' => $manualE2e['created_after'],
+            'manual_e2e_expires_at' => $manualE2e['expires_at'],
+            'manual_e2e_last_run_id' => $manualE2e['last_run_id'],
+            'manual_e2e_last_stopped_at' => $manualE2e['last_stopped_at'],
+            'manual_e2e_phase' => $manualE2e['phase'],
+            'manual_e2e_ttl_seconds' => (int) ($settings['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
+            'manual_e2e_allowlisted_phones' => $settings['manual_e2e_allowlisted_phones'] ?? [],
+            'manual_e2e_partner_portal_origin_enabled' => (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false),
+            'manual_e2e_partner_portal_origin' => $settings['manual_e2e_partner_portal_origin'] ?? null,
+            'manual_e2e_allowlisted_phone_masks' => array_map(
+                fn (string $phone): string => $this->maskPhone($phone),
+                $settings['manual_e2e_allowlisted_phones'] ?? [],
+            ),
+            'ops_whatsapp_enabled' => (bool) ($settings['ops_whatsapp_enabled'] ?? false),
+            'ops_whatsapp_phone' => $settings['ops_whatsapp_phone'] ?? null,
+            'ops_whatsapp_phone_masked' => $this->maskPhone((string) ($settings['ops_whatsapp_phone'] ?? '')),
+            'shared_test_phone' => $settings['test_phone'],
+            'shared_test_phone_masked' => $this->maskPhone($settings['test_phone']),
+            'test_phone' => $settings['test_phone'],
+            'test_phone_masked' => $this->maskPhone($settings['test_phone']),
+            'queue_paused' => (bool) $settings['queue_paused'],
+            'provider_key' => $settings['provider_key'],
+            'active_provider' => $settings['active_provider'],
+            'default_provider' => $settings['default_provider'],
+            'fallback_provider' => $settings['fallback_provider'],
+            'provider_priority' => $settings['provider_priority'],
+            'send_delay_seconds' => (int) $settings['send_delay_seconds'],
+            'duplicate_cooldown_minutes' => (int) $settings['duplicate_cooldown_minutes'],
+            'hourly_limit' => (int) $settings['hourly_limit'],
+            'daily_limit' => (int) $settings['daily_limit'],
+            'max_auto_retries' => (int) $settings['max_auto_retries'],
+            'allow_browser_smoke_send' => (bool) $settings['allow_browser_smoke_send'],
+            'allow_test_fixture_send' => (bool) $settings['allow_test_fixture_send'],
+        ];
     }
 
     /**

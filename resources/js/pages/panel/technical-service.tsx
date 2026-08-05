@@ -1119,6 +1119,7 @@ export function TechnicalServiceOperationCenter() {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [selectedEvents, setSelectedEvents] = useState<ApiTechnicalServiceEvent[]>([])
   const [selectedDetailRequest, setSelectedDetailRequest] = useState<ServiceRequest | null>(null)
+  const selectedDetailRequestRef = useRef<ServiceRequest | null>(null)
   const [assignDialogOpen, setAssignDialogOpen] = useState(false)
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
   const [contactDialogOpen, setContactDialogOpen] = useState(false)
@@ -1129,6 +1130,8 @@ export function TechnicalServiceOperationCenter() {
   const [assignNote, setAssignNote] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
+  const [assignSuccess, setAssignSuccess] = useState<string | null>(null)
+  const assignMutationInFlightRef = useRef(false)
   const [routeQuoteLoading, setRouteQuoteLoading] = useState(false)
   const [routeQuoteError, setRouteQuoteError] = useState<string | null>(null)
   const [routeQuoteManualSaveLoading, setRouteQuoteManualSaveLoading] = useState(false)
@@ -1138,6 +1141,7 @@ export function TechnicalServiceOperationCenter() {
   const routeQuoteLastAutoKey = useRef('')
   const [extraPaymentCreateLoading, setExtraPaymentCreateLoading] = useState(false)
   const [extraPaymentCreateError, setExtraPaymentCreateError] = useState<string | null>(null)
+  const extraPaymentCreateInFlightRef = useRef(false)
   const [technicianEarningMessageLoading, setTechnicianEarningMessageLoading] = useState(false)
   const [technicianEarningMessageError, setTechnicianEarningMessageError] = useState<string | null>(null)
   const [fieldDocumentReviewLoading, setFieldDocumentReviewLoading] = useState<string | null>(null)
@@ -1146,6 +1150,14 @@ export function TechnicalServiceOperationCenter() {
   const [customerApprovalResendError, setCustomerApprovalResendError] = useState<string | null>(null)
   const [partnerActionReviewLoading, setPartnerActionReviewLoading] = useState<string | null>(null)
   const [partnerActionReviewError, setPartnerActionReviewError] = useState<string | null>(null)
+  const [appointmentApprovalInFlight, setAppointmentApprovalInFlight] = useState<string | null>(null)
+  const [appointmentApprovalError, setAppointmentApprovalError] = useState<string | null>(null)
+  const [appointmentApprovalSuccess, setAppointmentApprovalSuccess] = useState<string | null>(null)
+  const appointmentApprovalInFlightRef = useRef<string | null>(null)
+  const [assignmentOfferUpdateInFlight, setAssignmentOfferUpdateInFlight] = useState(false)
+  const [assignmentOfferUpdateError, setAssignmentOfferUpdateError] = useState<string | null>(null)
+  const [assignmentOfferUpdateSuccess, setAssignmentOfferUpdateSuccess] = useState<string | null>(null)
+  const assignmentOfferUpdateInFlightRef = useRef(false)
   const [opsDetailVisibility, setOpsDetailVisibility] = useState<OpsDetailVisibilitySettings>(DEFAULT_OPS_DETAIL_VISIBILITY)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
@@ -1360,6 +1372,10 @@ export function TechnicalServiceOperationCenter() {
   }, [selectedListRequest])
 
   useEffect(() => {
+    selectedDetailRequestRef.current = selectedDetailRequest
+  }, [selectedDetailRequest])
+
+  useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
 
@@ -1410,10 +1426,14 @@ export function TechnicalServiceOperationCenter() {
     detailRequestTokenRef.current = requestToken
     const expectedListRequest = selectedListRequestRef.current ?? requestsRef.current.find((item) => item.id === requestId) ?? null
     const isCurrentRequest = () => detailRequestTokenRef.current === requestToken && selectedIdRef.current === requestId
-    setDetailLoading(true)
+    const preserveCurrentDetail = selectedDetailRequestRef.current?.id === requestId
+    setDetailLoading(!preserveCurrentDetail)
     setDetailError(null)
-    setSelectedDetailRequest(null)
-    setSelectedEvents([])
+
+    if (!preserveCurrentDetail) {
+      setSelectedDetailRequest(null)
+      setSelectedEvents([])
+    }
 
     try {
       const response = await apiRequest(`/api/technical-service/requests/${id}`)
@@ -1440,8 +1460,12 @@ export function TechnicalServiceOperationCenter() {
           detail: mappedDetail,
         })
         setDetailError('Seçilen kayıt ile detay verisi eşleşmedi. Lütfen listeyi yenileyin.')
-        setSelectedDetailRequest(null)
-        setSelectedEvents([])
+
+        if (!preserveCurrentDetail) {
+          setSelectedDetailRequest(null)
+          setSelectedEvents([])
+        }
+
         setDetailLoading(false)
 
         return
@@ -1459,8 +1483,11 @@ export function TechnicalServiceOperationCenter() {
       }
 
       setDetailError(caught instanceof Error ? caught.message : 'Talep detayları yüklenemedi.')
-      setSelectedEvents([])
-      setSelectedDetailRequest(null)
+
+      if (!preserveCurrentDetail) {
+        setSelectedEvents([])
+        setSelectedDetailRequest(null)
+      }
     } finally {
       if (isCurrentRequest()) {
         setDetailLoading(false)
@@ -2438,7 +2465,7 @@ export function TechnicalServiceOperationCenter() {
         hasAddressInfo,
         hasPlusCodeInfo,
         hasCoordinates: hasTechnicianCoordinates,
-        routeReady: hasTechnicianCoordinates,
+        routeReady: hasTechnicianCoordinates || hasPlusCodeInfo || hasAddressInfo,
         addressSummary,
         locationCode: match.technician.location_code ?? null,
         routeLocationMessage: hasTechnicianCoordinates
@@ -2446,7 +2473,7 @@ export function TechnicalServiceOperationCenter() {
             ? 'Usta koordinatı kontrol gerekli. Usta yol hakedişi otomatik onaylanmamalı.'
             : 'Yol hesabı için koordinat var.'
           : hasPlusCodeInfo || hasAddressInfo
-            ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Yol hesabı için lat/lng gerekli.'
+            ? 'Usta adres/Plus Code bilgisi var; yol hesabında güvenli koordinat çözümü yapılacak.'
             : 'Usta adres bilgisi eksik.',
         distanceKmLabel: match.distanceKm !== null
           ? `Yaklaşık şehir/adres mesafesi ${match.distanceKm.toLocaleString('tr-TR')} km`
@@ -2775,6 +2802,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignmentConfirmDialogOpen(false)
     setShowNearbyTechnicians(false)
     setAssignError(null)
+    setAssignSuccess(null)
     setRouteQuoteError(null)
     setExtraPaymentCreateError(null)
     setTechnicianEarningMessageError(null)
@@ -3317,6 +3345,7 @@ export function TechnicalServiceOperationCenter() {
   useEffect(() => {
     if (
       !selectedId
+      || !assignDialogOpen
       || !assignTechnicianOption
       || assignTechnicianOption === 'other'
       || !selectedAssignTechnicianRecord
@@ -3328,9 +3357,20 @@ export function TechnicalServiceOperationCenter() {
 
     const technicianCoordinates = technicianCoordinatePair(selectedAssignTechnicianRecord)
     const requestCoordinates = requestRouteCoordinatePair(modalRequest)
-    const missingRouteReason = !technicianCoordinates
+    const technicianHasAddressAuthority = [
+      selectedAssignTechnicianRecord.default_start_address,
+      selectedAssignTechnicianRecord.google_formatted_address,
+      selectedAssignTechnicianRecord.address,
+      selectedAssignTechnicianRecord.cari_address,
+      selectedAssignTechnicianRecord.location_code,
+      selectedAssignTechnicianRecord.google_plus_code,
+      selectedAssignTechnicianRecord.default_start_plus_code,
+    ].some((value) => typeof value === 'string' && value.trim() !== '')
+    const requestHasAddressAuthority = [modalRequest.address, modalRequest.district, modalRequest.city]
+      .some((value) => typeof value === 'string' && value.trim() !== '')
+    const missingRouteReason = !technicianCoordinates && !technicianHasAddressAuthority
       ? 'Usta konumu eksik; yol hakedişi manuel girilmeli.'
-      : !requestCoordinates
+      : !requestCoordinates && !requestHasAddressAuthority
         ? 'Müşteri konumu eksik; yol hakedişi manuel girilmeli.'
         : null
 
@@ -3339,8 +3379,10 @@ export function TechnicalServiceOperationCenter() {
       assignTechnicianOption,
       technicianCoordinates?.latitude ?? 'no-technician-location',
       technicianCoordinates?.longitude ?? 'no-technician-location',
+      technicianHasAddressAuthority ? technicianAddressSummary(selectedAssignTechnicianRecord) : '',
       requestCoordinates?.latitude ?? 'no-request-location',
       requestCoordinates?.longitude ?? 'no-request-location',
+      requestHasAddressAuthority ? [modalRequest.address, modalRequest.district, modalRequest.city].filter(Boolean).join('|') : '',
       modalRequest.routeFeeConfig?.fee_per_km ?? '',
       modalRequest.routeFeeConfig?.threshold_km ?? '',
       missingRouteReason ?? '',
@@ -3351,23 +3393,34 @@ export function TechnicalServiceOperationCenter() {
     }
 
     let cancelled = false
-    const timer = window.setTimeout(() => {
-      if (cancelled || routeQuoteLatestSelection.current.requestId !== selectedId || routeQuoteLatestSelection.current.technicianId !== assignTechnicianOption) {
+
+    if (routeQuoteLatestSelection.current.requestId !== selectedId || routeQuoteLatestSelection.current.technicianId !== assignTechnicianOption) {
+      return
+    }
+
+    routeQuoteLastAutoKey.current = autoKey
+
+    if (missingRouteReason) {
+      queueMicrotask(() => {
+        if (!cancelled && routeQuoteLastAutoKey.current === autoKey) {
+          setRouteQuoteError(missingRouteReason)
+          setRouteQuoteManualSaveError(null)
+        }
+      })
+
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const submittedRequestId = selectedId
+    const submittedTechnicianId = assignTechnicianOption
+    const requestSeq = ++routeQuoteAutoRequestSeq.current
+
+    queueMicrotask(() => {
+      if (cancelled) {
         return
       }
-
-      routeQuoteLastAutoKey.current = autoKey
-
-      if (missingRouteReason) {
-        setRouteQuoteError(missingRouteReason)
-        setRouteQuoteManualSaveError(null)
-
-        return
-      }
-
-      const submittedRequestId = selectedId
-      const submittedTechnicianId = assignTechnicianOption
-      const requestSeq = ++routeQuoteAutoRequestSeq.current
 
       setRouteQuoteLoading(true)
       setRouteQuoteError(null)
@@ -3376,68 +3429,68 @@ export function TechnicalServiceOperationCenter() {
       void apiRequest(`/api/technical-service/requests/${submittedRequestId}/technicians/${submittedTechnicianId}/route-quote`, {
         method: 'POST',
       })
-        .then((response) => {
-          if (
-            cancelled
-            || routeQuoteAutoRequestSeq.current !== requestSeq
-            || routeQuoteLatestSelection.current.requestId !== submittedRequestId
-            || routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId
-          ) {
-            return
-          }
+      .then((response) => {
+        if (
+          cancelled
+          || routeQuoteAutoRequestSeq.current !== requestSeq
+          || routeQuoteLatestSelection.current.requestId !== submittedRequestId
+          || routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId
+        ) {
+          return
+        }
 
-          const updatedRequest = response.request ? mapApiRequest(response.request) : null
+        const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
-          if (!updatedRequest) {
-            setRouteQuoteError('Usta yol hakedişi hesaplandı ancak talep detayı güncellenemedi.')
+        if (!updatedRequest) {
+          setRouteQuoteError('Usta yol hakedişi hesaplandı ancak talep detayı güncellenemedi.')
 
-            return
-          }
+          return
+        }
 
-          preserveDetailScroll(() => {
-            setRequests((current) => current.map((request) => (
-              request.id === updatedRequest.id ? updatedRequest : request
-            )))
-            setSelectedListRequest((current) => (
-              current?.id === updatedRequest.id ? updatedRequest : current
-            ))
-            setSelectedDetailRequest(updatedRequest)
-          })
-
-          const responseRoundTripKm = typeof response.round_trip_distance_km === 'number' && Number.isFinite(response.round_trip_distance_km)
-            ? response.round_trip_distance_km
-            : typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)
-              ? response.distance_km
-              : null
-
-          if (responseRoundTripKm !== null) {
-            setTravelRoundTripKm(String(responseRoundTripKm))
-          }
-
-          const responseStatus = typeof response.status === 'string' ? response.status : null
-          const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
-
-          setRouteQuoteError(routeQuoteFailed
-            ? routeQuoteFailureMessage(typeof response.message === 'string' ? response.message : null)
-            : null)
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
         })
-        .catch((caught: unknown) => {
-          if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
-            setRouteQuoteError(routeQuoteFailureMessage(caught instanceof Error ? caught.message : null))
-          }
-        })
+
+        const responseRoundTripKm = typeof response.round_trip_distance_km === 'number' && Number.isFinite(response.round_trip_distance_km)
+          ? response.round_trip_distance_km
+          : typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)
+            ? response.distance_km
+            : null
+
+        if (responseRoundTripKm !== null) {
+          setTravelRoundTripKm(String(responseRoundTripKm))
+        }
+
+        const responseStatus = typeof response.status === 'string' ? response.status : null
+        const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
+
+        setRouteQuoteError(routeQuoteFailed
+          ? routeQuoteFailureMessage(typeof response.message === 'string' ? response.message : null)
+          : null)
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
+          setRouteQuoteError(routeQuoteFailureMessage(caught instanceof Error ? caught.message : null))
+        }
+      })
         .finally(() => {
           if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
             setRouteQuoteLoading(false)
           }
         })
-    }, 250)
+    })
 
     return () => {
       cancelled = true
-      window.clearTimeout(timer)
     }
   }, [
+    assignDialogOpen,
     assignTechnicianOption,
     assignmentRouteQuote,
     modalRequest,
@@ -3499,11 +3552,13 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleExtraMountPaymentCreate = async (payload: ServiceRequestExtraMountPaymentPayload) => {
-    if (!selectedId) {
+  const handleExtraMountPaymentCreate = async (payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) => {
+    if (!selectedId || extraPaymentCreateInFlightRef.current) {
       return
     }
 
+    const requestId = selectedId
+    extraPaymentCreateInFlightRef.current = true
     setExtraPaymentCreateLoading(true)
     setExtraPaymentCreateError(null)
 
@@ -3520,32 +3575,37 @@ export function TechnicalServiceOperationCenter() {
         }
       }
 
-      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/mount-extra-payment`, {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/payments/mount-extra-payment`, {
         method: 'POST',
         body: JSON.stringify(transportPayload),
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
-      if (!updatedRequest) {
+      if (!updatedRequest && selectedIdRef.current === requestId) {
         setExtraPaymentCreateError('Ödeme linki oluşturuldu ancak talep detayı güncellenemedi.')
 
         return
       }
 
-      preserveDetailScroll(() => {
-        setRequests((current) => current.map((request) => (
-          request.id === updatedRequest.id ? updatedRequest : request
-        )))
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
-      })
+      if (updatedRequest && selectedIdRef.current === requestId) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      }
     } catch (caught) {
-      setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme linki oluşturulamadı.')
+      if (selectedIdRef.current === requestId) {
+        setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme linki oluşturulamadı.')
+      }
 
       throw caught
     } finally {
+      extraPaymentCreateInFlightRef.current = false
       setExtraPaymentCreateLoading(false)
     }
   }
@@ -3698,27 +3758,50 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const handlePartnerAppointmentProposalApprove = async (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => {
-    if (!selectedId) {
+    const actionKey = String(actionId)
+
+    if (!selectedId || appointmentApprovalInFlightRef.current !== null) {
       return
     }
 
-    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-appointment-proposals/${actionId}/approve`, {
-      method: 'POST',
-      body: JSON.stringify(payload ?? {}),
-    })
-    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+    const requestId = selectedId
+    appointmentApprovalInFlightRef.current = actionKey
+    setAppointmentApprovalInFlight(actionKey)
+    setAppointmentApprovalError(null)
+    setAppointmentApprovalSuccess(null)
 
-    if (updatedRequest) {
-      preserveDetailScroll(() => {
-        setRequests((current) => current.map((request) => (
-          request.id === updatedRequest.id ? updatedRequest : request
-        )))
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/partner-appointment-proposals/${actionId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify(payload ?? {}),
       })
-      await loadRequests({ silent: true, preserveSelection: true })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest && selectedIdRef.current === requestId) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      }
+
+      if (selectedIdRef.current === requestId) {
+        setAppointmentApprovalSuccess(response.status === 'duplicate_noop'
+          ? 'Randevu daha önce onaylanmış; ikinci işlem oluşturulmadı.'
+          : 'Randevu onaylandı; müşteri ve usta bildirimleri kuyruğa alındı.')
+      }
+
+    } catch (caught) {
+      if (selectedIdRef.current === requestId) {
+        setAppointmentApprovalError(caught instanceof Error ? caught.message : 'Randevu onaylanamadı.')
+      }
+    } finally {
+      appointmentApprovalInFlightRef.current = null
+      setAppointmentApprovalInFlight(null)
     }
   }
 
@@ -4062,26 +4145,48 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const handleAssignmentOfferUpdate = async (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => {
-    if (!selectedId) {
+    if (!selectedId || assignmentOfferUpdateInFlightRef.current) {
       return
     }
 
-    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/assignment-offers/${offerId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    })
-    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+    const requestId = selectedId
+    assignmentOfferUpdateInFlightRef.current = true
+    setAssignmentOfferUpdateInFlight(true)
+    setAssignmentOfferUpdateError(null)
+    setAssignmentOfferUpdateSuccess(null)
 
-    if (updatedRequest) {
-      preserveDetailScroll(() => {
-        setRequests((current) => current.map((request) => (
-          request.id === updatedRequest.id ? updatedRequest : request
-        )))
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/assignment-offers/${offerId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
       })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest && selectedIdRef.current === requestId) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      }
+
+      if (selectedIdRef.current === requestId) {
+        setAssignmentOfferUpdateSuccess(response.status === 'duplicate_noop'
+          ? 'Hakediş zaten güncel; ikinci kayıt oluşturulmadı.'
+          : 'Hakediş ve mutabakat toplamları güncellendi.')
+      }
+
+    } catch (caught) {
+      if (selectedIdRef.current === requestId) {
+        setAssignmentOfferUpdateError(caught instanceof Error ? caught.message : 'Hakediş güncellenemedi.')
+      }
+    } finally {
+      assignmentOfferUpdateInFlightRef.current = false
+      setAssignmentOfferUpdateInFlight(false)
     }
   }
 
@@ -4167,7 +4272,7 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const handleAssignSubmit = async () => {
-    if (!selectedId) {
+    if (!selectedId || assignMutationInFlightRef.current) {
       return
     }
 
@@ -4219,8 +4324,11 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    const requestId = selectedId
+    assignMutationInFlightRef.current = true
     setAssignLoading(true)
     setAssignError(null)
+    setAssignSuccess(null)
 
     try {
       const offerLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
@@ -4229,7 +4337,7 @@ export function TechnicalServiceOperationCenter() {
       const customerDirectAmount = customerDirectPaymentDisabled
         ? 0
         : roundTwo(parseNullableNumber(assignCustomerDirectAmount) ?? offerTotalAmount)
-      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
           ...(isManualTechnician
@@ -4263,19 +4371,11 @@ export function TechnicalServiceOperationCenter() {
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
-      assignmentDraftRequestId.current = null
       setAssignmentConfirmDialogOpen(false)
-      setAssignDialogOpen(false)
-      setAssignOtherTechnician('')
-      setAssignNote('')
-      setAssignOfferLaborAmount('')
-      setAssignOfferRouteFeeAmount('')
-      setAssignCustomerDirectAmount('')
-      setAssignOfferNote('')
       setAssignTechnicianOption(submittedTechnicianOption)
       setTravelRoundTripKm(submittedTravelRoundTripKm)
 
-      if (updatedRequest) {
+      if (updatedRequest && selectedIdRef.current === requestId) {
         preserveDetailScroll(() => {
           setRequests((current) => current.map((request) => (
             request.id === updatedRequest.id ? updatedRequest : request
@@ -4285,16 +4385,22 @@ export function TechnicalServiceOperationCenter() {
           ))
           setSelectedDetailRequest(updatedRequest)
         })
-      } else {
-        await loadRequestDetail(selectedId)
+        setAssignSuccess('Usta atandı; hakediş, iş kartı ve bildirim kaydı hazırlandı.')
+      } else if (selectedIdRef.current === requestId) {
+        await loadRequestDetail(requestId)
+        setAssignSuccess('Usta atandı; talep detayı yenilendi.')
       }
 
-      await loadRequests({ silent: true, preserveSelection: true })
-      await loadSummary()
-      await loadRequestDetail(updatedRequest?.id ?? selectedId)
+      void Promise.allSettled([
+        loadRequests({ silent: true, preserveSelection: true }),
+        loadSummary(),
+      ])
     } catch (caught) {
-      setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
+      if (selectedIdRef.current === requestId) {
+        setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
+      }
     } finally {
+      assignMutationInFlightRef.current = false
       setAssignLoading(false)
     }
   }
@@ -4515,6 +4621,11 @@ export function TechnicalServiceOperationCenter() {
     setRouteQuoteManualSaveError(null)
     setExtraPaymentCreateError(null)
     setTechnicianEarningMessageError(null)
+    setAssignSuccess(null)
+    setAppointmentApprovalError(null)
+    setAppointmentApprovalSuccess(null)
+    setAssignmentOfferUpdateError(null)
+    setAssignmentOfferUpdateSuccess(null)
     setShowNearbyTechnicians(false)
     setSelectedId(request.id)
     setIsDetailDialogOpen(true)
@@ -4892,6 +5003,11 @@ export function TechnicalServiceOperationCenter() {
               {assignError ? (
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                   {assignError}
+                </div>
+              ) : null}
+              {assignSuccess ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
+                  {assignSuccess}
                 </div>
               ) : null}
 
@@ -6171,6 +6287,7 @@ export function TechnicalServiceOperationCenter() {
                     assignLoading={assignLoading}
                     canSubmitAssign={canSubmitAssign}
                     assignError={assignError}
+                    assignSuccess={assignSuccess}
                     mountExclusionAcknowledged={assignOverrideWithoutPayment}
                     mountExclusionNote={assignOverrideReason}
                     onMountExclusionAcknowledgedChange={setAssignOverrideWithoutPayment}
@@ -6194,12 +6311,18 @@ export function TechnicalServiceOperationCenter() {
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
+                    appointmentApprovalInFlight={appointmentApprovalInFlight}
+                    appointmentApprovalError={appointmentApprovalError}
+                    appointmentApprovalSuccess={appointmentApprovalSuccess}
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
                     onRevisitServiceVisitCreate={handleRevisitServiceVisitCreate}
                     onPartRequestCreate={handlePartRequestCreate}
                     onPartRequestTransition={handlePartRequestTransition}
                     onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
+                    assignmentOfferUpdateInFlight={assignmentOfferUpdateInFlight}
+                    assignmentOfferUpdateError={assignmentOfferUpdateError}
+                    assignmentOfferUpdateSuccess={assignmentOfferUpdateSuccess}
                     onPartnerActionReview={handlePartnerActionReview}
                     partnerActionReviewInFlight={partnerActionReviewLoading}
                     partnerActionReviewError={partnerActionReviewError}

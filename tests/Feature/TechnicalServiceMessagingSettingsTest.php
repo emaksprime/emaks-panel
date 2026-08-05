@@ -53,6 +53,26 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertContains('mikro_api', $keys);
     }
 
+    public function test_workflow_dispatch_snapshot_matches_canonical_queue_policy_without_readiness_payload(): void
+    {
+        $service = app(TechnicalServiceMessagingSettingsService::class);
+        $payload = $service->payload();
+        $snapshot = $service->workflowDispatchSnapshot();
+
+        $this->assertSame($payload['global'], $snapshot['global']);
+        $this->assertSame($payload['message_types'], $snapshot['message_types']);
+        $this->assertSame(
+            collect($payload['providers'])->map(fn (array $provider): array => [
+                'key' => $provider['key'],
+                'enabled' => $provider['enabled'],
+                'contract_confirmed' => $provider['contract_confirmed'],
+                'capabilities' => $provider['capabilities'],
+            ])->values()->all(),
+            $snapshot['providers'],
+        );
+        $this->assertArrayNotHasKey('readiness', $snapshot);
+    }
+
     public function test_voibot_provider_is_disabled_until_contract_confirmed(): void
     {
         $providers = $this->actingAs($this->admin())
@@ -208,6 +228,12 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $paymentReceived = $types->get('payment_received_ops');
         $partReceived = $types->get('part_received_ops');
         $activationWarranty = $types->get('activation_warranty_customer');
+        $mountRequestCustomer = $types->get('mount_request_created_customer');
+
+        $this->assertTrue($mountRequestCustomer['enabled']);
+        $this->assertSame('whatsapp_and_sms', $mountRequestCustomer['channel_policy']);
+        $this->assertFalse($mountRequestCustomer['real_send_allowed']);
+        $this->assertSame('test', $mountRequestCustomer['sms_mode']);
 
         $this->assertTrue($paymentReceived['enabled']);
         $this->assertSame('whatsapp_only', $paymentReceived['channel_policy']);
@@ -253,6 +279,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertSame('whatsapp_only', $types->get('part_received_ops')['channel_policy']);
         $this->assertTrue($types->get('activation_warranty_customer')['enabled']);
         $this->assertSame('whatsapp_and_sms', $types->get('activation_warranty_customer')['channel_policy']);
+        $this->assertTrue($types->get('mount_request_created_customer')['enabled']);
+        $this->assertSame('whatsapp_and_sms', $types->get('mount_request_created_customer')['channel_policy']);
     }
 
     public function test_admin_can_save_safe_test_mode_settings(): void
