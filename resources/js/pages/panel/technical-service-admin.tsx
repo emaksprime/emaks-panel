@@ -1309,8 +1309,11 @@ function formatManualE2ERunDate(value: string | null): string {
 }
 
 function messagingRuntimeHeadline(settings: MessagingSettings): string {
-    if (settings.execution_mode.mode === 'local') {
-        return 'Lokal mod; dış provider çağrıları kapalı.';
+    if (
+        settings.execution_mode.mode === 'local' &&
+        !settings.global.real_send_enabled
+    ) {
+        return 'Lokal mod; gerçek gönderim kapalı.';
     }
 
     if (
@@ -1553,6 +1556,7 @@ export default function TechnicalServiceAdmin({
     });
     const [messagingInputs, setMessagingInputs] = useState({
         messaging_enabled: messagingSettings.global.messaging_enabled,
+        real_send_enabled: messagingSettings.global.real_send_enabled,
         test_mode_enabled: messagingSettings.global.test_mode_enabled,
         test_phone: messagingSettings.global.test_phone ?? '',
         active_provider: messagingSettings.global.active_provider,
@@ -2035,10 +2039,11 @@ export default function TechnicalServiceAdmin({
 
     const applyMessagingSettings = (nextSettings: MessagingSettings) => {
         setMessaging(nextSettings);
-        setMessagingInputs({
+        setMessagingInputs((current) => ({
             messaging_enabled: nextSettings.global.messaging_enabled,
+            real_send_enabled: nextSettings.global.real_send_enabled,
             test_mode_enabled: nextSettings.global.test_mode_enabled,
-            test_phone: nextSettings.global.test_phone ?? '',
+            test_phone: nextSettings.global.test_phone ?? current.test_phone,
             active_provider: nextSettings.global.active_provider,
             default_provider: nextSettings.global.default_provider,
             fallback_provider: nextSettings.global.fallback_provider,
@@ -2058,7 +2063,7 @@ export default function TechnicalServiceAdmin({
                     .manual_e2e_partner_portal_origin_enabled,
             manual_e2e_partner_portal_origin:
                 nextSettings.global.manual_e2e_partner_portal_origin ?? '',
-        });
+        }));
         setNacSmsInputs(nacSmsInputsFromSettings(nextSettings));
         setEvoWhatsappInputs(evoWhatsappInputsFromSettings(nextSettings));
         setMikroApiInputs(mikroApiInputsFromSettings(nextSettings));
@@ -2084,6 +2089,9 @@ export default function TechnicalServiceAdmin({
             test_mode_enabled:
                 nextSettings.global.test_mode_enabled ??
                 current.test_mode_enabled,
+            real_send_enabled:
+                nextSettings.global.real_send_enabled ??
+                current.real_send_enabled,
         }));
     };
 
@@ -2419,6 +2427,7 @@ export default function TechnicalServiceAdmin({
                     credentials: 'same-origin',
                     body: JSON.stringify({
                         messaging_enabled: messagingInputs.messaging_enabled,
+                        real_send_enabled: messagingInputs.real_send_enabled,
                         test_mode_enabled: messagingInputs.test_mode_enabled,
                         test_phone: messagingInputs.test_phone,
                         provider_key: messagingInputs.active_provider,
@@ -7782,6 +7791,10 @@ export default function TechnicalServiceAdmin({
                                             [
                                                 'messaging_enabled',
                                                 'Mesaj sistemi aktif',
+                                            ],
+                                            [
+                                                'real_send_enabled',
+                                                'Gerçek gönderim',
                                             ],
                                             ['test_mode_enabled', 'Test modu'],
                                             [

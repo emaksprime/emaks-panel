@@ -317,7 +317,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertOk()
             ->assertJsonPath('messaging_settings.global.messaging_enabled', true)
             ->assertJsonPath('messaging_settings.global.active_provider', 'evo_whatsapp')
-            ->assertJsonPath('messaging_settings.global.test_phone', '905467647428')
+            ->assertJsonPath('messaging_settings.global.test_phone', null)
+            ->assertJsonPath('messaging_settings.global.test_phone_masked', '9054****428')
             ->assertJsonPath('messaging_settings.readiness.can_send_test', true)
             ->assertJsonPath('messaging_settings.readiness.can_send_real', false)
             ->assertJsonPath('messaging_settings.provider.webhook_url_configured', true);
@@ -647,6 +648,20 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertJsonValidationErrors(['test_phone']);
     }
 
+    public function test_admin_real_send_and_test_mode_require_boolean_values(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'real_send_enabled' => 'yes',
+                'test_mode_enabled' => 'no',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors([
+                'real_send_enabled',
+                'test_mode_enabled',
+            ]);
+    }
+
     public function test_test_phone_validation_endpoint_normalizes_phone_without_sending(): void
     {
         Http::fake();
@@ -788,7 +803,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Salt okunur', $source);
         $this->assertStringNotContainsString('Lokalde Çalıştır', $source);
         $this->assertStringNotContainsString('Canlıda Çalıştır', $source);
-        $this->assertStringNotContainsString("['real_send_enabled', 'Gerçek gönderim aktif']", $source);
+        $this->assertStringContainsString("'real_send_enabled'", $source);
+        $this->assertStringContainsString("'Gerçek gönderim'", $source);
         $this->assertStringContainsString('Duplicate cooldown dakika', $source);
         $this->assertStringContainsString('Güvenli queue', $source);
         $this->assertStringContainsString('messagingRuntimeHeadline(messaging)', $source);

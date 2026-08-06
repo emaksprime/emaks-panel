@@ -22,7 +22,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
     public function show(TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
         return response()->json([
-            'messaging_settings' => $settings->payload(),
+            'messaging_settings' => $this->redactRecipientValues($settings->payload()),
         ]);
     }
 
@@ -39,6 +39,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
 
         $data = $request->validate([
             'messaging_enabled' => ['sometimes', 'required', 'boolean'],
+            'real_send_enabled' => ['sometimes', 'required', 'boolean'],
             'test_mode_enabled' => ['sometimes', 'required', 'boolean'],
             'manual_e2e_ttl_seconds' => ['sometimes', 'required', 'integer', 'min:60', 'max:14400'],
             'manual_e2e_allowlisted_phones' => ['sometimes', 'array'],
@@ -135,8 +136,26 @@ class TechnicalServiceMessagingSettingsController extends Controller
         ]);
 
         return response()->json([
-            'messaging_settings' => $settings->update($data),
+            'messaging_settings' => $this->redactRecipientValues($settings->update($data)),
         ]);
+    }
+
+    /**
+     * Keep recipient values in the authoritative store while API responses
+     * expose only the existing masks and fingerprints.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function redactRecipientValues(array $payload): array
+    {
+        Arr::set($payload, 'global.test_phone', null);
+        Arr::set($payload, 'global.shared_test_phone', null);
+        Arr::set($payload, 'global.ops_whatsapp_phone', null);
+        Arr::set($payload, 'global.manual_e2e_allowlisted_phones', []);
+        Arr::set($payload, 'nac_sms.test_phone', null);
+
+        return $payload;
     }
 
     public function reset(TechnicalServiceMessagingSettingsService $settings): JsonResponse

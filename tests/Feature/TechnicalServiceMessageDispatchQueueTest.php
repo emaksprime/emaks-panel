@@ -4350,13 +4350,13 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'payload' => ['body' => 'Montaj talebiniz alındı: http://10.0.28.64:8000/mount-request/test'],
             'idempotency_key' => 'local-acceptance-sms',
         ]);
-        $outsideAllowlist = $this->enqueueDispatch([
+        $actualRecipientOutsideTestAllowlist = $this->enqueueDispatch([
             'event' => 'mount_request_created_customer',
             'message_type' => 'mount_request_created_customer',
             'provider_key' => 'evo_whatsapp',
             'channel' => 'whatsapp',
             'target_phone' => '905550000000',
-            'payload' => ['body' => 'Allowlist dışı mesaj.'],
+            'payload' => ['body' => 'Test modu kapalı gerçek müşteri mesajı.'],
             'idempotency_key' => 'local-acceptance-outside',
         ]);
         $unsafeLink = $this->enqueueDispatch([
@@ -4371,9 +4371,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $whatsapp->status);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $sms->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $actualRecipientOutsideTestAllowlist->status);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED, $duplicate->status);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $outsideAllowlist->status);
-        $this->assertSame('local_manual_acceptance_recipient_blocked', $outsideAllowlist->last_error_code);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $unsafeLink->status);
         $this->assertSame('local_manual_acceptance_link_host_blocked', $unsafeLink->last_error_code);
         $this->assertNull(data_get($whatsapp->metadata, 'expected_body_token'));
@@ -4386,23 +4385,35 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'limit' => 10,
             'outbound_worker_owner' => $owner,
         ]);
-        $this->assertSame(2, $result['count']);
+        $this->assertSame(3, $result['count']);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $whatsapp->fresh()->status);
         $this->assertSame('EVO-LOCAL-ACCEPTANCE-1', $whatsapp->fresh()->provider_message_id);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $sms->fresh()->status);
         $this->assertSame('7654321', $sms->fresh()->provider_message_id);
         $this->assertSame(0, $historical->fresh()->attempt_count);
-        $this->assertSame(0, $outsideAllowlist->fresh()->attempt_count);
-        $this->assertSame(0, $unsafeLink->fresh()->attempt_count);
+        $actualRecipientOutsideTestAllowlist->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED, $actualRecipientOutsideTestAllowlist->status);
+        $this->assertSame(0, $actualRecipientOutsideTestAllowlist->attempt_count);
         Http::assertSentCount(2);
 
-        try {
-            $settings->update(['message_types' => ['mount_request_created_customer' => ['real_send_allowed' => false]]]);
-            $this->fail('Aktif yerel manuel kabul profili mutation kabul etmemeliydi.');
-        } catch (ConflictHttpException) {
-            $this->assertTrue($settings->localManualAcceptancePayload()['enabled']);
-        }
+        $this->travel(120)->seconds();
+        $this->assertTrue($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $actualRecipientOutsideTestAllowlist->refresh();
+        $this->assertSame(1, $actualRecipientOutsideTestAllowlist->attempt_count, json_encode([
+            'status' => $actualRecipientOutsideTestAllowlist->status,
+            'error' => $actualRecipientOutsideTestAllowlist->last_error_code,
+        ], JSON_THROW_ON_ERROR));
+        $this->assertSame(0, $unsafeLink->fresh()->attempt_count);
+        Http::assertSentCount(3);
 
+        $disabled = $settings->update(['real_send_enabled' => false]);
+        $this->assertFalse((bool) data_get($disabled, 'global.real_send_enabled'));
+        $this->assertSame('active', $settings->outboundWorkerLeaseStatus()['state']);
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
         $restartOwner = 'local-acceptance-restart-'.Str::lower(Str::random(12));
         $restartLease = $settings->registerOutboundWorkerLease(
@@ -4411,11 +4422,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             now()->addMinute()->toImmutable(),
         );
         $this->assertSame(TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE, $restartLease['profile']);
-        $this->assertTrue($settings->normalOutboundWorkerMayProcess($restartOwner));
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($restartOwner));
         $this->assertFalse($settings->clearOutboundWorkerLease($owner));
         $this->assertTrue($settings->clearOutboundWorkerLease($restartOwner));
-        $disabled = $settings->deactivateLocalManualAcceptance('Focused test kill-switch close.');
-        $this->assertFalse($disabled['enabled']);
         $suppressed = $this->enqueueDispatch([
             'event' => 'mount_request_created_customer',
             'message_type' => 'mount_request_created_customer',
@@ -4426,7 +4435,45 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'idempotency_key' => 'local-acceptance-disabled',
         ]);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $suppressed->status);
-        $this->assertSame(2, Http::recorded()->count());
+        $this->assertSame(3, Http::recorded()->count());
+    }
+
+    public function test_admin_test_mode_allows_only_configured_allowlisted_recipient(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake(fn () => Http::response(['messageId' => 'EVO-TEST-MODE-1'], 200));
+
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $allowlisted = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Configured test recipient message.'],
+            'idempotency_key' => 'local-test-mode-allowlisted',
+        ]);
+        $outsideAllowlist = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905550000000',
+            'payload' => ['body' => 'Outside configured test recipient.'],
+            'idempotency_key' => 'local-test-mode-outside',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $allowlisted->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $outsideAllowlist->status);
+        $this->assertSame('local_manual_acceptance_recipient_blocked', $outsideAllowlist->last_error_code);
+        $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $allowlisted->fresh()->status);
+        $this->assertSame(0, $outsideAllowlist->fresh()->attempt_count);
+        Http::assertSentCount(1);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 
     public function test_local_manual_acceptance_profile_is_code_owned_and_fails_closed_without_readiness(): void
@@ -4650,15 +4697,15 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     /**
      * @return array{TechnicalServiceMessagingSettingsService,string,array<string,mixed>}
      */
-    private function configureLocalManualAcceptanceContext(): array
+    private function configureLocalManualAcceptanceContext(bool $testMode = false): array
     {
-        config(['app.release_sha' => 'bc3bc87ea4f6dde12809610ffdc86a1b5ebccd20']);
+        config(['app.release_sha' => 'd115201e9fed01f6587a954c1876a5d79fdae69c']);
         $this->actingAs($this->admin());
         $settings = app(TechnicalServiceMessagingSettingsService::class);
         $settings->freezeManualE2E();
         $settings->update([
             'messaging_enabled' => true,
-            'test_mode_enabled' => false,
+            'test_mode_enabled' => $testMode,
             'shared_test_phone' => '905000000001',
             'manual_e2e_allowlisted_phones' => ['905000000001', '905000000002'],
             'manual_e2e_partner_portal_origin_enabled' => true,
@@ -4714,14 +4761,24 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         }
         $settings->saveEvoWhatsappCredentials(['api_key' => 'local-evo-test-key']);
         $settings->saveNacSmsCredentials(['username' => 'local-nac-user', 'password' => 'local-nac-pass']);
-        $profile = $settings->activateLocalManualAcceptance('Focused allowlisted local delivery acceptance.');
-        $this->assertTrue((bool) $profile['enabled'], json_encode($profile, JSON_THROW_ON_ERROR));
         $owner = 'local-acceptance-worker-'.Str::lower(Str::random(12));
         $settings->registerOutboundWorkerLease(
             $owner,
             now()->toImmutable(),
-            now()->addMinute()->toImmutable(),
+            now()->addHours(2)->toImmutable(),
         );
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'real_send_enabled' => true,
+                'test_mode_enabled' => $testMode,
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.global.real_send_enabled', true)
+            ->assertJsonPath('messaging_settings.global.test_mode_enabled', $testMode);
+        $profile = $settings->localManualAcceptancePayload();
+        $this->assertTrue((bool) $profile['enabled'], json_encode($profile, JSON_THROW_ON_ERROR));
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
 
         return [$settings, $owner, $profile];
     }
