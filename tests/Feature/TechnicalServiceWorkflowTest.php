@@ -4803,46 +4803,25 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_technician_earning_message_endpoint_records_audit_without_payment_side_effect(): void
+    public function test_manual_earning_send_creates_one_dispatch(): void
     {
-        $user = $this->adminUser();
-        $technician = TechnicalServiceTechnician::query()->create([
-            'name' => 'Hakediş Ustası',
-            'phone_e164' => '+905551234567',
-            'city' => 'Sentetik Sehir 001',
-            'active' => true,
-        ]);
-        $request = $this->technicalServiceRequest([
-            'status' => 'Yeni',
-            'workflow_status' => 'Usta Onayı Bekleyen',
-            'technical_service_technician_id' => $technician->id,
-            'technician_name' => $technician->name,
-            'technician_payment_amount' => 3000,
-            'travel_fee_amount' => 150,
-            'mount_payment_status' => 'paid',
-            'operation_control_payload' => [
-                'payment_checked' => 'yes',
-                'door_photos_checked' => 'compatible',
-            ],
-        ]);
+        Http::fake();
+        [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
 
-        $this->actingAs($user)
+        $response = $this->actingAs($user)
             ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
-                'labor_amount' => 3000,
-                'route_fee_amount' => 150,
+                'labor_amount' => 1,
+                'route_fee_amount' => 2,
                 'total_amount' => 3200,
                 'manual_override' => true,
                 'note' => 'Operasyon düzeltmesi',
             ])
             ->assertOk()
             ->assertJsonPath('ok', true)
-            ->assertJsonPath('request.sale_and_payment.technician_earning_message.status', 'sent')
+            ->assertJsonPath('duplicate_noop', false)
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount', 3150)
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.submitted_total_amount', 3200)
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount_corrected', true)
-            ->assertJsonPath('request.settlement.labor_earning_amount', 3000)
-            ->assertJsonPath('request.settlement.route_earning_amount', 150)
-            ->assertJsonPath('request.settlement.technician_earning_total', 3150)
             ->assertJsonPath('request.sale_and_payment.mount_payment_status', 'paid')
             ->assertJsonPath('request.mount_payment_status', 'paid')
             ->assertJson(fn ($json) => $json
@@ -4851,38 +4830,60 @@ class TechnicalServiceWorkflowTest extends TestCase
                 ->etc()
             );
 
+        $dispatchId = $response->json('dispatch.id');
+        $this->assertIsInt($dispatchId);
+        $this->assertDatabaseCount('technical_service_message_dispatches', 1);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'id' => $dispatchId,
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'earnings_message_technician',
+            'recipient_role' => 'technician',
+        ]);
         $request->refresh();
 
         $this->assertSame('paid', $request->mount_payment_status);
-        $this->assertSame('sent', $request->operation_control_payload['technician_earning_message']['status'] ?? null);
         $this->assertEquals(3150.0, $request->operation_control_payload['technician_earning_message']['total_amount'] ?? null);
         $this->assertStringContainsString('Toplam hakediş: 3.150,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
         $this->assertStringNotContainsString('3.200,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
-        $this->assertDatabaseHas('technical_service_assignment_offers', [
-            'technical_service_request_id' => $request->id,
-            'technical_service_technician_id' => $technician->id,
-            'labor_amount' => '3000.00',
-            'route_fee_amount' => '150.00',
-            'total_amount' => '3150.00',
-            'status' => 'sent',
-        ]);
+        $this->assertSame(3000.0, (float) $offer->fresh()->labor_amount);
+        $this->assertSame(150.0, (float) $offer->fresh()->route_fee_amount);
+        $this->assertSame(3150.0, (float) $offer->fresh()->total_amount);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $request->id,
-            'event_type' => 'technician_earning_message_sent',
-            'title' => 'Hakediş bilgisi gönderildi',
+            'event_type' => 'technician_earning_message_prepared',
+            'title' => 'Hakediş bilgisi gönderim için hazırlandı',
         ]);
         $this->assertDatabaseHas('technical_service_audit_logs', [
             'entity_type' => 'technical_service_request',
             'entity_id' => $request->id,
-            'action_type' => 'technician_earning_message_sent',
+            'action_type' => 'technician_earning_message_prepared',
         ]);
-        $this->assertDatabaseHas('technical_service_settlements', [
-            'technical_service_request_id' => $request->id,
-            'technical_service_technician_id' => $technician->id,
-            'labor_earning_amount' => '3000.00',
-            'route_earning_amount' => '150.00',
-            'technician_earning_total' => '3150.00',
-        ]);
+        $this->assertDatabaseCount('technical_service_settlements', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_duplicate_earning_send_creates_no_second_provider_call(): void
+    {
+        Http::fake();
+        [$user, $technician, $request] = $this->activeEarningMessageFixture();
+        $payload = [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 150,
+            'total_amount' => 3150,
+        ];
+
+        $first = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", $payload)
+            ->assertOk()
+            ->assertJsonPath('duplicate_noop', false);
+        $second = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", $payload)
+            ->assertOk()
+            ->assertJsonPath('duplicate_noop', true);
+
+        $this->assertSame($first->json('dispatch.id'), $second->json('dispatch.id'));
+        $this->assertDatabaseCount('technical_service_message_dispatches', 1);
+        Http::assertNothingSent();
     }
 
     public function test_technician_revision_offer_visible_in_ops_detail_without_overwriting_approved_earning(): void
@@ -6137,6 +6138,72 @@ class TechnicalServiceWorkflowTest extends TestCase
     private function adminUser(): User
     {
         return User::factory()->create(['role_code' => 'admin']);
+    }
+
+    /**
+     * @return array{User, TechnicalServiceTechnician, TechnicalServiceRequest, TechnicalServiceAssignmentOffer}
+     */
+    private function activeEarningMessageFixture(): array
+    {
+        config([
+            'services.partner_portal.public_url' => 'https://dashboard.test',
+        ]);
+
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Hakediş Ustası',
+            'phone_e164' => '+905551234567',
+            'city' => 'Sentetik Sehir 001',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'EARNING-MESSAGE-'.uniqid(),
+            'display_name' => 'Earning Message Locksmith',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        $partnerTechnician = B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 150,
+            'mount_payment_status' => 'paid',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $offer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 150,
+            'total_amount' => 3150,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_by' => $user->id,
+            'sent_at' => now(),
+            'metadata' => [
+                'assignment_partner_id' => $partner->id,
+                'assignment_partner_technician_link_id' => $partnerTechnician->id,
+            ],
+        ]);
+
+        return [$user, $technician, $request, $offer];
     }
 
     /**

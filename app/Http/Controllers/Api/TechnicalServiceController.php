@@ -25,7 +25,6 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
-use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
@@ -722,70 +721,153 @@ class TechnicalServiceController extends Controller
                 ->whereKey($technicalServiceRequest->id)
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            if ((int) ($job->technical_service_technician_id ?? 0) !== (int) $technician->id) {
+                throw ValidationException::withMessages([
+                    'technician' => 'Hakediş bilgisi yalnız aktif atamadaki ustaya gönderilebilir. Önce Servise Ata işlemini tamamlayın.',
+                ]);
+            }
+
+            $offer = TechnicalServiceAssignmentOffer::query()
+                ->where('technical_service_request_id', $job->id)
+                ->where('technical_service_technician_id', $technician->id)
+                ->whereIn('status', [
+                    TechnicalServiceAssignmentOffer::STATUS_SENT,
+                    TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                    TechnicalServiceAssignmentOffer::STATUS_REVISED,
+                ])
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
+            if (! $offer instanceof TechnicalServiceAssignmentOffer) {
+                throw ValidationException::withMessages([
+                    'assignment_offer' => 'Gönderilebilir canonical hakediş kaydı bulunamadı. Önce Servise Ata işlemini tamamlayın.',
+                ]);
+            }
+
+            $jobCardContext = $this->partnerJobScope->technicianJobCardContext($job);
+            if (($jobCardContext['ready'] ?? false) !== true) {
+                throw ValidationException::withMessages([
+                    'assignment_offer' => (string) ($jobCardContext['blocker_message'] ?? 'Aktif atamaya ait usta iş kartı hazır değil.'),
+                ]);
+            }
+
+            $earningSnapshotFingerprint = hash('sha256', implode('|', [
+                'assignment-offer',
+                $offer->id,
+                number_format((float) $offer->labor_amount, 2, '.', ''),
+                number_format((float) $offer->route_fee_amount, 2, '.', ''),
+                number_format((float) $offer->total_amount, 2, '.', ''),
+                (string) $offer->currency,
+                $offer->updated_at?->toISOString() ?? '',
+            ]));
+            $existingDispatch = TechnicalServiceMessageDispatch::query()
+                ->where('technical_service_request_id', $job->id)
+                ->where('message_type', 'earnings_message_technician')
+                ->where('recipient_role', 'technician')
+                ->latest('id')
+                ->get()
+                ->first(fn (TechnicalServiceMessageDispatch $dispatch): bool => hash_equals(
+                    $earningSnapshotFingerprint,
+                    (string) data_get($dispatch->metadata, 'earning_snapshot_fingerprint', ''),
+                ));
+            if ($existingDispatch instanceof TechnicalServiceMessageDispatch) {
+                $operationControl = is_array($job->operation_control_payload) ? $job->operation_control_payload : [];
+                $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
+                    ? $operationControl['technician_earning_message']
+                    : [];
+                $messageText = trim((string) ($earningPayload['message_text'] ?? $existingDispatch->bodyForProvider()));
+                $whatsappPhone = $this->normalizedMessagePhone(
+                    $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+                );
+
+                return [
+                    'request' => $job,
+                    'assignment_offer' => $offer,
+                    'message_text' => $messageText,
+                    'copy_text' => $messageText,
+                    'whatsapp_url' => $whatsappPhone !== ''
+                        ? 'https://wa.me/'.$whatsappPhone.'?text='.rawurlencode($messageText)
+                        : '',
+                    'dispatch' => $existingDispatch,
+                    'duplicate_noop' => true,
+                ];
+            }
+
             $result = $this->workflowService->recordTechnicianEarningsMessage(
                 $job,
                 $technician,
+                $offer,
                 $validated,
                 $request->user(),
             );
-            $offer = $result['assignment_offer'];
-            $routeQuote = is_numeric($offer->route_quote_id)
-                ? TechnicalServiceRouteQuote::query()->find((int) $offer->route_quote_id)
-                : null;
-            $existingSettlement = TechnicalServiceSettlement::query()
-                ->where('technical_service_request_id', $job->id)
-                ->lockForUpdate()
-                ->first();
-            $this->assignmentSettlementService->persistForAssignment(
-                $result['request']->refresh(),
-                $technician,
-                $offer,
-                $routeQuote,
-                (float) $offer->labor_amount,
-                (float) $offer->route_fee_amount,
-                $existingSettlement instanceof TechnicalServiceSettlement
-                    ? (float) $existingSettlement->customer_direct_to_technician_amount
-                    : null,
+
+            $operationControl = is_array($result['request']->operation_control_payload) ? $result['request']->operation_control_payload : [];
+            $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
+                ? $operationControl['technician_earning_message']
+                : [];
+            $dispatch = $this->workflowMessages->queueSystemMessage(
+                $job,
+                'earnings_message_technician',
+                'technician',
+                $result['message_text'],
+                [
+                    'copy_text' => $result['copy_text'],
+                    'whatsapp_url' => $result['whatsapp_url'],
+                    'labor_amount' => $earningPayload['labor_amount'] ?? null,
+                    'route_fee_amount' => $earningPayload['route_fee_amount'] ?? null,
+                    'total_amount' => $earningPayload['total_amount'] ?? null,
+                    'submitted_total_amount' => $earningPayload['submitted_total_amount'] ?? null,
+                    'total_amount_corrected' => $earningPayload['total_amount_corrected'] ?? false,
+                ],
                 $request->user(),
+                null,
+                [
+                    'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+                    'triggered_by' => 'technical_service_earnings_message',
+                    'event_version' => 'assignment-offer:'.$offer->id.':earnings-summary:'.$earningSnapshotFingerprint,
+                    'requires_public_url' => $jobCardContext['canonical_url'],
+                    'metadata' => [
+                        'assignment_offer_id' => $offer->id,
+                        'earning_snapshot_fingerprint' => $earningSnapshotFingerprint,
+                        'manual_ui_send' => true,
+                    ],
+                ],
             );
+
+            $operationControl['technician_earning_message'] = [
+                ...$earningPayload,
+                'status' => $dispatch->status,
+                'dispatch_id' => $dispatch->id,
+                'queued_at' => $dispatch->queued_at?->toISOString(),
+                'sent_at' => in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                    ? $dispatch->sent_at?->toISOString()
+                    : null,
+                'last_error_code' => $dispatch->last_error_code,
+                'last_error_message_redacted' => $dispatch->last_error_message_redacted,
+            ];
+            $job->forceFill(['operation_control_payload' => $operationControl])->save();
 
             return [
                 ...$result,
-                'request' => $result['request']->refresh(),
+                'request' => $job->refresh(),
+                'dispatch' => $dispatch,
+                'duplicate_noop' => false,
             ];
         });
-        $operationControl = is_array($result['request']->operation_control_payload) ? $result['request']->operation_control_payload : [];
-        $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
-            ? $operationControl['technician_earning_message']
-            : [];
-        $this->workflowMessages->queueSystemMessage(
-            $technicalServiceRequest,
-            'earnings_message_technician',
-            'technician',
-            $result['message_text'],
-            [
-                'copy_text' => $result['copy_text'],
-                'whatsapp_url' => $result['whatsapp_url'],
-                'labor_amount' => $earningPayload['labor_amount'] ?? null,
-                'route_fee_amount' => $earningPayload['route_fee_amount'] ?? null,
-                'total_amount' => $earningPayload['total_amount'] ?? null,
-                'submitted_total_amount' => $earningPayload['submitted_total_amount'] ?? null,
-                'total_amount_corrected' => $earningPayload['total_amount_corrected'] ?? false,
-            ],
-            $request->user(),
-            null,
-            [
-                'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
-                'triggered_by' => 'technical_service_earnings_message',
-                'metadata' => ['manual_ui_send' => true],
-            ],
-        );
 
         return response()->json([
             'ok' => true,
             'message_text' => $result['message_text'],
             'copy_text' => $result['copy_text'],
             'whatsapp_url' => $result['whatsapp_url'],
+            'dispatch' => [
+                'id' => $result['dispatch']->id,
+                'status' => $result['dispatch']->status,
+                'channel' => $result['dispatch']->channel,
+                'provider_key' => $result['dispatch']->provider_key,
+            ],
+            'duplicate_noop' => (bool) ($result['duplicate_noop'] ?? false),
             'request' => $this->workflowService->serialize($result['request'], true),
         ]);
     }
@@ -1895,6 +1977,28 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        if ($routeQuote instanceof TechnicalServiceRouteQuote) {
+            $routeQuotePayload = app(TechnicalServiceRouteCostService::class)->payload($routeQuote);
+            if (($routeQuotePayload['ok'] ?? false) !== true || ! is_numeric($routeQuotePayload['fee_amount'] ?? null)) {
+                throw ValidationException::withMessages([
+                    'route_quote_id' => (string) ($routeQuotePayload['message'] ?? 'Seçili yol hakedişi hesabı tamamlanmadı. Manuel yol hakedişi kaydedin.'),
+                ]);
+            }
+        } elseif ($technician instanceof TechnicalServiceTechnician) {
+            $latestRouteAttempt = TechnicalServiceRouteQuote::query()
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->where('technician_id', $technician->id)
+                ->latest('id')
+                ->first();
+            if ($latestRouteAttempt instanceof TechnicalServiceRouteQuote
+                && $latestRouteAttempt->status !== TechnicalServiceRouteQuote::STATUS_CALCULATED
+                && (float) ($payload['travel_round_trip_km'] ?? 0) <= 0.0) {
+                throw ValidationException::withMessages([
+                    'route_quote_id' => 'Otomatik rota hesaplanamadı. Atamadan önce nedenini kontrol edip manuel yol hakedişi kaydedin.',
+                ]);
+            }
+        }
+
         $assignmentOfferPayload = is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [];
 
         if (array_key_exists('labor_amount', $payload)) {
@@ -2445,10 +2549,16 @@ class TechnicalServiceController extends Controller
             ]);
         }
         $laborAmount ??= 0.0;
-        $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount'] ?? null)
-            ?? $this->nullableMoney($routeQuote?->fee_amount)
-            ?? $this->nullableMoney($request->travel_fee_amount)
-            ?? 0.0;
+        $routeFeeAmount = $routeQuote instanceof TechnicalServiceRouteQuote
+            ? $this->nullableMoney($routeQuote->fee_amount)
+            : ($this->nullableMoney($offerPayload['route_fee_amount'] ?? null)
+                ?? $this->nullableMoney($request->travel_fee_amount)
+                ?? 0.0);
+        if ($routeFeeAmount === null) {
+            throw ValidationException::withMessages([
+                'route_quote_id' => 'Canonical yol hakedişi tutarı bulunamadı.',
+            ]);
+        }
         $totalAmount = round($laborAmount + $routeFeeAmount, 2);
         $note = trim((string) ($offerPayload['note'] ?? ''));
         $currency = strtoupper(substr((string) ($offerPayload['currency'] ?? 'TRY'), 0, 8)) ?: 'TRY';

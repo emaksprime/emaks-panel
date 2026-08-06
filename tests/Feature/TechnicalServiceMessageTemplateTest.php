@@ -1507,7 +1507,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         }
     }
 
-    public function test_assignment_offer_sms_keeps_required_business_fields_with_guarded_short_url_under_segment_policy(): void
+    public function test_assignment_sms_contains_required_compact_fields(): void
     {
         $context = [
             'mrn' => 'MRN-2607MM180001',
@@ -1515,6 +1515,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'customer_phone' => '905372081633',
             'address' => 'Pamukkale Test Mahallesi Güvenli Sokak No 17 Denizli',
             'product_name' => 'Çelik Kapı Kilidi Test Ürünü',
+            'serial_no' => 'SN-ASSIGNMENT-001',
+            'maps_url' => 'https://www.google.com/maps/search/?api=1&query=37.916%2C29.117',
             'labor_amount_formatted' => '3.000,00 TL',
             'route_fee_formatted' => '200,00 TL',
             'technician_earning_total_formatted' => '3.200,00 TL',
@@ -1535,16 +1537,12 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
         $body = $sms['rendered_body'];
         foreach ([
-            'EMAKS Yeni Is',
+            'EMAKS Yeni is bildirimi',
             'MRN-2607MM180001',
-            'REL 4E Test Musteri',
-            '905372081633',
-            'Pamukkale Test Mahallesi Guvenli Sokak No 17 Denizli',
-            'Celik Kapi Kilidi Test Urunu',
-            'Is:3.000,00 TL',
-            'Yol:200,00 TL',
-            'Top:3.200,00 TL',
-            'Saat oner:',
+            'Musteri: REL 4E Test Musteri',
+            'Urun: Celik Kapi Kilidi Test Urunu',
+            'Toplam hakedis: 3.200,00 TL',
+            'Is karti:',
             'http://10.0.28.64:8000/pj/247',
         ] as $required) {
             $this->assertStringContainsString($required, $body);
@@ -1569,7 +1567,96 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
         $this->assertStringContainsString('EMAKS Prime Teknik Servis', $whatsapp);
         $this->assertStringContainsString($context['technician_job_card_url'], $whatsapp);
+        $this->assertStringContainsString($context['maps_url'], $whatsapp);
+        $this->assertStringContainsString('Seri No: SN-ASSIGNMENT-001', $whatsapp);
         $this->assertStringNotContainsString($context['technician_job_card_short_url'], $whatsapp);
+    }
+
+    public function test_assignment_whatsapp_contains_full_earning_and_job_url(): void
+    {
+        $context = [
+            'mrn' => 'MRN-ASSIGNMENT-WA-001',
+            'srv' => 'SRV-ASSIGNMENT-WA-001',
+            'customer_name' => 'Atama Müşterisi',
+            'customer_phone' => '905300000001',
+            'address' => 'Atama Mahallesi No 1 İstanbul',
+            'maps_url' => 'https://www.google.com/maps/search/?api=1&query=41.008%2C28.978',
+            'product_name' => 'Akıllı Kilit',
+            'serial_no' => 'SN-WA-001',
+            'labor_amount_formatted' => '3.000,00 TL',
+            'route_fee_formatted' => '1.420,00 TL',
+            'technician_earning_total_formatted' => '4.420,00 TL',
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=257',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/257',
+        ];
+
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'assignment_offer_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        foreach ([
+            'MRN: MRN-ASSIGNMENT-WA-001',
+            'SRV: SRV-ASSIGNMENT-WA-001',
+            'Müşteri: Atama Müşterisi',
+            'Telefon: 905300000001',
+            'Adres: Atama Mahallesi No 1 İstanbul',
+            $context['maps_url'],
+            'Ürün: Akıllı Kilit',
+            'Seri No: SN-WA-001',
+            'İşçilik/Montaj: 3.000,00 TL',
+            'Yol: 1.420,00 TL',
+            'Toplam: 4.420,00 TL',
+            $context['technician_job_card_url'],
+            'Lütfen randevu saati öneriniz.',
+        ] as $required) {
+            $this->assertStringContainsString($required, $body);
+        }
+    }
+
+    public function test_whatsapp_and_sms_use_same_earning_snapshot(): void
+    {
+        $context = [
+            'mrn' => 'MRN-SAME-SNAPSHOT-001',
+            'customer_name' => 'Aynı Snapshot Müşteri',
+            'customer_phone' => '905300000001',
+            'address' => 'Aynı Snapshot Adresi',
+            'maps_url' => 'https://www.google.com/maps/search/?api=1&query=41.008%2C28.978',
+            'product_name' => 'Snapshot Kilit',
+            'serial_no' => 'SN-SNAPSHOT-001',
+            'labor_amount_formatted' => '3.000,00 TL',
+            'route_fee_formatted' => '1.420,00 TL',
+            'technician_earning_total_formatted' => '4.420,00 TL',
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=258',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/258',
+        ];
+
+        $bodies = collect(['whatsapp', 'sms'])->mapWithKeys(function (string $channel) use ($context): array {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'assignment_offer_technician',
+                    'channel' => $channel,
+                    'sample_context' => false,
+                    'context' => $context,
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            return [$channel => $body];
+        });
+
+        $this->assertStringContainsString('4.420,00 TL', $bodies['whatsapp']);
+        $this->assertStringContainsString('4.420,00 TL', $bodies['sms']);
+        $this->assertStringNotContainsString('3.000,00 TL\nİş kartı', $bodies['sms']);
+        $this->assertSame(1, substr_count($bodies['whatsapp'], '4.420,00 TL'));
+        $this->assertSame(1, substr_count($bodies['sms'], '4.420,00 TL'));
     }
 
     public function test_sms_compliance_sms_footer_is_separate_from_internal_custom_id(): void

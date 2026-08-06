@@ -4536,6 +4536,50 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 
+    public function test_local_manual_acceptance_allows_canonical_map_and_locked_job_urls_for_assignment(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake([
+            'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-ASSIGNMENT-LINK-1'], 200),
+        ]);
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $body = implode("\n", [
+            'EMAKS Prime Teknik Servis',
+            'MRN: MRN-ASSIGNMENT-LINK-001',
+            'Harita:',
+            'https://www.google.com/maps/search/?api=1&query=41.008%2C28.978',
+            'İş Kartı',
+            'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=257',
+        ]);
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'recipient_phone' => '905399999999',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => $body],
+            'idempotency_key' => 'local-assignment-canonical-links',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame('905000000002', $dispatch->target_phone);
+        $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 1,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame('EVO-ASSIGNMENT-LINK-1', $dispatch->provider_message_id);
+        $this->assertSame($body, $dispatch->bodyForProvider());
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), '/message/sendText/')
+            && $request['number'] === '905000000002'
+            && $request['text'] === $body);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
     public function test_disabled_normal_event_is_blocked_before_provider_call(): void
     {
         Http::fake();
@@ -4833,6 +4877,24 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                     'sms_provider' => 'nac_sms',
                 ],
                 'appointment_approved_technician' => [
+                    'enabled' => true,
+                    'real_send_allowed' => false,
+                    'channel_policy' => 'whatsapp_only',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'disabled',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+                'assignment_offer_technician' => [
+                    'enabled' => true,
+                    'real_send_allowed' => false,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+                'earnings_message_technician' => [
                     'enabled' => true,
                     'real_send_allowed' => false,
                     'channel_policy' => 'whatsapp_only',

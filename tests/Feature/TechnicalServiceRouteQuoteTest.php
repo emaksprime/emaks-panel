@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\PageConfig;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartRequest;
@@ -444,15 +445,16 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_locksmith_travel_earning_calculates_on_initial_selection_without_reselect(): void
+    public function test_first_selection_calculates_and_persists_route(): void
     {
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
 
         $this->assertIsString($pageSource);
         $this->assertStringContainsString('routeQuoteLatestSelection.current = {', $pageSource);
         $this->assertStringContainsString('const autoKey = [', $pageSource);
-        $this->assertStringContainsString('|| !assignDialogOpen', $pageSource);
-        $this->assertStringContainsString('assignDialogOpen,', $pageSource);
+        $this->assertStringContainsString('|| !routeQuoteAutoEnabled', $pageSource);
+        $this->assertStringContainsString('setRouteQuoteAutoEnabled(true)', $pageSource);
+        $this->assertStringNotContainsString('|| !assignDialogOpen', $pageSource);
         $this->assertStringContainsString('queueMicrotask(() =>', $pageSource);
         $this->assertStringNotContainsString('window.setTimeout(() =>', $pageSource);
         $this->assertStringContainsString('routeQuoteLastAutoKey.current = autoKey', $pageSource);
@@ -463,6 +465,106 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringContainsString('Usta konumu eksik; yol hakedişi manuel girilmeli.', $pageSource);
         $this->assertStringContainsString('Müşteri konumu eksik; yol hakedişi manuel girilmeli.', $pageSource);
         $this->assertStringContainsString('/route-quote', $pageSource);
+
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_GOOGLE_ROUTES_URL => Http::response($this->googleRoutesResponseForRoundTripKm(60), 200),
+        ]);
+        $request = $this->technicalServiceRequestWithLocation();
+        $technician = $this->technicianWithLocation();
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/route-quote")
+            ->assertOk()
+            ->assertJsonPath('round_trip_distance_km', 60)
+            ->assertJsonPath('fee_amount', 300);
+
+        $this->assertDatabaseHas('technical_service_route_quotes', [
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'fee_amount' => '300.00',
+        ]);
+        $this->assertSame('300.00', $request->fresh()->travel_fee_amount);
+    }
+
+    public function test_final_assignment_modal_uses_canonical_labor_route_total(): void
+    {
+        config(['services.google.routes_fee_per_km' => 10]);
+        $request = $this->technicalServiceRequestWithLocation();
+        $request->forceFill([
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+        $technician = $this->technicianWithLocation();
+        $quote = $this->createCachedQuote($request, $technician, 10.0, 150.0);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'route_quote_id' => $quote->id,
+                'labor_amount' => 3000,
+                'travel_amount' => 0,
+                'confirm_assignment' => true,
+                'assignment_offer' => [
+                    'labor_amount' => 3000,
+                    'route_fee_amount' => 0,
+                    'total_amount' => 3000,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.labor_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 150)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3150)
+            ->assertJsonPath('request.travel_fee_amount', '150.00');
+
+        $offer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->firstOrFail();
+        $this->assertSame(3000.0, (float) $offer->labor_amount);
+        $this->assertSame(150.0, (float) $offer->route_fee_amount);
+        $this->assertSame(3150.0, (float) $offer->total_amount);
+
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $this->assertIsString($pageSource);
+        $this->assertStringContainsString('Yol hakedişi henüz hesaplanmadı.', $pageSource);
+        $this->assertStringContainsString("travelRoundTripKm.trim() === '' ? Number.NaN", $pageSource);
+    }
+
+    public function test_route_failure_never_silently_becomes_zero(): void
+    {
+        $request = $this->technicalServiceRequestWithLocation();
+        $technician = $this->technicianWithLocation();
+        TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_FAILED,
+            'error_code' => 'routes_unavailable',
+            'error_message' => 'Rota hesaplanamadı.',
+            'calculated_at' => now(),
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 0,
+                'assignment_offer' => [
+                    'labor_amount' => 3000,
+                    'route_fee_amount' => 0,
+                    'total_amount' => 3000,
+                ],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('route_quote_id');
+
+        $this->assertNull($request->fresh()->travel_fee_amount);
+        $this->assertDatabaseCount('technical_service_assignment_offers', 0);
     }
 
     public function test_dirty_zero_distance_quote_is_not_displayed_as_calculated_fee(): void

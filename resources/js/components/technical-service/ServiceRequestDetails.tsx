@@ -153,7 +153,7 @@ type ServiceRequestDetailsProps = {
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSend?: (paymentId: number | string, payload?: { resend_reason?: string | null }) => void | Promise<void>
-  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
+  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
@@ -2477,8 +2477,20 @@ export function ServiceRequestDetails({
     ?? (totalCustomerCollectedAmount !== null && earningTotalAmount !== null
     ? formatMoneyValue(totalCustomerCollectedAmount - earningTotalAmount)
     : 'Hesaplanamadı')
+  const activeOfferTechnicianId = activeAssignmentOffer?.technical_service_technician_id !== null
+    && activeAssignmentOffer?.technical_service_technician_id !== undefined
+    ? String(activeAssignmentOffer.technical_service_technician_id)
+    : null
+  const canonicalEarningAssignmentReady = Boolean(
+    activeAssignmentOffer
+    && !hasAssignmentChange
+    && requestTechnicianIdString
+    && selectedTechnicianIdString === requestTechnicianIdString
+    && activeOfferTechnicianId === requestTechnicianIdString,
+  )
   const canSendTechnicianEarning = Boolean(
-    selectedTechnician
+    canonicalEarningAssignmentReady
+    && selectedTechnician
     && selectedTechnician.phone
     && onTechnicianEarningMessageCreate
     && earningTotalAmount !== null
@@ -3181,6 +3193,12 @@ export function ServiceRequestDetails({
       return
     }
 
+    if (!canonicalEarningAssignmentReady) {
+      setRouteFeeEditorMessage('Hakediş mesajı için önce seçili ustayla Servise Ata işlemini tamamlayın.')
+
+      return
+    }
+
     if (!selectedTechnician.phone) {
       setRouteFeeEditorMessage('Usta telefonu olmadan hakediş bilgisi gönderilemez.')
 
@@ -3208,7 +3226,16 @@ export function ServiceRequestDetails({
       setEarningMessageUrl(response.whatsapp_url ?? '')
     }
 
-    setRouteFeeEditorMessage('Hakediş bilgisi gönderildi.')
+    const dispatchStatus = response?.dispatch?.status
+    setRouteFeeEditorMessage(response?.duplicate_noop === true || dispatchStatus === 'duplicate_blocked'
+      ? 'Aynı hakediş mesajı zaten kuyruğa alınmış veya gönderilmiş; ikinci provider çağrısı oluşturulmadı.'
+      : ['blocked', 'suppressed', 'suppressed_real_send_disabled'].includes(String(dispatchStatus))
+        ? 'Hakediş mesajı provider öncesinde bloklandı; Kuyruk / Log detayını kontrol edin.'
+        : dispatchStatus === 'queued'
+          ? 'Hakediş bilgisi mesaj kuyruğuna alındı.'
+          : dispatchStatus === 'sent' || dispatchStatus === 'test_sent'
+            ? 'Hakediş bilgisi gönderildi.'
+            : 'Hakediş mesajı kaydedildi; güncel durumu Kuyruk / Log ekranından izleyin.')
   }
   const operationControlChange = <K extends keyof NonNullable<ServiceRequest['operationControl']>>(
     key: K,
@@ -6578,7 +6605,9 @@ export function ServiceRequestDetails({
                 ) : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-500">
-                    Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu mesaj ayrı kaydedilir.
+                    {canonicalEarningAssignmentReady
+                      ? 'Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu aksiyon canonical atama hakedişini ayrıca kuyruğa alır.'
+                      : 'Hakediş mesajı ancak seçili usta için Servise Ata tamamlandıktan sonra gönderilebilir.'}
                   </p>
                   <Button
                     type="button"

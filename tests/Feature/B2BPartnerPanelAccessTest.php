@@ -7602,7 +7602,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString("\nhttps://portal.test/service-job-confirmation/{$confirmation->token}", $messageText);
         $this->assertStringNotContainsString('127.0.0.1', $messageText);
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
-        $this->assertSame("https://portal.test/service-job-confirmation/{$confirmation->token}", $confirmation->payload['message_payload']['confirmation_url'] ?? null);
+        $confirmationUrl = "https://portal.test/service-job-confirmation/{$confirmation->token}";
+        $this->assertSame($confirmationUrl, $confirmation->payload['message_payload']['confirmation_url'] ?? null);
+        $this->assertSame(1, substr_count($messageText, "\n{$confirmationUrl}"));
+        $this->assertDoesNotMatchRegularExpression('/[\x{200B}-\x{200D}\x{FEFF}]/u', $messageText);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $confirmation->payload['message_payload']['dispatch_status'] ?? null);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
@@ -7613,6 +7616,13 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
             'provider_key' => 'null_local',
         ]);
+        $approvalDispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('event', 'customer_approval_request')
+            ->latest('id')
+            ->firstOrFail();
+        $this->assertSame($messageText, $approvalDispatch->bodyForProvider());
+        $this->assertSame(hash('sha256', $messageText), $approvalDispatch->providerBodyHash());
         Http::assertNothingSent();
 
         $this->get("/service-job-confirmation/{$confirmation->token}")
@@ -9593,8 +9603,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('request.assignment_offer.labor_amount', 2000)
-            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1000)
-            ->assertJsonPath('request.assignment_offer.total_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 2942)
+            ->assertJsonPath('request.assignment_offer.total_amount', 4942)
             ->assertJsonPath('request.assignment_offer.route_quote_id', $routeQuote->id)
             ->assertJsonPath('request.route_quote.fee_amount', 2942);
 
@@ -9603,8 +9613,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->firstOrFail();
         $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_SENT, $offer->status);
         $this->assertSame(2000.0, (float) $offer->labor_amount);
-        $this->assertSame(1000.0, (float) $offer->route_fee_amount);
-        $this->assertSame(3000.0, (float) $offer->total_amount);
+        $this->assertSame(2942.0, (float) $offer->route_fee_amount);
+        $this->assertSame(4942.0, (float) $offer->total_amount);
         $this->assertIsArray($offer->metadata['message_payload'] ?? null);
         $this->assertTrue((bool) ($offer->metadata['confirmed_by_ops'] ?? false));
         $this->assertStringStartsWith(
@@ -9615,8 +9625,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('partner_id='.$partner->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
         $this->assertStringContainsString('job_id='.$job->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
         $this->assertStringContainsString('2.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
-        $this->assertStringContainsString('Yol: 1.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
-        $this->assertStringContainsString('Toplam: 3.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Yol: 2.942 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Toplam: 4.942 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringContainsString('İş kartı:', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringContainsString('Seri: SN-OFFER-ACT-001', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringContainsString('Aktivasyon: ACT-OFFER', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
@@ -9653,13 +9663,13 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('request.assignment_offer.id', $offer->id)
             ->assertJsonPath('request.assignment_offer.labor_amount', 2000)
-            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1000)
-            ->assertJsonPath('request.assignment_offer.total_amount', 3000)
-            ->assertJsonPath('request.assignment_offer.message_payload.route_fee_amount', 1000)
-            ->assertJsonPath('request.assignment_offer.message_payload.total_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 2942)
+            ->assertJsonPath('request.assignment_offer.total_amount', 4942)
+            ->assertJsonPath('request.assignment_offer.message_payload.route_fee_amount', 2942)
+            ->assertJsonPath('request.assignment_offer.message_payload.total_amount', 4942)
             ->assertJsonPath('request.assignment_offer.job_link', $offer->metadata['message_payload']['job_link'])
             ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
-            ->assertJsonPath('request.travel_fee_amount', '1000.00')
+            ->assertJsonPath('request.travel_fee_amount', '2942.00')
             ->assertJsonPath('request.technician_payment_amount', '2000.00');
 
         $this->actingAs($admin)
@@ -9675,14 +9685,14 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/partner/service-jobs/{$job->id}")
             ->assertOk()
             ->assertJsonPath('job.assignment_offer.labor_amount', 2000)
-            ->assertJsonPath('job.assignment_offer.route_fee_amount', 1000)
-            ->assertJsonPath('job.assignment_offer.total_amount', 3000)
+            ->assertJsonPath('job.assignment_offer.route_fee_amount', 2942)
+            ->assertJsonPath('job.assignment_offer.total_amount', 4942)
             ->assertJsonPath('job.earning_summary.labor_amount', 2000)
-            ->assertJsonPath('job.earning_summary.route_fee_amount', 1000)
-            ->assertJsonPath('job.earning_summary.total_amount', 3000)
+            ->assertJsonPath('job.earning_summary.route_fee_amount', 2942)
+            ->assertJsonPath('job.earning_summary.total_amount', 4942)
             ->assertJsonPath('job.earning_breakdown.current_visit.kind_label', 'Montaj')
-            ->assertJsonPath('job.earning_breakdown.current_visit.total_amount', 3000)
-            ->assertJsonPath('job.earning_breakdown.root_total.total_amount', 3000)
+            ->assertJsonPath('job.earning_breakdown.current_visit.total_amount', 4942)
+            ->assertJsonPath('job.earning_breakdown.root_total.total_amount', 4942)
             ->assertJsonPath('job.product_name', 'Offer SyntheticPerson038')
             ->assertJsonPath('job.product_model', 'Offer Model')
             ->assertJsonPath('job.brand', 'Emaks Prime')
@@ -9696,8 +9706,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson('/api/partner/earnings')
             ->assertOk()
             ->assertJsonPath('items.0.earnings.pending.rows.0.labor_amount', 2000)
-            ->assertJsonPath('items.0.earnings.pending.rows.0.travel_fee_amount', 1000)
-            ->assertJsonPath('items.0.earnings.pending.rows.0.line_total', 3000);
+            ->assertJsonPath('items.0.earnings.pending.rows.0.travel_fee_amount', 2942)
+            ->assertJsonPath('items.0.earnings.pending.rows.0.line_total', 4942);
 
         $otherPartner = $this->partner([
             'partner_type' => B2BPartner::TYPE_LOCKSMITH,
@@ -9733,8 +9743,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/technical-service/requests/{$job->id}")
             ->assertOk()
             ->assertJsonPath('request.assignment_offer.id', $offer->id)
-            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1000)
-            ->assertJsonPath('request.assignment_offer.total_amount', 3000);
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 2942)
+            ->assertJsonPath('request.assignment_offer.total_amount', 4942);
     }
 
     public function test_technical_service_assignment_requires_final_earning_confirmation_when_final_amounts_are_sent(): void

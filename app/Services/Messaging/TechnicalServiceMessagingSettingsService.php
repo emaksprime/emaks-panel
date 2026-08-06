@@ -7622,8 +7622,8 @@ class TechnicalServiceMessagingSettingsService
         if (! $this->providerRealReady($provider, $settings, false)) {
             return $this->executionBlock('local_manual_acceptance_provider_not_ready', 'Dispatch provider readiness geçmedi.');
         }
-        if (! $this->scopedLocalUatBodyUrlsAreSafe($body, $settings)) {
-            return $this->executionBlock('local_manual_acceptance_link_host_blocked', 'Dispatch body yalnız locked private LAN origin bağlantıları içerebilir.');
+        if (! $this->localManualAcceptanceBodyUrlsAreSafe($body, $settings)) {
+            return $this->executionBlock('local_manual_acceptance_link_host_blocked', 'Dispatch body yalnız locked private LAN origin ve canonical Google Maps bağlantıları içerebilir.');
         }
 
         return ['allowed' => true, 'code' => null, 'message' => null];
@@ -9958,6 +9958,66 @@ SQL,
         }
 
         return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function localManualAcceptanceBodyUrlsAreSafe(string $body, array $settings): bool
+    {
+        preg_match_all('~https?://[^\s<>"\']+~iu', $body, $matches);
+        $urls = array_map(
+            static fn (string $url): string => rtrim($url, '.,;:!?)]}'),
+            (array) ($matches[0] ?? []),
+        );
+        if ($urls === []) {
+            return true;
+        }
+
+        $expected = PartnerPortalPublicUrl::normalizeOrigin(
+            (string) ($settings['manual_e2e_partner_portal_origin'] ?? ''),
+        );
+        if ($expected === null || ! PartnerPortalPublicUrl::isPrivateLanOrigin($expected)) {
+            return false;
+        }
+
+        foreach ($urls as $url) {
+            $parts = parse_url($url);
+            if (! is_array($parts) || ! isset($parts['scheme'], $parts['host'])) {
+                return false;
+            }
+            $origin = strtolower((string) $parts['scheme']).'://'.strtolower((string) $parts['host']);
+            if (isset($parts['port'])) {
+                $origin .= ':'.(int) $parts['port'];
+            }
+            if (hash_equals(strtolower($expected), $origin)) {
+                continue;
+            }
+            if (! $this->isCanonicalGoogleMapsUrl($parts)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** @param array<string, mixed> $parts */
+    private function isCanonicalGoogleMapsUrl(array $parts): bool
+    {
+        if (strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
+            || strtolower((string) ($parts['host'] ?? '')) !== 'www.google.com'
+            || (isset($parts['port']) && (int) $parts['port'] !== 443)
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || ! in_array((string) ($parts['path'] ?? ''), ['/maps/search', '/maps/search/'], true)
+        ) {
+            return false;
+        }
+
+        parse_str((string) ($parts['query'] ?? ''), $query);
+
+        return (string) ($query['api'] ?? '') === '1'
+            && trim((string) ($query['query'] ?? '')) !== '';
     }
 
     private function maskEmail(string $email): string

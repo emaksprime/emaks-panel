@@ -908,19 +908,28 @@ class TechnicalServiceWorkflowService
     public function recordTechnicianEarningsMessage(
         TechnicalServiceRequest $request,
         TechnicalServiceTechnician $technician,
+        TechnicalServiceAssignmentOffer $offer,
         array $payload,
         ?Authenticatable $user = null
     ): array {
+        if ((int) $offer->technical_service_request_id !== (int) $request->id
+            || (int) $offer->technical_service_technician_id !== (int) $technician->id
+        ) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Canonical hakediş kaydı aktif talep ve usta ile eşleşmiyor.',
+            ]);
+        }
+
         $old = $this->snapshot($request);
-        $laborAmount = $this->nullableFloat($payload['labor_amount'] ?? null)
-            ?? $this->nullableFloat($request->technician_payment_amount)
-            ?? $this->customerAmountForService($request->service_type)
-            ?? 0.0;
-        $routeFeeAmount = $this->nullableFloat($payload['route_fee_amount'] ?? null)
-            ?? $this->nullableFloat($request->travel_fee_amount)
-            ?? 0.0;
+        $laborAmount = round((float) $offer->labor_amount, 2);
+        $routeFeeAmount = round((float) $offer->route_fee_amount, 2);
         $submittedTotalAmount = $this->nullableFloat($payload['total_amount'] ?? null);
         $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        if (abs(((float) $offer->total_amount) - $totalAmount) > 0.01) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Canonical hakediş toplamı işçilik ve yol toplamıyla eşleşmiyor.',
+            ]);
+        }
         $totalAmountCorrected = $submittedTotalAmount !== null && abs($submittedTotalAmount - $totalAmount) > 0.01;
         $note = trim((string) ($payload['note'] ?? ''));
         $messageText = $this->technicianEarningsMessageText($request, $technician, $laborAmount, $routeFeeAmount, $totalAmount, $note);
@@ -934,8 +943,11 @@ class TechnicalServiceWorkflowService
 
         $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $operationControl['technician_earning_message'] = [
-            'status' => 'sent',
-            'sent_at' => now()->toISOString(),
+            'status' => 'prepared',
+            'prepared_at' => now()->toISOString(),
+            'sent_at' => null,
+            'dispatch_id' => null,
+            'assignment_offer_id' => $offer->id,
             'technician_id' => $technician->id,
             'technician_name' => $technician->name,
             'technician_phone' => $this->technicianPhone($technician),
@@ -951,22 +963,9 @@ class TechnicalServiceWorkflowService
         ];
 
         $request->forceFill([
-            'technician_payment_amount' => round($laborAmount, 2),
-            'travel_fee_amount' => round($routeFeeAmount, 2),
             'operation_control_payload' => $operationControl,
             'updated_by_user_id' => $user?->id,
         ])->save();
-
-        $offer = $this->syncAssignmentOfferFromEarningsMessage(
-            $request,
-            $technician,
-            $laborAmount,
-            $routeFeeAmount,
-            $totalAmount,
-            $note,
-            $messagePayload,
-            $user,
-        );
 
         $eventPayload = [
             'technician_id' => $technician->id,
@@ -980,15 +979,15 @@ class TechnicalServiceWorkflowService
             'note' => $note !== '' ? $note : null,
         ];
 
-        $this->writeAuditLog($request, 'technician_earning_message_sent', $old, $this->snapshot($request), $user, $note !== '' ? $note : null);
+        $this->writeAuditLog($request, 'technician_earning_message_prepared', $old, $this->snapshot($request), $user, $note !== '' ? $note : null);
         $this->writeEvent(
             $request,
-            'technician_earning_message_sent',
+            'technician_earning_message_prepared',
             $this->currentWorkflowStatus($request),
             $this->currentWorkflowStatus($request),
             $user,
             $eventPayload,
-            'Hakediş bilgisi gönderildi'
+            'Hakediş bilgisi gönderim için hazırlandı'
         );
 
         $whatsappPhone = $this->whatsappPhone($this->technicianPhone($technician));
@@ -2494,6 +2493,17 @@ class TechnicalServiceWorkflowService
 
         if (! is_array($payload)) {
             return null;
+        }
+
+        $dispatch = is_numeric($payload['dispatch_id'] ?? null)
+            ? TechnicalServiceMessageDispatch::query()->find((int) $payload['dispatch_id'])
+            : null;
+        if ($dispatch instanceof TechnicalServiceMessageDispatch) {
+            $payload['status'] = $dispatch->status;
+            $payload['queued_at'] = $this->dateTimeString($dispatch->queued_at);
+            $payload['sent_at'] = $this->dateTimeString($dispatch->sent_at);
+            $payload['last_error_code'] = $dispatch->last_error_code;
+            $payload['last_error_message_redacted'] = $dispatch->last_error_message_redacted;
         }
 
         $laborAmount = $this->nullableFloat($payload['labor_amount'] ?? null)
@@ -4678,72 +4688,6 @@ class TechnicalServiceWorkflowService
         }
 
         return $payload;
-    }
-
-    /**
-     * @param  array<string, mixed>  $messagePayload
-     */
-    private function syncAssignmentOfferFromEarningsMessage(
-        TechnicalServiceRequest $request,
-        TechnicalServiceTechnician $technician,
-        float $laborAmount,
-        float $routeFeeAmount,
-        float $totalAmount,
-        string $note,
-        array $messagePayload,
-        ?Authenticatable $user,
-    ): TechnicalServiceAssignmentOffer {
-        TechnicalServiceAssignmentOffer::query()
-            ->where('technical_service_request_id', $request->id)
-            ->where('technical_service_technician_id', '<>', $technician->id)
-            ->whereIn('status', [
-                TechnicalServiceAssignmentOffer::STATUS_SENT,
-                TechnicalServiceAssignmentOffer::STATUS_REVISED,
-            ])
-            ->update([
-                'status' => TechnicalServiceAssignmentOffer::STATUS_CANCELLED,
-                'updated_at' => now(),
-            ]);
-
-        $offer = TechnicalServiceAssignmentOffer::query()
-            ->where('technical_service_request_id', $request->id)
-            ->where('technical_service_technician_id', $technician->id)
-            ->whereIn('status', [
-                TechnicalServiceAssignmentOffer::STATUS_SENT,
-                TechnicalServiceAssignmentOffer::STATUS_REVISED,
-            ])
-            ->latest('id')
-            ->first();
-
-        $metadata = $offer instanceof TechnicalServiceAssignmentOffer && is_array($offer->metadata)
-            ? $offer->metadata
-            : [];
-        $metadata['source'] = $metadata['source'] ?? 'technician_earning_message';
-        $metadata['message_payload'] = $messagePayload;
-        $metadata['synced_from_earning_message_at'] = now()->toISOString();
-
-        if (! $offer instanceof TechnicalServiceAssignmentOffer) {
-            $offer = new TechnicalServiceAssignmentOffer([
-                'technical_service_request_id' => $request->id,
-                'technical_service_technician_id' => $technician->id,
-                'route_quote_id' => $request->latestRouteQuote?->id,
-                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
-                'sent_by' => $user?->id,
-                'sent_at' => now(),
-            ]);
-        }
-
-        $offer->forceFill([
-            'labor_amount' => round($laborAmount, 2),
-            'route_fee_amount' => round($routeFeeAmount, 2),
-            'total_amount' => round($totalAmount, 2),
-            'currency' => 'TRY',
-            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
-            'note' => $note !== '' ? $note : null,
-            'metadata' => $metadata,
-        ])->save();
-
-        return $offer;
     }
 
     /**

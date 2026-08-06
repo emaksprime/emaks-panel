@@ -616,16 +616,24 @@ function routeQuoteActiveForSelection(
       && configFeePerKm !== null
       && Math.abs(routeQuote.fee_per_km - configFeePerKm) <= 0.001
     )
+  const isManualQuote = routeQuote.manual_override === true
+    || routeQuote.provider === 'manual_override'
+    || routeQuote.source === 'manual_override'
 
   return routeQuoteTechnicianId === selectedTechnicianId
     && (routeQuote.status === 'calculated' || routeQuote.status === 'manual_override')
-    && technicianCoordinates !== null
-    && requestCoordinates !== null
-    && sameCoordinateValue(routeQuote.origin_latitude, technicianCoordinates.latitude)
-    && sameCoordinateValue(routeQuote.origin_longitude, technicianCoordinates.longitude)
-    && sameCoordinateValue(routeQuote.destination_latitude, requestCoordinates.latitude)
-    && sameCoordinateValue(routeQuote.destination_longitude, requestCoordinates.longitude)
     && feeMatchesConfig
+    && (
+      isManualQuote
+      || (
+        technicianCoordinates !== null
+        && requestCoordinates !== null
+        && sameCoordinateValue(routeQuote.origin_latitude, technicianCoordinates.latitude)
+        && sameCoordinateValue(routeQuote.origin_longitude, technicianCoordinates.longitude)
+        && sameCoordinateValue(routeQuote.destination_latitude, requestCoordinates.latitude)
+        && sameCoordinateValue(routeQuote.destination_longitude, requestCoordinates.longitude)
+      )
+    )
 }
 
 function technicianDisplayName(technician: ServiceTechnician): string {
@@ -1136,6 +1144,7 @@ export function TechnicalServiceOperationCenter() {
   const [routeQuoteError, setRouteQuoteError] = useState<string | null>(null)
   const [routeQuoteManualSaveLoading, setRouteQuoteManualSaveLoading] = useState(false)
   const [routeQuoteManualSaveError, setRouteQuoteManualSaveError] = useState<string | null>(null)
+  const [routeQuoteAutoEnabled, setRouteQuoteAutoEnabled] = useState(false)
   const routeQuoteAutoRequestSeq = useRef(0)
   const routeQuoteLatestSelection = useRef({ requestId: '', technicianId: '' })
   const routeQuoteLastAutoKey = useRef('')
@@ -1190,6 +1199,7 @@ export function TechnicalServiceOperationCenter() {
   const resetAssignmentDraftForTechnicianChange = useCallback(() => {
     routeQuoteAutoRequestSeq.current += 1
     routeQuoteLastAutoKey.current = ''
+    setRouteQuoteAutoEnabled(false)
     setAssignOfferLaborAmount('')
     setAssignOfferRouteFeeAmount('')
     setAssignCustomerDirectAmount('')
@@ -2126,6 +2136,7 @@ export function TechnicalServiceOperationCenter() {
     && (
       modalFinancePayoutTechnicianId === selectedAssignmentTechnicianId
       || (!modalFinancePayoutTechnicianId && modalRequestTechnicianId === selectedAssignmentTechnicianId)
+      || (!modalFinancePayoutTechnicianId && !modalRequestTechnicianId)
     ),
   )
   const activeModalFinancePayout = modalFinancePayoutMatchesSelection ? modalFinancePayout : null
@@ -3345,7 +3356,7 @@ export function TechnicalServiceOperationCenter() {
   useEffect(() => {
     if (
       !selectedId
-      || !assignDialogOpen
+      || !routeQuoteAutoEnabled
       || !assignTechnicianOption
       || assignTechnicianOption === 'other'
       || !selectedAssignTechnicianRecord
@@ -3490,11 +3501,11 @@ export function TechnicalServiceOperationCenter() {
       cancelled = true
     }
   }, [
-    assignDialogOpen,
     assignTechnicianOption,
     assignmentRouteQuote,
     modalRequest,
     preserveDetailScroll,
+    routeQuoteAutoEnabled,
     selectedAssignTechnicianRecord,
     selectedId,
   ])
@@ -4257,9 +4268,15 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if (!isManualTechnician && !assignmentRouteQuote) {
+      setAssignError('Yol hakedişi henüz hesaplanmadı. Otomatik hesaplamayı tamamlayın veya açık neden ile manuel yol hakedişi kaydedin.')
+
+      return
+    }
+
     const parsedTravelRoundTripKm = typeof assignmentRouteRoundTripKm === 'number'
       ? assignmentRouteRoundTripKm
-      : travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
+      : travelRoundTripKm.trim() === '' ? Number.NaN : Number(travelRoundTripKm)
 
     if (!Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
       setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
@@ -4312,9 +4329,15 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if (!isManualTechnician && !assignmentRouteQuote) {
+      setAssignError('Yol hakedişi henüz hesaplanmadı. Otomatik hesaplamayı tamamlayın veya açık neden ile manuel yol hakedişi kaydedin.')
+
+      return
+    }
+
     const parsedTravelRoundTripKm = typeof assignmentRouteRoundTripKm === 'number'
       ? assignmentRouteRoundTripKm
-      : travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
+      : travelRoundTripKm.trim() === '' ? Number.NaN : Number(travelRoundTripKm)
     const submittedTechnicianOption = assignTechnicianOption
     const submittedTravelRoundTripKm = String(parsedTravelRoundTripKm)
 
@@ -4616,6 +4639,7 @@ export function TechnicalServiceOperationCenter() {
     setPriorityUpdateError(null)
     setPriorityUpdateLoading(false)
     setAssignTechnicianOption(request.technicianId ?? '')
+    setRouteQuoteAutoEnabled(false)
     setTravelRoundTripKm('')
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
@@ -5119,6 +5143,7 @@ export function TechnicalServiceOperationCenter() {
                             checked={assignTechnicianOption === match.technician.id}
                             onChange={() => {
                               resetAssignmentDraftForTechnicianChange()
+                              setRouteQuoteAutoEnabled(true)
                               setAssignTechnicianOption(match.technician.id)
                               const links = activeTechnicianPartnerLinks(match.technician)
                               setAssignPartnerOption(links.length === 1 ? String(links[0].partner_id) : '')
@@ -5175,6 +5200,7 @@ export function TechnicalServiceOperationCenter() {
                         checked={assignTechnicianOption === 'other'}
                         onChange={() => {
                           resetAssignmentDraftForTechnicianChange()
+                          setRouteQuoteAutoEnabled(false)
                           setAssignTechnicianOption('other')
                           setAssignPartnerOption('')
                           setTravelRoundTripKm('')
@@ -6294,6 +6320,7 @@ export function TechnicalServiceOperationCenter() {
                     onMountExclusionNoteChange={setAssignOverrideReason}
                     onTechnicianSelect={(technicianId) => {
                       resetAssignmentDraftForTechnicianChange()
+                      setRouteQuoteAutoEnabled(true)
                       setAssignTechnicianOption(technicianId)
                       const technician = technicians.find((item) => item.id === technicianId) ?? null
                       const links = activeTechnicianPartnerLinks(technician)
