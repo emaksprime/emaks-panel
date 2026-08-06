@@ -251,7 +251,12 @@ class TechnicalServiceMessageContextBuilder
         $context['sms_short_address'] = $this->smsShortAddress($context);
         $context['sms_customer_name'] = $this->smsSafeText($context['customer_name'] ?? null);
         $context['sms_service_address'] = $this->smsSafeText($context['address'] ?? null);
-        $context['product_sms_label'] = $this->smsSafeText($context['product_name'] ?? null);
+        $productSmsLabel = $this->filledString($context['product_sms_label'] ?? null)
+            ?: implode(' ', array_values(array_unique(array_filter([
+                $this->filledString($context['product_name'] ?? null),
+                $this->filledString($context['product_model'] ?? null),
+            ]))));
+        $context['product_sms_label'] = $this->smsSafeText($productSmsLabel, 32);
         $context['customer_visible_note_line'] = $this->line('Not', $context['customer_visible_note'] ?? null);
         $context['technician_visible_note_line'] = $this->line('Not', $context['technician_visible_note'] ?? null);
         $context['customer_visible_note_block'] = $this->block('Not', $context['customer_visible_note'] ?? null);
@@ -838,14 +843,16 @@ class TechnicalServiceMessageContextBuilder
         ])) ?: 'Bölge bilgisi panelde';
     }
 
-    private function smsSafeText(mixed $value): string
+    private function smsSafeText(mixed $value, ?int $maxLength = null): string
     {
         $text = $this->filledString($value);
         if ($text === null) {
             return '';
         }
 
-        return trim((string) preg_replace('/\s+/', ' ', Str::ascii($text)));
+        $normalized = trim((string) preg_replace('/\s+/', ' ', Str::ascii($text)));
+
+        return $maxLength === null ? $normalized : mb_substr($normalized, 0, $maxLength);
     }
 
     private function shortLink(mixed $value, string $sampleFallback, bool $allowSampleFallback): string

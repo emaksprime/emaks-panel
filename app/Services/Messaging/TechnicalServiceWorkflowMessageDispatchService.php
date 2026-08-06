@@ -71,7 +71,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         $recipientPhone = $this->recipientPhone($request, $recipientRole, $options, $global);
         $testMode = (bool) ($global['test_mode_enabled'] ?? false);
         $targetPhone = $testMode
-            ? $this->idempotency->normalizePhone((string) ($global['shared_test_phone'] ?? $global['test_phone'] ?? ''))
+            ? $this->settings->testPhoneForRole($global, $recipientRole)
             : $recipientPhone;
         $testRedirectApplied = $testMode && $targetPhone !== '' && $targetPhone !== $recipientPhone;
         $manualE2e = $this->manualE2ePreparation($global, $recipientRole, $targetPhone, $request);
@@ -331,7 +331,7 @@ class TechnicalServiceWorkflowMessageDispatchService
         $testMode = (bool) ($global['test_mode_enabled'] ?? false);
         $recipientPhone = $this->recipientPhone($request, $recipientRole, $options, $global);
         $targetPhone = $testMode
-            ? $this->idempotency->normalizePhone((string) ($global['shared_test_phone'] ?? $global['test_phone'] ?? ''))
+            ? $this->settings->testPhoneForRole($global, $recipientRole)
             : $recipientPhone;
         $businessEventId = $this->businessEventId($request, $messageType, $sourceAction, $body, $options);
         $opsWhatsappEnabled = $this->opsWhatsappEnabled($settings, $messageType, $recipientRole);

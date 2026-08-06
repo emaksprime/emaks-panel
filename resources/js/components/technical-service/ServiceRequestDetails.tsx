@@ -22,6 +22,8 @@ type PaymentLinkSendTarget = {
   last_message_sent_at?: string | null
 }
 
+type ExtraPaymentPurpose = NonNullable<ServiceRequestExtraMountPaymentPayload['purpose']>
+
 const OPS_DOOR_PHOTO_FIELD_CODES = new Set<string>([
   'ops_door_front_photo',
   'ops_door_side_photo',
@@ -517,6 +519,23 @@ const parseNumericInput = (value: string): number | null => {
 
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
 }
+
+const canonicalExtraPaymentPurpose = (value: string | null | undefined): string => {
+  switch (value) {
+    case 'manual_extra':
+    case 'mount_extra':
+    case 'manual_mount_payment':
+      return 'extra_mount_fee'
+    case 'service_payment':
+      return 'customer_charge'
+    default:
+      return value ?? ''
+  }
+}
+
+const paymentSerialIdentity = (ids: Array<number | string> | null | undefined): string => (
+  (ids ?? []).map((id) => String(id)).sort().join(',')
+)
 
 const parseCoordinateValue = (value: number | string | null | undefined): number | null => {
   if (value === null || value === undefined || value === '') {
@@ -1735,6 +1754,7 @@ export function ServiceRequestDetails({
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
   const [routeFeeEditorMode, setRouteFeeEditorMode] = useState<'route_fee' | 'payment_link'>('route_fee')
+  const [extraPaymentPurpose, setExtraPaymentPurpose] = useState<ExtraPaymentPurpose>('manual_mount_payment')
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
@@ -2026,28 +2046,29 @@ export function ServiceRequestDetails({
   const existingPendingPaymentAmount = typeof latestPendingMountPayment?.amount === 'number' && Number.isFinite(latestPendingMountPayment.amount) && latestPendingMountPayment.amount > 0
     ? latestPendingMountPayment.amount
     : null
+  const existingPendingPaymentAmountInput = numericInputValue(existingPendingPaymentAmount)
+  const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+  const paymentSelectedSerialIds = invoiceSerials?.selected_serials
+    ?.map((serial) => serial.id)
+    .filter((id): id is number | string => id !== null && id !== undefined) ?? []
+  const isSameLogicalPayment = (payment: ServiceRequestExtraMountPayment): boolean => (
+    extraPaymentAmount !== null
+    && canonicalExtraPaymentPurpose(payment.purpose ?? payment.reason) === canonicalExtraPaymentPurpose(extraPaymentPurpose)
+    && roundTwo(Number(payment.amount ?? 0)) === roundTwo(extraPaymentAmount)
+    && paymentSerialIdentity(payment.selected_serial_ids) === paymentSerialIdentity(paymentSelectedSerialIds)
+  )
   const pendingOnlinePaymentLink = pendingMountPaymentRecords.length > 0
   const paidOnlinePaymentLink = paidMountPaymentRecords.length > 0
   const cancelledOnlinePaymentLink = cancelledMountPaymentRecords.length > 0
-  const terminalPaymentRetryRequired = cancelledOnlinePaymentLink && !pendingOnlinePaymentLink
+  const terminalPaymentRetryRequired = cancelledMountPaymentRecords.some(isSameLogicalPayment)
+    && !pendingMountPaymentRecords.some(isSameLogicalPayment)
   const terminalPaymentRetryReason = terminalPaymentRetryReasons[String(request.id)] ?? ''
-  const paymentLinkActionLabel = paidOnlinePaymentLink
-    ? 'Ödeme Düzenle'
-    : pendingOnlinePaymentLink
-      ? 'Ödeme Düzenle'
-      : 'Ödeme Al'
-  const paymentLinkModalTitle = paidOnlinePaymentLink
-    ? 'Ödeme Düzenle'
-    : pendingOnlinePaymentLink ? 'Ödeme Düzenle' : 'Ödeme Al'
+  const hasPaymentHistory = pendingOnlinePaymentLink || paidOnlinePaymentLink || cancelledOnlinePaymentLink
+  const paymentLinkActionLabel = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
+  const paymentLinkModalTitle = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
   const paymentLinkSubmitLabel = extraPaymentCreateLoading
-    ? paidOnlinePaymentLink ? 'Ek ödeme linki hazırlanıyor...' : pendingOnlinePaymentLink ? 'Link güncelleniyor...' : 'Link oluşturuluyor...'
-    : paidOnlinePaymentLink
-      ? pendingOnlinePaymentLink ? 'Ek ödeme linki oluştur / bekleyen linki kullan' : 'Ek ödeme linki oluştur'
-      : pendingOnlinePaymentLink
-      ? 'Bekleyen linki güncelle / yeniden kullan'
-      : terminalPaymentRetryRequired ? 'Yeni ödeme bağlantısı oluştur' : 'Link oluştur'
-  const existingPendingPaymentAmountInput = numericInputValue(existingPendingPaymentAmount)
-  const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+    ? 'Ödeme bağlantısı hazırlanıyor...'
+    : terminalPaymentRetryRequired ? 'Yeni ödeme bağlantısı oluştur' : 'Link oluştur'
   const paymentLinkAmountSourceLabel = routeFeeExtraPaymentInput.trim() === ''
     ? 'Tutar kaynağı: Manuel giriş gerekli'
     : existingPendingPaymentAmount !== null && routeFeeExtraPaymentInput === existingPendingPaymentAmountInput
@@ -2078,6 +2099,7 @@ export function ServiceRequestDetails({
     && extraPaymentAmount !== null
     && extraPaymentAmount > 0
     && (routeFeeEditorMode === 'payment_link' || selectedTechnician)
+    && (extraPaymentPurpose !== 'route_fee' || selectedTechnician)
     && (!terminalPaymentRetryRequired || terminalPaymentRetryReason.trim().length >= 3)
   )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
@@ -2703,6 +2725,7 @@ export function ServiceRequestDetails({
     const note = activeRouteQuote?.manual_note ?? ''
 
     setRouteFeeEditorMode('payment_link')
+    setExtraPaymentPurpose('manual_mount_payment')
     setRouteFeeOneWayKmInput(oneWay)
     setRouteFeeRoundTripKmInput(roundTrip)
     setRouteFeeThresholdKmInput(threshold)
@@ -2804,18 +2827,23 @@ export function ServiceRequestDetails({
       return
     }
 
-    const selectedSerialIds = invoiceSerials?.selected_serials
-      ?.map((serial) => serial.id)
-      .filter((id): id is number | string => id !== null && id !== undefined) ?? []
+    const paymentPurpose: ExtraPaymentPurpose = routeFeeEditorMode === 'payment_link'
+      ? extraPaymentPurpose
+      : 'route_fee'
+    const isServicePayment = paymentPurpose === 'service_payment'
 
     const payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null } = {
       route_quote_id: activeRouteQuote?.id ?? null,
       technician_id: selectedTechnician?.id ?? null,
-      selected_serial_ids: selectedSerialIds,
-      amount: extraPaymentAmount,
+      selected_serial_ids: paymentSelectedSerialIds,
+      amount: isServicePayment ? null : extraPaymentAmount,
+      service_amount: isServicePayment ? extraPaymentAmount : null,
+      part_amount: isServicePayment ? 0 : null,
       currency: 'TRY',
-      reason: routeFeeEditorMode === 'payment_link' ? 'manual_extra' : 'route_fee',
-      purpose: routeFeeEditorMode === 'payment_link' ? 'manual_mount_payment' : 'route_fee',
+      reason: paymentPurpose === 'route_fee'
+        ? 'route_fee'
+        : paymentPurpose === 'service_payment' ? 'service_payment' : 'manual_extra',
+      purpose: paymentPurpose,
       note: routeFeeNote.trim() || null,
       terminal_retry_reason: terminalPaymentRetryRequired ? terminalPaymentRetryReason.trim() : null,
     }
@@ -3566,13 +3594,25 @@ export function ServiceRequestDetails({
               </div>
             </details>
           ) : null}
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Tahsilat amacı
+              <select
+                value={extraPaymentPurpose}
+                onChange={(event) => setExtraPaymentPurpose(event.target.value as ExtraPaymentPurpose)}
+                className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                required
+              >
+                <option value="manual_mount_payment">Genel ek tahsilat</option>
+                <option value="service_payment">Ek servis</option>
+                {selectedTechnician ? <option value="route_fee">Yol farkı</option> : null}
+              </select>
+            </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               {pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı'}
               <Input type="number" inputMode="decimal" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
               <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
             </label>
-            <MiniMetric label="Durum" value={paidOnlinePaymentLink ? 'Ödeme düzenleme' : pendingOnlinePaymentLink ? 'Bekleyen link' : 'Yeni link'} />
           </div>
           <label className="grid gap-2 text-sm font-medium text-slate-700">
             Not
@@ -4189,34 +4229,7 @@ export function ServiceRequestDetails({
   const showNextActionPrimaryButton = Boolean(nextActionPayload?.primary_action && !isAssignedPartnerActionStage)
   const cancelContext = request.cancelContext?.exists ? request.cancelContext : null
   const isCancelledOrReviewContext = Boolean(cancelContext?.is_cancelled || cancelContext?.is_cancel_review)
-  const paymentActionWorkflowText = [
-    request.workflowStatus,
-    request.status,
-    request.currentStageSummary?.label,
-    displayedNextActionTitle,
-  ].filter(Boolean).join(' ').toLocaleLowerCase('tr-TR')
-  const paymentActionRelevantByWorkflow = [
-    'iş ustada',
-    'beklemede',
-    'usta onayı',
-    'usta onayi',
-    'usta onayı bekleyen',
-  ].some((label) => paymentActionWorkflowText.includes(label))
-  const hasPaymentManagementContext = Boolean(
-    pendingOnlinePaymentLink
-    || paidOnlinePaymentLink
-    || cancelledOnlinePaymentLink
-    || shouldShowCustomerPaysTechnicianCard
-    || canonicalPaymentRequiresPayment
-    || mountExcludedOrPaymentRequired
-    || nextActionPayload?.primary_action === 'create_payment_link'
-    || paymentActionRelevantByWorkflow
-  )
-  const shouldShowFooterPaymentLinkAction = Boolean(
-    !isActionDisabled
-    && !isCancelledOrReviewContext
-    && hasPaymentManagementContext
-  )
+  const shouldShowFooterPaymentLinkAction = Boolean(onExtraMountPaymentCreate)
   const cancelSummaryRows = cancelContext
     ? [
       { label: 'İptal edilen iş', value: cancelContext.cancelled_code ?? cancelContext.previous_cancelled_code ?? request.mrn },

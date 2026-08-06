@@ -20,6 +20,7 @@ use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
@@ -1502,9 +1503,100 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_cancellation_is_atomic_requires_reason_queues_both_roles_and_repeat_is_noop(): void
+    public function test_mount_request_customer_whatsapp_and_sms_use_same_customer_role(): void
+    {
+        [$request, $dispatches] = $this->queueMountRequestCustomerMessages();
+
+        $this->assertCount(2, $dispatches);
+        $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->sort()->values()->all());
+        $this->assertTrue($dispatches->every(
+            fn (TechnicalServiceMessageDispatch $dispatch): bool => $dispatch->recipient_role === 'customer',
+        ));
+        $this->assertTrue($dispatches->every(
+            fn (TechnicalServiceMessageDispatch $dispatch): bool => $dispatch->original_phone === '905559998877',
+        ));
+        $this->assertSame($request->id, $dispatches->first()->technical_service_request_id);
+        Http::assertNothingSent();
+    }
+
+    public function test_mount_request_sms_uses_customer_test_phone(): void
+    {
+        [, $dispatches] = $this->queueMountRequestCustomerMessages();
+        $sms = $dispatches->firstWhere('channel', 'sms');
+        $whatsapp = $dispatches->firstWhere('channel', 'whatsapp');
+
+        $this->assertInstanceOf(TechnicalServiceMessageDispatch::class, $sms);
+        $this->assertInstanceOf(TechnicalServiceMessageDispatch::class, $whatsapp);
+        $this->assertSame('905372081633', $sms->target_phone);
+        $this->assertSame('905372081633', $whatsapp->target_phone);
+        $this->assertNotSame('905467647428', $sms->target_phone);
+        $this->assertTrue((bool) $sms->test_redirect_applied);
+        Http::assertNothingSent();
+    }
+
+    public function test_historical_blocked_dispatches_are_not_replayed(): void
+    {
+        $historicalRequest = $this->technicalServiceRequest(['mrn' => 'MRN-HISTORICAL-BLOCKED']);
+        $historical = TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'mount_request_created_customer',
+            'technical_service_request_id' => $historicalRequest->id,
+            'request_id' => $historicalRequest->id,
+            'message_type' => 'mount_request_created_customer',
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+            'recipient_role' => 'customer',
+            'original_phone' => '905559998877',
+            'target_phone' => '905467647428',
+            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'attempt_count' => 0,
+            'last_error_code' => 'template_blocked',
+        ]);
+
+        $this->queueMountRequestCustomerMessages();
+
+        $historical->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $historical->status);
+        $this->assertSame(0, $historical->attempt_count);
+        $this->assertNull($historical->provider_message_id);
+        $this->assertNull($historical->started_at);
+        Http::assertNothingSent();
+    }
+
+    public function test_duplicate_business_event_creates_one_dispatch_per_channel(): void
     {
         Http::fake();
+        $this->configureRoleBasedCustomerMessaging(true);
+        $actor = $this->admin();
+        $request = $this->technicalServiceRequest(['technical_service_technician_id' => null]);
+        $service = app(TechnicalServiceWorkflowMessageDispatchService::class);
+
+        $first = $service->queueWorkflowDispatches($request, 'mount_request_created_customer', 'customer', [], $actor);
+        $second = $service->queueWorkflowDispatches($request, 'mount_request_created_customer', 'customer', [], $actor);
+
+        $this->assertTrue((bool) $first['provider_policy_attempted']);
+        $this->assertSame(2, (int) $second['duplicate_blocked']);
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'mount_request_created_customer')
+            ->where('status', '!=', TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED)
+            ->count());
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'mount_request_created_customer')
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED)
+            ->count());
+        $this->assertSame(['sms', 'whatsapp'], TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'mount_request_created_customer')
+            ->where('status', '!=', TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED)
+            ->pluck('channel')->sort()->values()->all());
+        Http::assertNothingSent();
+    }
+
+    public function test_technician_cancel_messages_pass_role_body_validation(): void
+    {
+        Http::fake();
+        config()->set('services.partner_portal.public_url', 'https://technician-portal.example.test');
         $actor = $this->admin();
         $this->configureMessaging([
             'appointment_cancelled_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
@@ -1545,8 +1637,25 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->whereIn('message_type', ['appointment_cancelled_customer', 'appointment_cancelled_technician'])
             ->get();
         $this->assertCount(4, $dispatches);
-        $this->assertTrue($dispatches->every(fn (TechnicalServiceMessageDispatch $dispatch): bool => str_contains($dispatch->bodyForProvider(), 'Müşteri randevunun iptalini istedi.')
-        ));
+        $technicianDispatches = $dispatches->where('recipient_role', 'technician')->values();
+        $this->assertCount(2, $technicianDispatches);
+        foreach ($technicianDispatches as $technicianDispatch) {
+            $this->assertSame(
+                [],
+                $technicianDispatch->roleBodyValidationErrors(),
+                $technicianDispatch->channel.': '.$technicianDispatch->bodyForProvider(),
+            );
+        }
+        $technicianWhatsapp = $technicianDispatches->firstWhere('channel', 'whatsapp');
+        $technicianSms = $technicianDispatches->firstWhere('channel', 'sms');
+        $this->assertInstanceOf(TechnicalServiceMessageDispatch::class, $technicianWhatsapp);
+        $this->assertInstanceOf(TechnicalServiceMessageDispatch::class, $technicianSms);
+        $this->assertSame('905467647428', $technicianWhatsapp->target_phone);
+        $this->assertSame('905467647428', $technicianSms->target_phone);
+        $this->assertStringContainsString('Müşteri randevunun iptalini istedi.', $technicianWhatsapp->bodyForProvider());
+        $this->assertStringContainsString('İş Kartı', $technicianWhatsapp->bodyForProvider());
+        $this->assertMatchesRegularExpression('/https?:\/\/[^\s]+/', $technicianWhatsapp->bodyForProvider());
+        $this->assertMatchesRegularExpression('/(?:^|\R)Kart\s+https?:\/\/[^\s]+/u', $technicianSms->bodyForProvider());
         $request->refresh();
         $this->assertNotNull($request->cancelled_at);
         $this->assertDatabaseHas('technical_service_request_events', [
@@ -1619,6 +1728,94 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->where('technical_service_request_id', $request->id)
             ->where('message_type', 'appointment_approved_customer')
             ->count());
+    }
+
+    /**
+     * @return array{0: TechnicalServiceRequest, 1: Collection<int, TechnicalServiceMessageDispatch>}
+     */
+    private function queueMountRequestCustomerMessages(): array
+    {
+        Http::fake();
+        $this->configureRoleBasedCustomerMessaging();
+        $actor = $this->admin();
+        $request = $this->technicalServiceRequest([
+            'technical_service_technician_id' => null,
+            'customer_phone' => '+905559998877',
+            'product_name' => 'Akilli Kilit Plus',
+            'product_model' => 'EK-2026',
+        ]);
+
+        app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+            $request,
+            'mount_request_created_customer',
+            'customer',
+            [],
+            $actor,
+        );
+
+        return [
+            $request,
+            TechnicalServiceMessageDispatch::query()
+                ->where('technical_service_request_id', $request->id)
+                ->where('message_type', 'mount_request_created_customer')
+                ->get(),
+        ];
+    }
+
+    private function configureRoleBasedCustomerMessaging(bool $realSend = false): void
+    {
+        config([
+            'app.release_sha' => 'd086045e3013d1a7f0472b95f0193a1f35951d13',
+            'services.evolution.allow_unit_test_http_fake' => true,
+        ]);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        $settings->update([
+            'messaging_enabled' => true,
+            'real_send_enabled' => false,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0537 208 16 33',
+            'customer_test_phone' => '0537 208 16 33',
+            'technician_ops_test_phone' => '0546 764 74 28',
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'max_auto_retries' => 0,
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'role-routing-fixture',
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
+                'sender' => 'EMAKS PRIME',
+                'real_send_allowed' => true,
+            ],
+            'message_types' => [
+                'mount_request_created_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
+            ],
+        ]);
+
+        if ($realSend) {
+            $this->enableExecutionModeProviders();
+            $settings->saveEvoWhatsappCredentials(['api_key' => 'role-routing-evo-key']);
+            $settings->saveNacSmsCredentials(['username' => 'role-routing-nac-user', 'password' => 'role-routing-nac-pass']);
+            $settings->update([
+                'real_send_enabled' => true,
+                'test_mode_enabled' => true,
+            ]);
+        }
     }
 
     /**

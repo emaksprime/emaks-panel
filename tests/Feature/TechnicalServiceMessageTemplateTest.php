@@ -1424,19 +1424,92 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                     'sample_context' => false,
                     'context' => [
                         'customer_name' => 'Montaj Müşterisi',
+                        'mrn' => 'MRN-MNJ-TEST-001',
                         'customer_reference_phrase' => 'MNJ-TEST-001 numaralı',
                         'product_name' => 'Akıllı Kilit',
+                        'product_model' => 'EK-2026',
                     ],
                 ])
                 ->assertOk()
                 ->assertJsonPath('preview.preview_ready', true)
                 ->json('preview.rendered_body');
 
-            $this->assertStringContainsString('MNJ-TEST-001 numaralı', $body);
-            $this->assertStringContainsString('Akıllı Kilit', $body);
-            $this->assertStringNotContainsString('MRN:', $body);
+            if ($channel === 'whatsapp') {
+                $this->assertStringContainsString('MNJ-TEST-001 numaralı', $body);
+                $this->assertStringNotContainsString('MRN:', $body);
+            } else {
+                $this->assertStringContainsString('MRN: MRN-MNJ-TEST-001', $body);
+                $this->assertStringNotContainsString('MNJ-TEST-001 numaralı', $body);
+            }
+            $this->assertStringContainsString('Akilli Kilit', str_replace('ı', 'i', $body));
             $this->assertStringNotContainsString('SRV:', $body);
         }
+    }
+
+    public function test_mount_request_sms_stays_below_segment_limit(): void
+    {
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'mount_request_created_customer',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'Montaj Müşterisi',
+                    'mrn' => 'MRN-2608DD060004',
+                    'customer_reference_phrase' => 'MRN-2608DD060004 numaralı',
+                    'product_name' => 'Akıllı Kilit Çok Uzun Ürün Tanımı',
+                    'product_model' => 'MODEL-2026-UZUN',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('EMAKS Prime', $preview['rendered_body']);
+        $this->assertStringContainsString('MRN: MRN-2608DD060004', $preview['rendered_body']);
+        $this->assertStringContainsString('Ekibimiz sizinle iletisime gececek.', $preview['rendered_body']);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_appointment_cancelled_technician_whatsapp_contains_job_card(): void
+    {
+        $context = $this->technicianCancellationContext();
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_cancelled_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        foreach (['MRN-2608DD060004', 'SRV-2608DD060004-001', 'İptal Müşterisi', '08.08.2026', '14:00 - 16:00', 'Müşteri talebi'] as $required) {
+            $this->assertStringContainsString($required, $body);
+        }
+        $this->assertStringContainsString("İş Kartı\n{$context['technician_job_card_url']}", $body);
+    }
+
+    public function test_appointment_cancelled_technician_sms_contains_job_card(): void
+    {
+        $context = $this->technicianCancellationContext();
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_cancelled_technician',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('Randevu iptal edildi.', $preview['rendered_body']);
+        $this->assertStringContainsString('MRN: MRN-2608DD060004', $preview['rendered_body']);
+        $this->assertStringContainsString('SRV: SRV-2608DD060004-001', $preview['rendered_body']);
+        $this->assertStringContainsString("Kart {$context['technician_job_card_short_url']}", $preview['rendered_body']);
+        $this->assertLessThan(4, $preview['sms']['segments']);
     }
 
     public function test_customer_language_policy_all_customer_templates(): void
@@ -2054,6 +2127,21 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringContainsString('Önizleme oluşturulamadı', $source);
         $this->assertStringContainsString('Blok yok.', $source);
         $this->assertStringNotContainsString('Blok yok veya henüz preview alınmadı.', $source);
+    }
+
+    /** @return array<string, string> */
+    private function technicianCancellationContext(): array
+    {
+        return [
+            'mrn' => 'MRN-2608DD060004',
+            'srv' => 'SRV-2608DD060004-001',
+            'customer_name' => 'İptal Müşterisi',
+            'appointment_date_formatted' => '08.08.2026',
+            'appointment_exact_time_range' => '14:00 - 16:00',
+            'cancellation_reason' => 'Müşteri talebi',
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=433',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/433',
+        ];
     }
 
     private function admin(): User

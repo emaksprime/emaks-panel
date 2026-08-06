@@ -937,7 +937,7 @@ class TechnicalServiceController extends Controller
             'part_amount' => ['nullable', 'numeric', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
             'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra,service_payment,part_payment,service_and_part_payment'],
-            'purpose' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
+            'purpose' => ['required', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
             'charge_type' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
             'part_request_id' => ['nullable', 'integer', 'exists:technical_service_part_requests,id'],
             'note' => ['nullable', 'string', 'max:2000'],
@@ -952,13 +952,7 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        if ($technicalServiceRequest->mount_session_id === null) {
-            throw ValidationException::withMessages([
-                'payment' => 'Bu talep için ödeme oturumu bulunamadı.',
-            ]);
-        }
-
-        $session = TechnicalServiceMountSession::query()->findOrFail($technicalServiceRequest->mount_session_id);
+        $session = $this->paymentMountSessionForRequest($technicalServiceRequest);
         $serialIds = collect($validated['selected_serial_ids'] ?? [])
             ->map(fn (mixed $id): int => (int) $id)
             ->filter(fn (int $id): bool => $id > 0)
@@ -990,7 +984,7 @@ class TechnicalServiceController extends Controller
             ->values()
             ->all();
         $currency = strtoupper($validated['currency'] ?? 'TRY');
-        $purpose = (string) ($validated['purpose'] ?? $validated['reason'] ?? $validated['charge_type'] ?? 'mount_extra');
+        $purpose = (string) $validated['purpose'];
         $chargeType = (string) ($validated['charge_type'] ?? $purpose);
         $isCustomerCharge = in_array($purpose, ['service_payment', 'part_payment', 'service_and_part_payment'], true);
         $partRequestId = isset($validated['part_request_id']) ? (int) $validated['part_request_id'] : null;
@@ -2981,6 +2975,44 @@ class TechnicalServiceController extends Controller
     private function minorUnitsToDecimal(int $minorUnits): string
     {
         return intdiv($minorUnits, 100).'.'.str_pad((string) ($minorUnits % 100), 2, '0', STR_PAD_LEFT);
+    }
+
+    private function paymentMountSessionForRequest(TechnicalServiceRequest $request): TechnicalServiceMountSession
+    {
+        $current = $request;
+        $visited = [];
+
+        while ($current instanceof TechnicalServiceRequest && ! isset($visited[$current->id])) {
+            $visited[$current->id] = true;
+            if ($current->mount_session_id !== null) {
+                $session = TechnicalServiceMountSession::query()->find((int) $current->mount_session_id);
+                if ($session instanceof TechnicalServiceMountSession) {
+                    return $session;
+                }
+            }
+
+            $current = $current->parent_request_id === null
+                ? null
+                : TechnicalServiceRequest::query()->find((int) $current->parent_request_id);
+        }
+
+        $rootMrn = trim((string) ($request->root_mrn ?: ''));
+        if ($rootMrn !== '') {
+            $rootSessionId = TechnicalServiceRequest::query()
+                ->whereNull('parent_request_id')
+                ->where('mrn', $rootMrn)
+                ->value('mount_session_id');
+            if (is_numeric($rootSessionId)) {
+                $session = TechnicalServiceMountSession::query()->find((int) $rootSessionId);
+                if ($session instanceof TechnicalServiceMountSession) {
+                    return $session;
+                }
+            }
+        }
+
+        throw ValidationException::withMessages([
+            'payment' => 'Bu kaydın bağlı MRN ödeme altyapısı bulunamadı.',
+        ]);
     }
 
     private function canonicalExtraPaymentPurpose(string $value): string

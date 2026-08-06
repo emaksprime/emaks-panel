@@ -9888,7 +9888,7 @@ SQL,
     }
 
     /** @param array<string, mixed> $settings */
-    private function testPhoneForRole(array $settings, string $role): string
+    public function testPhoneForRole(array $settings, string $role): string
     {
         $field = $role === 'customer'
             ? 'customer_test_phone'
