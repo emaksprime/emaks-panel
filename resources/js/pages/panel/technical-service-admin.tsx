@@ -634,6 +634,10 @@ type MessagingSettings = {
         manual_e2e_partner_portal_origin: string | null;
         test_phone: string | null;
         test_phone_masked: string | null;
+        customer_test_phone: string | null;
+        customer_test_phone_masked: string | null;
+        technician_ops_test_phone: string | null;
+        technician_ops_test_phone_masked: string | null;
         queue_paused: boolean;
         provider_key: string;
         active_provider: string;
@@ -1558,7 +1562,10 @@ export default function TechnicalServiceAdmin({
         messaging_enabled: messagingSettings.global.messaging_enabled,
         real_send_enabled: messagingSettings.global.real_send_enabled,
         test_mode_enabled: messagingSettings.global.test_mode_enabled,
-        test_phone: messagingSettings.global.test_phone ?? '',
+        customer_test_phone:
+            messagingSettings.global.customer_test_phone ?? '',
+        technician_ops_test_phone:
+            messagingSettings.global.technician_ops_test_phone ?? '',
         active_provider: messagingSettings.global.active_provider,
         default_provider: messagingSettings.global.default_provider,
         fallback_provider: messagingSettings.global.fallback_provider,
@@ -2043,7 +2050,12 @@ export default function TechnicalServiceAdmin({
             messaging_enabled: nextSettings.global.messaging_enabled,
             real_send_enabled: nextSettings.global.real_send_enabled,
             test_mode_enabled: nextSettings.global.test_mode_enabled,
-            test_phone: nextSettings.global.test_phone ?? current.test_phone,
+            customer_test_phone:
+                nextSettings.global.customer_test_phone ??
+                current.customer_test_phone,
+            technician_ops_test_phone:
+                nextSettings.global.technician_ops_test_phone ??
+                current.technician_ops_test_phone,
             active_provider: nextSettings.global.active_provider,
             default_provider: nextSettings.global.default_provider,
             fallback_provider: nextSettings.global.fallback_provider,
@@ -2429,7 +2441,23 @@ export default function TechnicalServiceAdmin({
                         messaging_enabled: messagingInputs.messaging_enabled,
                         real_send_enabled: messagingInputs.real_send_enabled,
                         test_mode_enabled: messagingInputs.test_mode_enabled,
-                        test_phone: messagingInputs.test_phone,
+                        ...(messagingInputs.customer_test_phone.trim() !== ''
+                            ? {
+                                  customer_test_phone:
+                                      messagingInputs.customer_test_phone,
+                              }
+                            : {}),
+                        ...(messagingInputs.technician_ops_test_phone.trim() !==
+                        ''
+                            ? {
+                                  technician_ops_test_phone:
+                                      messagingInputs.technician_ops_test_phone,
+                                  test_phone:
+                                      messagingInputs.technician_ops_test_phone,
+                                  shared_test_phone:
+                                      messagingInputs.technician_ops_test_phone,
+                              }
+                            : {}),
                         provider_key: messagingInputs.active_provider,
                         active_provider: messagingInputs.active_provider,
                         default_provider: messagingInputs.default_provider,
@@ -2453,7 +2481,6 @@ export default function TechnicalServiceAdmin({
                             messagingInputs.manual_e2e_partner_portal_origin_enabled,
                         manual_e2e_partner_portal_origin:
                             messagingInputs.manual_e2e_partner_portal_origin,
-                        shared_test_phone: messagingInputs.test_phone,
                         nac_sms: {
                             enabled: nacSmsInputs.enabled,
                             profile: nacSmsInputs.profile,
@@ -2821,7 +2848,9 @@ export default function TechnicalServiceAdmin({
         }
     };
 
-    const validateMessagingPhone = async () => {
+    const validateMessagingPhone = async (
+        field: 'customer_test_phone' | 'technician_ops_test_phone',
+    ) => {
         setMessagingPhoneChecking(true);
         setMessagingMessage('');
 
@@ -2837,7 +2866,7 @@ export default function TechnicalServiceAdmin({
                     },
                     credentials: 'same-origin',
                     body: JSON.stringify({
-                        test_phone: messagingInputs.test_phone,
+                        test_phone: messagingInputs[field],
                     }),
                 },
             );
@@ -2856,8 +2885,7 @@ export default function TechnicalServiceAdmin({
             const responsePayload = await response.json();
             setMessagingInputs((current) => ({
                 ...current,
-                test_phone:
-                    responsePayload.phone?.normalized ?? current.test_phone,
+                [field]: responsePayload.phone?.normalized ?? current[field],
             }));
             setMessagingMessage(
                 responsePayload.message ?? 'Test telefon numarası geçerli.',
@@ -7835,47 +7863,73 @@ export default function TechnicalServiceAdmin({
                                     </div>
 
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                        <label className="grid gap-1 text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase md:col-span-2">
-                                            <span>Test telefon numarası</span>
-                                            <div className="flex flex-col gap-2 sm:flex-row">
-                                                <input
-                                                    type="text"
-                                                    disabled={
-                                                        messagingSettingsLocked
-                                                    }
-                                                    value={
-                                                        messagingInputs.test_phone
-                                                    }
-                                                    onChange={(event) =>
-                                                        setMessagingInputs({
-                                                            ...messagingInputs,
-                                                            test_phone:
-                                                                event.target
-                                                                    .value,
-                                                        })
-                                                    }
-                                                    placeholder="905467647428"
-                                                    className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-900 normal-case focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    disabled={
-                                                        messagingSettingsLocked ||
-                                                        messagingPhoneChecking ||
-                                                        messagingInputs.test_phone.trim() ===
-                                                            ''
-                                                    }
-                                                    onClick={() => {
-                                                        void validateMessagingPhone();
-                                                    }}
-                                                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-800 normal-case shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                                >
-                                                    {messagingPhoneChecking
-                                                        ? 'Kontrol ediliyor'
-                                                        : 'Test telefonu doğrula'}
-                                                </button>
-                                            </div>
-                                        </label>
+                                        {(
+                                            [
+                                                [
+                                                    'customer_test_phone',
+                                                    'Müşteri test telefonu',
+                                                    messagingSettings.global
+                                                        .customer_test_phone_masked,
+                                                ],
+                                                [
+                                                    'technician_ops_test_phone',
+                                                    'Usta / OPS test telefonu',
+                                                    messagingSettings.global
+                                                        .technician_ops_test_phone_masked,
+                                                ],
+                                            ] as const
+                                        ).map(([field, label, masked]) => (
+                                            <label
+                                                key={field}
+                                                className="grid gap-1 text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase"
+                                            >
+                                                <span>{label}</span>
+                                                <div className="flex flex-col gap-2 sm:flex-row">
+                                                    <input
+                                                        type="text"
+                                                        disabled={
+                                                            messagingSettingsLocked
+                                                        }
+                                                        value={
+                                                            messagingInputs[field]
+                                                        }
+                                                        onChange={(event) =>
+                                                            setMessagingInputs({
+                                                                ...messagingInputs,
+                                                                [field]:
+                                                                    event.target
+                                                                        .value,
+                                                            })
+                                                        }
+                                                        placeholder={
+                                                            masked ??
+                                                            '90XXXXXXXXXX'
+                                                        }
+                                                        className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-900 normal-case focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        disabled={
+                                                            messagingSettingsLocked ||
+                                                            messagingPhoneChecking ||
+                                                            messagingInputs[
+                                                                field
+                                                            ].trim() === ''
+                                                        }
+                                                        onClick={() => {
+                                                            void validateMessagingPhone(
+                                                                field,
+                                                            );
+                                                        }}
+                                                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-800 normal-case shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                                    >
+                                                        {messagingPhoneChecking
+                                                            ? 'Kontrol ediliyor'
+                                                            : 'Doğrula'}
+                                                    </button>
+                                                </div>
+                                            </label>
+                                        ))}
                                         {[
                                             [
                                                 'send_delay_seconds',
@@ -7965,12 +8019,6 @@ export default function TechnicalServiceAdmin({
                                                         Aktif
                                                     </th>
                                                     <th className="px-3 py-2">
-                                                        Test
-                                                    </th>
-                                                    <th className="px-3 py-2">
-                                                        Gerçek
-                                                    </th>
-                                                    <th className="px-3 py-2">
                                                         Kanal politikası
                                                     </th>
                                                     <th className="px-3 py-2">
@@ -8037,8 +8085,6 @@ export default function TechnicalServiceAdmin({
                                                                 {(
                                                                     [
                                                                         'enabled',
-                                                                        'test_send_allowed',
-                                                                        'real_send_allowed',
                                                                     ] as const
                                                                 ).map((key) => (
                                                                     <td
@@ -8540,10 +8586,10 @@ export default function TechnicalServiceAdmin({
                                         Mesaj tipi ayarları
                                     </p>
                                     <p className="mt-1 text-sm leading-6 text-slate-600">
-                                        Mesaj tipi ayarları provider
-                                        bağımsızdır. Gerçek gönderim varsayılan
-                                        kapalıdır; test modu açıkken hedef
-                                        numara test telefonuna çevrilir.
+                                        Her mesaj tipi için etkinlik, kanal,
+                                        provider ve template seçilir. Gerçek
+                                        gönderim genel ayardan; test hedefi
+                                        alıcı rolünden çözülür.
                                     </p>
                                     <div className="mt-4 overflow-x-auto">
                                         <table className="min-w-[1280px] text-left text-sm">
@@ -8554,12 +8600,6 @@ export default function TechnicalServiceAdmin({
                                                     </th>
                                                     <th className="px-3 py-2">
                                                         Aktif
-                                                    </th>
-                                                    <th className="px-3 py-2">
-                                                        Test
-                                                    </th>
-                                                    <th className="px-3 py-2">
-                                                        Gerçek
                                                     </th>
                                                     <th className="px-3 py-2">
                                                         Kanal politikası
@@ -8628,8 +8668,6 @@ export default function TechnicalServiceAdmin({
                                                                 {(
                                                                     [
                                                                         'enabled',
-                                                                        'test_send_allowed',
-                                                                        'real_send_allowed',
                                                                     ] as const
                                                                 ).map((key) => (
                                                                     <td

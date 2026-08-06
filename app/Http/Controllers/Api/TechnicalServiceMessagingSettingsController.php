@@ -50,6 +50,8 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'ops_whatsapp_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'shared_test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'customer_test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'technician_ops_test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'provider_key' => ['sometimes', 'required', 'string', Rule::in($providerKeys)],
             'active_provider' => ['sometimes', 'required', 'string', Rule::in($providerKeys)],
             'default_provider' => ['sometimes', 'required', 'string', Rule::in($providerKeys)],
@@ -151,6 +153,8 @@ class TechnicalServiceMessagingSettingsController extends Controller
     {
         Arr::set($payload, 'global.test_phone', null);
         Arr::set($payload, 'global.shared_test_phone', null);
+        Arr::set($payload, 'global.customer_test_phone', null);
+        Arr::set($payload, 'global.technician_ops_test_phone', null);
         Arr::set($payload, 'global.ops_whatsapp_phone', null);
         Arr::set($payload, 'global.manual_e2e_allowlisted_phones', []);
         Arr::set($payload, 'nac_sms.test_phone', null);
@@ -161,7 +165,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
     public function reset(TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
         return response()->json([
-            'messaging_settings' => $settings->reset(),
+            'messaging_settings' => $this->redactRecipientValues($settings->reset()),
             'message' => 'Mesajlaşma sağlayıcı ayarları güvenli varsayılanlara döndürüldü.',
         ]);
     }

@@ -136,6 +136,8 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_partner_portal_origin',
         'messaging_enabled',
         'test_phone',
+        'customer_test_phone',
+        'technician_ops_test_phone',
         'provider_key',
         'active_provider',
         'default_provider',
@@ -197,6 +199,8 @@ class TechnicalServiceMessagingSettingsService
         'test_mode_enabled',
         'test_phone',
         'shared_test_phone',
+        'customer_test_phone',
+        'technician_ops_test_phone',
         'manual_e2e_allowlisted_phones',
         'manual_e2e_ttl_seconds',
         'manual_e2e_partner_portal_origin_enabled',
@@ -581,7 +585,7 @@ class TechnicalServiceMessagingSettingsService
             'warnings' => [
                 'Yerel gerçek gönderim Admin gerçek gönderim ve test modu ayarlarıyla açılır; yalnız aktivasyon sonrasında oluşan dispatch’ler işlenir.',
                 'Randevu mesajları usta seçildiğinde değil OPS randevu onayında gider.',
-                'Test modu açıkken hedef numara test numarasına çevrilir.',
+                'Test modu açıkken hedef numara müşteri veya usta / OPS rolüne ait test numarasına çevrilir.',
                 'Provider dispatch’leri test allowlisti, queue, rate limit ve idempotency kontrollerinden geçer.',
                 'Voibot ses/mesaj sağlayıcısı API sözleşmesi doğrulanana kadar kapalıdır.',
                 'Evo Direct API, NAC SMS ve Mikro API canlı aksiyonları credential/readiness/queue/onay tamamlanmadan çalışmaz.',
@@ -589,7 +593,7 @@ class TechnicalServiceMessagingSettingsService
             'helper_texts' => [
                 'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
                 'queue' => 'Yerel provider kuyruğu gerçek gönderim açıkken yalnız aktivasyon sonrası dispatch’leri tek sender ve kalıcı claim ile işler.',
-                'test_phone' => 'Test modu açıkken müşteri/usta yerine ortak test telefonuna yönlenir.',
+                'test_phone' => 'Test modu açıkken müşteri ve usta / OPS mesajları ayrı kayıtlı test telefonlarına yönlenir.',
                 'active_provider' => 'Öncelikli sağlayıcı manuel test/readiness için varsayılan bakılan sağlayıcıdır.',
                 'default_provider' => 'Varsayılan test sağlayıcısı otomasyon değil, güvenli preview/test tercihidir.',
                 'fallback_provider' => 'Otomatik provider fallback bu kontrollü akışta kapalıdır; kanal politikası açık provider seçimini kullanır.',
@@ -1041,7 +1045,7 @@ class TechnicalServiceMessagingSettingsService
                 continue;
             }
             foreach ((array) $providerChannels as $channel => $provider) {
-                if (! $this->messageTypeAllowsScopedChannel($type, (string) $channel, (string) $provider)) {
+                if (! $this->messageTypeAllowsChannel($type, (string) $channel, (string) $provider)) {
                     $eventBlockers[] = [
                         'code' => 'scoped_uat_event_channel_not_ready:'.$event.':'.$channel,
                         'message' => $event.' '.$channel.' kanalı code-owned UAT profiliyle eşleşmiyor.',
@@ -3779,6 +3783,17 @@ class TechnicalServiceMessagingSettingsService
         } elseif (array_key_exists('test_phone', $values)) {
             $next['test_phone'] = $this->normalizePhone((string) $values['test_phone']);
         }
+        if ((array_key_exists('shared_test_phone', $values) || array_key_exists('test_phone', $values))
+            && ! array_key_exists('customer_test_phone', $values)
+            && ! array_key_exists('technician_ops_test_phone', $values)) {
+            $next['customer_test_phone'] = $next['test_phone'];
+            $next['technician_ops_test_phone'] = $next['test_phone'];
+        }
+        foreach (['customer_test_phone', 'technician_ops_test_phone'] as $roleTestPhone) {
+            if (array_key_exists($roleTestPhone, $values)) {
+                $next[$roleTestPhone] = $this->normalizePhone((string) $values[$roleTestPhone]);
+            }
+        }
 
         if (array_key_exists('ops_whatsapp_phone', $values)) {
             $next['ops_whatsapp_phone'] = $this->normalizePhone((string) $values['ops_whatsapp_phone']);
@@ -5924,6 +5939,63 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
+     * Apply the stored Admin test-mode authority to normal business dispatches.
+     * Scoped Manual E2E dispatches keep their immutable run recipient snapshot.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    public function withNormalDispatchRecipientAuthority(array $input): array
+    {
+        $metadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
+        if (filter_var($metadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)
+            || array_key_exists('scoped_local_uat_profile_id', $metadata)) {
+            return $input;
+        }
+
+        $provider = $this->normalizeProviderKey((string) ($input['provider_key'] ?? ''));
+        $channel = strtolower(trim((string) ($input['channel'] ?? '')));
+        $role = strtolower(trim((string) ($input['recipient_role'] ?? $input['target_type'] ?? '')));
+        if (! in_array($provider, ['evo_whatsapp', 'nac_sms'], true)
+            || ! in_array($channel, ['whatsapp', 'sms'], true)
+            || ! in_array($role, ['customer', 'technician', 'ops'], true)) {
+            return $input;
+        }
+
+        $settings = $this->settings();
+        if (! (bool) ($settings['messaging_enabled'] ?? false)
+            || ! (bool) ($settings['real_send_enabled'] ?? false)) {
+            return $input;
+        }
+        $testMode = (bool) ($settings['test_mode_enabled'] ?? false);
+        $originalPhone = $this->normalizePhone((string) (
+            $input['recipient_phone']
+                ?? $input['target_phone']
+                ?? $input['effective_target_phone']
+                ?? ''
+        ));
+        $targetPhone = $testMode
+            ? $this->testPhoneForRole($settings, $role)
+            : $originalPhone;
+
+        $input['target_phone'] = $targetPhone;
+        $input['effective_target_phone'] = $targetPhone;
+        $input['test_mode'] = $testMode;
+        $input['test_redirect_applied'] = $testMode && $targetPhone !== '';
+        if (is_array($input['payload'] ?? null)) {
+            $input['payload']['test_redirect_applied'] = $input['test_redirect_applied'];
+            $input['payload']['target_role'] = $role;
+        }
+        $input['metadata'] = [
+            ...$metadata,
+            'test_recipient_role' => $testMode ? $role : null,
+            'test_recipient_authority' => $testMode ? 'admin_role_settings' : null,
+        ];
+
+        return $input;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function settings(): array
@@ -5945,8 +6017,11 @@ class TechnicalServiceMessagingSettingsService
     private function settingsFromLayout(array $layout): array
     {
         $stored = Arr::get($layout, self::ROOT_KEY, []);
+        $stored = is_array($stored) ? $stored : [];
+        $hasStoredCustomerTestPhone = array_key_exists('customer_test_phone', $stored);
+        $hasStoredTechnicianOpsTestPhone = array_key_exists('technician_ops_test_phone', $stored);
         $defaults = $this->defaultSettings();
-        $settings = is_array($stored) ? array_replace_recursive($defaults, $stored) : $defaults;
+        $settings = array_replace_recursive($defaults, $stored);
         $settings['message_types'] = $this->mergeMessageTypeSettings(
             $defaults['message_types'],
             is_array($settings['message_types'] ?? null) ? $settings['message_types'] : [],
@@ -5975,6 +6050,25 @@ class TechnicalServiceMessagingSettingsService
             $defaults['mikro_api'],
             is_array($settings['mikro_api'] ?? null) ? $settings['mikro_api'] : [],
         );
+        $legacyTestPhone = $this->normalizePhone((string) ($settings['test_phone'] ?? ''));
+        $allowlistedPhones = array_values(array_unique(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        ))));
+        $legacyCustomerTestPhone = collect($allowlistedPhones)
+            ->first(fn (string $phone): bool => $phone !== $legacyTestPhone)
+            ?? $legacyTestPhone;
+        $settings['test_phone'] = $legacyTestPhone;
+        $settings['customer_test_phone'] = $this->normalizePhone((string) (
+            $hasStoredCustomerTestPhone
+                ? ($settings['customer_test_phone'] ?? '')
+                : $legacyCustomerTestPhone
+        ));
+        $settings['technician_ops_test_phone'] = $this->normalizePhone((string) (
+            $hasStoredTechnicianOpsTestPhone
+                ? ($settings['technician_ops_test_phone'] ?? '')
+                : $legacyTestPhone
+        ));
         $settings['manual_e2e_ttl_seconds'] = max(60, min(
             TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
             (int) ($settings['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
@@ -6050,6 +6144,8 @@ class TechnicalServiceMessagingSettingsService
             'real_send_enabled' => false,
             'test_mode_enabled' => true,
             'test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
+            'customer_test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
+            'technician_ops_test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
             'queue_paused' => true,
             'outbound_execution_mode' => self::OUTBOUND_EXECUTION_MODE_LOCAL,
             'outbound_mode_revision' => 1,
@@ -6674,6 +6770,16 @@ class TechnicalServiceMessagingSettingsService
                 'test_phone' => 'Test modu aktifken geçerli test telefon numarası zorunlu.',
             ]);
         }
+        if ((bool) $settings['messaging_enabled'] && (bool) $settings['test_mode_enabled']) {
+            foreach ([
+                'customer_test_phone' => 'Test modu aktifken geçerli müşteri test telefonu zorunlu.',
+                'technician_ops_test_phone' => 'Test modu aktifken geçerli usta / OPS test telefonu zorunlu.',
+            ] as $field => $message) {
+                if (! $this->validPhone((string) ($settings[$field] ?? ''))) {
+                    throw ValidationException::withMessages([$field => $message]);
+                }
+            }
+        }
 
         $manualPortalOrigin = trim((string) ($settings['manual_e2e_partner_portal_origin'] ?? ''));
         $normalizedManualPortalOrigin = PartnerPortalPublicUrl::normalizeOrigin($manualPortalOrigin);
@@ -7035,7 +7141,8 @@ class TechnicalServiceMessagingSettingsService
         $webhookConfigured = trim((string) config('services.evolution.n8n_webhook_url', '')) !== '';
         $evoDirect = $this->evoWhatsappReadiness($settings);
         $providerSecretConfigured = $evoDirect['credentials_ready'];
-        $testPhoneConfigured = $this->validPhone((string) $settings['test_phone']);
+        $testPhoneConfigured = $this->validPhone((string) ($settings['customer_test_phone'] ?? ''))
+            && $this->validPhone((string) ($settings['technician_ops_test_phone'] ?? ''));
         $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
         $activeProviderDefinition = self::PROVIDERS[$activeProvider];
         $activeProviderEnabled = $this->providerEnabled($activeProvider, $settings);
@@ -7043,7 +7150,9 @@ class TechnicalServiceMessagingSettingsService
         $activeProviderCredentialsReady = $this->providerCredentialsReady($activeProvider, $settings, $webhookConfigured);
         $activeProviderRealReady = $this->providerRealReady($activeProvider, $settings, $webhookConfigured);
         $realAllowedTypes = collect($settings['message_types'] ?? [])
-            ->filter(fn (array $type): bool => (bool) ($type['enabled'] ?? false) && (bool) ($type['real_send_allowed'] ?? false))
+            ->filter(fn (array $type): bool => (bool) ($type['enabled'] ?? false)
+                && ($this->messageTypeAllowsChannel($type, 'whatsapp', (string) ($type['whatsapp_provider'] ?? ''))
+                    || $this->messageTypeAllowsChannel($type, 'sms', (string) ($type['sms_provider'] ?? ''))))
             ->keys()
             ->values()
             ->all();
@@ -7082,7 +7191,7 @@ class TechnicalServiceMessagingSettingsService
             $disabledReasons[] = 'Aktif sağlayıcının API sözleşmesi doğrulanmadı.';
         }
         if ($realAllowedTypes === []) {
-            $disabledReasons[] = 'Gerçek gönderime açık mesaj tipi yok.';
+            $disabledReasons[] = 'Aktif kanal/provider kombinasyonuna sahip mesaj tipi yok.';
         }
         if ((bool) ($settings['queue_paused'] ?? true)) {
             $disabledReasons[] = 'Provider kuyruğu duraklatıldı.';
@@ -7295,12 +7404,11 @@ class TechnicalServiceMessagingSettingsService
 
         $messageTypes = [];
         foreach ((array) ($settings['message_types'] ?? []) as $key => $policy) {
-            if (! is_array($policy) || ! (bool) ($policy['enabled'] ?? false) || ! (bool) ($policy['real_send_allowed'] ?? false)) {
+            if (! is_array($policy) || ! (bool) ($policy['enabled'] ?? false)) {
                 continue;
             }
             $messageTypes[(string) $key] = Arr::only($policy, [
                 'enabled',
-                'real_send_allowed',
                 'channel_policy',
                 'whatsapp_mode',
                 'sms_mode',
@@ -7327,6 +7435,8 @@ class TechnicalServiceMessagingSettingsService
             'real_send_enabled' => (bool) ($settings['real_send_enabled'] ?? false),
             'queue_paused' => (bool) ($settings['queue_paused'] ?? true),
             'test_mode_enabled' => (bool) ($settings['test_mode_enabled'] ?? false),
+            'customer_test_phone_fingerprint' => hash('sha256', (string) ($settings['customer_test_phone'] ?? '')),
+            'technician_ops_test_phone_fingerprint' => hash('sha256', (string) ($settings['technician_ops_test_phone'] ?? '')),
             'max_auto_retries' => (int) ($settings['max_auto_retries'] ?? -1),
             'allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
             'origin_enabled' => (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false),
@@ -7385,10 +7495,13 @@ class TechnicalServiceMessagingSettingsService
         if ($allowlist === [] || collect($allowlist)->contains(fn (string $phone): bool => ! $this->validPhone($phone))) {
             throw new ConflictHttpException('Yerel manuel kabul için geçerli recipient allowlist zorunlu.');
         }
-        $testPhone = $this->normalizePhone((string) ($settings['test_phone'] ?? ''));
-        if ((bool) ($settings['test_mode_enabled'] ?? false)
-            && ($testPhone === '' || ! in_array($testPhone, $allowlist, true))) {
-            throw new ConflictHttpException('Test modu için configured test telefonu recipient allowlist içinde olmalı.');
+        if ((bool) ($settings['test_mode_enabled'] ?? false)) {
+            foreach (['customer', 'technician'] as $role) {
+                $roleTestPhone = $this->testPhoneForRole($settings, $role);
+                if ($roleTestPhone === '' || ! in_array($roleTestPhone, $allowlist, true)) {
+                    throw new ConflictHttpException("Test modu için {$role} test telefonu recipient allowlist içinde olmalı.");
+                }
+            }
         }
         if (! (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false)
             || $origin === null
@@ -7408,19 +7521,18 @@ class TechnicalServiceMessagingSettingsService
             throw new ConflictHttpException('Yerel manuel kabul açılmadan önce sender current release olmalı ve actionable external backlog sıfır kalmalı.');
         }
 
-        $realPolicies = collect((array) ($settings['message_types'] ?? []))
+        $activePolicies = collect((array) ($settings['message_types'] ?? []))
             ->filter(fn (mixed $policy): bool => is_array($policy)
-                && (bool) ($policy['enabled'] ?? false)
-                && (bool) ($policy['real_send_allowed'] ?? false));
-        if ($realPolicies->isEmpty()) {
-            throw new ConflictHttpException('Yerel manuel kabul için en az bir explicit real-send message type zorunlu.');
+                && (bool) ($policy['enabled'] ?? false));
+        if ($activePolicies->isEmpty()) {
+            throw new ConflictHttpException('Yerel manuel kabul için en az bir aktif mesaj tipi zorunlu.');
         }
-        foreach ($realPolicies as $policy) {
+        foreach ($activePolicies as $policy) {
             foreach ([
                 ['whatsapp', (string) ($policy['whatsapp_provider'] ?? '')],
                 ['sms', (string) ($policy['sms_provider'] ?? '')],
             ] as [$channel, $provider]) {
-                if ($this->messageTypeAllowsScopedChannel((array) $policy, $channel, $provider)
+                if ($this->messageTypeAllowsChannel((array) $policy, $channel, $provider)
                     && ! $this->providerRealReady($provider, $settings, false)) {
                     throw new ConflictHttpException("Yerel manuel kabul {$provider} readiness geçmedi.");
                 }
@@ -7493,9 +7605,8 @@ class TechnicalServiceMessagingSettingsService
         if (! in_array($provider, ['evo_whatsapp', 'nac_sms'], true)
             || ! in_array($channel, ['whatsapp', 'sms'], true)
             || ! (bool) ($typePolicy['enabled'] ?? false)
-            || ! (bool) ($typePolicy['real_send_allowed'] ?? false)
-            || ! $this->messageTypeAllowsScopedChannel($typePolicy, $channel, $provider)) {
-            return $this->executionBlock('local_manual_acceptance_event_channel_blocked', 'Dispatch event/channel/provider profilde gerçek gönderime açık değil.');
+            || ! $this->messageTypeAllowsChannel($typePolicy, $channel, $provider)) {
+            return $this->executionBlock('local_manual_acceptance_event_channel_blocked', 'Dispatch event/channel/provider ayarı aktif değil.');
         }
 
         $target = $this->normalizePhone($targetPhone);
@@ -7667,6 +7778,10 @@ class TechnicalServiceMessagingSettingsService
             'shared_test_phone_masked' => $this->maskPhone($settings['test_phone']),
             'test_phone' => $settings['test_phone'],
             'test_phone_masked' => $this->maskPhone($settings['test_phone']),
+            'customer_test_phone' => $settings['customer_test_phone'],
+            'customer_test_phone_masked' => $this->maskPhone($settings['customer_test_phone']),
+            'technician_ops_test_phone' => $settings['technician_ops_test_phone'],
+            'technician_ops_test_phone_masked' => $this->maskPhone($settings['technician_ops_test_phone']),
             'queue_paused' => (bool) $settings['queue_paused'],
             'provider_key' => $settings['provider_key'],
             'active_provider' => $settings['active_provider'],
@@ -9276,12 +9391,19 @@ SQL,
         } elseif ($context->enabled()
             || $context->activeRunId() !== null
             || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+            || ! (bool) ($settings['messaging_enabled'] ?? false)
             || ! (bool) ($settings['real_send_enabled'] ?? false)
             || (bool) ($settings['queue_paused'] ?? true)) {
             return $this->executionBlock('production_live_gate_closed', 'Production live provider gate veya queue state hazır değil.');
         }
-        if (! (bool) data_get($settings, 'message_types.'.$dispatch->message_type.'.real_send_allowed', false)) {
-            return $this->executionBlock('message_type_real_send_disabled', 'Dispatch mesaj tipi gerçek gönderime açık değil.');
+        $typePolicy = (array) data_get($settings, 'message_types.'.$dispatch->message_type, []);
+        if (! (bool) ($typePolicy['enabled'] ?? false)
+            || ! $this->messageTypeAllowsChannel(
+                $typePolicy,
+                (string) $dispatch->channel,
+                (string) $dispatch->provider_key,
+            )) {
+            return $this->executionBlock('message_type_channel_disabled', 'Dispatch mesaj tipi, kanal veya provider ayarı aktif değil.');
         }
         $worker = $this->outboundWorkerLeaseStatus();
         $rawWorker = $this->outboundWorkerLease();
@@ -9765,6 +9887,16 @@ SQL,
         return $digits;
     }
 
+    /** @param array<string, mixed> $settings */
+    private function testPhoneForRole(array $settings, string $role): string
+    {
+        $field = $role === 'customer'
+            ? 'customer_test_phone'
+            : 'technician_ops_test_phone';
+
+        return $this->normalizePhone((string) ($settings[$field] ?? ''));
+    }
+
     private function validPhone(string $phone): bool
     {
         $normalized = $this->normalizePhone($phone);
@@ -9775,7 +9907,7 @@ SQL,
     /**
      * @param  array<string, mixed>  $type
      */
-    private function messageTypeAllowsScopedChannel(array $type, string $channel, string $provider): bool
+    private function messageTypeAllowsChannel(array $type, string $channel, string $provider): bool
     {
         $policy = (string) ($type['channel_policy'] ?? 'disabled');
         $allowedPolicies = $channel === 'whatsapp'

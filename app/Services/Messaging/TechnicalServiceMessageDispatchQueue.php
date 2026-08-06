@@ -21,6 +21,7 @@ class TechnicalServiceMessageDispatchQueue
      */
     public function enqueue(array $input, ?User $actor = null): TechnicalServiceMessageDispatch
     {
+        $input = $this->settings->withNormalDispatchRecipientAuthority($input);
         $input = $this->withServerExecutionModeSnapshot($input);
         $targetPhone = $this->idempotency->normalizePhone((string) ($input['target_phone'] ?? $input['effective_target_phone'] ?? ''));
         $recipientHash = $this->idempotency->phoneHash((string) ($input['recipient_phone'] ?? $targetPhone));

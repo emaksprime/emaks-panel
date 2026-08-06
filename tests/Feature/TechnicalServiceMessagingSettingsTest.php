@@ -292,6 +292,8 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                 'messaging_enabled' => true,
                 'test_mode_enabled' => true,
                 'test_phone' => '0546 764 74 28',
+                'customer_test_phone' => '0537 208 16 33',
+                'technician_ops_test_phone' => '0546 764 74 28',
                 'active_provider' => 'evo_whatsapp',
                 'default_provider' => 'null_local',
                 'fallback_provider' => 'evo_whatsapp',
@@ -319,6 +321,10 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertJsonPath('messaging_settings.global.active_provider', 'evo_whatsapp')
             ->assertJsonPath('messaging_settings.global.test_phone', null)
             ->assertJsonPath('messaging_settings.global.test_phone_masked', '9054****428')
+            ->assertJsonPath('messaging_settings.global.customer_test_phone', null)
+            ->assertJsonPath('messaging_settings.global.customer_test_phone_masked', '9053****633')
+            ->assertJsonPath('messaging_settings.global.technician_ops_test_phone', null)
+            ->assertJsonPath('messaging_settings.global.technician_ops_test_phone_masked', '9054****428')
             ->assertJsonPath('messaging_settings.readiness.can_send_test', true)
             ->assertJsonPath('messaging_settings.readiness.can_send_real', false)
             ->assertJsonPath('messaging_settings.provider.webhook_url_configured', true);
@@ -330,9 +336,36 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertTrue((bool) data_get($layout, 'technical_service.messaging.messaging_enabled'));
         $this->assertSame('evo_whatsapp', data_get($layout, 'technical_service.messaging.active_provider'));
         $this->assertSame('905467647428', data_get($layout, 'technical_service.messaging.test_phone'));
+        $this->assertSame('905372081633', data_get($layout, 'technical_service.messaging.customer_test_phone'));
+        $this->assertSame('905467647428', data_get($layout, 'technical_service.messaging.technician_ops_test_phone'));
         $this->assertSame('future_template_key', data_get($layout, 'technical_service.messaging.message_types.appointment_approved_customer.template_key'));
         $this->assertSame('whatsapp_and_sms', data_get($layout, 'technical_service.messaging.message_types.appointment_approved_customer.channel_policy'));
         $this->assertSame('test', data_get($layout, 'technical_service.messaging.message_types.appointment_approved_customer.sms_mode'));
+    }
+
+    public function test_legacy_single_test_phone_derives_role_targets_from_existing_allowlist_without_migration(): void
+    {
+        PageConfig::query()->create([
+            'page_code' => TechnicalServiceMessagingSettingsService::PAGE_CODE,
+            'layout_json' => [
+                'technical_service' => [
+                    'messaging' => [
+                        'test_phone' => '905467647428',
+                        'manual_e2e_allowlisted_phones' => [
+                            '905372081633',
+                            '905467647428',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $global = app(TechnicalServiceMessagingSettingsService::class)->payload()['global'];
+
+        $this->assertSame('905372081633', $global['customer_test_phone']);
+        $this->assertSame('905467647428', $global['technician_ops_test_phone']);
+        $this->assertSame('9053****633', $global['customer_test_phone_masked']);
+        $this->assertSame('9054****428', $global['technician_ops_test_phone_masked']);
     }
 
     public function test_message_type_live_channel_modes_are_blocked_until_queue_and_single_test_proof(): void
