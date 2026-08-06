@@ -52,6 +52,26 @@ class TechnicalServiceMessageDispatchProcessor
     {
         $processed = [];
         $limit = max(1, (int) ($options['limit'] ?? 10));
+        $outboundWorkerOwner = is_string($options['outbound_worker_owner'] ?? null)
+            ? trim($options['outbound_worker_owner'])
+            : '';
+        if ($outboundWorkerOwner !== '') {
+            $workerScope = $this->settings->outboundWorkerProcessingScope($outboundWorkerOwner);
+            if (! (bool) ($workerScope['allowed'] ?? false)) {
+                return [
+                    'dry_run' => false,
+                    'count' => 0,
+                    'blocked' => true,
+                    'reason' => 'Normal outbound worker locked execution scope ile eşleşmiyor.',
+                    'dispatches' => [],
+                ];
+            }
+            if (($workerScope['profile'] ?? null) === TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
+                $options['created_after'] = $workerScope['created_after'];
+                $options['allowlisted_phones'] = $workerScope['allowlisted_phones'];
+                $options['local_manual_acceptance_worker'] = true;
+            }
+        }
         $allowlistedPhones = (array) ($options['allowlisted_phones'] ?? []);
 
         if ((bool) ($options['manual_e2e_only'] ?? false) && empty($options['dispatch_id'])) {
@@ -67,6 +87,7 @@ class TechnicalServiceMessageDispatchProcessor
         if (! (bool) ($options['no_external'] ?? false)
             && $allowlistedPhones !== []
             && empty($options['dispatch_id'])
+            && ! (bool) ($options['local_manual_acceptance_worker'] ?? false)
             && ! $this->guardedManualE2eBatchAllowed($options, $allowlistedPhones)) {
             return [
                 'dry_run' => false,
@@ -179,6 +200,8 @@ class TechnicalServiceMessageDispatchProcessor
                     $outboundWorkerOwner = is_string($options['outbound_worker_owner'] ?? null)
                         ? trim($options['outbound_worker_owner'])
                         : null;
+                    $localManualAcceptanceWorker = $outboundWorkerOwner !== null
+                        && (bool) ($options['local_manual_acceptance_worker'] ?? false);
                     $executionAuthorization = $noExternal && $dispatch->provider_key === 'null_local'
                         ? ['allowed' => true, 'code' => null, 'message' => null]
                         : $this->settings->dispatchExecutionAuthorization(
@@ -245,7 +268,7 @@ class TechnicalServiceMessageDispatchProcessor
                         return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
                     }
 
-                    if (! $noExternal && $allowlistedPhones !== []) {
+                    if (! $noExternal && $allowlistedPhones !== [] && ! $localManualAcceptanceWorker) {
                         $smokeValidation = $this->controlledSmokeValidationErrors($dispatch, $options);
                         if ($smokeValidation !== []) {
                             $reason = implode(' ', array_column($smokeValidation, 'message'));
@@ -261,7 +284,10 @@ class TechnicalServiceMessageDispatchProcessor
                         }
                     }
 
-                    if (! $noExternal && $allowlistedPhones !== [] && ! $this->isControlledSmokeDispatch($dispatch, $options)) {
+                    if (! $noExternal
+                        && $allowlistedPhones !== []
+                        && ! $localManualAcceptanceWorker
+                        && ! $this->isControlledSmokeDispatch($dispatch, $options)) {
                         $dispatch->forceFill([
                             'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
                             'failed_at' => now(),

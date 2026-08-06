@@ -93,6 +93,10 @@ class TechnicalServiceMessagingSettingsService
 
     public const OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS = 30;
 
+    public const LOCAL_MANUAL_ACCEPTANCE_PROFILE = 'LOCAL_MANUAL_ACCEPTANCE';
+
+    public const LOCAL_MANUAL_ACCEPTANCE_PROFILE_VERSION = 1;
+
     private const MANUAL_E2E_ADVISORY_LOCK_CLASS_ID = 1162690891;
 
     private const MANUAL_E2E_ADVISORY_LOCK_OBJECT_ID = 1296384581;
@@ -149,6 +153,10 @@ class TechnicalServiceMessagingSettingsService
         'max_auto_retries',
         'allow_browser_smoke_send',
         'allow_test_fixture_send',
+        'local_manual_acceptance_enabled',
+        'local_manual_acceptance_activated_at',
+        'local_manual_acceptance_profile_fingerprint',
+        'local_manual_acceptance_reason',
     ];
 
     public const GENERIC_LIFECYCLE_FIELDS = [
@@ -178,6 +186,11 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_run_id',
         'smoke_run_id',
         'manual_e2e',
+        'local_manual_acceptance_enabled',
+        'local_manual_acceptance_activated_at',
+        'local_manual_acceptance_profile_fingerprint',
+        'local_manual_acceptance_reason',
+        'local_manual_acceptance_profile',
     ];
 
     private const ACTIVE_RUN_LOCKED_FIELDS = [
@@ -706,10 +719,24 @@ class TechnicalServiceMessagingSettingsService
                 'global_profile_fingerprint',
             ])
             : [];
+        $localAcceptanceSnapshot = $this->localManualAcceptanceIsCurrent($settings)
+            ? [
+                'local_manual_acceptance_profile_id' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
+                'local_manual_acceptance_profile_version' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE_VERSION,
+                'local_manual_acceptance_activated_at' => $settings['local_manual_acceptance_activated_at'],
+                'local_manual_acceptance_profile_fingerprint' => $settings['local_manual_acceptance_profile_fingerprint'],
+            ]
+            : [
+                'local_manual_acceptance_profile_id' => null,
+                'local_manual_acceptance_profile_version' => null,
+                'local_manual_acceptance_activated_at' => null,
+                'local_manual_acceptance_profile_fingerprint' => null,
+            ];
 
         return [
             ...app(ExternalExecutionControlPlaneService::class)->messagingSnapshot($provider),
             ...$scopedSnapshot,
+            ...$localAcceptanceSnapshot,
             'messaging_enabled' => (bool) ($settings['messaging_enabled'] ?? false),
         ];
     }
@@ -834,6 +861,10 @@ class TechnicalServiceMessagingSettingsService
             $next['test_mode_enabled'] = false;
             $next['real_send_enabled'] = $this->runtimeEnvironment() === 'production';
             $next['queue_paused'] = $this->runtimeEnvironment() !== 'production';
+            $next['local_manual_acceptance_enabled'] = false;
+            $next['local_manual_acceptance_activated_at'] = null;
+            $next['local_manual_acceptance_profile_fingerprint'] = null;
+            $next['local_manual_acceptance_reason'] = null;
         }
 
         if ($mode === ExternalExecutionControlPlaneService::MODE_LOCAL) {
@@ -1216,6 +1247,39 @@ class TechnicalServiceMessagingSettingsService
             $blockCode,
             (string) ($authorization['message'] ?? 'Global execution snapshot current state ile eşleşmiyor.'),
         );
+    }
+
+    /**
+     * Authorize creation of a normal external dispatch. The persistent local
+     * profile is server-owned and never trusts caller-provided scope fields.
+     *
+     * @param  array<string, mixed>  $metadata
+     * @return array{allowed:bool,code:string|null,message:string|null}
+     */
+    public function outboundQueueAuthorization(
+        string $provider,
+        string $channel,
+        string $messageType,
+        string $targetPhone,
+        array $metadata,
+        string $body = '',
+    ): array {
+        $settings = $this->settings();
+        if ($this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
+            && (bool) ($settings['local_manual_acceptance_enabled'] ?? false)) {
+            return $this->localManualAcceptanceTupleAuthorization(
+                $provider,
+                $channel,
+                $messageType,
+                $targetPhone,
+                $metadata,
+                CarbonImmutable::now(),
+                $body,
+                $settings,
+            );
+        }
+
+        return $this->outboundSnapshotAuthorization($provider, $metadata);
     }
 
     /**
@@ -3484,6 +3548,114 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
+     * Open the persistent, allowlisted local manual-acceptance sender profile.
+     * The profile is code-owned; callers can only supply an audit reason.
+     *
+     * @return array<string, mixed>
+     */
+    public function activateLocalManualAcceptance(string $reason): array
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw ValidationException::withMessages([
+                'reason' => 'Yerel manuel kabul profili için neden zorunlu.',
+            ]);
+        }
+        if ($this->runtimeEnvironment() === 'production') {
+            throw new ConflictHttpException('Yerel manuel kabul profili production ortamında açılamaz.');
+        }
+
+        $lock = $this->acquireLifecycleLock();
+        try {
+            DB::transaction(function () use ($reason): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                if ($this->localManualAcceptanceIsCurrent($current)) {
+                    return;
+                }
+
+                $this->assertLocalManualAcceptanceActivationReady($current);
+                $activatedAt = CarbonImmutable::now()->toIso8601String();
+                $next = [
+                    ...$current,
+                    'manual_e2e_enabled' => false,
+                    'manual_e2e_phase' => self::MANUAL_E2E_PHASE_FROZEN,
+                    'manual_e2e_active_run_id' => null,
+                    'manual_e2e_open_window' => null,
+                    'manual_e2e_active_claim' => null,
+                    'test_mode_enabled' => false,
+                    'real_send_enabled' => true,
+                    'queue_paused' => false,
+                    'local_manual_acceptance_enabled' => true,
+                    'local_manual_acceptance_activated_at' => $activatedAt,
+                    'local_manual_acceptance_reason' => Str::limit($reason, 160, ''),
+                    'local_manual_acceptance_profile_fingerprint' => null,
+                ];
+                $next['local_manual_acceptance_profile_fingerprint'] = $this->localManualAcceptanceFingerprint($next);
+                $this->validateSettings($next);
+                $this->persistAuthoritativeSettings($locked, $next);
+            });
+        } finally {
+            $lock();
+        }
+
+        return $this->localManualAcceptancePayload();
+    }
+
+    /** @return array<string, mixed> */
+    public function deactivateLocalManualAcceptance(string $reason): array
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw ValidationException::withMessages([
+                'reason' => 'Yerel manuel kabul profilini kapatma nedeni zorunlu.',
+            ]);
+        }
+
+        $lock = $this->acquireLifecycleLock();
+        try {
+            DB::transaction(function () use ($reason): void {
+                $locked = $this->lockedAuthoritativeSettings();
+                $current = $locked['settings'];
+                if (is_array($current['normal_outbound_active_claim'] ?? null)) {
+                    throw new ConflictHttpException('Provider çağrısı sürerken yerel manuel kabul profili kapatılamaz.');
+                }
+
+                $next = $this->deactivateLocalManualAcceptanceSettings($current, $reason);
+                $this->validateSettings($next);
+                $this->persistAuthoritativeSettings($locked, $next);
+            });
+        } finally {
+            $lock();
+        }
+
+        return $this->localManualAcceptancePayload();
+    }
+
+    /** @return array<string, mixed> */
+    public function localManualAcceptancePayload(): array
+    {
+        $settings = $this->settings();
+        $allowlist = array_values(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        )));
+        $worker = $this->outboundWorkerLeaseStatus();
+
+        return [
+            'profile' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
+            'enabled' => $this->localManualAcceptanceIsCurrent($settings),
+            'activated_at' => $this->nullableScalar($settings['local_manual_acceptance_activated_at'] ?? null),
+            'profile_fingerprint' => $this->nullableScalar($settings['local_manual_acceptance_profile_fingerprint'] ?? null),
+            'allowlist' => array_map(fn (string $phone): string => $this->maskPhone($phone), $allowlist),
+            'allowlist_fingerprints' => array_map(fn (string $phone): string => hash('sha256', $phone), $allowlist),
+            'real_send_enabled' => (bool) ($settings['real_send_enabled'] ?? false),
+            'queue_paused' => (bool) ($settings['queue_paused'] ?? true),
+            'worker' => $worker,
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $values
      * @param  array<string, mixed>|null  $current
      */
@@ -3509,6 +3681,7 @@ class TechnicalServiceMessagingSettingsService
         $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
         if (! $context->enabled()
             && $context->activeRunId() === null
+            && ! (bool) ($current['local_manual_acceptance_enabled'] ?? false)
             && ! is_array($current['normal_outbound_active_claim'] ?? null)) {
             return;
         }
@@ -3551,6 +3724,7 @@ class TechnicalServiceMessagingSettingsService
         $current = $settings ?? $this->settings();
         $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
         if ($this->executionMode($current) === self::OUTBOUND_EXECUTION_MODE_LIVE
+            || (bool) ($current['local_manual_acceptance_enabled'] ?? false)
             || $context->enabled()
             || $context->activeRunId() !== null
             || is_array($current['scoped_local_uat_active_effect_claim'] ?? null)
@@ -5790,6 +5964,10 @@ class TechnicalServiceMessagingSettingsService
             ? (int) $settings['outbound_mode_changed_by']
             : null;
         $settings['outbound_mode_reason'] = $this->nullableScalar($settings['outbound_mode_reason'] ?? null);
+        $settings['local_manual_acceptance_enabled'] = (bool) ($settings['local_manual_acceptance_enabled'] ?? false);
+        $settings['local_manual_acceptance_activated_at'] = $this->nullableScalar($settings['local_manual_acceptance_activated_at'] ?? null);
+        $settings['local_manual_acceptance_profile_fingerprint'] = $this->nullableScalar($settings['local_manual_acceptance_profile_fingerprint'] ?? null);
+        $settings['local_manual_acceptance_reason'] = $this->nullableScalar($settings['local_manual_acceptance_reason'] ?? null);
 
         return $settings;
     }
@@ -5823,6 +6001,10 @@ class TechnicalServiceMessagingSettingsService
             'max_auto_retries' => 0,
             'allow_browser_smoke_send' => false,
             'allow_test_fixture_send' => false,
+            'local_manual_acceptance_enabled' => false,
+            'local_manual_acceptance_activated_at' => null,
+            'local_manual_acceptance_profile_fingerprint' => null,
+            'local_manual_acceptance_reason' => null,
             'manual_e2e_enabled' => false,
             'manual_e2e_phase' => null,
             'manual_e2e_active_run_id' => null,
@@ -6099,6 +6281,10 @@ class TechnicalServiceMessagingSettingsService
         $settings['manual_e2e_started_at'] = null;
         $settings['manual_e2e_created_after'] = null;
         $settings['manual_e2e_expires_at'] = null;
+        $settings['local_manual_acceptance_enabled'] = false;
+        $settings['local_manual_acceptance_activated_at'] = null;
+        $settings['local_manual_acceptance_profile_fingerprint'] = null;
+        $settings['local_manual_acceptance_reason'] = null;
 
         return $settings;
     }
@@ -6532,12 +6718,15 @@ class TechnicalServiceMessagingSettingsService
         $executionMode = $this->executionMode($settings);
         $productionLive = $executionMode === self::OUTBOUND_EXECUTION_MODE_LIVE
             && $this->runtimeEnvironment() === 'production';
+        $localAcceptanceEnabled = (bool) ($settings['local_manual_acceptance_enabled'] ?? false);
+        $localAcceptanceCurrent = $this->localManualAcceptanceIsCurrent($settings);
 
         // Legacy/non-manual settings predate persisted lifecycle phases. Once a
         // lifecycle operation writes a phase, every transition is strict.
         if ($storedPhase === ''
             && ! $manualEnabled
             && ! $realSend
+            && ! $localAcceptanceEnabled
             && $runId === null
             && $window === null
             && $claim === null
@@ -6613,12 +6802,16 @@ class TechnicalServiceMessagingSettingsService
 
         $invalid = $normalClaimInvalid || $effectClaimInvalid || match ($phase) {
             self::MANUAL_E2E_PHASE_FROZEN => $manualEnabled
-                || ($productionLive ? (! $realSend || $queuePaused) : ($realSend || ! $queuePaused))
+                || ($localAcceptanceEnabled && ! $localAcceptanceCurrent)
+                || ($productionLive
+                    ? (! $realSend || $queuePaused || $localAcceptanceEnabled)
+                    : ($localAcceptanceCurrent ? (! $realSend || $queuePaused) : ($realSend || ! $queuePaused)))
                 || $runId !== null
                 || $window !== null
                 || $claim !== null
                 || ($effectClaim !== null && ! $frozenDispatchingEffect),
             self::MANUAL_E2E_PHASE_PREPARED => ! $manualEnabled
+                || $localAcceptanceEnabled
                 || $realSend
                 || ! $queuePaused
                 || $runId === null
@@ -6635,6 +6828,7 @@ class TechnicalServiceMessagingSettingsService
                 || ($claim !== null && $effectClaim !== null)
                 || $normalClaim !== null,
             self::MANUAL_E2E_PHASE_WINDOW_OPEN => ! $manualEnabled
+                || $localAcceptanceEnabled
                 || ! $this->manualE2EExecutionScopeAllowed($settings)
                 || ! $realSend
                 || $queuePaused
@@ -6943,6 +7137,20 @@ class TechnicalServiceMessagingSettingsService
                 && hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha);
         }
 
+        if ($this->localManualAcceptanceIsCurrent($settings)) {
+            $worker = $this->outboundWorkerLeaseStatus();
+            $releaseSha = $this->runtimeReleaseSha();
+
+            return $releaseSha !== null
+                && ($worker['state'] ?? null) === 'active'
+                && ($worker['profile'] ?? null) === self::LOCAL_MANUAL_ACCEPTANCE_PROFILE
+                && hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha)
+                && hash_equals(
+                    (string) ($worker['profile_fingerprint'] ?? ''),
+                    (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? ''),
+                );
+        }
+
         return (bool) ($settings['messaging_enabled'] ?? false)
             && $this->manualE2EExecutionScopeAllowed($settings, $context)
             && (bool) ($settings['real_send_enabled'] ?? false)
@@ -6967,6 +7175,10 @@ class TechnicalServiceMessagingSettingsService
             return false;
         }
 
+        if ($this->localManualAcceptanceIsCurrent($settings)) {
+            return true;
+        }
+
         $context ??= TechnicalServiceManualE2ERunContext::fromSettings($settings);
         $snapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
             ? $settings['manual_e2e_run_snapshot']
@@ -6984,6 +7196,249 @@ class TechnicalServiceMessagingSettingsService
     {
         return data_get($settings, 'manual_e2e_run_snapshot.scoped_local_uat_profile_id')
             === ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function localManualAcceptanceIsCurrent(array $settings): bool
+    {
+        if (! (bool) ($settings['local_manual_acceptance_enabled'] ?? false)
+            || $this->runtimeEnvironment() === 'production'
+            || $this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LOCAL) {
+            return false;
+        }
+
+        $activatedAt = $this->safeDate($settings['local_manual_acceptance_activated_at'] ?? null);
+        $storedFingerprint = trim((string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? ''));
+
+        return $activatedAt !== null
+            && preg_match('/^[a-f0-9]{64}$/', $storedFingerprint) === 1
+            && hash_equals($storedFingerprint, $this->localManualAcceptanceFingerprint($settings));
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function localManualAcceptanceFingerprint(array $settings): string
+    {
+        $allowlist = array_values(array_unique(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        ))));
+        sort($allowlist);
+
+        $messageTypes = [];
+        foreach ((array) ($settings['message_types'] ?? []) as $key => $policy) {
+            if (! is_array($policy) || ! (bool) ($policy['enabled'] ?? false) || ! (bool) ($policy['real_send_allowed'] ?? false)) {
+                continue;
+            }
+            $messageTypes[(string) $key] = Arr::only($policy, [
+                'enabled',
+                'real_send_allowed',
+                'channel_policy',
+                'whatsapp_mode',
+                'sms_mode',
+                'whatsapp_provider',
+                'sms_provider',
+                'template_key',
+            ]);
+        }
+        ksort($messageTypes);
+        $global = app(ExternalExecutionControlPlaneService::class)->state();
+
+        return hash('sha256', json_encode([
+            'profile' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
+            'version' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE_VERSION,
+            'activated_at' => $this->nullableScalar($settings['local_manual_acceptance_activated_at'] ?? null),
+            'runtime_environment' => $this->runtimeEnvironment(),
+            'release_sha' => $this->runtimeReleaseSha(),
+            'global_operator_mode' => $global['operator_mode'] ?? null,
+            'global_state' => $global['transition_state'] ?? null,
+            'global_epoch' => (int) ($global['epoch'] ?? 0),
+            'global_revision' => (int) ($global['revision'] ?? 0),
+            'global_profile_fingerprint' => $global['profile_fingerprint'] ?? null,
+            'messaging_enabled' => (bool) ($settings['messaging_enabled'] ?? false),
+            'real_send_enabled' => (bool) ($settings['real_send_enabled'] ?? false),
+            'queue_paused' => (bool) ($settings['queue_paused'] ?? true),
+            'test_mode_enabled' => (bool) ($settings['test_mode_enabled'] ?? false),
+            'max_auto_retries' => (int) ($settings['max_auto_retries'] ?? -1),
+            'allowlist_fingerprint' => $this->allowlistFingerprint($allowlist),
+            'origin_enabled' => (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false),
+            'origin_fingerprint' => hash('sha256', (string) ($settings['manual_e2e_partner_portal_origin'] ?? '')),
+            'evo_profile_fingerprint' => $this->messagingProfileFingerprint('evo_whatsapp', $settings),
+            'nac_profile_fingerprint' => $this->messagingProfileFingerprint('nac_sms', $settings),
+            'evo_real_send_allowed' => $this->providerRealSendAllowed('evo_whatsapp', $settings),
+            'nac_real_send_allowed' => $this->providerRealSendAllowed('nac_sms', $settings),
+            'message_types' => $messageTypes,
+            'mikro' => [
+                'active' => (bool) data_get($settings, 'mikro_api.active', false),
+                'read_sync' => (bool) data_get($settings, 'mikro_api.read_sync', false),
+                'write' => (bool) data_get($settings, 'mikro_api.write', false),
+            ],
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function assertLocalManualAcceptanceActivationReady(array $settings): void
+    {
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $allowlist = array_values(array_unique(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        ))));
+        $origin = PartnerPortalPublicUrl::normalizeOrigin((string) ($settings['manual_e2e_partner_portal_origin'] ?? ''));
+        $worker = $this->outboundWorkerLeaseStatus();
+        $global = app(ExternalExecutionControlPlaneService::class)->state();
+
+        if ($this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LOCAL
+            || ($global['transition_state'] ?? null) !== ExternalExecutionControlPlaneService::STATE_LOCAL) {
+            throw new ConflictHttpException('Yerel manuel kabul için global execution authority local olmalı.');
+        }
+        if ($this->runtimeReleaseSha() === null) {
+            throw new ConflictHttpException('Yerel manuel kabul için exact runtime release SHA zorunlu.');
+        }
+        if ($context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+            || $context->enabled()
+            || $context->activeRunId() !== null
+            || is_array($settings['manual_e2e_open_window'] ?? null)
+            || is_array($settings['manual_e2e_active_claim'] ?? null)
+            || is_array($settings['scoped_local_uat_active_effect_claim'] ?? null)
+            || is_array($settings['normal_outbound_active_claim'] ?? null)) {
+            throw new ConflictHttpException('Yerel manuel kabul profili yalnız frozen ve claimsiz lifecycle durumundan açılabilir.');
+        }
+        if ((bool) ($settings['real_send_enabled'] ?? false)
+            || ! (bool) ($settings['queue_paused'] ?? true)) {
+            throw new ConflictHttpException('Yerel manuel kabul profili yalnız dış etkiye kapalı queue durumundan açılabilir.');
+        }
+        if (! (bool) ($settings['messaging_enabled'] ?? false)
+            || (bool) ($settings['test_mode_enabled'] ?? false)
+            || (int) ($settings['max_auto_retries'] ?? -1) !== 0) {
+            throw new ConflictHttpException('Yerel manuel kabul kill-switch, test redirect veya retry sözleşmesi hazır değil.');
+        }
+        if ($allowlist === [] || collect($allowlist)->contains(fn (string $phone): bool => ! $this->validPhone($phone))) {
+            throw new ConflictHttpException('Yerel manuel kabul için geçerli recipient allowlist zorunlu.');
+        }
+        if (! (bool) ($settings['manual_e2e_partner_portal_origin_enabled'] ?? false)
+            || $origin === null
+            || ! PartnerPortalPublicUrl::isPrivateLanOrigin($origin)) {
+            throw new ConflictHttpException('Yerel manuel kabul için telefon erişimine açık private LAN origin zorunlu.');
+        }
+        if (($worker['state'] ?? 'none') !== 'none'
+            || $this->pendingExternalDispatchCount() !== 0
+            || $this->unsafeExternalDispatchCount() !== 0) {
+            throw new ConflictHttpException('Yerel manuel kabul açılmadan önce worker ve actionable external backlog sıfır olmalı.');
+        }
+
+        $realPolicies = collect((array) ($settings['message_types'] ?? []))
+            ->filter(fn (mixed $policy): bool => is_array($policy)
+                && (bool) ($policy['enabled'] ?? false)
+                && (bool) ($policy['real_send_allowed'] ?? false));
+        if ($realPolicies->isEmpty()) {
+            throw new ConflictHttpException('Yerel manuel kabul için en az bir explicit real-send message type zorunlu.');
+        }
+        foreach ($realPolicies as $policy) {
+            foreach ([
+                ['whatsapp', (string) ($policy['whatsapp_provider'] ?? '')],
+                ['sms', (string) ($policy['sms_provider'] ?? '')],
+            ] as [$channel, $provider]) {
+                if ($this->messageTypeAllowsScopedChannel((array) $policy, $channel, $provider)
+                    && ! $this->providerRealReady($provider, $settings, false)) {
+                    throw new ConflictHttpException("Yerel manuel kabul {$provider} readiness geçmedi.");
+                }
+            }
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function deactivateLocalManualAcceptanceSettings(array $settings, string $reason): array
+    {
+        return [
+            ...$settings,
+            'real_send_enabled' => false,
+            'queue_paused' => true,
+            'local_manual_acceptance_enabled' => false,
+            'local_manual_acceptance_activated_at' => null,
+            'local_manual_acceptance_profile_fingerprint' => null,
+            'local_manual_acceptance_reason' => Str::limit(trim($reason), 160, ''),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     * @param  array<string, mixed>  $settings
+     * @return array{allowed:bool,code:string|null,message:string|null}
+     */
+    private function localManualAcceptanceTupleAuthorization(
+        string $provider,
+        string $channel,
+        string $messageType,
+        string $targetPhone,
+        array $metadata,
+        CarbonImmutable $createdAt,
+        string $body,
+        array $settings,
+    ): array {
+        if (! $this->localManualAcceptanceIsCurrent($settings)) {
+            return $this->executionBlock('local_manual_acceptance_snapshot_stale', 'Yerel manuel kabul profile fingerprinti current değil.');
+        }
+
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if ($context->enabled()
+            || $context->activeRunId() !== null
+            || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+            || ! (bool) ($settings['messaging_enabled'] ?? false)
+            || ! (bool) ($settings['real_send_enabled'] ?? false)
+            || (bool) ($settings['queue_paused'] ?? true)
+            || (bool) ($settings['test_mode_enabled'] ?? false)) {
+            return $this->executionBlock('local_manual_acceptance_gate_closed', 'Yerel manuel kabul lifecycle veya kill-switch kapısı açık değil.');
+        }
+
+        $storedFingerprint = (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? '');
+        $storedActivatedAt = (string) ($settings['local_manual_acceptance_activated_at'] ?? '');
+        if (($metadata['local_manual_acceptance_profile_id'] ?? null) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE
+            || (int) ($metadata['local_manual_acceptance_profile_version'] ?? 0) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE_VERSION
+            || ! hash_equals($storedFingerprint, (string) ($metadata['local_manual_acceptance_profile_fingerprint'] ?? ''))
+            || ! hash_equals($storedActivatedAt, (string) ($metadata['local_manual_acceptance_activated_at'] ?? ''))) {
+            return $this->executionBlock('local_manual_acceptance_dispatch_snapshot_mismatch', 'Dispatch yerel manuel kabul snapshotı current profile ile eşleşmiyor.');
+        }
+
+        $activatedAt = $this->safeDate($storedActivatedAt);
+        if ($activatedAt === null || $createdAt->lt($activatedAt)) {
+            return $this->executionBlock('local_manual_acceptance_created_before_activation', 'Activation öncesi dispatch provider tarafından claim edilemez.');
+        }
+
+        $provider = $this->normalizeProviderKey($provider);
+        $typePolicy = (array) data_get($settings, 'message_types.'.$messageType, []);
+        if (! in_array($provider, ['evo_whatsapp', 'nac_sms'], true)
+            || ! in_array($channel, ['whatsapp', 'sms'], true)
+            || ! (bool) ($typePolicy['enabled'] ?? false)
+            || ! (bool) ($typePolicy['real_send_allowed'] ?? false)
+            || ! $this->messageTypeAllowsScopedChannel($typePolicy, $channel, $provider)) {
+            return $this->executionBlock('local_manual_acceptance_event_channel_blocked', 'Dispatch event/channel/provider profilde gerçek gönderime açık değil.');
+        }
+
+        $target = $this->normalizePhone($targetPhone);
+        $allowlist = array_values(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        )));
+        if ($target === '' || ! in_array($target, $allowlist, true)) {
+            return $this->executionBlock('local_manual_acceptance_recipient_blocked', 'Dispatch recipient allowlist dışında.');
+        }
+        if (! $this->providerRealReady($provider, $settings, false)) {
+            return $this->executionBlock('local_manual_acceptance_provider_not_ready', 'Dispatch provider readiness geçmedi.');
+        }
+        if (! $this->scopedLocalUatBodyUrlsAreSafe($body, $settings)) {
+            return $this->executionBlock('local_manual_acceptance_link_host_blocked', 'Dispatch body yalnız locked private LAN origin bağlantıları içerebilir.');
+        }
+
+        return ['allowed' => true, 'code' => null, 'message' => null];
     }
 
     /**
@@ -8675,8 +9130,11 @@ SQL,
         $scopedManualE2E = $manualE2E
             && $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
             && $this->isScopedLocalUatSettings($settings);
+        $persistentLocalAcceptance = ! $manualE2E
+            && $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
+            && (bool) ($settings['local_manual_acceptance_enabled'] ?? false);
 
-        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE && ! $scopedManualE2E) {
+        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE && ! $scopedManualE2E && ! $persistentLocalAcceptance) {
             return $this->executionBlock('outbound_execution_mode_local', 'Global sistem çalışma modu Lokal; dış provider çağrısı kapalı.');
         }
         if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)
@@ -8685,16 +9143,23 @@ SQL,
             || ($dispatch->provider_key === 'nac_sms' && $dispatch->channel !== 'sms')) {
             return $this->executionBlock('outbound_provider_channel_mismatch', 'Dispatch provider/channel tuple çalışma modu için geçersiz.');
         }
-        $globalAuthorization = $this->outboundSnapshotAuthorization(
-            (string) $dispatch->provider_key,
-            $metadata,
-        );
-        if (! $globalAuthorization['allowed']) {
-            return $globalAuthorization;
+        if (! $persistentLocalAcceptance) {
+            $globalAuthorization = $this->outboundSnapshotAuthorization(
+                (string) $dispatch->provider_key,
+                $metadata,
+            );
+            if (! $globalAuthorization['allowed']) {
+                return $globalAuthorization;
+            }
         }
-        if (! $this->evoProviderReadyForLive($settings, $environment === 'production')
-            || ! $this->nacProviderReadyForLive($settings, $environment === 'production')) {
-            return $this->executionBlock('outbound_provider_set_not_ready', 'Evo ve NAC provider readiness birlikte geçerli değil; outbound fail-closed tutuldu.');
+        $providerReady = $persistentLocalAcceptance
+            ? ($dispatch->provider_key === 'evo_whatsapp'
+                ? $this->evoProviderReadyForLive($settings, false)
+                : $this->nacProviderReadyForLive($settings, false))
+            : ($this->evoProviderReadyForLive($settings, $environment === 'production')
+                && $this->nacProviderReadyForLive($settings, $environment === 'production'));
+        if (! $providerReady) {
+            return $this->executionBlock('outbound_provider_set_not_ready', 'Dispatch provider readiness geçmedi; outbound fail-closed tutuldu.');
         }
 
         if ($manualE2E) {
@@ -8712,10 +9177,26 @@ SQL,
             return ['allowed' => true, 'code' => null, 'message' => null];
         }
 
-        if ($environment !== 'production') {
+        if ($persistentLocalAcceptance) {
+            $createdAt = $dispatch->created_at instanceof \DateTimeInterface
+                ? CarbonImmutable::instance($dispatch->created_at)
+                : CarbonImmutable::parse((string) $dispatch->created_at);
+            $localAuthorization = $this->localManualAcceptanceTupleAuthorization(
+                (string) $dispatch->provider_key,
+                (string) $dispatch->channel,
+                (string) $dispatch->message_type,
+                (string) $dispatch->target_phone,
+                $metadata,
+                $createdAt,
+                $dispatch->bodyForProvider(),
+                $settings,
+            );
+            if (! $localAuthorization['allowed']) {
+                return $localAuthorization;
+            }
+        } elseif ($environment !== 'production') {
             return $this->executionBlock('non_production_normal_outbound_blocked', 'Non-production ortamda normal operasyon outbound kapalı; yalnız exact Manual E2E permit kullanılabilir.');
-        }
-        if ($context->enabled()
+        } elseif ($context->enabled()
             || $context->activeRunId() !== null
             || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
             || ! (bool) ($settings['real_send_enabled'] ?? false)
@@ -8732,6 +9213,18 @@ SQL,
             || $releaseSha === null
             || ! hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha)) {
             return $this->executionBlock('outbound_worker_not_healthy', 'Normal outbound worker heartbeat current release ile eşleşmiyor.');
+        }
+        if ($persistentLocalAcceptance
+            && (($rawWorker['profile'] ?? null) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE
+                || ! hash_equals(
+                    (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? ''),
+                    (string) ($rawWorker['profile_fingerprint'] ?? ''),
+                )
+                || ! hash_equals(
+                    (string) ($settings['local_manual_acceptance_activated_at'] ?? ''),
+                    (string) ($rawWorker['activated_at'] ?? ''),
+                ))) {
+            return $this->executionBlock('outbound_worker_profile_mismatch', 'Normal outbound worker locked yerel profile ile eşleşmiyor.');
         }
         $currentOwner = trim((string) ($rawWorker['lock_owner'] ?? ''));
         $expectedOwnerHash = $currentOwner === '' ? '' : hash('sha256', $currentOwner);
@@ -8765,6 +9258,7 @@ SQL,
     {
         if ($this->executionMode($settings) !== self::OUTBOUND_EXECUTION_MODE_LOCAL
             || (bool) ($settings['manual_e2e_enabled'] ?? false)
+            || (bool) ($settings['local_manual_acceptance_enabled'] ?? false)
             || (bool) ($settings['real_send_enabled'] ?? false)
             || ! (bool) ($settings['queue_paused'] ?? true)
             || (bool) ($settings['ops_whatsapp_enabled'] ?? false)
@@ -8980,8 +9474,24 @@ SQL,
         CarbonImmutable $expiresAt,
     ): array {
         $releaseSha = $this->runtimeReleaseSha();
-        if ($this->runtimeEnvironment() !== 'production' || trim($lockOwner) === '' || $releaseSha === null) {
-            throw new ConflictHttpException('Normal outbound worker yalnız exact release SHA ile production ortamında kaydedilebilir.');
+        $settings = $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        $production = $this->runtimeEnvironment() === 'production';
+        $localAcceptance = $this->localManualAcceptanceIsCurrent($settings);
+        if (trim($lockOwner) === '' || $releaseSha === null) {
+            throw new ConflictHttpException('Normal outbound worker lock owner veya exact release SHA olmadan kaydedilemez.');
+        }
+        if (! $production && ! $localAcceptance) {
+            throw new ConflictHttpException('Normal outbound worker current production veya locked yerel manuel kabul profili olmadan kaydedilemez.');
+        }
+        if ($context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+            || $context->enabled()
+            || $context->activeRunId() !== null) {
+            throw new ConflictHttpException('Normal outbound worker frozen normal lifecycle dışında kaydedilemez.');
+        }
+        if (! $production && (! (bool) ($settings['real_send_enabled'] ?? false)
+            || (bool) ($settings['queue_paused'] ?? true))) {
+            throw new ConflictHttpException('Yerel manuel kabul worker real-send ve queue kapısı açık olmadan kaydedilemez.');
         }
 
         $now = CarbonImmutable::now();
@@ -8989,7 +9499,14 @@ SQL,
             'lock_owner' => $lockOwner,
             'process_id' => getmypid() ?: null,
             'release_sha' => $releaseSha,
-            'mode' => 'normal_live_worker',
+            'mode' => $localAcceptance ? 'local_manual_acceptance_worker' : 'normal_live_worker',
+            'profile' => $localAcceptance ? self::LOCAL_MANUAL_ACCEPTANCE_PROFILE : 'PRODUCTION_NORMAL_OUTBOUND',
+            'profile_fingerprint' => $localAcceptance
+                ? (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? '')
+                : null,
+            'activated_at' => $localAcceptance
+                ? (string) ($settings['local_manual_acceptance_activated_at'] ?? '')
+                : null,
             'started_at' => $startedAt->toIso8601String(),
             'heartbeat_at' => $now->toIso8601String(),
             'expires_at' => $expiresAt->toIso8601String(),
@@ -9004,7 +9521,8 @@ SQL,
         $lease = $this->outboundWorkerLease();
         if ($lease === null
             || ($lease['lock_owner'] ?? null) !== $lockOwner
-            || ($lease['release_sha'] ?? null) !== $this->runtimeReleaseSha()) {
+            || ($lease['release_sha'] ?? null) !== $this->runtimeReleaseSha()
+            || ! $this->outboundWorkerLeaseMatchesCurrentScope($lease, $this->settings())) {
             return false;
         }
 
@@ -9028,20 +9546,40 @@ SQL,
 
     public function normalOutboundWorkerMayProcess(string $lockOwner): bool
     {
+        return (bool) ($this->outboundWorkerProcessingScope($lockOwner)['allowed'] ?? false);
+    }
+
+    /**
+     * Internal sender scope. Raw allowlist values never leave the worker
+     * process and are not included in public payloads.
+     *
+     * @return array{allowed:bool,profile:string|null,created_after:string|null,allowlisted_phones:array<int,string>}
+     */
+    public function outboundWorkerProcessingScope(string $lockOwner): array
+    {
         $lease = $this->outboundWorkerLease();
         $settings = $this->settings();
-        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if ($lease === null
+            || trim($lockOwner) === ''
+            || ! hash_equals((string) ($lease['lock_owner'] ?? ''), trim($lockOwner))
+            || ! hash_equals((string) ($lease['release_sha'] ?? ''), (string) $this->runtimeReleaseSha())
+            || ! $this->outboundWorkerLeaseMatchesCurrentScope($lease, $settings)) {
+            return ['allowed' => false, 'profile' => null, 'created_after' => null, 'allowlisted_phones' => []];
+        }
 
-        return $lease !== null
-            && ($lease['lock_owner'] ?? null) === $lockOwner
-            && ($lease['release_sha'] ?? null) === $this->runtimeReleaseSha()
-            && $this->runtimeEnvironment() === 'production'
-            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE
-            && (bool) ($settings['real_send_enabled'] ?? false)
-            && ! (bool) ($settings['queue_paused'] ?? true)
-            && $context->phase() === self::MANUAL_E2E_PHASE_FROZEN
-            && ! $context->enabled()
-            && $context->activeRunId() === null;
+        if (($lease['profile'] ?? null) === self::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
+            return [
+                'allowed' => true,
+                'profile' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
+                'created_after' => (string) ($settings['local_manual_acceptance_activated_at'] ?? ''),
+                'allowlisted_phones' => array_values(array_filter(array_map(
+                    fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+                    (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+                ))),
+            ];
+        }
+
+        return ['allowed' => true, 'profile' => 'PRODUCTION_NORMAL_OUTBOUND', 'created_after' => null, 'allowlisted_phones' => []];
     }
 
     /**
@@ -9050,6 +9588,39 @@ SQL,
     public function outboundWorkerLeaseStatus(): array
     {
         return $this->outboundWorkerLeasePublicPayload($this->outboundWorkerLease(), CarbonImmutable::now());
+    }
+
+    /**
+     * @param  array<string, mixed>  $lease
+     * @param  array<string, mixed>  $settings
+     */
+    private function outboundWorkerLeaseMatchesCurrentScope(array $lease, array $settings): bool
+    {
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if ($context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+            || $context->enabled()
+            || $context->activeRunId() !== null
+            || ! (bool) ($settings['messaging_enabled'] ?? false)
+            || ! (bool) ($settings['real_send_enabled'] ?? false)
+            || (bool) ($settings['queue_paused'] ?? true)) {
+            return false;
+        }
+
+        if (($lease['profile'] ?? null) === self::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
+            return $this->localManualAcceptanceIsCurrent($settings)
+                && hash_equals(
+                    (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? ''),
+                    (string) ($lease['profile_fingerprint'] ?? ''),
+                )
+                && hash_equals(
+                    (string) ($settings['local_manual_acceptance_activated_at'] ?? ''),
+                    (string) ($lease['activated_at'] ?? ''),
+                );
+        }
+
+        return ($lease['profile'] ?? null) === 'PRODUCTION_NORMAL_OUTBOUND'
+            && $this->runtimeEnvironment() === 'production'
+            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LIVE;
     }
 
     /**
@@ -9071,7 +9642,12 @@ SQL,
         if ($lease === null) {
             return [
                 'state' => 'none',
+                'process_id' => null,
                 'release_sha' => null,
+                'mode' => null,
+                'profile' => null,
+                'profile_fingerprint' => null,
+                'activated_at' => null,
                 'started_at' => null,
                 'heartbeat_at' => null,
                 'expires_at' => null,
@@ -9086,7 +9662,12 @@ SQL,
 
         return [
             'state' => $stale ? 'stale' : 'active',
+            'process_id' => is_numeric($lease['process_id'] ?? null) ? (int) $lease['process_id'] : null,
             'release_sha' => is_scalar($lease['release_sha'] ?? null) ? (string) $lease['release_sha'] : null,
+            'mode' => is_scalar($lease['mode'] ?? null) ? (string) $lease['mode'] : null,
+            'profile' => is_scalar($lease['profile'] ?? null) ? (string) $lease['profile'] : null,
+            'profile_fingerprint' => is_scalar($lease['profile_fingerprint'] ?? null) ? (string) $lease['profile_fingerprint'] : null,
+            'activated_at' => $this->parseWorkerLeaseDate($lease['activated_at'] ?? null)?->toIso8601String(),
             'started_at' => $this->parseWorkerLeaseDate($lease['started_at'] ?? null)?->toIso8601String(),
             'heartbeat_at' => $heartbeat?->toIso8601String(),
             'expires_at' => $expiresAt?->toIso8601String(),

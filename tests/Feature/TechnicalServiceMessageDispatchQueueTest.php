@@ -4300,6 +4300,172 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         );
     }
 
+    public function test_persistent_local_manual_acceptance_sends_only_new_allowlisted_normal_dispatches_once(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake(fn ($request) => str_contains($request->url(), 'nac.example.test')
+            ? Http::response(['err' => null, 'data' => ['pkgID' => 7654321]], 200)
+            : Http::response(['messageId' => 'EVO-LOCAL-ACCEPTANCE-1'], 200));
+
+        $historical = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Activation öncesi audit mesajı.'],
+            'idempotency_key' => 'local-acceptance-historical',
+        ]);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $historical->status);
+
+        [$settings, $owner, $profile] = $this->configureLocalManualAcceptanceContext();
+        $this->assertTrue($profile['enabled']);
+        $this->assertSame(TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE, $profile['profile']);
+        $this->assertFalse((bool) data_get($settings->manualE2ELifecyclePayload(), 'manual_e2e.enabled'));
+
+        $whatsapp = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => "EMAKS Prime montaj talebiniz alındı.\nhttp://10.0.28.64:8000/mount-request/test"],
+            'idempotency_key' => 'local-acceptance-whatsapp',
+        ]);
+        $duplicate = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => "EMAKS Prime montaj talebiniz alındı.\nhttp://10.0.28.64:8000/mount-request/test"],
+            'idempotency_key' => 'local-acceptance-whatsapp',
+        ]);
+        $sms = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Montaj talebiniz alındı: http://10.0.28.64:8000/mount-request/test'],
+            'idempotency_key' => 'local-acceptance-sms',
+        ]);
+        $outsideAllowlist = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905550000000',
+            'payload' => ['body' => 'Allowlist dışı mesaj.'],
+            'idempotency_key' => 'local-acceptance-outside',
+        ]);
+        $unsafeLink = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Yanlış origin: https://production.example.test/mount-request/test'],
+            'idempotency_key' => 'local-acceptance-unsafe-link',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $whatsapp->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $sms->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED, $duplicate->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $outsideAllowlist->status);
+        $this->assertSame('local_manual_acceptance_recipient_blocked', $outsideAllowlist->last_error_code);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $unsafeLink->status);
+        $this->assertSame('local_manual_acceptance_link_host_blocked', $unsafeLink->last_error_code);
+        $this->assertNull(data_get($whatsapp->metadata, 'expected_body_token'));
+        $this->assertSame(
+            TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
+            data_get($whatsapp->metadata, 'local_manual_acceptance_profile_id'),
+        );
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ]);
+        $this->assertSame(2, $result['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $whatsapp->fresh()->status);
+        $this->assertSame('EVO-LOCAL-ACCEPTANCE-1', $whatsapp->fresh()->provider_message_id);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $sms->fresh()->status);
+        $this->assertSame('7654321', $sms->fresh()->provider_message_id);
+        $this->assertSame(0, $historical->fresh()->attempt_count);
+        $this->assertSame(0, $outsideAllowlist->fresh()->attempt_count);
+        $this->assertSame(0, $unsafeLink->fresh()->attempt_count);
+        Http::assertSentCount(2);
+
+        try {
+            $settings->update(['message_types' => ['mount_request_created_customer' => ['real_send_allowed' => false]]]);
+            $this->fail('Aktif yerel manuel kabul profili mutation kabul etmemeliydi.');
+        } catch (ConflictHttpException) {
+            $this->assertTrue($settings->localManualAcceptancePayload()['enabled']);
+        }
+
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+        $restartOwner = 'local-acceptance-restart-'.Str::lower(Str::random(12));
+        $restartLease = $settings->registerOutboundWorkerLease(
+            $restartOwner,
+            now()->toImmutable(),
+            now()->addMinute()->toImmutable(),
+        );
+        $this->assertSame(TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE, $restartLease['profile']);
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($restartOwner));
+        $this->assertFalse($settings->clearOutboundWorkerLease($owner));
+        $this->assertTrue($settings->clearOutboundWorkerLease($restartOwner));
+        $disabled = $settings->deactivateLocalManualAcceptance('Focused test kill-switch close.');
+        $this->assertFalse($disabled['enabled']);
+        $suppressed = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Kill-switch sonrası mesaj gönderilmemeli.'],
+            'idempotency_key' => 'local-acceptance-disabled',
+        ]);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $suppressed->status);
+        $this->assertSame(2, Http::recorded()->count());
+    }
+
+    public function test_local_manual_acceptance_profile_is_code_owned_and_fails_closed_without_readiness(): void
+    {
+        Http::fake();
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+
+        try {
+            $settings->update(['local_manual_acceptance_enabled' => true]);
+            $this->fail('Generic settings local manual acceptance profilini açamamalıydı.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('local_manual_acceptance_enabled', $exception->errors());
+        }
+
+        $settings->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'manual_e2e_allowlisted_phones' => ['905000000001'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'message_types' => [
+                'mount_request_created_customer' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
+            ],
+        ]);
+
+        $this->expectException(ConflictHttpException::class);
+        try {
+            $settings->activateLocalManualAcceptance('Missing provider readiness must fail closed.');
+        } finally {
+            $this->assertFalse($settings->localManualAcceptancePayload()['enabled']);
+            Http::assertNothingSent();
+        }
+    }
+
     private function enqueueDispatch(array $overrides = []): TechnicalServiceMessageDispatch
     {
         $metadata = is_array($overrides['metadata'] ?? null) ? $overrides['metadata'] : [];
@@ -4479,6 +4645,85 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->activateGlobalLiveForMessagingAdapterFixture($settings, $admin);
 
         return $settings;
+    }
+
+    /**
+     * @return array{TechnicalServiceMessagingSettingsService,string,array<string,mixed>}
+     */
+    private function configureLocalManualAcceptanceContext(): array
+    {
+        config(['app.release_sha' => 'bc3bc87ea4f6dde12809610ffdc86a1b5ebccd20']);
+        $this->actingAs($this->admin());
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        $settings->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'shared_test_phone' => '905000000001',
+            'manual_e2e_allowlisted_phones' => ['905000000001', '905000000002'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'max_auto_retries' => 0,
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'local_manual_acceptance',
+                'delay' => 0,
+                'link_preview' => false,
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
+                'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
+            ],
+            'message_types' => [
+                'mount_request_created_customer' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        foreach ([
+            [TechnicalServiceMessagingSettingsService::PAGE_CODE, TechnicalServiceMessagingSettingsService::ROOT_KEY],
+            [TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY],
+        ] as [$pageCode, $root]) {
+            $page = PageConfig::query()->where('page_code', $pageCode)->firstOrFail();
+            $layout = (array) $page->layout_json;
+            foreach (['evo_whatsapp', 'nac_sms'] as $provider) {
+                Arr::set($layout, $root.'.providers.'.$provider, [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'test_send_allowed' => true,
+                    'notes' => 'Fake local manual acceptance provider.',
+                ]);
+            }
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
+        $settings->saveEvoWhatsappCredentials(['api_key' => 'local-evo-test-key']);
+        $settings->saveNacSmsCredentials(['username' => 'local-nac-user', 'password' => 'local-nac-pass']);
+        $profile = $settings->activateLocalManualAcceptance('Focused allowlisted local delivery acceptance.');
+        $this->assertTrue((bool) $profile['enabled'], json_encode($profile, JSON_THROW_ON_ERROR));
+        $owner = 'local-acceptance-worker-'.Str::lower(Str::random(12));
+        $settings->registerOutboundWorkerLease(
+            $owner,
+            now()->toImmutable(),
+            now()->addMinute()->toImmutable(),
+        );
+
+        return [$settings, $owner, $profile];
     }
 
     private function activateProductionLiveQueueContext(): string
