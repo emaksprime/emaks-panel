@@ -2,6 +2,7 @@ import { Head } from '@inertiajs/react'
 import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
+import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult } from '@/components/technical-service/PendingPaymentLinkActions'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
@@ -3693,9 +3694,23 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleMountPaymentSend = async (paymentId: number | string, payload?: { resend_reason?: string | null }) => {
+  const handleMountPaymentSendContext = async (paymentId: number | string): Promise<PaymentLinkSendContext> => {
     if (!selectedId) {
-      return
+      throw new Error('Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.')
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/status`)
+
+    if (!response.payment) {
+      throw new Error('Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.')
+    }
+
+    return response.payment as PaymentLinkSendContext
+  }
+
+  const handleMountPaymentSend = async (paymentId: number | string, payload: PaymentLinkSendPayload): Promise<PaymentLinkSendResult> => {
+    if (!selectedId) {
+      throw new Error('Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.')
     }
 
     try {
@@ -3707,19 +3722,23 @@ export function TechnicalServiceOperationCenter() {
 
       if (!updatedRequest) {
         setExtraPaymentCreateError('Ödeme linki kuyruğa alındı ancak talep detayı güncellenemedi.')
-
-        return
+      } else {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
       }
 
-      preserveDetailScroll(() => {
-        setRequests((current) => current.map((request) => (
-          request.id === updatedRequest.id ? updatedRequest : request
-        )))
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
-      })
+      return {
+        message: response.message ?? null,
+        payment: response.payment ?? null,
+        idempotent_replay: response.idempotent_replay === true,
+      }
     } catch (caught) {
       setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme linki mesaj kuyruğuna alınamadı.')
 
@@ -6373,6 +6392,7 @@ export function TechnicalServiceOperationCenter() {
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
                     onMountPaymentCancel={handleMountPaymentCancel}
                     onMountPaymentSync={handleMountPaymentSync}
+                    onMountPaymentSendContext={handleMountPaymentSendContext}
                     onMountPaymentSend={handleMountPaymentSend}
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}

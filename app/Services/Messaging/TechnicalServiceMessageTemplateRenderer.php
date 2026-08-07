@@ -227,18 +227,19 @@ class TechnicalServiceMessageTemplateRenderer
             }
         }
 
-        if ($messageType === 'payment_link_customer') {
+        if (in_array($messageType, ['payment_link_customer', 'part_fee_payment_link_customer'], true)) {
             $this->appendCustomerFacingLabelBlockers($rendered, $context, $blockers);
 
             if ($this->blank($context['payment_link'] ?? null) && $this->blank($context['payment_link_sms'] ?? null)) {
                 $blockers[] = 'Ödeme linki mesajı için payment_link zorunlu.';
             }
 
-            if (in_array($payerState, [
-                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
-                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL,
-            ], true)) {
-                $blockers[] = 'Şirket tahsil etmişken müşteriye ödeme linki mesajı gönderilemez.';
+            $selectedPaymentId = (int) ($context['selected_payment_id'] ?? 0);
+            $selectedPaymentStatus = strtolower(trim((string) ($context['selected_payment_status'] ?? '')));
+            if ($selectedPaymentId <= 0) {
+                $blockers[] = 'Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.';
+            } elseif ($selectedPaymentStatus !== 'pending') {
+                $blockers[] = 'Seçilen ödeme bağlantısı aktif bekleyen durumda değil; gönderilemez.';
             }
         }
 

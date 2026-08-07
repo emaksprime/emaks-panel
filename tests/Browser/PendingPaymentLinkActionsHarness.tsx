@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { PendingPaymentLinkActions } from '../../resources/js/components/technical-service/PendingPaymentLinkActions'
-import type { PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from '../../resources/js/components/technical-service/PendingPaymentLinkActions'
+import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload } from '../../resources/js/components/technical-service/PendingPaymentLinkActions'
+import type { PaymentLinkSendContext, PaymentLinkSendPayload, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from '../../resources/js/components/technical-service/PendingPaymentLinkActions'
 import '../../resources/css/app.css'
 
 type HarnessState = {
@@ -9,6 +9,8 @@ type HarnessState = {
   sendCount: Record<string, number>
   checkCount: Record<string, number>
   cancelCount: Record<string, number>
+  modalRequestCount: number
+  modalPayloads: PaymentLinkSendPayload[]
 }
 
 declare global {
@@ -25,6 +27,8 @@ const state: HarnessState = {
   sendCount: {},
   checkCount: {},
   cancelCount: {},
+  modalRequestCount: 0,
+  modalPayloads: [],
 }
 
 window.__pendingPaymentDomState = state
@@ -32,7 +36,35 @@ window.__pendingPaymentDomState = state
 function Harness() {
   const [feedback, setFeedback] = useState<Record<string, string>>({})
   const [sendBusy, setSendBusy] = useState<Record<string, boolean>>({})
+  const [modalPayment, setModalPayment] = useState<PaymentLinkSendContext | null>({
+    id: 195,
+    request_code: 'MRN-DOM-SELECTED-PAYMENT',
+    customer_name: 'Test Müşteri',
+    amount: 3000,
+    amount_label: '3.000,00 TL',
+    currency: 'TRY',
+    status: 'pending',
+    status_label: 'Bekliyor',
+    purpose: 'service_payment',
+    purpose_label: 'Ek servis',
+    canonical_url: canonicalUrl,
+    payment_url: canonicalUrl,
+    copy_url: canonicalUrl,
+    link_token: 'dom-acceptance-token',
+    message_target_phone_masked: '9053****633',
+    message_target_mode: 'test',
+    message_send_count: 0,
+    can_open: true,
+    can_copy: true,
+    can_send: true,
+    can_check: true,
+    can_cancel: true,
+  })
+  const [modalBusy, setModalBusy] = useState(false)
+  const [modalRequestCount, setModalRequestCount] = useState(0)
+  const [modalPaymentId, setModalPaymentId] = useState<number | string | null>(null)
   const sendLocks = useRef(new Set<string>())
+  const modalRequestLock = useRef(false)
   const payment: PendingPaymentLinkActionPayment = {
     id: 192,
     status: 'pending',
@@ -61,6 +93,24 @@ function Harness() {
     state.sendCount[surface] = (state.sendCount[surface] ?? 0) + 1
     setSendBusy((current) => ({ ...current, [surface]: true }))
     setFeedback((current) => ({ ...current, [surface]: 'Ödeme bağlantısı müşteriye gönderim kuyruğuna alındı.' }))
+  }
+  const sendSelectedPayment = () => {
+    if (!modalPayment || modalRequestLock.current) {
+      return
+    }
+
+    modalRequestLock.current = true
+    const payload = canonicalPaymentLinkSendPayload(
+      modalPayment,
+      '95f29308-3626-4a27-9e8c-b85c650269b4',
+      null,
+    )
+
+    state.modalRequestCount += 1
+    state.modalPayloads.push(payload)
+    setModalRequestCount((current) => current + 1)
+    setModalPaymentId(payload.payment_id)
+    setModalBusy(true)
   }
 
   return (
@@ -120,6 +170,67 @@ function Harness() {
           onCancel={() => undefined}
         />
       </section>
+      <section id="payment-send-modal-controls" className="flex gap-2">
+        <button
+          type="button"
+          data-testid="open-pending-payment-send-modal"
+          onClick={() => {
+            modalRequestLock.current = false
+            setModalBusy(false)
+            setModalPayment({
+              id: 195,
+              request_code: 'MRN-DOM-SELECTED-PAYMENT',
+              customer_name: 'Test Müşteri',
+              amount: 3000,
+              amount_label: '3.000,00 TL',
+              currency: 'TRY',
+              status: 'pending',
+              status_label: 'Bekliyor',
+              purpose: 'service_payment',
+              purpose_label: 'Ek servis',
+              canonical_url: canonicalUrl,
+              link_token: 'dom-acceptance-token',
+              message_target_phone_masked: '9053****633',
+              message_target_mode: 'test',
+              message_send_count: 0,
+            })
+          }}
+        >Pending modal</button>
+        <button
+          type="button"
+          data-testid="open-paid-payment-send-modal"
+          onClick={() => setModalPayment({
+            id: 192,
+            request_code: 'MRN-DOM-SELECTED-PAYMENT',
+            customer_name: 'Test Müşteri',
+            amount: 3000,
+            amount_label: '3.000,00 TL',
+            currency: 'TRY',
+            status: 'paid',
+            status_label: 'Ödendi',
+            purpose: 'manual_mount_payment',
+            purpose_label: 'Genel ek tahsilat',
+            canonical_url: 'https://sandbox.iyzi.link/paid-token',
+            link_token: 'paid-token',
+            message_target_phone_masked: '9053****633',
+            message_target_mode: 'test',
+            message_send_count: 1,
+          })}
+        >Paid modal</button>
+      </section>
+      <PaymentLinkSendDialog
+        open={modalPayment !== null}
+        payment={modalPayment}
+        requestReference="MRN-DOM-SELECTED-PAYMENT"
+        resendReason=""
+        busy={modalBusy}
+        resultMessage={modalBusy ? '3.000,00 TL tutarındaki Ek servis ödeme bağlantısı müşteriye gönderim kuyruğuna alındı.' : null}
+        onResendReasonChange={() => undefined}
+        onConfirm={sendSelectedPayment}
+        onClose={() => setModalPayment(null)}
+      />
+      <output data-testid="modal-network-request-count" className="sr-only">{modalRequestCount}</output>
+      <output data-testid="modal-payment-id" className="sr-only">{modalPaymentId ?? ''}</output>
     </main>
   )
 }

@@ -633,7 +633,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
 
         $response = $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link");
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            );
 
         $response->assertOk()
             ->assertJsonPath('dispatches.queued', 2);
@@ -675,6 +678,246 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_send_requires_exact_payment_id(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture();
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", [
+                'send_request_id' => Str::uuid()->toString(),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['payment_id']);
+
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_distinct_pending_payment_is_sendable_when_another_payment_is_paid(): void
+    {
+        [$actor, $request, $pending] = $this->paymentLinkFixture([
+            'amount' => 1000,
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'service_payment',
+                'charge_type' => 'service_payment',
+            ],
+        ]);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $pending->technical_service_mount_session_id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'paid-distinct-obligation',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/mount-payment/paid-distinct-obligation',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'manual_mount_payment',
+                'purpose' => 'manual_mount_payment',
+                'charge_type' => 'manual_mount_payment',
+            ],
+        ]);
+
+        $response = $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$pending->id}/send-link",
+                $this->paymentLinkSendPayload($pending),
+            )
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2)
+            ->assertJsonPath('dispatches.blocked', 0);
+
+        $this->assertStringContainsString('1.000,00 TL tutarındaki Ek servis', (string) $response->json('message'));
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('metadata->payment_id', $pending->id)
+            ->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_paid_selected_payment_creates_no_dispatch(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture([
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'paid_at' => now(),
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.payment.0', 'Bu ödeme zaten tahsil edildi; bağlantı yeniden gönderilemez.');
+
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+    }
+
+    public function test_cancelled_selected_payment_creates_no_dispatch(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture([
+            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.payment.0', 'Bu ödeme bağlantısı iptal edildi; yeniden gönderilemez.');
+
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+    }
+
+    public function test_ambiguous_payment_identity_fails_before_dispatch_creation(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture();
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", [
+                'payment_id' => $payment->id + 1,
+                'send_request_id' => Str::uuid()->toString(),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.payment_id.0', 'Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.');
+
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+    }
+
+    public function test_send_uses_canonical_amount_purpose_and_url(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture([
+            'amount' => 3000,
+            'payment_url' => 'https://pay.example.test/mount-payment/canonical-selected-link',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'service_payment',
+                'charge_type' => 'service_payment',
+            ],
+        ]);
+
+        $response = $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                [
+                    ...$this->paymentLinkSendPayload($payment),
+                    'amount' => 1,
+                    'purpose' => 'manual_mount_payment',
+                    'payment_url' => 'https://evil.example.test/not-authority',
+                ],
+            )
+            ->assertOk()
+            ->assertJsonPath('payment.id', $payment->id)
+            ->assertJsonPath('payment.purpose', 'service_payment')
+            ->assertJsonPath('payment.purpose_label', 'Ek servis')
+            ->assertJsonPath('payment.link_token', 'canonical-selected-link');
+
+        $this->assertStringContainsString('3.000,00 TL tutarındaki Ek servis', (string) $response->json('message'));
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('metadata->payment_id', $payment->id)
+            ->get();
+        $this->assertCount(2, $dispatches);
+        foreach ($dispatches as $dispatch) {
+            $body = (string) data_get($dispatch->request_payload, 'body');
+            $this->assertStringContainsString('3.000,00 TL', $body);
+            $this->assertStringContainsString('https://pay.example.test/mount-payment/canonical-selected-link', $body);
+            $this->assertStringNotContainsString('evil.example.test', $body);
+            $this->assertSame($payment->id, data_get($dispatch->metadata, 'payment_id'));
+            $this->assertSame('service_payment', data_get($dispatch->metadata, 'payment_purpose'));
+        }
+    }
+
+    public function test_duplicate_send_creates_one_dispatch_per_channel(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture();
+        $sendRequestId = Str::uuid()->toString();
+        $payload = $this->paymentLinkSendPayload($payment, null, $sendRequestId);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", $payload)
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2);
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", $payload)
+            ->assertOk()
+            ->assertJsonPath('idempotent_replay', true);
+
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('channel', 'whatsapp')
+            ->count());
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('channel', 'sms')
+            ->count());
+    }
+
+    public function test_resend_requires_reason(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture();
+
+        $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
+            ->assertOk();
+        $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['resend_reason']);
+
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+    }
+
+    public function test_duplicate_resend_creates_one_dispatch_per_channel(): void
+    {
+        [$actor, $request, $payment] = $this->paymentLinkFixture();
+        $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
+            ->assertOk();
+
+        $resendRequestId = Str::uuid()->toString();
+        $resend = $this->paymentLinkSendPayload($payment, 'Müşteri yeniden gönderim istedi.', $resendRequestId);
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", $resend)
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2);
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", $resend)
+            ->assertOk()
+            ->assertJsonPath('idempotent_replay', true);
+
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('channel', 'whatsapp')
+            ->count());
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('channel', 'sms')
+            ->count());
+    }
+
     public function test_payment_link_send_uses_customer_test_recipient_in_test_mode(): void
     {
         Http::fake();
@@ -708,7 +951,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
             ->assertOk()
             ->assertJsonPath('dispatches.queued', 2);
 
@@ -748,7 +994,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ]);
 
             $this->actingAs($actor)
-                ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+                ->postJson(
+                    "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                    $this->paymentLinkSendPayload($payment),
+                )
                 ->assertUnprocessable()
                 ->assertJsonValidationErrors(['payment']);
         }
@@ -789,7 +1038,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
             ->assertOk()
             ->assertJsonPath('dispatches.queued', 2)
             ->assertJsonPath('dispatches.blocked', 0);
@@ -859,7 +1111,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->assertJsonPath('request.sale_and_payment.mount_payments.latest.message_send_count', 0);
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
             ->assertOk()
             ->assertJsonPath('dispatches.queued', 2);
 
@@ -925,7 +1180,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertNotNull($response->json('request.sale_and_payment.customer_charges.latest.last_message_sent_at'));
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['resend_reason']);
 
@@ -966,7 +1224,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
             ->assertOk()
             ->assertJsonPath('dispatches.queued', 2)
             ->assertJsonPath('dispatches.blocked', 0);
@@ -995,12 +1256,16 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         ]);
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link",
+                $this->paymentLinkSendPayload($payment),
+            )
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['resend_reason']);
 
         $this->actingAs($actor)
             ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", [
+                ...$this->paymentLinkSendPayload($payment),
                 'resend_reason' => 'Müşteri açıkça yeniden gönderim istedi.',
             ])
             ->assertOk()
@@ -2119,6 +2384,63 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     private function admin(): User
     {
         return User::factory()->create(['role_code' => 'admin']);
+    }
+
+    /** @return array{payment_id:int,send_request_id:string,resend_reason:string|null} */
+    private function paymentLinkSendPayload(
+        TechnicalServiceMountPayment $payment,
+        ?string $resendReason = null,
+        ?string $sendRequestId = null,
+    ): array {
+        return [
+            'payment_id' => (int) $payment->id,
+            'send_request_id' => $sendRequestId ?? Str::uuid()->toString(),
+            'resend_reason' => $resendReason,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $paymentOverrides
+     * @param  array<string, mixed>  $requestOverrides
+     * @return array{0:User,1:TechnicalServiceRequest,2:TechnicalServiceMountPayment}
+     */
+    private function paymentLinkFixture(array $paymentOverrides = [], array $requestOverrides = []): array
+    {
+        Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
+        $actor = $this->admin();
+        $this->configureGuardedLiveMessaging([
+            'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            'part_fee_payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SELECTED-PAYMENT-'.Str::upper(Str::random(6)),
+            'customer_phone' => '05372081633',
+            ...$requestOverrides,
+        ]);
+        $session = $this->mountSession('SELECTED-PAYMENT-'.Str::upper(Str::random(6)));
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $rawPayload = [
+            'source' => 'operation_customer_charge',
+            'purpose' => 'service_payment',
+            'charge_type' => 'service_payment',
+            ...((array) ($paymentOverrides['raw_payload'] ?? [])),
+        ];
+        unset($paymentOverrides['raw_payload']);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'selected-payment-'.Str::lower(Str::random(8)),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1000,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/mount-payment/selected-payment-link',
+            'raw_payload' => $rawPayload,
+            ...$paymentOverrides,
+        ]);
+
+        return [$actor, $request, $payment];
     }
 
     /**

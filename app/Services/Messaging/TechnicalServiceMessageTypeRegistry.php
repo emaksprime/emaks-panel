@@ -430,7 +430,8 @@ class TechnicalServiceMessageTypeRegistry
             'payment_link_customer',
             'part_fee_payment_link_customer' => [
                 'requires_payment_link' => true,
-                'block_if_company_collected' => true,
+                'requires_selected_payment_id' => true,
+                'requires_selected_payment_status' => 'pending',
             ],
             'customer_pays_technician_notice' => [
                 'requires_customer_pays_technician' => true,

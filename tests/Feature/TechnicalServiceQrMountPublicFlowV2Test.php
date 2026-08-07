@@ -35,6 +35,7 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -870,6 +871,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         config([
             'services.partner_portal.public_url' => 'http://10.0.0.50:8000',
             'app.url' => 'http://127.0.0.1:8000',
+            'inertia.ssr.enabled' => false,
         ]);
         $actor = User::factory()->create(['role_code' => 'admin']);
         $request = $this->createRequestWithMrn('MRN-URL-GUARD-001');
@@ -889,7 +891,10 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         ]);
 
         $this->actingAs($actor)
-            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link", [
+                'payment_id' => $payment->id,
+                'send_request_id' => Str::uuid()->toString(),
+            ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['payment']);
 

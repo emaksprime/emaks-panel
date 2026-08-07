@@ -6,8 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import { PendingPaymentLinkActions, canonicalPendingPaymentUrl } from './PendingPaymentLinkActions'
-import type { PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
+import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
+import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
@@ -152,7 +152,8 @@ type ServiceRequestDetailsProps = {
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
-  onMountPaymentSend?: (paymentId: number | string, payload?: { resend_reason?: string | null }) => void | Promise<void>
+  onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
+  onMountPaymentSend?: (paymentId: number | string, payload: PaymentLinkSendPayload) => Promise<PaymentLinkSendResult | void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
@@ -517,6 +518,14 @@ const parseNumericInput = (value: string): number | null => {
   const parsed = Number(normalized)
 
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+const createPaymentLinkSendRequestId = (): string => {
+  if (!globalThis.crypto?.randomUUID) {
+    throw new Error('Güvenli gönderim isteği kimliği oluşturulamadı.')
+  }
+
+  return globalThis.crypto.randomUUID()
 }
 
 const canonicalExtraPaymentPurpose = (value: string | null | undefined): string => {
@@ -1536,6 +1545,7 @@ export function ServiceRequestDetails({
   onExtraMountPaymentCreate,
   onMountPaymentCancel,
   onMountPaymentSync,
+  onMountPaymentSendContext,
   onMountPaymentSend,
   onTechnicianEarningMessageCreate,
   onAssignSelectedTechnician,
@@ -1792,7 +1802,12 @@ export function ServiceRequestDetails({
   const [paymentCancelInFlight, setPaymentCancelInFlight] = useState<number | string | null>(null)
   const [paymentSyncInFlight, setPaymentSyncInFlight] = useState<number | string | null>(null)
   const [paymentSendInFlight, setPaymentSendInFlight] = useState<number | string | null>(null)
-  const [paymentResendReasons, setPaymentResendReasons] = useState<Record<string, string>>({})
+  const [paymentLinkSendTarget, setPaymentLinkSendTarget] = useState<PaymentLinkSendContext | null>(null)
+  const [paymentLinkSendRequestId, setPaymentLinkSendRequestId] = useState<string | null>(null)
+  const [paymentLinkSendResendReason, setPaymentLinkSendResendReason] = useState('')
+  const [paymentLinkSendResult, setPaymentLinkSendResult] = useState<string | null>(null)
+  const [paymentLinkSendError, setPaymentLinkSendError] = useState<string | null>(null)
+  const paymentLinkSendRequestLock = useRef<string | null>(null)
   const [terminalPaymentRetryReasons, setTerminalPaymentRetryReasons] = useState<Record<string, string>>({})
   const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
   const [paymentLinkCopyMessage, setPaymentLinkCopyMessage] = useState<string | null>(null)
@@ -2968,8 +2983,8 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (!onMountPaymentSend) {
-      setPaymentCancelError('Ödeme linki mesaj kuyruğu servisi bağlı değil.')
+    if (!onMountPaymentSend || !onMountPaymentSendContext) {
+      setPaymentCancelError('Ödeme linki gönderim bağlamı servisi bağlı değil.')
 
       return
     }
@@ -2978,13 +2993,72 @@ export function ServiceRequestDetails({
     setPaymentCancelError(null)
 
     try {
-      const resendReason = paymentResendReasons[String(payment.id)]?.trim() || null
+      const canonical = await onMountPaymentSendContext(payment.id)
 
-      await onMountPaymentSend(payment.id, { resend_reason: resendReason })
-      setRouteFeeEditorMessage('Ödeme bağlantısı müşteriye gönderim kuyruğuna alındı.')
+      if (!canonical.id
+        || !canonical.status
+        || Number(canonical.amount ?? 0) <= 0
+        || !(canonical.purpose_label || canonical.purpose)
+        || !canonicalPendingPaymentUrl(canonical)
+        || !canonical.customer_name
+        || !canonical.message_target_phone_masked) {
+        throw new Error('Gönderilecek ödeme kaydının kimlik, tutar, amaç, müşteri veya hedef bağlamı eksik.')
+      }
+
+      setPaymentLinkSendTarget(canonical)
+      setPaymentLinkSendRequestId(createPaymentLinkSendRequestId())
+      setPaymentLinkSendResendReason('')
+      setPaymentLinkSendResult(null)
+      setPaymentLinkSendError(null)
     } catch (caught) {
-      setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme linki müşteriye gönderilemedi.')
+      setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme linki gönderim bağlamı yüklenemedi.')
     } finally {
+      setPaymentSendInFlight(null)
+    }
+  }
+
+  const confirmPendingPaymentSend = async () => {
+    const payment = paymentLinkSendTarget
+    const requestId = paymentLinkSendRequestId
+
+    if (!payment || !requestId || !onMountPaymentSend) {
+      setPaymentLinkSendError('Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.')
+
+      return
+    }
+
+    const disabledReason = paymentLinkSendDisabledReason(payment)
+
+    if (disabledReason) {
+      setPaymentLinkSendError(disabledReason)
+
+      return
+    }
+
+    if (paymentLinkSendRequestLock.current === requestId) {
+      return
+    }
+
+    paymentLinkSendRequestLock.current = requestId
+    setPaymentSendInFlight(payment.id)
+    setPaymentLinkSendError(null)
+
+    try {
+      const result = await onMountPaymentSend(
+        payment.id,
+        canonicalPaymentLinkSendPayload(payment, requestId, paymentLinkSendResendReason.trim() || null),
+      )
+      const canonical = result?.payment ?? payment
+
+      setPaymentLinkSendTarget(canonical)
+      setPaymentLinkSendResult(result?.message ?? 'Ödeme bağlantısı müşteriye gönderim kuyruğuna alındı.')
+      setRouteFeeEditorMessage(result?.message ?? 'Ödeme bağlantısı müşteriye gönderim kuyruğuna alındı.')
+      setPaymentLinkSendRequestId(createPaymentLinkSendRequestId())
+      setPaymentLinkSendResendReason('')
+    } catch (caught) {
+      setPaymentLinkSendError(caught instanceof Error ? caught.message : 'Ödeme linki müşteriye gönderilemedi.')
+    } finally {
+      paymentLinkSendRequestLock.current = null
       setPaymentSendInFlight(null)
     }
   }
@@ -3022,28 +3096,15 @@ export function ServiceRequestDetails({
     const blocker = paymentLinkSendBlocker(payment)
     const paymentId = payment?.id ?? null
     const sendCount = Math.max(0, Number(payment?.message_send_count ?? 0))
-    const resendReason = paymentId === null ? '' : paymentResendReasons[String(paymentId)] ?? ''
-    const resendReasonBlocker = sendCount > 0 && resendReason.trim().length < 3
-      ? 'Yeniden gönderim nedeni en az 3 karakter olmalıdır.'
-      : null
 
     return (
       <div className="grid min-w-0 gap-2">
-        {sendCount > 0 && paymentId !== null ? (
-          <Input
-            className="h-8 min-w-[220px] flex-1"
-            value={resendReason}
-            onChange={(event) => setPaymentResendReasons((current) => ({ ...current, [String(paymentId)]: event.target.value }))}
-            placeholder="Yeniden gönderim nedeni"
-            aria-label="Ödeme linki yeniden gönderim nedeni"
-          />
-        ) : null}
         <PendingPaymentLinkActions
           payment={payment}
           surface={surface}
           copyFeedback={renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))}
           sendLabel={sendCount > 0 ? 'Yeniden gönder' : 'Linki gönder'}
-          sendDisabledReason={blocker ?? resendReasonBlocker}
+          sendDisabledReason={blocker}
           sendBusy={paymentSendInFlight === paymentId}
           checkBusy={paymentSyncInFlight === paymentId}
           cancelBusy={paymentCancelInFlight === paymentId}
@@ -3055,6 +3116,26 @@ export function ServiceRequestDetails({
       </div>
     )
   }
+  const paymentLinkSendDialog = (
+    <PaymentLinkSendDialog
+      open={paymentLinkSendTarget !== null}
+      payment={paymentLinkSendTarget}
+      requestReference={displayMrn || request.mrn}
+      resendReason={paymentLinkSendResendReason}
+      busy={paymentLinkSendTarget !== null && paymentSendInFlight === paymentLinkSendTarget.id}
+      resultMessage={paymentLinkSendResult}
+      errorMessage={paymentLinkSendError}
+      onResendReasonChange={setPaymentLinkSendResendReason}
+      onConfirm={confirmPendingPaymentSend}
+      onClose={() => {
+        setPaymentLinkSendTarget(null)
+        setPaymentLinkSendResult(null)
+        setPaymentLinkSendError(null)
+        setPaymentLinkSendResendReason('')
+        setPaymentLinkSendRequestId(null)
+      }}
+    />
+  )
   const handleCreatePaymentLinkAction = () => {
     scrollToNextActionSection('assignment')
 
@@ -5141,6 +5222,7 @@ export function ServiceRequestDetails({
         {partCreateModal}
         {partDecisionModal}
         {historyRecordModal}
+        {paymentLinkSendDialog}
 
         {serialQueryOpen ? (
           <section className="order-25 grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">

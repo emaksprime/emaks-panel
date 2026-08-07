@@ -29,6 +29,8 @@ use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
+use App\Services\Messaging\TechnicalServiceMessageIdempotencyService;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
@@ -63,6 +65,8 @@ class TechnicalServiceController extends Controller
         private readonly TechnicalServiceWorkflowService $workflowService,
         private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
         private readonly TechnicalServiceAppointmentMessageDispatchService $appointmentMessages,
+        private readonly TechnicalServiceMessagingSettingsService $messagingSettings,
+        private readonly TechnicalServiceMessageIdempotencyService $messageIdempotency,
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
         private readonly TechnicalServiceServiceVisitService $serviceVisitService,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlementService,
@@ -1261,14 +1265,25 @@ class TechnicalServiceController extends Controller
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
         $validated = $request->validate([
+            'payment_id' => ['required', 'integer', 'min:1'],
+            'send_request_id' => ['required', 'uuid'],
             'resend_reason' => ['nullable', 'string', 'min:3', 'max:500'],
         ]);
+        if ((int) $validated['payment_id'] !== (int) $payment->id) {
+            throw ValidationException::withMessages([
+                'payment_id' => 'Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.',
+            ]);
+        }
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $payment, $validated, $request): array {
-            $lockedPayment = TechnicalServiceMountPayment::query()->whereKey($payment->id)->lockForUpdate()->firstOrFail();
+            $lockedPayment = TechnicalServiceMountPayment::query()
+                ->whereKey($payment->id)
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
             if ($lockedPayment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
                 throw ValidationException::withMessages([
-                    'payment' => 'Yalnızca bekleyen ödeme linkleri müşteriye gönderilebilir.',
+                    'payment' => $this->paymentLinkSendStatusBlocker($lockedPayment->status),
                 ]);
             }
 
@@ -1290,6 +1305,27 @@ class TechnicalServiceController extends Controller
             }
 
             $rawPayload = is_array($lockedPayment->raw_payload) ? $lockedPayment->raw_payload : [];
+            $history = is_array($rawPayload['message_send_history'] ?? null) ? $rawPayload['message_send_history'] : [];
+            $sendRequestId = strtolower((string) $validated['send_request_id']);
+            $existingRequest = collect($history)->first(
+                fn (mixed $entry): bool => is_array($entry)
+                    && hash_equals(strtolower((string) ($entry['send_request_id'] ?? '')), $sendRequestId),
+            );
+            if (is_array($existingRequest)) {
+                return [
+                    'summary' => [
+                        'queued' => 0,
+                        'blocked' => 0,
+                        'suppressed' => 0,
+                        'duplicate_blocked' => 0,
+                        'idempotent_replay' => true,
+                        'dispatches' => [],
+                    ],
+                    'payment' => $lockedPayment,
+                    'idempotent_replay' => true,
+                ];
+            }
+
             $messageState = $this->workflowService->paymentLinkMessageState($lockedPayment);
             $sendCount = max((int) ($rawPayload['message_send_count'] ?? 0), $messageState['send_count']);
             $parentDispatch = $this->latestPaymentLinkDispatch($technicalServiceRequest, $lockedPayment);
@@ -1302,6 +1338,7 @@ class TechnicalServiceController extends Controller
 
             $amountLabel = number_format($amount, 2, ',', '.').' TL';
             $purpose = (string) ($rawPayload['purpose'] ?? $rawPayload['charge_type'] ?? '');
+            $purposeLabel = $this->paymentPurposeLabel($purpose);
             $partRequestId = $rawPayload['part_request_id'] ?? null;
             $isPartFeePayment = $partRequestId !== null || in_array($purpose, ['part_payment', 'service_and_part_payment'], true);
             $messageType = $isPartFeePayment ? 'part_fee_payment_link_customer' : 'payment_link_customer';
@@ -1316,6 +1353,10 @@ class TechnicalServiceController extends Controller
                     'payment_amount_formatted' => $amountLabel,
                     'customer_payment_amount' => $amount,
                     'customer_payment_amount_formatted' => $amountLabel,
+                    'selected_payment_id' => $lockedPayment->id,
+                    'selected_payment_status' => $lockedPayment->status,
+                    'payment_purpose' => $purpose,
+                    'payment_purpose_label' => $purposeLabel,
                 ],
                 $request->user(),
                 null,
@@ -1329,7 +1370,12 @@ class TechnicalServiceController extends Controller
                     'force_resend_reason' => $validated['resend_reason'] ?? null,
                     'metadata' => [
                         'payment_id' => $lockedPayment->id,
+                        'send_request_id' => $sendRequestId,
                         'part_request_id' => $partRequestId,
+                        'payment_status' => $lockedPayment->status,
+                        'payment_purpose' => $purpose,
+                        'payment_purpose_label' => $purposeLabel,
+                        'payment_amount' => $amount,
                         'payment_provider' => $lockedPayment->provider,
                         'manual_ui_send' => true,
                         'resend' => $isResend,
@@ -1342,8 +1388,8 @@ class TechnicalServiceController extends Controller
             );
 
             if (($summary['queued'] ?? 0) > 0) {
-                $history = is_array($rawPayload['message_send_history'] ?? null) ? $rawPayload['message_send_history'] : [];
                 $history[] = [
+                    'send_request_id' => $sendRequestId,
                     'send_count' => $nextSendCount,
                     'requested_at' => now()->toISOString(),
                     'requested_by_user_id' => $request->user()?->id,
@@ -1367,6 +1413,11 @@ class TechnicalServiceController extends Controller
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
                     'payment_id' => $lockedPayment->id,
+                    'send_request_id' => $sendRequestId,
+                    'payment_status' => $lockedPayment->status,
+                    'payment_purpose' => $purpose,
+                    'payment_purpose_label' => $purposeLabel,
+                    'payment_amount' => $amount,
                     'message_send_count' => ($summary['queued'] ?? 0) > 0 ? $nextSendCount : $sendCount,
                     'parent_dispatch_id' => $parentDispatch?->id,
                     'resend_reason' => $validated['resend_reason'] ?? null,
@@ -1374,17 +1425,26 @@ class TechnicalServiceController extends Controller
                 ],
             ]);
 
-            return ['summary' => $summary, 'payment' => $lockedPayment->refresh()];
+            return [
+                'summary' => $summary,
+                'payment' => $lockedPayment->refresh(),
+                'idempotent_replay' => false,
+            ];
         });
         $summary = $result['summary'];
         $payment = $result['payment'];
+        $paymentPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $purposeLabel = $this->paymentPurposeLabel((string) ($paymentPayload['purpose'] ?? $paymentPayload['charge_type'] ?? ''));
+        $amountLabel = number_format((float) $payment->amount, 2, ',', '.').' TL';
+        $idempotentReplay = (bool) ($result['idempotent_replay'] ?? false);
 
         return response()->json([
             'ok' => true,
-            'message' => $summary['queued'] > 0
-                ? 'Ödeme linki müşteriye gönderilmek üzere kuyruğa alındı.'
+            'message' => ($summary['queued'] > 0 || $idempotentReplay)
+                ? "{$amountLabel} tutarındaki {$purposeLabel} ödeme bağlantısı müşteriye gönderim kuyruğuna alındı."
                 : 'Ödeme linki mesajı oluşturulamadı; kuyruk/log detayını kontrol edin.',
             'dispatches' => $summary,
+            'idempotent_replay' => $idempotentReplay,
             'payment' => $this->mountPaymentResponse($payment->refresh()),
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]);
@@ -1535,6 +1595,10 @@ class TechnicalServiceController extends Controller
         $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
         $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
         $paymentUrl = trim((string) ($payment->payment_url ?? ''));
+        $paymentUrlPath = is_string(parse_url($paymentUrl, PHP_URL_PATH))
+            ? trim((string) parse_url($paymentUrl, PHP_URL_PATH), '/')
+            : '';
+        $linkToken = $paymentUrlPath !== '' ? basename($paymentUrlPath) : null;
         $providerMode = $payload['provider_mode']
             ?? $providerDecision['provider_mode']
             ?? ($payment->provider === 'fake' ? 'local' : ($payload['provider_environment'] ?? null));
@@ -1547,6 +1611,12 @@ class TechnicalServiceController extends Controller
             ?? $providerGateway['raw_status']
             ?? $payment->status;
         $messageState = $this->workflowService->paymentLinkMessageState($payment);
+        $messagingGlobal = (array) data_get($this->messagingSettings->workflowDispatchSnapshot(), 'global', []);
+        $testMode = (bool) ($messagingGlobal['test_mode_enabled'] ?? false);
+        $messageTargetMasked = $testMode
+            ? ($messagingGlobal['customer_test_phone_masked'] ?? null)
+            : $this->messageIdempotency->maskPhone($payload['customer_phone'] ?? $payment->technicalServiceRequest?->customer_phone);
+        $purpose = (string) ($payload['purpose'] ?? $payload['charge_type'] ?? '');
 
         return array_merge([
             'id' => $payment->id,
@@ -1559,10 +1629,16 @@ class TechnicalServiceController extends Controller
             'customer_phone' => $payload['customer_phone'] ?? $payment->technicalServiceRequest?->customer_phone,
             'customer_email' => $payload['customer_email'] ?? null,
             'status' => $payment->status,
+            'status_label' => $this->paymentStatusLabel($payment->status),
             'amount' => (float) $payment->amount,
+            'amount_label' => number_format((float) $payment->amount, 2, ',', '.').' '.($payment->currency === 'TRY' ? 'TL' : $payment->currency),
             'currency' => $payment->currency,
             'payment_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'link_token' => $linkToken,
+            'message_target_phone_masked' => $messageTargetMasked,
+            'message_target_mode' => $testMode ? 'test' : 'actual',
+            'message_channels' => ['whatsapp', 'sms'],
             'provider' => $payment->provider,
             'provider_mode' => $providerMode,
             'provider_transport' => $providerTransport,
@@ -1577,7 +1653,8 @@ class TechnicalServiceController extends Controller
             'provider_paid_confirmed_at' => $payment->provider_paid_confirmed_at?->toISOString(),
             'amount_source' => $payload['amount_source'] ?? null,
             'source' => $payload['source'] ?? null,
-            'purpose' => $payload['purpose'] ?? null,
+            'purpose' => $purpose !== '' ? $purpose : null,
+            'purpose_label' => $this->paymentPurposeLabel($purpose),
             'reason' => $payload['reason'] ?? null,
             'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
             'paid_at' => $payment->paid_at?->toISOString(),
@@ -1590,6 +1667,41 @@ class TechnicalServiceController extends Controller
             'created_at' => $payment->created_at?->toISOString(),
             'updated_at' => $payment->updated_at?->toISOString(),
         ], TechnicalServicePaymentActionPresenter::forPayment($payment), $overrides);
+    }
+
+    private function paymentLinkSendStatusBlocker(string $status): string
+    {
+        return match ($status) {
+            TechnicalServiceMountPayment::STATUS_PAID => 'Bu ödeme zaten tahsil edildi; bağlantı yeniden gönderilemez.',
+            TechnicalServiceMountPayment::STATUS_CANCELLED => 'Bu ödeme bağlantısı iptal edildi; yeniden gönderilemez.',
+            TechnicalServiceMountPayment::STATUS_EXPIRED => 'Bu ödeme bağlantısının süresi doldu; yeniden gönderilemez.',
+            default => 'Seçilen ödeme bağlantısı aktif bekleyen durumda değil; gönderilemez.',
+        };
+    }
+
+    private function paymentPurposeLabel(string $purpose): string
+    {
+        return match ($purpose) {
+            'service_payment' => 'Ek servis',
+            'part_payment' => 'Parça ücreti',
+            'service_and_part_payment' => 'Servis + parça ücreti',
+            'route_fee' => 'Yol ücreti',
+            'multi_product', 'multi_product_mount' => 'Çoklu ürün montaj ödemesi',
+            'manual_mount_payment', 'mount_extra', 'manual_extra' => 'Genel ek tahsilat',
+            default => 'Ek ödeme',
+        };
+    }
+
+    private function paymentStatusLabel(string $status): string
+    {
+        return match ($status) {
+            TechnicalServiceMountPayment::STATUS_PENDING => 'Bekliyor',
+            TechnicalServiceMountPayment::STATUS_PAID => 'Ödendi',
+            TechnicalServiceMountPayment::STATUS_CANCELLED => 'İptal edildi',
+            TechnicalServiceMountPayment::STATUS_EXPIRED => 'Süresi doldu',
+            TechnicalServiceMountPayment::STATUS_FAILED => 'Başarısız',
+            default => 'Bilinmiyor',
+        };
     }
 
     public function recheckInvoiceSerials(
