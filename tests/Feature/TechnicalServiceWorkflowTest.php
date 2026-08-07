@@ -3,9 +3,11 @@
 namespace Tests\Feature;
 
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Mail\TechnicalServicePaymentAuditMail;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
+use App\Models\MailTransportProfile;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
@@ -42,6 +44,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -2105,6 +2108,141 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_part_request_shows_manual_payment_received_action(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $routes = file_get_contents(base_path('routes/technical-service-qr-mount-v2.php'));
+
+        $this->assertIsString($source);
+        $this->assertIsString($routes);
+        $this->assertStringContainsString('Manuel tahsilat kaydı', $source);
+        $this->assertStringContainsString('Ödeme alındı', $source);
+        $this->assertStringContainsString('openManualPartPaymentModal(partRequest)', $source);
+        $this->assertStringContainsString('part-requests/{partRequest}/manual-payment', $routes);
+    }
+
+    public function test_manual_part_payment_requires_explanation(): void
+    {
+        $fixture = $this->manualPartPaymentFixture();
+
+        $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => ''])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['explanation']);
+
+        $this->assertSame(0, $this->manualPartPayments($fixture['request'], $fixture['part'])->count());
+    }
+
+    public function test_manual_part_payment_creates_canonical_paid_record(): void
+    {
+        $fixture = $this->manualPartPaymentFixture();
+
+        $response = $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => 'Nakit tahsilat OPS tarafından doğrulandı.'])
+            ->assertOk()
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PAID)
+            ->assertJsonPath('payment.provider', 'manual');
+        $payment = TechnicalServiceMountPayment::query()->findOrFail((int) $response->json('payment.id'));
+
+        $this->assertSame('part_charge', data_get($payment->raw_payload, 'purpose'));
+        $this->assertSame($fixture['part']->id, data_get($payment->raw_payload, 'part_request_id'));
+        $this->assertSame($fixture['actor']->id, data_get($payment->raw_payload, 'manual_confirmation.actor_user_id'));
+        $this->assertSame($fixture['actor']->name, data_get($payment->raw_payload, 'manual_confirmation.actor_name_snapshot'));
+        $this->assertSame('Nakit tahsilat OPS tarafından doğrulandı.', data_get($payment->raw_payload, 'manual_confirmation.explanation'));
+    }
+
+    public function test_manual_payment_does_not_fabricate_provider_references(): void
+    {
+        $fixture = $this->manualPartPaymentFixture();
+        $response = $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => 'Manuel banka tahsilatı kaydı.'])
+            ->assertOk();
+        $payment = TechnicalServiceMountPayment::query()->findOrFail((int) $response->json('payment.id'));
+
+        $this->assertSame('manual', $payment->provider);
+        $this->assertNull($payment->provider_reference);
+        $this->assertNull($payment->provider_payment_reference);
+        $this->assertNull($payment->provider_transaction_reference);
+        $this->assertNull($payment->provider_receipt_reference);
+        $this->assertNull($payment->provider_paid_at);
+        $this->assertNull($payment->provider_paid_confirmed_at);
+        $this->assertNull($payment->payment_url);
+    }
+
+    public function test_manual_payment_updates_part_projection_and_collection_once(): void
+    {
+        $fixture = $this->manualPartPaymentFixture();
+        $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => 'Elden tahsilat doğrulandı.'])
+            ->assertOk();
+        $this->postJson($fixture['endpoint'], ['explanation' => 'Elden tahsilat doğrulandı.'])
+            ->assertOk();
+
+        $part = app(TechnicalServicePartRequestService::class)->serialize($fixture['part']->fresh());
+        $request = app(TechnicalServiceWorkflowService::class)->serialize($fixture['request']->fresh(), true);
+        $this->assertTrue($part['is_payment_paid']);
+        $this->assertFalse($part['is_payment_required']);
+        $this->assertSame(20.0, $part['paid_amount']);
+        $this->assertSame(20.0, $request['sale_and_payment']['customer_charges']['paid_total_amount']);
+        $this->assertSame(0.0, $request['sale_and_payment']['customer_charges']['pending_total_amount']);
+        $this->assertSame(1, $fixture['request']->events()->where('event_type', 'part_request_payment_paid')->count());
+    }
+
+    public function test_duplicate_manual_submit_creates_one_payment(): void
+    {
+        $fixture = $this->manualPartPaymentFixture();
+        $first = $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => 'Nakit tahsilat doğrulandı.'])
+            ->assertOk();
+        $second = $this->postJson($fixture['endpoint'], ['explanation' => 'Nakit tahsilat doğrulandı.'])
+            ->assertOk();
+
+        $this->assertSame($first->json('payment.id'), $second->json('payment.id'));
+        $this->assertSame(1, $this->manualPartPayments($fixture['request'], $fixture['part'])->count());
+        $this->assertSame(1, $fixture['request']->events()->where('event_type', 'customer_charge_paid')->count());
+    }
+
+    public function test_active_pending_link_blocks_manual_confirmation_until_cancelled(): void
+    {
+        $fixture = $this->manualPartPaymentFixture(true);
+
+        $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => 'Nakit tahsilat doğrulandı.'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['payment'])
+            ->assertJsonPath('errors.payment.0', 'Aktif ödeme bağlantısını iptal ettikten sonra manuel tahsilatı kaydedin.');
+        $this->postJson("/api/technical-service/requests/{$fixture['request']->id}/payments/{$fixture['pending']->id}/cancel", [
+            'reason' => 'Manuel tahsilat öncesi provider linki iptal edildi.',
+        ])->assertOk();
+        $this->postJson($fixture['endpoint'], ['explanation' => 'Nakit tahsilat doğrulandı.'])
+            ->assertOk()
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PAID);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $fixture['pending']->fresh()->status);
+        $this->assertSame(1, $this->manualPartPayments($fixture['request'], $fixture['part'])->count());
+    }
+
+    public function test_manual_paid_transition_creates_one_receipt_intent(): void
+    {
+        Mail::fake();
+        $this->enableManualPaymentReceiptNotification();
+        $fixture = $this->manualPartPaymentFixture();
+
+        $first = $this->actingAs($fixture['actor'])
+            ->postJson($fixture['endpoint'], ['explanation' => 'Kasa tahsilatı doğrulandı.'])
+            ->assertOk();
+        $this->postJson($fixture['endpoint'], ['explanation' => 'Kasa tahsilatı doğrulandı.'])
+            ->assertOk();
+        $paymentId = (int) $first->json('payment.id');
+
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()
+            ->where('related_type', TechnicalServiceMountPayment::class)
+            ->where('related_id', $paymentId)
+            ->where('message_type', 'payment_receipt_notification')
+            ->count());
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
+    }
+
     public function test_service_part_charge_paid_does_not_override_paid_mount_payment_summary(): void
     {
         $request = $this->technicalServiceRequest([
@@ -3063,7 +3201,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('Tutar kaynağı: Manuel giriş gerekli', $source);
         $this->assertStringContainsString('Tutar kaynağı: Mevcut ödeme kaydı', $source);
         $this->assertStringContainsString('Tutar kaynağı: Operasyon manuel girişi', $source);
-        $this->assertStringContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $source);
+        $this->assertStringNotContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $source);
         $this->assertStringNotContainsString('const extraPayment = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) :', $source);
     }
 
@@ -6351,7 +6489,8 @@ class TechnicalServiceWorkflowTest extends TestCase
         $compactDetailsSource = preg_replace('/\s+/', ' ', $detailsSource) ?? $detailsSource;
         $this->assertStringContainsString('Yeni ek ödeme linki tutarı', $compactDetailsSource);
         $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $compactDetailsSource);
-        $this->assertStringContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $compactDetailsSource);
+        $this->assertStringNotContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $compactDetailsSource);
+        $this->assertStringContainsString('Ödeme tutarı girilmelidir.', $compactDetailsSource);
         $this->assertStringContainsString('Ödeme Al', $detailsSource);
         $this->assertStringContainsString('Yeni ek ödeme al', $detailsSource);
         $this->assertStringContainsString('Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.', $compactDetailsSource);
@@ -6365,6 +6504,52 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringNotContainsString('Ödeme alındı; bu fazda ödenmiş link düzenlenmez.', $detailsSource);
         $this->assertStringContainsString('paymentLinkActionLabel', $detailsSource);
         $this->assertStringContainsString('Tutar kaynağı: Manuel giriş gerekli', $detailsSource);
+    }
+
+    public function test_empty_amount_modal_shows_no_initial_duplicate_warning(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+
+        $this->assertStringNotContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $source);
+        $this->assertStringContainsString('setPaymentAmountError(null)', $source);
+        $this->assertStringContainsString('setRouteFeeEditorMessage(null)', $source);
+    }
+
+    public function test_empty_amount_submit_shows_one_field_error(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+
+        $this->assertSame(1, substr_count($source, "setPaymentAmountError('Ödeme tutarı girilmelidir.')"));
+        $this->assertSame(1, substr_count($source, '{paymentAmountError ? <span'));
+        $this->assertStringContainsString('aria-invalid={paymentAmountError !== null}', $source);
+        $this->assertStringContainsString('disabled={!canSubmitPaymentLink || extraPaymentCreateLoading}', $source);
+    }
+
+    public function test_pending_link_shows_open_copy_send_cancel_actions(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $partCardStart = strpos($source, 'const partRequestPaymentId = partRequest.payment_id');
+
+        $this->assertNotFalse($partCardStart);
+        $partCard = substr($source, (int) $partCardStart, 9000);
+        $this->assertStringContainsString('Ödeme linkini aç', $partCard);
+        $this->assertStringContainsString('Linki kopyala', $partCard);
+        $this->assertStringContainsString('renderPaymentLinkSendAction({', $partCard);
+        $this->assertStringContainsString('Durumu kontrol et', $partCard);
+        $this->assertStringContainsString('İptal et', $partCard);
+        $this->assertStringContainsString('Ödeme alındı', $partCard);
+        $this->assertStringContainsString("['cancelled', 'expired', 'failed'].includes", $partCard);
+        $this->assertStringContainsString('variant="outline" disabled>Ödeme linkini aç', $partCard);
+    }
+
+    public function test_copy_action_copies_exact_canonical_url(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+
+        $this->assertStringContainsString('const partRequestPaymentUrl = paymentLinkCopyUrl(partRequestPayment)', $source);
+        $this->assertStringContainsString("copyCustomerChargeValue(partRequestPaymentUrl, 'Ödeme bağlantısı kopyalandı.')", $source);
+        $this->assertStringContainsString('payment_url: partRequestPaymentUrl', $source);
+        $this->assertStringContainsString('Number(selectedManualPartPaymentRequest.total_amount ?? 0) - Number(selectedManualPartPaymentRequest.paid_amount ?? 0)', $source);
     }
 
     private function adminUser(): User
@@ -6504,6 +6689,114 @@ class TechnicalServiceWorkflowTest extends TestCase
             'is_returned' => false,
             'is_current_latest_sale' => true,
             'color_status' => 'green',
+        ]);
+    }
+
+    /**
+     * @return array{actor:User,request:TechnicalServiceRequest,part:TechnicalServicePartRequest,session:TechnicalServiceMountSession,pending:?TechnicalServiceMountPayment,endpoint:string}
+     */
+    private function manualPartPaymentFixture(bool $withPendingLink = false): array
+    {
+        $actor = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'service_code' => 'SRV-MANUAL-PART-'.uniqid(),
+            'root_mrn' => 'MRN-MANUAL-PART-'.uniqid(),
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ]);
+        $session = $this->mountSessionForRequest($request);
+        $part = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+            'part_name' => 'Manuel tahsilat test parçası',
+            'quantity' => 1,
+            'metadata' => [
+                'charge_decision' => 'chargeable',
+                'charge_decision_label' => 'Ücretli parça',
+                'charge_status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'payment_status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'service_amount' => 5,
+                'part_amount' => 15,
+                'total_amount' => 20,
+            ],
+        ]);
+        $pending = null;
+        if ($withPendingLink) {
+            $pending = TechnicalServiceMountPayment::query()->create([
+                'technical_service_mount_session_id' => $session->id,
+                'technical_service_request_id' => $request->id,
+                'provider' => 'fake',
+                'provider_reference' => 'manual-part-pending-'.uniqid(),
+                'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'amount' => '20.00',
+                'currency' => 'TRY',
+                'payment_url' => 'https://dashboard.test/mount-payment/manual-part-pending',
+                'raw_payload' => [
+                    'source' => 'operation_customer_charge',
+                    'purpose' => 'service_and_part_payment',
+                    'charge_type' => 'service_and_part_payment',
+                    'service_amount' => '5.00',
+                    'part_amount' => '15.00',
+                    'total_amount' => '20.00',
+                    'part_request_id' => $part->id,
+                ],
+            ]);
+            $metadata = is_array($part->metadata) ? $part->metadata : [];
+            $metadata['payment_id'] = $pending->id;
+            $metadata['customer_charge_payment_id'] = $pending->id;
+            $metadata['payment_url'] = $pending->payment_url;
+            $part->forceFill(['metadata' => $metadata])->save();
+        }
+
+        return [
+            'actor' => $actor,
+            'request' => $request,
+            'part' => $part,
+            'session' => $session,
+            'pending' => $pending,
+            'endpoint' => "/api/technical-service/requests/{$request->id}/part-requests/{$part->id}/manual-payment",
+        ];
+    }
+
+    private function manualPartPayments(TechnicalServiceRequest $request, TechnicalServicePartRequest $partRequest)
+    {
+        return TechnicalServiceMountPayment::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('provider', 'manual')
+            ->get()
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => (int) data_get($payment->raw_payload, 'part_request_id') === (int) $partRequest->id);
+    }
+
+    private function enableManualPaymentReceiptNotification(): void
+    {
+        PageConfig::query()->create([
+            'page_code' => TechnicalServicePaymentProviderSettingsService::PAGE_CODE,
+            'layout_json' => [
+                'technical_service' => [
+                    'payment' => [
+                        'notification' => [
+                            'enabled' => true,
+                            'recipients' => 'payment-audit@example.test',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+        MailTransportProfile::query()->create([
+            'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
+            'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
+            'display_name' => 'Manual payment test SMTP',
+            'outgoing_enabled' => true,
+            'outgoing_mailer' => MailTransportProfile::MAILER_SMTP,
+            'smtp_host' => 'smtp.example.test',
+            'smtp_port' => 587,
+            'smtp_encryption' => 'tls',
+            'smtp_username_encrypted' => 'payment-audit@example.test',
+            'smtp_password_encrypted' => str_repeat('x', 12),
+            'smtp_username_mask' => 'pay****it@example.test',
+            'smtp_password_mask' => '************',
+            'from_address' => 'no-reply@example.test',
+            'from_name' => 'EMAKS Test',
         ]);
     }
 

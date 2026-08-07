@@ -164,6 +164,7 @@ type ServiceRequestDetailsProps = {
   onPartRequestCreate?: (payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
+  onPartRequestManualPaymentConfirm?: (partRequestId: number | string, payload: { explanation: string }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
   onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
@@ -1547,6 +1548,7 @@ export function ServiceRequestDetails({
   onPartRequestCreate,
   onPartRequestTransition,
   onPartRequestServiceVisitCreate,
+  onPartRequestManualPaymentConfirm,
   onAssignmentOfferUpdate,
   onPartnerActionReview,
   onFieldDocumentReview,
@@ -1787,6 +1789,7 @@ export function ServiceRequestDetails({
   const [routeFeeBillableKmInput, setRouteFeeBillableKmInput] = useState('')
   const [routeFeeAmountInput, setRouteFeeAmountInput] = useState('')
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
+  const [paymentAmountError, setPaymentAmountError] = useState<string | null>(null)
   const [paymentCancelInFlight, setPaymentCancelInFlight] = useState<number | string | null>(null)
   const [paymentSyncInFlight, setPaymentSyncInFlight] = useState<number | string | null>(null)
   const [paymentSendInFlight, setPaymentSendInFlight] = useState<number | string | null>(null)
@@ -1825,6 +1828,10 @@ export function ServiceRequestDetails({
   const [partRequestPartnerMessages, setPartRequestPartnerMessages] = useState<Record<string, string>>({})
   const [partRequestProviders, setPartRequestProviders] = useState<Record<string, string>>({})
   const [partRequestTrackings, setPartRequestTrackings] = useState<Record<string, string>>({})
+  const [manualPartPaymentRequestId, setManualPartPaymentRequestId] = useState<number | string | null>(null)
+  const [manualPartPaymentExplanation, setManualPartPaymentExplanation] = useState('')
+  const [manualPartPaymentError, setManualPartPaymentError] = useState<string | null>(null)
+  const [manualPartPaymentSubmitting, setManualPartPaymentSubmitting] = useState(false)
   const [partCreateModalOpen, setPartCreateModalOpen] = useState(false)
   const [partCreateName, setPartCreateName] = useState('')
   const [partCreateCode, setPartCreateCode] = useState('')
@@ -1855,6 +1862,9 @@ export function ServiceRequestDetails({
   const selectedPartDecisionRequest = partDecisionRequestId === null
     ? null
     : partRequests.find((partRequest) => String(partRequest.id) === String(partDecisionRequestId)) ?? null
+  const selectedManualPartPaymentRequest = manualPartPaymentRequestId === null
+    ? null
+    : partRequests.find((partRequest) => String(partRequest.id) === String(manualPartPaymentRequestId)) ?? null
   const selectedHistoryRecord = historyRecordId === null
     ? null
     : serviceVisitHistoryRecords.find((record) => String(record.id) === String(historyRecordId)) ?? null
@@ -2101,9 +2111,6 @@ export function ServiceRequestDetails({
     : existingPendingPaymentAmount !== null && routeFeeExtraPaymentInput === existingPendingPaymentAmountInput
       ? 'Tutar kaynağı: Mevcut ödeme kaydı'
       : 'Tutar kaynağı: Operasyon manuel girişi'
-  const paymentLinkAmountWarning = routeFeeEditorMode === 'payment_link' && routeFeeExtraPaymentInput.trim() === ''
-    ? 'Ödeme tutarı net değil. Link oluşturmak için tutar girin.'
-    : null
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
   const customerChargeTotalAmount = roundTwo(customerServiceChargeAmount + customerPartChargeAmount)
@@ -2127,6 +2134,10 @@ export function ServiceRequestDetails({
     && extraPaymentAmount > 0
     && (routeFeeEditorMode === 'payment_link' || selectedTechnician)
     && (extraPaymentPurpose !== 'route_fee' || selectedTechnician)
+    && (!terminalPaymentRetryRequired || terminalPaymentRetryReason.trim().length >= 3)
+  )
+  const canSubmitPaymentLink = Boolean(
+    onExtraMountPaymentCreate
     && (!terminalPaymentRetryRequired || terminalPaymentRetryReason.trim().length >= 3)
   )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
@@ -2760,10 +2771,11 @@ export function ServiceRequestDetails({
     setRouteFeeBillableKmInput(billable)
     setRouteFeeAmountInput(amount)
     setRouteFeeExtraPaymentInput(paymentAmount)
+    setPaymentAmountError(null)
     setRouteFeeManualAmountTouched(manualTouched)
     setRouteFeeNote(note)
     setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, paymentAmount, manualTouched, note))
-    setRouteFeeEditorMessage(paymentAmount === '' ? 'Ödeme tutarı net değil. Link oluşturmak için tutar girin.' : null)
+    setRouteFeeEditorMessage(null)
     setPaymentCancelError(null)
     setPaymentLinkCopyMessage(null)
     setPaymentLinkManualCopyValue(null)
@@ -2849,10 +2861,18 @@ export function ServiceRequestDetails({
 
     if (extraPaymentAmount === null || extraPaymentAmount <= 0) {
       setRouteFeeEditorOpen(true)
-      setRouteFeeEditorMessage('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.')
+
+      if (routeFeeEditorMode === 'payment_link') {
+        setPaymentAmountError('Ödeme tutarı girilmelidir.')
+        setRouteFeeEditorMessage(null)
+      } else {
+        setRouteFeeEditorMessage('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.')
+      }
 
       return
     }
+
+    setPaymentAmountError(null)
 
     const paymentPurpose: ExtraPaymentPurpose = routeFeeEditorMode === 'payment_link'
       ? extraPaymentPurpose
@@ -3013,7 +3033,7 @@ export function ServiceRequestDetails({
           title={blocker ?? (sendCount > 0 ? 'Ödeme linkini neden kaydıyla yeniden gönder' : 'Ödeme linkini müşteriye WhatsApp ve SMS kuyruğuna al')}
           onClick={() => payment && void handlePendingPaymentSend(payment)}
         >
-          {paymentSendInFlight === paymentId ? 'Kuyruğa alınıyor...' : sendCount > 0 ? 'Yeniden gönder' : 'Linki müşteriye gönder'}
+          {paymentSendInFlight === paymentId ? 'Kuyruğa alınıyor...' : sendCount > 0 ? 'Yeniden gönder' : 'Linki gönder'}
         </Button>
       </div>
     )
@@ -3241,6 +3261,44 @@ export function ServiceRequestDetails({
       setRouteFeeEditorMessage(caught instanceof Error ? caught.message : 'Parça talebi kararı kaydedilemedi.')
     }
   }
+  const openManualPartPaymentModal = (partRequest: NonNullable<ServiceRequest['partRequests']>[number]) => {
+    setManualPartPaymentRequestId(partRequest.id)
+    setManualPartPaymentExplanation('')
+    setManualPartPaymentError(null)
+  }
+  const closeManualPartPaymentModal = () => {
+    setManualPartPaymentRequestId(null)
+    setManualPartPaymentExplanation('')
+    setManualPartPaymentError(null)
+  }
+  const handleManualPartPaymentConfirm = async () => {
+    if (!selectedManualPartPaymentRequest || !onPartRequestManualPaymentConfirm) {
+      setManualPartPaymentError('Manuel tahsilat servisi bağlı değil.')
+
+      return
+    }
+
+    const explanation = manualPartPaymentExplanation.trim()
+
+    if (explanation.length < 5) {
+      setManualPartPaymentError('Açıklama en az 5 karakter olmalıdır.')
+
+      return
+    }
+
+    setManualPartPaymentSubmitting(true)
+    setManualPartPaymentError(null)
+
+    try {
+      await onPartRequestManualPaymentConfirm(selectedManualPartPaymentRequest.id, { explanation })
+      closeManualPartPaymentModal()
+      setRouteFeeEditorMessage('Manuel tahsilat kaydedildi.')
+    } catch (caught) {
+      setManualPartPaymentError(caught instanceof Error ? caught.message : 'Manuel tahsilat kaydedilemedi.')
+    } finally {
+      setManualPartPaymentSubmitting(false)
+    }
+  }
   const handleTechnicianEarningMessageCreate = async () => {
     if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
       setRouteFeeEditorMessage('Önce usta seçin.')
@@ -3403,6 +3461,55 @@ export function ServiceRequestDetails({
       </div>
     </div>
   ) : null
+  const manualPartPaymentTotal = selectedManualPartPaymentRequest
+    ? Math.max(0, Number(selectedManualPartPaymentRequest.total_amount ?? 0) - Number(selectedManualPartPaymentRequest.paid_amount ?? 0))
+    : 0
+  const manualPartPaymentModal = selectedManualPartPaymentRequest ? (
+    <div className="fixed inset-0 z-[115] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Manuel tahsilat kaydı">
+      <div className="max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-emerald-100 bg-white p-4 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-base font-semibold text-slate-950">Manuel tahsilat kaydı</p>
+            <p className="mt-1 text-xs text-slate-600">Bu işlem mevcut provider ödemesini değiştirmez; kalan parça tahsilatını manuel paid kayıt olarak kapatır.</p>
+          </div>
+          <Button type="button" size="sm" variant="ghost" onClick={closeManualPartPaymentModal}>Kapat</Button>
+        </div>
+        <div className="mt-4 grid gap-3">
+          <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 sm:grid-cols-2">
+            <span>MRN/SRV: {displayMrn ?? request.mrn}</span>
+            <span>Parça: {selectedManualPartPaymentRequest.part_name}</span>
+            <span>Tahsilat amacı: Parça tahsilatı</span>
+            <span>Kalan tutar: {formatMoneyValue(manualPartPaymentTotal)}</span>
+          </div>
+          <label className="grid gap-1 text-xs font-semibold text-slate-700">
+            Açıklama / tahsilat notu
+            <textarea
+              value={manualPartPaymentExplanation}
+              minLength={5}
+              maxLength={2000}
+              onChange={(event) => {
+                setManualPartPaymentExplanation(event.target.value)
+                setManualPartPaymentError(null)
+              }}
+              className="min-h-24 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+              placeholder="Tahsilat yöntemi ve operasyon açıklaması"
+            />
+          </label>
+          {manualPartPaymentError ? <p className="text-xs font-semibold text-rose-700">{manualPartPaymentError}</p> : null}
+          <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+            <Button type="button" variant="outline" onClick={closeManualPartPaymentModal}>Vazgeç</Button>
+            <Button
+              type="button"
+              disabled={manualPartPaymentSubmitting || manualPartPaymentExplanation.trim().length < 5 || manualPartPaymentTotal <= 0}
+              onClick={() => void handleManualPartPaymentConfirm()}
+            >
+              {manualPartPaymentSubmitting ? 'Kaydediliyor...' : 'Ödeme alındı'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null
   const otherTechniciansModal = otherTechniciansModalOpen ? (
     <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Diğer ustalar">
       <div className="max-h-[92dvh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
@@ -3440,11 +3547,6 @@ export function ServiceRequestDetails({
           </Button>
         </div>
         <div className="mt-4 grid gap-3">
-          {paymentLinkAmountWarning ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
-              {paymentLinkAmountWarning}
-            </div>
-          ) : null}
           {routeFeeEditorMessage ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
               {routeFeeEditorMessage}
@@ -3637,8 +3739,20 @@ export function ServiceRequestDetails({
             </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               {pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı'}
-              <Input type="number" inputMode="decimal" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+              <Input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="1"
+                value={routeFeeExtraPaymentInput}
+                aria-invalid={paymentAmountError !== null}
+                onChange={(event) => {
+                  setRouteFeeExtraPaymentInput(event.target.value)
+                  setPaymentAmountError(null)
+                }}
+              />
               <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
+              {paymentAmountError ? <span className="font-semibold text-rose-700">{paymentAmountError}</span> : null}
             </label>
           </div>
           <label className="grid gap-2 text-sm font-medium text-slate-700">
@@ -3670,7 +3784,7 @@ export function ServiceRequestDetails({
               type="button"
               variant="outline"
               onClick={() => void handleExtraPaymentCreate()}
-              disabled={!canCreateExtraPayment || extraPaymentCreateLoading}
+              disabled={!canSubmitPaymentLink || extraPaymentCreateLoading}
             >
               {paymentLinkSubmitLabel}
             </Button>
@@ -5072,6 +5186,7 @@ export function ServiceRequestDetails({
         </section>
         ) : null}
         {customerChargeModal}
+        {manualPartPaymentModal}
         {otherTechniciansModal}
         {paymentLinkEditorModal}
         {partCreateModal}
@@ -5694,6 +5809,10 @@ export function ServiceRequestDetails({
                   const showShipmentInputs = (partRequest.status === 'approved' || partRequest.status === 'ordered') && canShipPart
                   const partRequestPaymentId = partRequest.payment_id ?? partRequest.customer_charge?.id ?? null
                   const partRequestPayment = customerChargeSummary?.rows?.find((payment) => String(payment.id) === String(partRequestPaymentId)) ?? null
+                  const partRequestPaymentUrl = paymentLinkCopyUrl(partRequestPayment) || partRequest.copy_url || partRequest.payment_url || ''
+                  const partRequestPaymentStatus = partRequestPayment?.status ?? partRequest.customer_charge?.status
+                  const partRequestPaymentPending = partRequestPaymentStatus === 'pending'
+                  const partRequestPaymentTerminal = ['cancelled', 'expired', 'failed'].includes(String(partRequestPaymentStatus))
                   const transition = (status: string) => onPartRequestTransition?.(partRequest.id, {
                     status,
                     note: note || null,
@@ -5736,21 +5855,42 @@ export function ServiceRequestDetails({
                               {partRequest.customer_charge?.payment_reference || partRequest.payment_reference || partRequest.provider_reference ? (
                                 <p>Referans: {displayOrEmpty(partRequest.customer_charge?.payment_reference ?? partRequest.payment_reference ?? partRequest.provider_reference, '-')}</p>
                               ) : null}
-                              {partRequest.payment_url ? (
+                              {partRequestPaymentUrl ? (
                                 <div className="grid gap-2">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
-                                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequest.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                                    {partRequestPaymentTerminal ? (
+                                      <Button type="button" size="sm" variant="outline" disabled>Ödeme linkini aç</Button>
+                                    ) : (
+                                      <a href={partRequestPaymentUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
+                                    )}
+                                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequestPaymentUrl, 'Ödeme bağlantısı kopyalandı.')}>Linki kopyala</Button>
                                     {renderPaymentLinkSendAction({
                                       id: partRequestPaymentId,
-                                      status: partRequest.customer_charge?.status ?? 'pending',
-                                      payment_url: partRequest.payment_url,
+                                      status: partRequestPayment?.status ?? partRequest.customer_charge?.status ?? 'pending',
+                                      payment_url: partRequestPaymentUrl,
                                       amount: partRequest.customer_charge?.amount ?? ((Number(partRequest.service_amount ?? 0) || 0) + (Number(partRequest.part_amount ?? 0) || 0)),
                                       message_send_count: partRequestPayment?.message_send_count ?? partRequest.customer_charge?.message_send_count,
                                       last_message_sent_at: partRequestPayment?.last_message_sent_at ?? partRequest.customer_charge?.last_message_sent_at,
                                     })}
+                                    {partRequestPaymentPending && partRequestPayment?.is_external_provider ? (
+                                      <Button type="button" size="sm" variant="outline" disabled={paymentSyncInFlight === partRequestPayment.id} onClick={() => void handlePendingPaymentSync(partRequestPayment)}>
+                                        {paymentSyncInFlight === partRequestPayment.id ? 'Kontrol ediliyor...' : 'Durumu kontrol et'}
+                                      </Button>
+                                    ) : null}
+                                    {partRequestPaymentPending && partRequestPayment ? (
+                                      <Button type="button" size="sm" variant="destructive" disabled={paymentCancelInFlight === partRequestPayment.id} onClick={() => void handlePendingPaymentCancel(partRequestPayment)}>
+                                        {paymentCancelInFlight === partRequestPayment.id ? 'İptal ediliyor...' : 'İptal et'}
+                                      </Button>
+                                    ) : null}
                                   </div>
-                                  {renderCustomerChargeCopyFeedback(partRequest.payment_url)}
+                                  {renderCustomerChargeCopyFeedback(partRequestPaymentUrl)}
+                                </div>
+                              ) : null}
+                              {partRequest.is_payment_paid !== true ? (
+                                <div className="flex flex-wrap justify-end">
+                                  <Button type="button" size="sm" onClick={() => openManualPartPaymentModal(partRequest)}>
+                                    Ödeme alındı
+                                  </Button>
                                 </div>
                               ) : null}
                             </div>
@@ -6362,11 +6502,6 @@ export function ServiceRequestDetails({
                         İptal
                       </Button>
                     </div>
-                    {paymentLinkAmountWarning ? (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
-                        {paymentLinkAmountWarning}
-                      </div>
-                    ) : null}
                     {routeFeeEditorMode === 'payment_link' && paidOnlinePaymentLink ? (
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
                         Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.

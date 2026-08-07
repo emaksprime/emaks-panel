@@ -26,6 +26,7 @@ use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
+use App\Models\User;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
@@ -40,6 +41,7 @@ use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
+use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
@@ -1217,6 +1219,36 @@ class TechnicalServiceController extends Controller
 
         return response()->json([
             'ok' => true,
+            'payment' => $this->mountPaymentResponse($payment->refresh()),
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    public function confirmManualPartPayment(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePartRequest $partRequest,
+        TechnicalServicePaymentSettlementService $paymentSettlementService,
+    ): JsonResponse {
+        abort_unless((int) $partRequest->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        $validated = $request->validate([
+            'explanation' => ['required', 'string', 'min:5', 'max:2000'],
+        ]);
+        $actor = $request->user();
+        abort_unless($actor instanceof User, 401);
+        $session = $this->paymentMountSessionForRequest($technicalServiceRequest);
+        $payment = $paymentSettlementService->recordManualPartPayment(
+            $technicalServiceRequest,
+            $partRequest,
+            $session,
+            $actor,
+            (string) $validated['explanation'],
+        );
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Manuel tahsilat kaydedildi.',
             'payment' => $this->mountPaymentResponse($payment->refresh()),
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]);

@@ -7,9 +7,11 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
+use App\Models\User;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Payments\TechnicalServicePaymentReceiptNotificationService;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
@@ -68,6 +70,169 @@ class TechnicalServicePaymentSettlementService
         }
     }
 
+    public function recordManualPartPayment(
+        TechnicalServiceRequest $request,
+        TechnicalServicePartRequest $partRequest,
+        TechnicalServiceMountSession $session,
+        User $actor,
+        string $explanation,
+    ): TechnicalServiceMountPayment {
+        $explanation = trim($explanation);
+        if (mb_strlen($explanation) < 5) {
+            throw ValidationException::withMessages([
+                'explanation' => 'Açıklama en az 5 karakter olmalıdır.',
+            ]);
+        }
+
+        $payment = DB::transaction(function () use ($request, $partRequest, $session, $actor, $explanation): TechnicalServiceMountPayment {
+            $lockedRequest = TechnicalServiceRequest::query()
+                ->whereKey($request->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $lockedPartRequest = TechnicalServicePartRequest::query()
+                ->whereKey($partRequest->getKey())
+                ->where('technical_service_request_id', $lockedRequest->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $lockedSession = TechnicalServiceMountSession::query()
+                ->whereKey($session->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (! $lockedPartRequest->isChargeable()) {
+                throw ValidationException::withMessages([
+                    'payment' => 'Yalnızca ücretli parça talebi için manuel tahsilat kaydedilebilir.',
+                ]);
+            }
+
+            $payments = TechnicalServiceMountPayment::query()
+                ->where('technical_service_request_id', $lockedRequest->getKey())
+                ->lockForUpdate()
+                ->get()
+                ->filter(function (TechnicalServiceMountPayment $candidate) use ($lockedPartRequest): bool {
+                    $payload = is_array($candidate->raw_payload) ? $candidate->raw_payload : [];
+
+                    return ($payload['source'] ?? null) === 'operation_customer_charge'
+                        && (int) ($payload['part_request_id'] ?? 0) === (int) $lockedPartRequest->getKey();
+                });
+
+            if ($payments->contains(fn (TechnicalServiceMountPayment $candidate): bool => $candidate->status === TechnicalServiceMountPayment::STATUS_PENDING)) {
+                throw ValidationException::withMessages([
+                    'payment' => 'Aktif ödeme bağlantısını iptal ettikten sonra manuel tahsilatı kaydedin.',
+                ]);
+            }
+
+            $metadata = is_array($lockedPartRequest->metadata) ? $lockedPartRequest->metadata : [];
+            $serviceTotalMinor = $this->moneyMinorUnits($metadata['service_amount'] ?? 0);
+            $partTotalMinor = $this->moneyMinorUnits($metadata['part_amount'] ?? 0);
+            if ($serviceTotalMinor + $partTotalMinor <= 0) {
+                $partTotalMinor = $this->moneyMinorUnits($metadata['total_amount'] ?? 0);
+            }
+            if ($serviceTotalMinor + $partTotalMinor <= 0) {
+                throw ValidationException::withMessages([
+                    'payment' => 'Parça talebinin tahsil edilecek kalan tutarı bulunamadı.',
+                ]);
+            }
+
+            $paidServiceMinor = 0;
+            $paidPartMinor = 0;
+            foreach ($payments->where('status', TechnicalServiceMountPayment::STATUS_PAID) as $paidPayment) {
+                $payload = is_array($paidPayment->raw_payload) ? $paidPayment->raw_payload : [];
+                $serviceMinor = $this->moneyMinorUnits($payload['service_amount'] ?? 0);
+                $partMinor = $this->moneyMinorUnits($payload['part_amount'] ?? 0);
+                if ($serviceMinor + $partMinor <= 0) {
+                    $purpose = (string) ($payload['purpose'] ?? $payload['charge_type'] ?? '');
+                    if (in_array($purpose, ['part_payment', 'part_charge'], true)) {
+                        $partMinor = $this->moneyMinorUnits($paidPayment->amount);
+                    } else {
+                        $serviceMinor = $this->moneyMinorUnits($paidPayment->amount);
+                    }
+                }
+                $paidServiceMinor += $serviceMinor;
+                $paidPartMinor += $partMinor;
+            }
+
+            $remainingServiceMinor = max(0, $serviceTotalMinor - $paidServiceMinor);
+            $remainingPartMinor = max(0, $partTotalMinor - $paidPartMinor);
+            $remainingTotalMinor = $remainingServiceMinor + $remainingPartMinor;
+            if ($remainingTotalMinor <= 0) {
+                $existingManual = $payments
+                    ->where('provider', 'manual')
+                    ->where('status', TechnicalServiceMountPayment::STATUS_PAID)
+                    ->sortByDesc('id')
+                    ->first();
+                if ($existingManual instanceof TechnicalServiceMountPayment) {
+                    return $existingManual;
+                }
+
+                throw ValidationException::withMessages([
+                    'payment' => 'Parça talebinin tahsilatı zaten tamamlanmış.',
+                ]);
+            }
+
+            $idempotencyKey = hash('sha256', implode('|', [
+                'manual-part-payment-v1',
+                (string) $lockedRequest->getKey(),
+                (string) $lockedPartRequest->getKey(),
+                (string) $remainingTotalMinor,
+                (string) ($paidServiceMinor + $paidPartMinor),
+            ]));
+            $rootMrn = trim((string) ($lockedRequest->root_mrn ?: $lockedRequest->mrn));
+            $payment = TechnicalServiceMountPayment::query()->create([
+                'technical_service_mount_session_id' => $lockedSession->getKey(),
+                'technical_service_request_id' => $lockedRequest->getKey(),
+                'provider' => 'manual',
+                'provider_reference' => null,
+                'provider_payment_reference' => null,
+                'provider_transaction_reference' => null,
+                'provider_receipt_reference' => null,
+                'provider_sync_attempts' => 0,
+                'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'amount' => $this->minorUnitsDecimal($remainingTotalMinor),
+                'currency' => 'TRY',
+                'payment_url' => null,
+                'raw_payload' => [
+                    'source' => 'operation_customer_charge',
+                    'amount_source' => 'manual_part_collection',
+                    'purpose' => 'part_charge',
+                    'charge_type' => 'part_charge',
+                    'technical_service_request_id' => $lockedRequest->getKey(),
+                    'root_request_id' => $lockedPartRequest->root_request_id ?: ($lockedRequest->parent_request_id ?: $lockedRequest->getKey()),
+                    'request_code' => $lockedRequest->service_code ?: $lockedRequest->mrn,
+                    'mrn' => $lockedRequest->mrn,
+                    'root_mrn' => $rootMrn,
+                    'service_code' => $lockedRequest->service_code,
+                    'part_request_id' => $lockedPartRequest->getKey(),
+                    'part_name' => $lockedPartRequest->part_name,
+                    'service_amount' => $this->minorUnitsDecimal($remainingServiceMinor),
+                    'part_amount' => $this->minorUnitsDecimal($remainingPartMinor),
+                    'total_amount' => $this->minorUnitsDecimal($remainingTotalMinor),
+                    'note' => $explanation,
+                    'created_by_user_id' => $actor->getKey(),
+                    'created_by_name' => $actor->name,
+                    'manual_confirmation' => [
+                        'schema_version' => 1,
+                        'idempotency_key' => $idempotencyKey,
+                        'actor_user_id' => $actor->getKey(),
+                        'actor_name_snapshot' => $actor->name,
+                        'explanation' => $explanation,
+                        'confirmed_at' => now()->toIso8601String(),
+                    ],
+                ],
+            ]);
+
+            return $this->settleLockedPayment($payment, [
+                'source' => 'manual_part_payment_confirmation',
+                'provider' => 'manual',
+            ], false);
+        });
+
+        return $this->receiptNotificationService->notifyTrustedPaid($payment, [
+            'source' => 'manual_part_payment_confirmation',
+            'provider' => 'manual',
+        ]);
+    }
+
     /** @param array<string, mixed> $payload */
     private function settleLockedPayment(
         TechnicalServiceMountPayment $payment,
@@ -120,6 +285,7 @@ class TechnicalServicePaymentSettlementService
             $payload,
             ['provider_receipt_reference', 'receipt_no', 'dekont_no'],
         ) ?: $payment->provider_receipt_reference;
+        $manualSettlement = ($payload['source'] ?? null) === 'manual_part_payment_confirmation';
 
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_PAID,
@@ -142,7 +308,9 @@ class TechnicalServicePaymentSettlementService
             'provider_last_sync_error' => ($payload['source'] ?? null) === 'provider_reconciliation'
                 ? null
                 : $payment->provider_last_sync_error,
-            'provider_paid_confirmed_at' => $payment->provider_paid_confirmed_at ?? now(),
+            'provider_paid_confirmed_at' => $manualSettlement
+                ? $payment->provider_paid_confirmed_at
+                : ($payment->provider_paid_confirmed_at ?? now()),
             'raw_payload' => $rawPayload,
         ])->save();
 
@@ -246,6 +414,11 @@ class TechnicalServicePaymentSettlementService
                 ->where('technical_service_request_id', $request->id)
                 ->first();
         }
+        $manualConfirmation = is_array($payload['manual_confirmation'] ?? null) ? $payload['manual_confirmation'] : [];
+        $manualExplanation = trim((string) ($manualConfirmation['explanation'] ?? ''));
+        $manualActorId = is_numeric($manualConfirmation['actor_user_id'] ?? null)
+            ? (int) $manualConfirmation['actor_user_id']
+            : null;
 
         if ($partRequest instanceof TechnicalServicePartRequest) {
             $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
@@ -254,6 +427,9 @@ class TechnicalServicePaymentSettlementService
             $receiptReference = trim((string) $payment->provider_receipt_reference) ?: null;
             $metadata['charge_status'] = TechnicalServiceMountPayment::STATUS_PAID;
             $metadata['payment_status'] = TechnicalServiceMountPayment::STATUS_PAID;
+            $metadata['payment_id'] = $payment->id;
+            $metadata['customer_charge_payment_id'] = $payment->id;
+            $metadata['payment_url'] = $payment->payment_url;
             $metadata['paid_amount'] = round((float) $payment->amount, 2);
             $metadata['paid_at'] = $paidAt->toISOString();
             $metadata['payment_reference'] = $receiptReference;
@@ -283,10 +459,12 @@ class TechnicalServicePaymentSettlementService
         $request->events()->create([
             'event_type' => 'customer_charge_paid',
             'title' => 'Müşteri servis/parça ödemesi alındı',
-            'note' => 'Müşteri ödeme linki üzerinden servis/parça tahsilatı onaylandı.',
+            'note' => $manualExplanation !== ''
+                ? 'Manuel tahsilat: '.$manualExplanation
+                : 'Müşteri ödeme linki üzerinden servis/parça tahsilatı onaylandı.',
             'from_status' => $request->workflow_status,
             'to_status' => $request->workflow_status,
-            'author_user_id' => null,
+            'author_user_id' => $manualActorId,
             'metadata' => [
                 'payment_id' => $payment->id,
                 'provider' => $payment->provider,
@@ -300,6 +478,10 @@ class TechnicalServicePaymentSettlementService
                 'provider_payment_reference' => $payment->provider_payment_reference,
                 'provider_transaction_reference' => $payment->provider_transaction_reference,
                 'provider_receipt_reference' => $payment->provider_receipt_reference,
+                'manual_confirmation' => $manualExplanation !== '' ? [
+                    'actor_name_snapshot' => $manualConfirmation['actor_name_snapshot'] ?? null,
+                    'explanation' => $manualExplanation,
+                ] : null,
             ],
         ]);
 
@@ -307,12 +489,14 @@ class TechnicalServicePaymentSettlementService
             $request->events()->create([
                 'event_type' => 'part_request_payment_paid',
                 'title' => 'Parça ödemesi alındı',
-                'note' => $receiptReference
-                    ? 'Dekont / referans: '.$receiptReference
-                    : 'Müşteri ödeme linki üzerinden parça tahsilatı onaylandı.',
+                'note' => $manualExplanation !== ''
+                    ? 'Manuel tahsilat: '.$manualExplanation
+                    : ($receiptReference
+                        ? 'Dekont / referans: '.$receiptReference
+                        : 'Müşteri ödeme linki üzerinden parça tahsilatı onaylandı.'),
                 'from_status' => $request->workflow_status,
                 'to_status' => $request->workflow_status,
-                'author_user_id' => null,
+                'author_user_id' => $manualActorId,
                 'metadata' => [
                     'part_request_id' => $partRequest->id,
                     'payment_id' => $payment->id,
@@ -327,6 +511,20 @@ class TechnicalServicePaymentSettlementService
                 ],
             ]);
         }
+    }
+
+    private function moneyMinorUnits(mixed $value): int
+    {
+        if (! is_numeric($value)) {
+            return 0;
+        }
+
+        return max(0, (int) round((float) $value * 100));
+    }
+
+    private function minorUnitsDecimal(int $minorUnits): string
+    {
+        return intdiv($minorUnits, 100).'.'.str_pad((string) ($minorUnits % 100), 2, '0', STR_PAD_LEFT);
     }
 
     /**

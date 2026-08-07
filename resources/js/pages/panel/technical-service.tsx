@@ -3727,6 +3727,45 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handlePartRequestManualPaymentConfirm = async (partRequestId: number | string, payload: { explanation: string }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const requestId = selectedId
+    setExtraPaymentCreateLoading(true)
+    setExtraPaymentCreateError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/part-requests/${partRequestId}/manual-payment`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (!updatedRequest || selectedIdRef.current !== requestId) {
+        throw new Error('Manuel tahsilat kaydedildi ancak talep detayı güncellenemedi.')
+      }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : 'Manuel tahsilat kaydedilemedi.'
+      setExtraPaymentCreateError(message)
+
+      throw caught
+    } finally {
+      setExtraPaymentCreateLoading(false)
+    }
+  }
+
   const handleTechnicianEarningMessageCreate = async (payload: ServiceRequestTechnicianEarningMessagePayload) => {
     if (!selectedId) {
       return undefined
@@ -6346,6 +6385,7 @@ export function TechnicalServiceOperationCenter() {
                     onPartRequestCreate={handlePartRequestCreate}
                     onPartRequestTransition={handlePartRequestTransition}
                     onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
+                    onPartRequestManualPaymentConfirm={handlePartRequestManualPaymentConfirm}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
                     assignmentOfferUpdateInFlight={assignmentOfferUpdateInFlight}
                     assignmentOfferUpdateError={assignmentOfferUpdateError}

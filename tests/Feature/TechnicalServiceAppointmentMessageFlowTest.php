@@ -626,6 +626,13 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
         ]);
 
+        $this->assertTrue(TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_link_customer')
+            ->get()
+            ->every(fn (TechnicalServiceMessageDispatch $dispatch): bool => $dispatch->target_phone === '905372081633'
+                && ! $dispatch->test_redirect_applied));
+
         $body = (string) TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)
             ->where('message_type', 'payment_link_customer')
@@ -639,6 +646,91 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'technical_service_request_id' => $request->id,
             'event_type' => 'mount_payment_link_send_requested',
         ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_payment_link_send_uses_customer_test_recipient_in_test_mode(): void
+    {
+        Http::fake();
+        config(['services.partner_portal.public_url' => 'https://pay.example.test']);
+        $actor = $this->admin();
+        $this->configureRoleBasedCustomerMessaging(true);
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'message_types' => [
+                'payment_link_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                ],
+            ],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E10-PAYMENT-TEST-MODE',
+            'customer_phone' => '05559998877',
+        ]);
+        $session = $this->mountSession('REL4E10-PAYMENT-TEST-MODE');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e10-test-mode',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1250,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/mount-payment/pay-rel4e10-test-mode',
+            'raw_payload' => ['source' => 'rel4e10_test_mode'],
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2);
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_link_customer')
+            ->get();
+        $this->assertCount(2, $dispatches);
+        $this->assertTrue($dispatches->every(
+            fn (TechnicalServiceMessageDispatch $dispatch): bool => $dispatch->recipient_role === 'customer'
+                && $dispatch->original_phone === '905559998877'
+                && $dispatch->target_phone === '905372081633'
+                && $dispatch->test_redirect_applied,
+        ));
+        Http::assertNothingSent();
+    }
+
+    public function test_cancelled_or_expired_link_cannot_be_sent(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $request = $this->technicalServiceRequest(['customer_phone' => '05372081633']);
+        $session = $this->mountSession('REL4E10-TERMINAL-PAYMENT');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+
+        foreach ([TechnicalServiceMountPayment::STATUS_CANCELLED, TechnicalServiceMountPayment::STATUS_EXPIRED] as $status) {
+            $payment = TechnicalServiceMountPayment::query()->create([
+                'technical_service_mount_session_id' => $session->id,
+                'technical_service_request_id' => $request->id,
+                'provider' => 'fake',
+                'provider_reference' => "pay-rel4e10-{$status}",
+                'status' => $status,
+                'amount' => 1250,
+                'currency' => 'TRY',
+                'payment_url' => "https://pay.example.test/mount-payment/pay-rel4e10-{$status}",
+                'raw_payload' => ['source' => 'rel4e10_terminal_send_guard'],
+            ]);
+
+            $this->actingAs($actor)
+                ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['payment']);
+        }
+
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['payment_link_customer', 'part_fee_payment_link_customer'])
+            ->count());
         Http::assertNothingSent();
     }
 
@@ -1188,7 +1280,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
         $compactDetailSource = preg_replace('/\s+/', '', $detailSource) ?? $detailSource;
 
-        $this->assertStringContainsString('Linki müşteriye gönder', $detailSource);
+        $this->assertStringContainsString('Linki gönder', $detailSource);
         $this->assertStringContainsString('onMountPaymentSend(payment.id, { resend_reason: resendReason })', $detailSource);
         $this->assertStringContainsString('placeholder="Yeniden gönderim nedeni"', $detailSource);
         $this->assertStringContainsString('Ödeme linkini neden kaydıyla yeniden gönder', $detailSource);

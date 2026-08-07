@@ -237,6 +237,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('requests/{technicalServiceRequest}/payments/{payment}/cancel', [TechnicalServiceController::class, 'cancelMountPayment'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.cancel');
+        Route::post('requests/{technicalServiceRequest}/part-requests/{partRequest}/manual-payment', [TechnicalServiceController::class, 'confirmManualPartPayment'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.part-requests.manual-payment');
         Route::patch('requests/{technicalServiceRequest}/operation-control', [TechnicalServiceController::class, 'updateOperationControl'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.operation-control');
