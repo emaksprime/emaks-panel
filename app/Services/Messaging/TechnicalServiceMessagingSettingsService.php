@@ -700,7 +700,7 @@ class TechnicalServiceMessagingSettingsService
         $runSnapshot = is_array($settings['manual_e2e_run_snapshot'] ?? null)
             ? $settings['manual_e2e_run_snapshot']
             : [];
-        $scopedSnapshot = $this->isScopedLocalUatSettings($settings)
+        $scopedSnapshot = $context->isActive() && $this->isScopedLocalUatSettings($settings)
             ? Arr::only($runSnapshot, [
                 'scoped_local_uat_profile_id',
                 'scoped_local_uat_profile_version',
@@ -6954,7 +6954,9 @@ class TechnicalServiceMessagingSettingsService
 
         $invalid = $normalClaimInvalid || $effectClaimInvalid || match ($phase) {
             self::MANUAL_E2E_PHASE_FROZEN => $manualEnabled
-                || ($localAcceptanceEnabled && ! $localAcceptanceCurrent)
+                || ($localAcceptanceEnabled
+                    && ! $localAcceptanceCurrent
+                    && ! $this->normalLocalAdminExecutionAuthority($settings))
                 || ($productionLive
                     ? (! $realSend || $queuePaused || $localAcceptanceEnabled)
                     : ($localAcceptanceCurrent ? (! $realSend || $queuePaused) : ($realSend === $queuePaused)))
@@ -9679,6 +9681,12 @@ SQL,
             'started_at' => $startedAt->toIso8601String(),
             'heartbeat_at' => $now->toIso8601String(),
             'expires_at' => $expiresAt->toIso8601String(),
+            'cycle_count' => 0,
+            'processed_count' => 0,
+            'last_cycle_candidate_count' => 0,
+            'last_cycle_progress_count' => 0,
+            'last_cycle_at' => null,
+            'last_progress_at' => null,
         ];
         Cache::put(self::OUTBOUND_WORKER_LEASE_KEY, $lease, max(60, $now->diffInSeconds($expiresAt) + 60));
 
@@ -9696,6 +9704,36 @@ SQL,
         }
 
         $lease['heartbeat_at'] = CarbonImmutable::now()->toIso8601String();
+        Cache::put(self::OUTBOUND_WORKER_LEASE_KEY, $lease, 120);
+
+        return true;
+    }
+
+    public function recordOutboundWorkerCycle(
+        string $lockOwner,
+        int $candidateCount,
+        int $progressCount,
+    ): bool {
+        $lease = $this->outboundWorkerLease();
+        if ($lease === null
+            || ($lease['lock_owner'] ?? null) !== $lockOwner
+            || ($lease['release_sha'] ?? null) !== $this->runtimeReleaseSha()
+            || ! $this->outboundWorkerLeaseMatchesCurrentScope($lease, $this->settings())) {
+            return false;
+        }
+
+        $now = CarbonImmutable::now();
+        $candidateCount = max(0, $candidateCount);
+        $progressCount = max(0, min($candidateCount, $progressCount));
+        $lease['heartbeat_at'] = $now->toIso8601String();
+        $lease['cycle_count'] = max(0, (int) ($lease['cycle_count'] ?? 0)) + 1;
+        $lease['processed_count'] = max(0, (int) ($lease['processed_count'] ?? 0)) + $progressCount;
+        $lease['last_cycle_candidate_count'] = $candidateCount;
+        $lease['last_cycle_progress_count'] = $progressCount;
+        $lease['last_cycle_at'] = $now->toIso8601String();
+        if ($progressCount > 0) {
+            $lease['last_progress_at'] = $now->toIso8601String();
+        }
         Cache::put(self::OUTBOUND_WORKER_LEASE_KEY, $lease, 120);
 
         return true;
@@ -9822,6 +9860,13 @@ SQL,
                 'started_at' => null,
                 'heartbeat_at' => null,
                 'expires_at' => null,
+                'cycle_count' => 0,
+                'processed_count' => 0,
+                'last_cycle_candidate_count' => 0,
+                'last_cycle_progress_count' => 0,
+                'last_cycle_at' => null,
+                'last_progress_at' => null,
+                'claim_progress_state' => 'not_observed',
             ];
         }
 
@@ -9830,9 +9875,18 @@ SQL,
         $stale = $heartbeat === null
             || $heartbeat->addSeconds(self::OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS)->lte($now)
             || ($expiresAt !== null && $expiresAt->lte($now));
+        $lastCycleAt = $this->parseWorkerLeaseDate($lease['last_cycle_at'] ?? null);
+        $lastProgressAt = $this->parseWorkerLeaseDate($lease['last_progress_at'] ?? null);
+        $lastCandidateCount = max(0, (int) ($lease['last_cycle_candidate_count'] ?? 0));
+        $lastProgressCount = max(0, (int) ($lease['last_cycle_progress_count'] ?? 0));
+        $claimProgressState = $lastCycleAt === null
+            ? 'not_observed'
+            : ($lastCandidateCount === 0
+                ? 'idle'
+                : ($lastProgressCount > 0 ? 'progressing' : 'stalled'));
 
         return [
-            'state' => $stale ? 'stale' : 'active',
+            'state' => $stale ? 'stale' : ($claimProgressState === 'stalled' ? 'unhealthy' : 'active'),
             'process_id' => is_numeric($lease['process_id'] ?? null) ? (int) $lease['process_id'] : null,
             'release_sha' => is_scalar($lease['release_sha'] ?? null) ? (string) $lease['release_sha'] : null,
             'mode' => is_scalar($lease['mode'] ?? null) ? (string) $lease['mode'] : null,
@@ -9842,6 +9896,13 @@ SQL,
             'started_at' => $this->parseWorkerLeaseDate($lease['started_at'] ?? null)?->toIso8601String(),
             'heartbeat_at' => $heartbeat?->toIso8601String(),
             'expires_at' => $expiresAt?->toIso8601String(),
+            'cycle_count' => max(0, (int) ($lease['cycle_count'] ?? 0)),
+            'processed_count' => max(0, (int) ($lease['processed_count'] ?? 0)),
+            'last_cycle_candidate_count' => $lastCandidateCount,
+            'last_cycle_progress_count' => $lastProgressCount,
+            'last_cycle_at' => $lastCycleAt?->toIso8601String(),
+            'last_progress_at' => $lastProgressAt?->toIso8601String(),
+            'claim_progress_state' => $claimProgressState,
         ];
     }
 

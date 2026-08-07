@@ -4619,6 +4619,102 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(3, Http::recorded()->count());
     }
 
+    public function test_valid_post_activation_dispatch_is_claimed_once(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake([
+            'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-POST-ACTIVATION-1'], 200),
+        ]);
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        $lifecycle = (array) data_get(
+            $layout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY,
+            [],
+        );
+        $lifecycle['local_manual_acceptance_enabled'] = true;
+        $lifecycle['local_manual_acceptance_activated_at'] = now()->subHour()->toIso8601String();
+        $lifecycle['local_manual_acceptance_profile_fingerprint'] = str_repeat('a', 64);
+        $lifecycle['manual_e2e_run_snapshot'] = [
+            'scoped_local_uat_profile_id' => ExternalEffectCapabilityRegistry::LOCAL_ALLOWLISTED_UAT_PROFILE,
+            'expected_body_token' => 'STALE-UAT-TOKEN',
+            'expected_body_token_fingerprint' => hash('sha256', 'STALE-UAT-TOKEN'),
+        ];
+        Arr::set(
+            $layout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY,
+            $lifecycle,
+        );
+        $page->forceFill(['layout_json' => $layout])->save();
+
+        $this->assertFalse((bool) $settings->localManualAcceptancePayload()['enabled']);
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'recipient_phone' => '905399999999',
+            'target_phone' => '905399999999',
+            'payload' => ['body' => 'Post-activation normal customer message.'],
+            'idempotency_key' => 'post-activation-normal-customer-message',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertNull(data_get($dispatch->metadata, 'scoped_local_uat_profile_id'));
+        $this->assertNull(data_get($dispatch->metadata, 'expected_body_token'));
+        $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->fresh()->status);
+        $this->assertSame('EVO-POST-ACTIVATION-1', $dispatch->fresh()->provider_message_id);
+        $this->assertSame(0, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        Http::assertSentCount(1);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_stale_lease_is_recovered_safely(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+
+        $this->travel(TechnicalServiceMessagingSettingsService::OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS + 1)->seconds();
+        $this->assertSame('stale', $settings->outboundWorkerLeaseStatus()['state']);
+        $this->assertTrue($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertSame('active', $settings->outboundWorkerLeaseStatus()['state']);
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease('different-owner'));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_heartbeat_without_claim_progress_is_reported_unhealthy(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+
+        $this->assertTrue($settings->recordOutboundWorkerCycle($owner, 2, 0));
+        $stalled = $settings->outboundWorkerLeaseStatus();
+        $this->assertSame('unhealthy', $stalled['state']);
+        $this->assertSame('stalled', $stalled['claim_progress_state']);
+        $this->assertSame(2, $stalled['last_cycle_candidate_count']);
+        $this->assertSame(0, $stalled['last_cycle_progress_count']);
+        $this->assertNotNull($stalled['heartbeat_at']);
+        $this->assertFalse((bool) data_get($settings->payload(), 'readiness.queue_ready'));
+
+        $this->assertTrue($settings->recordOutboundWorkerCycle($owner, 2, 2));
+        $recovered = $settings->outboundWorkerLeaseStatus();
+        $this->assertSame('active', $recovered['state']);
+        $this->assertSame('progressing', $recovered['claim_progress_state']);
+        $this->assertSame(2, $recovered['processed_count']);
+        $this->assertNotNull($recovered['last_progress_at']);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
     public function test_mount_request_and_assignment_use_same_execution_mode_authority_and_role_routing(): void
     {
         config(['services.evolution.allow_unit_test_http_fake' => true]);

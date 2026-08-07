@@ -310,8 +310,17 @@ class ProcessTechnicalServiceMessageDispatches extends Command
 
                 if ($settings->normalOutboundWorkerMayProcess($owner)) {
                     $result = $processor->process($workerOptions);
-                    $processed += (int) ($result['count'] ?? 0);
+                    $cycleCandidates = (int) ($result['count'] ?? 0);
+                    $cycleProgress = collect($result['dispatches'] ?? [])
+                        ->reject(fn (mixed $dispatch): bool => is_array($dispatch)
+                            && (bool) ($dispatch['skipped'] ?? false))
+                        ->count();
+                    $processed += $cycleProgress;
                     $cycles++;
+                    if (! $settings->recordOutboundWorkerCycle($owner, $cycleCandidates, $cycleProgress)) {
+                        $stopReason = 'outbound_worker_progress_lease_invalid';
+                        break;
+                    }
                 }
 
                 sleep($sleepSeconds);
