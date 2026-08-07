@@ -1645,6 +1645,29 @@ export function ServiceRequestDetails({
     ?? latestCustomerApprovalPayload.dispatch_status
     ?? '',
   )
+  const latestCustomerApprovalMessageStatusLabel = (() => {
+    if (['sent', 'test_sent'].includes(latestCustomerApprovalDispatchStatus)) {
+      return 'Gönderildi'
+    }
+
+    if (['queued', 'sending'].includes(latestCustomerApprovalDispatchStatus)) {
+      return 'Kuyrukta'
+    }
+
+    if (latestCustomerApprovalDispatchStatus === '') {
+      return 'Henüz gönderilmedi'
+    }
+
+    if (latestCustomerApprovalDispatchStatus === 'failed' || latestCustomerApprovalDispatchStatus.includes('error')) {
+      return 'Başarısız'
+    }
+
+    if (latestCustomerApprovalDispatchStatus.includes('failed')) {
+      return 'Başarısız'
+    }
+
+    return 'Bastırıldı'
+  })()
   const latestCustomerApprovalUrl = stringValue(latestCustomerApprovalPayload, 'approval_url')
     ?? stringValue(latestCustomerApprovalPayload, 'confirmation_url')
     ?? stringValue(latestCustomerApprovalMessagePayload, 'approval_url')
@@ -2006,15 +2029,19 @@ export function ServiceRequestDetails({
     ? activeRouteQuote.straight_line_distance_km
     : null
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
-  const mountPaymentRecords = saleAndPayment?.mount_payments?.rows ?? []
-  const paidMountPaymentRecords = saleAndPayment?.mount_payments?.paid_rows ?? mountPaymentRecords.filter((payment) => payment.status === 'paid')
-  const pendingMountPaymentRecords = saleAndPayment?.mount_payments?.pending_rows ?? mountPaymentRecords.filter((payment) => payment.status === 'pending')
-  const cancelledMountPaymentRecords = saleAndPayment?.mount_payments?.cancelled_rows ?? mountPaymentRecords.filter((payment) => payment.status === 'cancelled')
-  const latestPendingMountPayment = saleAndPayment?.mount_payments?.latest_pending ?? pendingMountPaymentRecords[0] ?? null
-  const latestPaidMountPayment = saleAndPayment?.mount_payments?.latest_paid ?? paidMountPaymentRecords[0] ?? null
-  const latestCancelledMountPayment = saleAndPayment?.mount_payments?.latest_cancelled ?? cancelledMountPaymentRecords[0] ?? null
-  const extraMountPayment = latestPendingMountPayment ?? saleAndPayment?.extra_mount_payment ?? latestPaidMountPayment
   const customerChargeSummary = saleAndPayment?.customer_charges ?? null
+  const mountPaymentRecords = saleAndPayment?.mount_payments?.rows ?? []
+  const paymentHistoryRecords = [...mountPaymentRecords, ...(customerChargeSummary?.rows ?? [])]
+    .filter((payment, index, rows) => rows.findIndex((candidate) => String(candidate.id) === String(payment.id)) === index)
+    .sort((left, right) => Number(right.id ?? 0) - Number(left.id ?? 0))
+  const paidMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'paid')
+  const pendingMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'pending')
+  const cancelledMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'cancelled')
+  const latestPendingMountPayment = pendingMountPaymentRecords[0] ?? null
+  const latestPaidMountPayment = paidMountPaymentRecords[0] ?? null
+  const latestCancelledMountPayment = cancelledMountPaymentRecords[0] ?? null
+  const extraMountPayment = latestPendingMountPayment ?? saleAndPayment?.extra_mount_payment ?? latestPaidMountPayment
+  const paymentHistoryTotal = (rows: typeof paymentHistoryRecords) => rows.reduce((total, payment) => total + (Number(payment.amount) || 0), 0)
   const paymentSummary = saleAndPayment?.payment_summary ?? null
   const paymentSummaryMount = paymentSummary?.mount ?? null
   const paymentSummaryService = paymentSummary?.service ?? null
@@ -3456,9 +3483,9 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
           <div className="grid gap-2 sm:grid-cols-3">
-            <MiniMetric label="Toplam alınan ödeme" value={saleAndPayment?.mount_payments?.paid_total_amount_label ?? formatMoneyValue(saleAndPayment?.mount_payments?.paid_total_amount ?? 0)} />
-            <MiniMetric label="Bekleyen ödeme linkleri" value={saleAndPayment?.mount_payments?.pending_total_amount_label ?? formatMoneyValue(saleAndPayment?.mount_payments?.pending_total_amount ?? 0)} />
-            <MiniMetric label="İptal edilen linkler" value={cancelledOnlinePaymentLink ? (saleAndPayment?.mount_payments?.cancelled_total_amount_label ?? formatMoneyValue(saleAndPayment?.mount_payments?.cancelled_total_amount ?? 0)) : '0 TL'} />
+            <MiniMetric label="Toplam alınan ödeme" value={formatMoneyValue(paymentHistoryTotal(paidMountPaymentRecords))} />
+            <MiniMetric label="Bekleyen ödeme linkleri" value={formatMoneyValue(paymentHistoryTotal(pendingMountPaymentRecords))} />
+            <MiniMetric label="İptal edilen linkler" value={formatMoneyValue(paymentHistoryTotal(cancelledMountPaymentRecords))} />
           </div>
           <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
             <p className="font-semibold text-slate-900">Talep bilgisi</p>
@@ -6857,13 +6884,9 @@ export function ServiceRequestDetails({
             {onCustomerApprovalResend ? (
               <div className="flex flex-col gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="font-semibold">Müşteri onayı</p>
+                  <p className="font-semibold">Son mesaj durumu</p>
                   <p className="mt-1 text-xs text-violet-800">
-                    {latestCustomerApprovalDispatchStatus === 'sent'
-                      ? 'Son onay mesajı gönderildi.'
-                      : latestCustomerApprovalDispatchStatus !== ''
-                        ? 'Son onay mesajı gönderilemedi veya bastırıldı.'
-                        : 'Gerekirse yeni onay linki oluşturup müşteriye tekrar gönderin.'}
+                    {latestCustomerApprovalMessageStatusLabel}
                   </p>
                   {latestCustomerApprovalRequest?.created_at ? (
                     <p className="mt-1 text-[11px] font-semibold text-violet-700">

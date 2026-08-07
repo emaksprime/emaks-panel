@@ -23,6 +23,7 @@ use App\Services\Messaging\TechnicalServiceMessageDispatchStatusRegistry;
 use App\Services\Messaging\TechnicalServiceMessageIdempotencyService;
 use App\Services\Messaging\TechnicalServiceMessageProviderRouter;
 use App\Services\Messaging\TechnicalServiceMessageRateLimitService;
+use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
@@ -3817,7 +3818,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_provider_payload_selected_nac_smoke_uses_direct_laravel_dispatch_body_and_stores_pkgid(): void
+    public function test_provider_suffix_is_not_part_of_application_template(): void
     {
         $global = $this->activateManualE2EContext();
         Http::fake([
@@ -3847,6 +3848,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue((bool) data_get($dispatch->provider_response_redacted, 'provider_payload_body_matches_dispatch'));
         $this->assertSame('9053***633', data_get($dispatch->provider_response_redacted, 'provider_request_target_phone'));
         $this->assertSame('customer', data_get($dispatch->provider_response_redacted, 'provider_request_target_type'));
+        $this->assertStringNotContainsString('B028', $body);
         $this->assertStringNotContainsString('nac-pass', json_encode($dispatch->provider_response_redacted, JSON_THROW_ON_ERROR));
         Http::assertSent(fn ($request): bool => $request->url() === 'https://nac.example.test/sms/create'
             && $request['number'] === 905372081633
@@ -3860,6 +3862,183 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue($detail['provider_payload_body_matches_dispatch']);
         $this->assertSame(data_get($dispatch->provider_response_redacted, 'provider_payload_body_hash'), $detail['provider_payload_body_hash']);
         $this->assertSame($body, $detail['provider_request_preview']);
+    }
+
+    public function test_preview_dispatch_and_provider_sms_body_match(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake([
+            'https://nac.example.test/sms/create' => Http::response(['err' => null, 'data' => ['pkgID' => 884422]], 200),
+        ]);
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update([
+            'message_types' => [
+                'mount_request_created_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'sms_only',
+                    'sms_mode' => 'test',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-TEMPLATE-AUTHORITY-001',
+            'customer_name' => 'Şablon Yetki Müşterisi',
+            'customer_phone' => '905399999999',
+            'product_name' => 'Yetki Test Ürünü',
+        ]);
+        $templateService = app(TechnicalServiceMessageTemplateService::class);
+        $templateService->save([
+            'message_type' => 'mount_request_created_customer',
+            'channel' => 'sms',
+            'body' => "EMAKS Prime\n{customer_reference_phrase} montaj talebiniz alındı.\nÜrün: {product_name}\nOperasyon ekibimiz sizinle iletişime geçecektir.",
+        ]);
+        $preview = $templateService->preview([
+            'message_type' => 'mount_request_created_customer',
+            'channel' => 'sms',
+            'request_id' => $request->id,
+            'sample_context' => false,
+        ]);
+
+        $summary = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+            $request,
+            'mount_request_created_customer',
+            'customer',
+            actor: $this->admin(),
+        );
+        $dispatch = TechnicalServiceMessageDispatch::query()->findOrFail($summary['dispatches'][0]['id']);
+
+        $this->assertSame(1, $summary['queued']);
+        $this->assertSame($preview['rendered_body'], $dispatch->bodyForProvider());
+        $this->assertSame('db_template', data_get($dispatch->request_payload, 'template_source'));
+        app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            options: ['outbound_worker_owner' => $owner],
+        );
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->fresh()->status);
+        Http::assertSent(fn ($providerRequest): bool => $providerRequest->url() === 'https://nac.example.test/sms/create'
+            && $providerRequest['content'] === $preview['rendered_body']);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_segment_limit_never_silently_substitutes_template(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update([
+            'message_types' => [
+                'mount_request_created_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'sms_only',
+                    'sms_mode' => 'test',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-LONG-TEMPLATE-001']);
+        app(TechnicalServiceMessageTemplateService::class)->save([
+            'message_type' => 'mount_request_created_customer',
+            'channel' => 'sms',
+            'body' => "EMAKS Prime\n{customer_reference_phrase}\nÜrün: {product_name}\n".str_repeat('Bu kayıt admin şablonundan gelir ve sessizce değiştirilemez. ', 20),
+        ]);
+
+        $dispatch = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
+            $request,
+            'mount_request_created_customer',
+            'customer',
+            'Uygulama tarafından uydurulmuş kısa fallback.',
+            actor: $this->admin(),
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->status);
+        $this->assertSame('template_blocked', $dispatch->last_error_code);
+        $this->assertStringNotContainsString('uydurulmuş kısa fallback', $dispatch->bodyForProvider());
+        $this->assertSame(0, $dispatch->attempt_count);
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_earning_update_dispatches_enabled_technician_channels(): void
+    {
+        config([
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.partner_portal.public_url' => 'http://10.0.28.64:8000',
+        ]);
+        Http::fake(fn ($providerRequest) => str_contains($providerRequest->url(), 'nac.example.test')
+            ? Http::response(['err' => null, 'data' => ['pkgID' => 778899]], 200)
+            : Http::response(['messageId' => 'EVO-EARNING-778899'], 200));
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update([
+            'message_types' => [
+                'earnings_message_technician' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Hakediş Kanal Ustası',
+            'phone_e164' => '+905399999999',
+            'city' => 'Sentetik Şehir',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'EARNING-CHANNEL-PARTNER',
+            'display_name' => 'Hakediş Kanal Partneri',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-EARNING-CHANNEL-001',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $summary = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+            $request,
+            'earnings_message_technician',
+            'technician',
+            [
+                'labor_amount_formatted' => '3.000,00 TL',
+                'route_fee_formatted' => '150,00 TL',
+                'technician_earning_total_formatted' => '3.150,00 TL',
+            ],
+            $this->admin(),
+        );
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'earnings_message_technician')
+            ->orderBy('id')
+            ->get();
+        $this->assertSame(2, $summary['queued']);
+        $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->sort()->values()->all());
+        foreach ($dispatches as $dispatch) {
+            $this->assertStringContainsString('3.150,00 TL', $dispatch->bodyForProvider());
+        }
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 2,
+            'outbound_worker_owner' => $owner,
+        ]);
+        $this->assertSame(2, $result['count']);
+        $this->assertSame(2, $dispatches->fresh()->whereIn('status', TechnicalServiceMessageDispatch::SUCCESS_STATUSES)->count());
+        Http::assertSentCount(2);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 
     public function test_queue_processor_processes_only_selected_dispatch_ids(): void

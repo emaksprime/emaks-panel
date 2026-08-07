@@ -625,21 +625,34 @@ class PartnerServiceJobController extends Controller
         ]);
 
         [$action, $dispatchSummary] = DB::transaction(function () use ($job, $partner, $user, $data): array {
-            TechnicalServiceCustomerConfirmation::query()
+            $job = TechnicalServiceRequest::query()->whereKey($job->id)->lockForUpdate()->firstOrFail();
+            $confirmation = TechnicalServiceCustomerConfirmation::query()
                 ->where('technical_service_request_id', $job->id)
-                ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
-                ->update(['status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED]);
+                ->where(function ($query): void {
+                    $query->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED)
+                        ->orWhere(function ($pending): void {
+                            $pending->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+                                ->where(function ($valid): void {
+                                    $valid->whereNull('expires_at')->orWhere('expires_at', '>', now());
+                                });
+                        });
+                })
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
 
-            $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
-                'technical_service_request_id' => $job->id,
-                'token' => Str::random(64),
-                'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
-                'payload' => [
-                    'partner_id' => $partner->id,
-                    'requested_by_user_id' => $user->id,
-                    'technical_service_technician_id' => $job->technical_service_technician_id,
-                ],
-            ]);
+            if (! $confirmation instanceof TechnicalServiceCustomerConfirmation) {
+                $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+                    'technical_service_request_id' => $job->id,
+                    'token' => Str::random(64),
+                    'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+                    'payload' => [
+                        'partner_id' => $partner->id,
+                        'requested_by_user_id' => $user->id,
+                        'technical_service_technician_id' => $job->technical_service_technician_id,
+                    ],
+                ]);
+            }
             $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
             $publicUrlWarning = PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
                 ? 'Müşteri onay linki telefondan açılabilir public URL gerektirir. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.'
@@ -691,10 +704,15 @@ class PartnerServiceJobController extends Controller
                 ],
             );
             $dispatchSummary = $this->dispatchSummary($dispatch);
+            $canonicalMessageText = $dispatch->bodyForProvider();
             $messagePayload = [
                 ...($action->payload['message_payload'] ?? []),
                 ...$dispatchSummary,
                 'dispatch_id' => $dispatch->id,
+                'message_text' => $canonicalMessageText,
+                'approval_url' => $approvalUrl,
+                'confirmation_url' => $approvalUrl,
+                'whatsapp_url' => 'https://wa.me/'.$this->normalizedPhoneForWa($job->customer_phone).'?text='.rawurlencode($canonicalMessageText),
             ];
 
             $actionPayload = [

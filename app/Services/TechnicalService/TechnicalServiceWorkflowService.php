@@ -3481,12 +3481,15 @@ class TechnicalServiceWorkflowService
         }
         $messageTemplate = TechnicalServiceUiLabelService::cleanDisplayText($payload['message_template'] ?? null);
         $paymentUrl = (string) ($payment->payment_url ?? '');
+        $providerDecision = is_array($payload['provider_decision'] ?? null) ? $payload['provider_decision'] : [];
+        $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
+        $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
         $messageText = trim((string) ($messageTemplate ?: 'Emaks Prime servis/parça ödemeniz için bağlantı aşağıdadır.'));
         if ($paymentUrl !== '' && ! str_contains($messageText, $paymentUrl)) {
             $messageText = trim($messageText)."\n\n".$paymentUrl;
         }
 
-        return [
+        return array_merge([
             'id' => $payment->id,
             'request_id' => $payment->technical_service_request_id,
             'mrn' => $payment->technicalServiceRequest?->mrn,
@@ -3501,9 +3504,24 @@ class TechnicalServiceWorkflowService
             'part_amount_label' => $this->moneyLabel($partAmount),
             'currency' => $payment->currency,
             'payment_url' => $payment->payment_url,
+            'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'provider' => $payment->provider,
+            'provider_mode' => $payload['provider_mode'] ?? $providerDecision['provider_mode'] ?? ($payment->provider === 'fake' ? 'local' : ($payload['provider_environment'] ?? null)),
+            'provider_transport' => $payload['provider_transport'] ?? $providerDecision['provider_transport'] ?? ($payment->provider === 'fake' ? 'fake_local' : null),
+            'provider_token' => $payment->provider_reference,
             'provider_reference' => $payment->provider_reference,
+            'provider_payment_reference' => $payment->provider_payment_reference,
+            'provider_transaction_reference' => $payment->provider_transaction_reference,
+            'provider_receipt_reference' => $payment->provider_receipt_reference,
+            'provider_status' => $providerGatewaySync['provider_status']
+                ?? $providerGateway['provider_status']
+                ?? $providerGatewaySync['raw_status']
+                ?? $providerGateway['raw_status']
+                ?? $payment->status,
             'paid_at' => $this->dateTimeString($payment->paid_at),
+            'cancelled_at' => $payload['cancelled_at'] ?? null,
+            'cancelled_by_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancelled_by_name'] ?? null),
+            'cancellation_reason' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancellation_reason'] ?? null),
             'purpose' => $payload['purpose'] ?? $payload['charge_type'] ?? null,
             'purpose_label' => $this->customerChargePurposeLabel((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')),
             'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
@@ -3512,7 +3530,15 @@ class TechnicalServiceWorkflowService
             'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
             'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
                 ?? $messageState['last_message_sent_at'],
-        ];
+            'source' => $payload['source'] ?? null,
+            'readonly' => in_array($payment->status, [
+                TechnicalServiceMountPayment::STATUS_PAID,
+                TechnicalServiceMountPayment::STATUS_CANCELLED,
+            ], true),
+            'can_cancel' => $payment->status === TechnicalServiceMountPayment::STATUS_PENDING,
+            'created_at' => $this->dateTimeString($payment->created_at),
+            'updated_at' => $this->dateTimeString($payment->updated_at),
+        ], TechnicalServicePaymentActionPresenter::forPayment($payment));
     }
 
     /**

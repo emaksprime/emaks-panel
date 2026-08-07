@@ -458,6 +458,38 @@ class TechnicalServicePaymentProviderSettingsService
             ];
         }
 
+        if (! $this->companyRecipientAddressReady()) {
+            return [
+                'status' => 'company_recipient_address_missing',
+                'label' => 'Firma adresi eksik',
+                'message' => self::COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE,
+            ];
+        }
+
+        if (! $this->ipWhitelistConfirmed()) {
+            return [
+                'status' => 'ip_whitelist_unverified',
+                'label' => 'IP doğrulaması bekliyor',
+                'message' => 'Iyzico IP whitelist doğrulaması tamamlanmadan provider hazırlığı Hazır sayılamaz.',
+            ];
+        }
+
+        if (! $this->backUrlReadyForLive()) {
+            return [
+                'status' => 'back_url_unverified',
+                'label' => 'Back URL eksik',
+                'message' => 'Public HTTPS Back URL ve callback route doğrulanmadan provider hazırlığı Hazır sayılamaz.',
+            ];
+        }
+
+        if (! $this->connectionVerificationReady($this->providerMode())) {
+            return [
+                'status' => 'connection_unverified',
+                'label' => 'Bağlantı doğrulanmadı',
+                'message' => 'Seçili Iyzico modu için başarılı bağlantı doğrulaması kaydı bulunmuyor.',
+            ];
+        }
+
         if ($this->providerMode() === 'live' && ! $this->liveSendApproved()) {
             return [
                 'status' => 'live_send_approval_missing',
@@ -584,6 +616,8 @@ class TechnicalServicePaymentProviderSettingsService
      */
     private function readinessPayload(string $providerMode, bool $canEnable, ?string $disabledReason): array
     {
+        $operationalBlockers = $this->operationalReadinessBlockers($providerMode);
+
         return [
             'effective_mode' => $this->effectiveModeKey($this->realProviderEnabled(), $providerMode),
             'selected_provider' => $this->configuredProvider(),
@@ -608,10 +642,35 @@ class TechnicalServicePaymentProviderSettingsService
             'back_url_ready' => $this->backUrlReadyForLive(),
             'callback_route_ready' => $this->callbackRouteExists(),
             'live_readiness_ready' => $this->liveOperationalReadinessReady(),
+            'connection_verification_ready' => $this->connectionVerificationReady($providerMode),
+            'operational_readiness_ready' => $operationalBlockers === [],
+            'operational_blockers' => $operationalBlockers,
             'can_enable_real_provider' => $canEnable,
             'disabled_reason' => $disabledReason,
             'next_required_action' => $canEnable ? 'Sandbox gerçek ödeme sağlayıcısı yerel kontrollü test için hazır.' : $this->nextRequiredAction($providerMode),
         ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function operationalReadinessBlockers(string $providerMode): array
+    {
+        return array_values(array_filter([
+            $this->companyRecipientAddressReady() ? null : self::COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE,
+            $this->ipWhitelistConfirmed() ? null : 'Iyzico IP whitelist doğrulaması bekliyor.',
+            $this->backUrlReadyForLive() ? null : 'Public HTTPS Back URL / callback doğrulaması bekliyor.',
+            $this->connectionVerificationReady($providerMode) ? null : 'Iyzico bağlantı doğrulaması bekliyor.',
+        ]));
+    }
+
+    private function connectionVerificationReady(string $providerMode): bool
+    {
+        $credential = $this->credentialService->credentialPayload($this->normalizeMode($providerMode));
+        $status = strtolower(trim((string) ($credential['last_verification_status'] ?? '')));
+
+        return ($credential['last_verified_at'] ?? null) !== null
+            && in_array($status, ['passed', 'success', 'verified'], true);
     }
 
     /**

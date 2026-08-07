@@ -409,6 +409,18 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringNotContainsString('TERMINAL_PAYMENT_NOT_REUSABLE', $source);
     }
 
+    public function test_approval_state_is_not_overwritten_by_message_status(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('<MiniMetric label="Müşteri onayı" value={closureApprovalLabel}', $source);
+        $this->assertStringContainsString('const latestCustomerApprovalMessageStatusLabel = (() =>', $source);
+        $this->assertStringContainsString('<p className="font-semibold">Son mesaj durumu</p>', $source);
+        $this->assertStringContainsString('{latestCustomerApprovalMessageStatusLabel}', $source);
+        $this->assertStringContainsString("return 'Bastırıldı'", $source);
+        $this->assertStringNotContainsString('<p className="font-semibold">Müşteri onayı</p>\n                  <p className="mt-1 text-xs text-violet-800">', $source);
+    }
+
     public function test_current_srv_earning_must_be_selected_before_completion(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');

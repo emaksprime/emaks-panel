@@ -62,6 +62,38 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_admin_sms_template_is_single_body_authority(): void
+    {
+        Http::fake();
+        $firstBody = "EMAKS Prime\n{customer_reference_phrase} montaj talebiniz alındı.\nÜrün: {product_name}\nİlk sürüm";
+        $currentBody = "EMAKS Prime\n{customer_reference_phrase} montaj talebiniz alındı.\nÜrün: {product_name}\nOperasyon ekibimiz sizinle iletişime geçecektir.";
+
+        foreach ([$firstBody, $currentBody] as $body) {
+            $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates', [
+                    'message_type' => 'mount_request_created_customer',
+                    'channel' => 'sms',
+                    'body' => $body,
+                ])
+                ->assertOk();
+        }
+
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'mount_request_created_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Operasyon ekibimiz sizinle iletişime geçecektir.', $preview);
+        $this->assertStringNotContainsString('İlk sürüm', $preview);
+        $this->assertSame(1, TechnicalServiceMessageTemplate::query()->where('active', true)->count());
+        $this->assertSame([1, 2], TechnicalServiceMessageTemplate::query()->orderBy('version')->pluck('version')->all());
+        Http::assertNothingSent();
+    }
+
     public function test_template_preview_endpoint_renders_default_sample_context(): void
     {
         $this->actingAs($this->admin())

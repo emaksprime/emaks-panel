@@ -841,31 +841,15 @@ export type ServiceRequestMountPaymentSummary = {
   has_cancelled?: boolean
 }
 
-export type ServiceRequestCustomerCharge = {
-  id?: number | string | null
-  request_id?: number | string | null
-  mrn?: string | null
+export type ServiceRequestCustomerCharge = ServiceRequestExtraMountPayment & {
   service_code?: string | null
-  status?: string | null
-  status_label?: string | null
-  amount?: number | null
-  amount_label?: string | null
   service_amount?: number | null
   service_amount_label?: string | null
   part_amount?: number | null
   part_amount_label?: string | null
-  currency?: string | null
-  payment_url?: string | null
-  provider?: string | null
-  provider_reference?: string | null
-  paid_at?: string | null
-  purpose?: string | null
   purpose_label?: string | null
-  note?: string | null
   message_template?: string | null
   message_text?: string | null
-  message_send_count?: number | null
-  last_message_sent_at?: string | null
 }
 
 export type ServiceRequestCustomerChargeSummary = {

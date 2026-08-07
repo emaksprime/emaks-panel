@@ -9,7 +9,7 @@ class IyzicoLinkRequestFactory
     private const DEFAULT_IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function linkBody(array $payload): array
@@ -22,9 +22,9 @@ class IyzicoLinkRequestFactory
             'price' => number_format((float) ($payload['amount'] ?? 0), 2, '.', ''),
             'currencyCode' => strtoupper((string) ($payload['currency'] ?? 'TRY')),
             'encodedImageFile' => $this->encodedImageFile(),
-            // Iyzico Link checkout should not ask the buyer for address in this flow.
-            // Any fallback provider address would be request-compatibility data only, not CRM truth.
-            'addressIgnorable' => true,
+            // Hosted checkout collects its required buyer address; local customer or technician
+            // addresses are not substituted for the company collection authority.
+            'addressIgnorable' => false,
             'installmentRequested' => false,
             'stockEnabled' => false,
             'categoryType' => 'UNKNOWN',
@@ -32,7 +32,7 @@ class IyzicoLinkRequestFactory
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function description(array $payload): string
     {
@@ -66,7 +66,7 @@ class IyzicoLinkRequestFactory
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function providerToken(array $payload): ?string
     {

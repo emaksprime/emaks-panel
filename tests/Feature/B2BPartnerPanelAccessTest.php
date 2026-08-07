@@ -7489,7 +7489,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNull($job->technician_completed_at);
     }
 
-    public function test_customer_approval_link_is_required_for_partner_completion(): void
+    public function test_approval_url_is_absolute_and_whatsapp_clickable(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
@@ -7579,15 +7579,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
             'id' => $oldConfirmation->id,
-            'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
-        ]);
-        $this->post("/service-job-confirmation/{$oldConfirmation->token}/approve")
-            ->assertStatus(410)
-            ->assertSee('Bu onay bağlantısı artık geçerli değil', false)
-            ->assertDontSee('Laravel', false);
-        $this->assertDatabaseMissing('technical_service_partner_job_actions', [
-            'technical_service_request_id' => $job->id,
-            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
         ]);
 
         $confirmation = TechnicalServiceCustomerConfirmation::query()
@@ -7595,6 +7587,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
             ->latest('id')
             ->firstOrFail();
+        $this->assertSame($oldConfirmation->id, $confirmation->id);
         $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
         $messageText = (string) ($confirmation->payload['message_payload']['message_text'] ?? '');
         $this->assertStringContainsString('Özel onay mesajı', $messageText);
@@ -7604,6 +7597,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
         $confirmationUrl = "https://portal.test/service-job-confirmation/{$confirmation->token}";
         $this->assertSame($confirmationUrl, $confirmation->payload['message_payload']['confirmation_url'] ?? null);
+        $this->assertSame('https', parse_url($confirmationUrl, PHP_URL_SCHEME));
+        $whatsappUrl = (string) ($confirmation->payload['message_payload']['whatsapp_url'] ?? '');
+        $this->assertStringStartsWith('https://wa.me/', $whatsappUrl);
+        $this->assertStringContainsString($confirmationUrl, rawurldecode($whatsappUrl));
         $this->assertSame(1, substr_count($messageText, "\n{$confirmationUrl}"));
         $this->assertDoesNotMatchRegularExpression('/[\x{200B}-\x{200D}\x{FEFF}]/u', $messageText);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $confirmation->payload['message_payload']['dispatch_status'] ?? null);
@@ -7651,7 +7648,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'customer_note' => 'Tekrar onay denemesi.',
         ])
             ->assertOk()
-            ->assertSee('Teşekkür ederiz', false)
+            ->assertSee('Bu montaj onayı daha önce alınmıştır.', false)
             ->assertDontSee('Laravel', false);
         $job->refresh();
         $this->assertNull($job->completed_at);
@@ -8841,7 +8838,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
     }
 
-    public function test_ops_can_resend_customer_approval_with_new_token_and_force_whatsapp_dispatch(): void
+    public function test_approval_ui_whatsapp_sms_share_one_canonical_url(): void
     {
         config([
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
@@ -8854,6 +8851,59 @@ class B2BPartnerPanelAccessTest extends TestCase
         Http::fake([
             'https://n8n.test/*' => Http::response(['message' => 'Workflow was started'], 200),
         ]);
+        $messaging = app(TechnicalServiceMessagingSettingsService::class);
+        $messaging->update([
+            'messaging_enabled' => true,
+            'real_send_enabled' => false,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '905467647428',
+            'customer_test_phone' => '905467647428',
+            'manual_e2e_allowlisted_phones' => ['905467647428'],
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'approval-url-test',
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
+                'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
+            ],
+            'message_types' => [
+                'customer_approval_request' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        foreach ([
+            [TechnicalServiceMessagingSettingsService::PAGE_CODE, TechnicalServiceMessagingSettingsService::ROOT_KEY],
+            [TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY],
+        ] as [$pageCode, $root]) {
+            $page = PageConfig::query()->where('page_code', $pageCode)->firstOrFail();
+            $layout = (array) $page->layout_json;
+            foreach (['evo_whatsapp', 'nac_sms'] as $provider) {
+                Arr::set($layout, $root.'.providers.'.$provider, [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'test_send_allowed' => true,
+                    'notes' => 'Fake canonical approval URL provider.',
+                ]);
+            }
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
+        $messaging->saveEvoWhatsappCredentials(['api_key' => 'approval-url-test-key']);
+        $messaging->saveNacSmsCredentials(['username' => 'approval-url-user', 'password' => 'approval-url-password']);
 
         $admin = $this->userWithRole('admin', true);
         $partner = $this->partner([
@@ -8891,7 +8941,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
             'id' => $oldConfirmation->id,
-            'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
         ]);
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'technical_service_request_id' => $job->id,
@@ -8903,6 +8953,26 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('technical_service_request_id', $job->id)
             ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
             ->count());
+        $canonicalUrl = "https://panel.test/service-job-confirmation/{$oldConfirmation->token}";
+        $action = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
+            ->latest('id')
+            ->firstOrFail();
+        $confirmation = $oldConfirmation->fresh();
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('message_type', 'customer_approval_request')
+            ->orderBy('id')
+            ->get();
+
+        $this->assertSame($canonicalUrl, data_get($action->payload, 'approval_url'));
+        $this->assertSame($canonicalUrl, data_get($action->payload, 'message_payload.approval_url'));
+        $this->assertSame($canonicalUrl, data_get($confirmation->payload, 'message_payload.confirmation_url'));
+        $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->sort()->values()->all());
+        foreach ($dispatches as $dispatch) {
+            $this->assertSame(1, substr_count($dispatch->bodyForProvider(), $canonicalUrl));
+        }
         Http::assertNothingSent();
     }
 

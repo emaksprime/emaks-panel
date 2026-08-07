@@ -4,6 +4,7 @@ namespace App\Services\Messaging;
 
 use App\Models\TechnicalServiceMessageTemplate;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceMessageTemplateService
@@ -110,25 +111,30 @@ class TechnicalServiceMessageTemplateService
             throw ValidationException::withMessages(['body' => 'Şablon yasak değişken içeriyor.']);
         }
 
-        $latestVersion = (int) TechnicalServiceMessageTemplate::query()
-            ->where('template_key', $templateKey)
-            ->max('version');
+        $record = DB::transaction(function () use ($templateKey, $template): TechnicalServiceMessageTemplate {
+            $latest = TechnicalServiceMessageTemplate::query()
+                ->where('template_key', $templateKey)
+                ->latest('version')
+                ->lockForUpdate()
+                ->first();
+            $latestVersion = (int) ($latest?->version ?? 0);
 
-        TechnicalServiceMessageTemplate::query()
-            ->where('template_key', $templateKey)
-            ->where('active', true)
-            ->update([
-                'active' => false,
-                'superseded_at' => now(),
+            TechnicalServiceMessageTemplate::query()
+                ->where('template_key', $templateKey)
+                ->where('active', true)
+                ->update([
+                    'active' => false,
+                    'superseded_at' => now(),
+                    'updated_by' => Auth::id(),
+                ]);
+
+            return TechnicalServiceMessageTemplate::query()->create([
+                ...$template,
+                'version' => max(1, $latestVersion + 1),
+                'created_by' => Auth::id(),
                 'updated_by' => Auth::id(),
             ]);
-
-        $record = TechnicalServiceMessageTemplate::query()->create([
-            ...$template,
-            'version' => max(1, $latestVersion + 1),
-            'created_by' => Auth::id(),
-            'updated_by' => Auth::id(),
-        ]);
+        });
 
         return [
             'template' => $this->templatePayload($record->toArray(), false),

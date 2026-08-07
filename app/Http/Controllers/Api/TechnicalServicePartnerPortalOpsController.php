@@ -986,7 +986,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         ]);
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $request, $validated): array {
-            $job = $technicalServiceRequest->refresh();
+            $job = TechnicalServiceRequest::query()->whereKey($technicalServiceRequest->id)->lockForUpdate()->firstOrFail();
             $partnerId = $this->partnerIdForRequest($job);
 
             if ($partnerId === null) {
@@ -995,22 +995,34 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ]);
             }
 
-            TechnicalServiceCustomerConfirmation::query()
+            $confirmation = TechnicalServiceCustomerConfirmation::query()
                 ->where('technical_service_request_id', $job->id)
-                ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
-                ->update(['status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED]);
+                ->where(function ($query): void {
+                    $query->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED)
+                        ->orWhere(function ($pending): void {
+                            $pending->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+                                ->where(function ($valid): void {
+                                    $valid->whereNull('expires_at')->orWhere('expires_at', '>', now());
+                                });
+                        });
+                })
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
 
-            $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
-                'technical_service_request_id' => $job->id,
-                'token' => Str::random(64),
-                'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
-                'payload' => [
-                    'partner_id' => $partnerId,
-                    'requested_by_user_id' => $request->user()?->id,
-                    'technical_service_technician_id' => $job->technical_service_technician_id,
-                    'source' => 'ops_resend',
-                ],
-            ]);
+            if (! $confirmation instanceof TechnicalServiceCustomerConfirmation) {
+                $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+                    'technical_service_request_id' => $job->id,
+                    'token' => Str::random(64),
+                    'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+                    'payload' => [
+                        'partner_id' => $partnerId,
+                        'requested_by_user_id' => $request->user()?->id,
+                        'technical_service_technician_id' => $job->technical_service_technician_id,
+                        'source' => 'ops_resend',
+                    ],
+                ]);
+            }
 
             $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
             $publicUrlWarning = ! $this->workflowMessages->publicUrlReadyForDispatch($approvalUrl)
@@ -1074,11 +1086,15 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ],
             );
             $dispatchSummary = $this->dispatchSummary($dispatch);
+            $canonicalMessageText = $dispatch->bodyForProvider();
             $actionPayload = is_array($action->payload) ? $action->payload : [];
             $messagePayload = [
                 ...($actionPayload['message_payload'] ?? []),
                 ...$dispatchSummary,
                 'dispatch_id' => $dispatch->id,
+                'message_text' => $canonicalMessageText,
+                'approval_url' => $approvalUrl,
+                'confirmation_url' => $approvalUrl,
             ];
             $action->forceFill([
                 'payload' => [

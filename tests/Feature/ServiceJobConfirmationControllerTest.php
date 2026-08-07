@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -42,7 +44,7 @@ class ServiceJobConfirmationControllerTest extends TestCase
             ->assertDontSee('Laravel', false);
     }
 
-    public function test_service_job_confirmation_already_approved_is_idempotent_or_friendly(): void
+    public function test_repeated_approved_link_shows_already_approved_without_second_transition(): void
     {
         $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
             'technical_service_request_id' => $this->request()->id,
@@ -52,12 +54,19 @@ class ServiceJobConfirmationControllerTest extends TestCase
             'payload' => [],
         ]);
 
+        $eventCount = TechnicalServiceRequestEvent::query()->count();
+        $actionCount = TechnicalServicePartnerJobAction::query()->count();
+
         $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
             'customer_note' => 'Tekrar onay denemesi.',
         ])
             ->assertOk()
-            ->assertSee('Teşekkür ederiz', false)
+            ->assertSee('Bu montaj onayı daha önce alınmıştır.', false)
             ->assertDontSee('Laravel', false);
+
+        $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_APPROVED, $confirmation->fresh()->status);
+        $this->assertSame($eventCount, TechnicalServiceRequestEvent::query()->count());
+        $this->assertSame($actionCount, TechnicalServicePartnerJobAction::query()->count());
     }
 
     private function request(): TechnicalServiceRequest

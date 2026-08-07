@@ -2603,7 +2603,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(0.0, (float) $payload['sale_and_payment']['mount_payments']['cancelled_total_amount']);
     }
 
-    public function test_new_additional_payment_is_not_blocked_by_old_terminal_payment(): void
+    public function test_additional_payment_not_blocked_by_old_terminal_payment(): void
     {
         config(['services.public_urls.payment_base_url' => 'https://dashboard.test']);
         $request = $this->technicalServiceRequest();
@@ -2637,6 +2637,53 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('service_payment', data_get($payment->raw_payload, 'purpose'));
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, TechnicalServiceMountPayment::query()->findOrFail($terminalId)->status);
+    }
+
+    public function test_root_and_part_payment_use_same_manager(): void
+    {
+        config(['services.public_urls.payment_base_url' => 'https://dashboard.test']);
+        $request = $this->technicalServiceRequest();
+        $this->mountSessionForRequest($request);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+            'part_name' => 'Canonical manager test parçası',
+            'quantity' => 1,
+            'metadata' => ['charge_decision' => 'chargeable'],
+        ]);
+
+        $root = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'amount' => '300.00',
+                'currency' => 'TRY',
+                'purpose' => 'manual_mount_payment',
+                'reason' => 'manual_extra',
+            ])
+            ->assertCreated();
+        $part = $this->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+            'service_amount' => '0.00',
+            'part_amount' => '450.00',
+            'currency' => 'TRY',
+            'purpose' => 'part_payment',
+            'reason' => 'part_payment',
+            'part_request_id' => $partRequest->id,
+        ])->assertCreated();
+
+        $rootPayment = TechnicalServiceMountPayment::query()->findOrFail($root->json('payment.id'));
+        $partPayment = TechnicalServiceMountPayment::query()->findOrFail($part->json('payment.id'));
+        $this->assertSame('fake', $rootPayment->provider);
+        $this->assertSame($rootPayment->provider, $partPayment->provider);
+        $this->assertSame('operation_extra_mount_fee', data_get($rootPayment->raw_payload, 'source'));
+        $this->assertSame('operation_customer_charge', data_get($partPayment->raw_payload, 'source'));
+        $this->assertSame($partRequest->id, data_get($partPayment->raw_payload, 'part_request_id'));
+
+        $controller = file_get_contents(app_path('Http/Controllers/Api/TechnicalServiceController.php'));
+        $methodStart = strpos($controller, 'public function createExtraMountFeePayment(');
+        $methodEnd = strpos($controller, 'public function mountPaymentStatus(', $methodStart);
+        $this->assertIsInt($methodStart);
+        $this->assertIsInt($methodEnd);
+        $method = substr($controller, $methodStart, $methodEnd - $methodStart);
+        $this->assertSame(1, substr_count($method, '$paymentProviderManager->createPayment($payment)'));
     }
 
     public function test_extra_payment_multiple_payment_state_can_create_additional_pending_link_without_increasing_collected_total(): void
@@ -3230,7 +3277,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertMatchesRegularExpression('/onClick=\\{\\(\\)=>voidhandlePendingPaymentCancel\\(payment,?\\)\\}/', $compactSource);
     }
 
-    public function test_action_buttons_use_can_open_payment_url_can_copy_payment_url_can_cancel_payment_flags(): void
+    public function test_payment_modal_preserves_open_copy_cancel_history_actions(): void
     {
         $presenter = file_get_contents(app_path('Services/TechnicalService/TechnicalServicePaymentActionPresenter.php'));
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));

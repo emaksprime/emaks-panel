@@ -185,30 +185,26 @@ class TechnicalServiceWorkflowMessageDispatchService
                 'context' => $context,
             ]);
             $blockers = array_values((array) ($preview['blockers'] ?? []));
-            $fallbackBody = trim((string) ($options['fallback_body'] ?? ''));
             if ($blockers !== [] || ! (bool) ($preview['preview_ready'] ?? false)) {
-                if ($fallbackBody === '') {
-                    $summary = $this->addBlockedDispatch(
-                        $summary,
-                        [
-                            ...$baseInput,
-                            'payload' => [
-                                ...((array) ($baseInput['payload'] ?? [])),
-                                'template_blockers' => $blockers,
-                            ],
+                $summary = $this->addBlockedDispatch(
+                    $summary,
+                    [
+                        ...$baseInput,
+                        'payload' => [
+                            ...((array) ($baseInput['payload'] ?? [])),
+                            'template_blockers' => $blockers,
                         ],
-                        $actor,
-                        'template_blocked',
-                        implode(' ', $blockers) ?: 'Şablon önizleme bloklu.',
-                    );
+                    ],
+                    $actor,
+                    'template_blocked',
+                    implode(' ', $blockers) ?: 'Şablon önizleme bloklu.',
+                );
 
-                    continue;
-                }
+                continue;
             }
 
             $template = (array) ($preview['template'] ?? []);
-            $usingFallbackBody = ($blockers !== [] || ! (bool) ($preview['preview_ready'] ?? false)) && $fallbackBody !== '';
-            $body = $usingFallbackBody ? $fallbackBody : (string) ($preview['rendered_body'] ?? '');
+            $body = (string) ($preview['rendered_body'] ?? '');
             $businessEventId = $this->businessEventId($request, $messageType, $sourceAction, $body, $options + [
                 'channel' => $channel,
                 'event_version' => $options['event_version'] ?? null,
@@ -225,10 +221,8 @@ class TechnicalServiceWorkflowMessageDispatchService
                     'rendered_body' => $body,
                     'message_text' => $body,
                     'business_event_id' => $businessEventId,
-                    'template_source' => $usingFallbackBody
-                        ? 'explicit_queue_body'
-                        : ((bool) ($template['is_default'] ?? false) ? 'default_registry' : 'db_template'),
-                    'template_blockers' => $usingFallbackBody ? $blockers : [],
+                    'template_source' => (bool) ($template['is_default'] ?? false) ? 'default_registry' : 'db_template',
+                    'template_blockers' => [],
                     'sms' => $preview['sms'] ?? null,
                 ],
                 'metadata' => [
@@ -236,11 +230,8 @@ class TechnicalServiceWorkflowMessageDispatchService
                     'business_event_id' => $businessEventId,
                     'warnings' => [
                         ...array_values((array) ($preview['warnings'] ?? [])),
-                        ...($usingFallbackBody ? ['Şablon context eksik olduğu için hazır kuyruk metni kullanıldı.'] : []),
                     ],
-                    'template_source' => $usingFallbackBody
-                        ? 'explicit_queue_body'
-                        : ((bool) ($template['is_default'] ?? false) ? 'default_registry' : 'db_template'),
+                    'template_source' => (bool) ($template['is_default'] ?? false) ? 'default_registry' : 'db_template',
                 ],
             ], $actor);
 

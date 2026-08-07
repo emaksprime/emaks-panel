@@ -37,7 +37,7 @@ class ServiceJobConfirmationController extends Controller
         $state = $this->state($confirmation);
 
         if ($state === 'approved') {
-            return response($this->html($confirmation->refresh(), 'approved'));
+            return response($this->html($confirmation->refresh(), 'already_approved'));
         }
 
         if ($state !== 'pending') {
@@ -139,7 +139,7 @@ class ServiceJobConfirmationController extends Controller
             ],
         ]);
 
-        return response($this->html($confirmation->refresh(), 'approved'));
+        return response($this->html($confirmation->refresh(), 'approved_now'));
     }
 
     public function reject(Request $request, string $token): Response
@@ -277,17 +277,19 @@ class ServiceJobConfirmationController extends Controller
     private function html(TechnicalServiceCustomerConfirmation $confirmation, string $state): string
     {
         $job = $confirmation->request;
-        $approved = $state === 'approved';
+        $approved = in_array($state, ['approved', 'approved_now', 'already_approved'], true);
+        $alreadyApproved = in_array($state, ['approved', 'already_approved'], true);
         $rejected = $state === 'rejected';
         $expired = $state === 'expired';
         $title = $approved
-            ? 'Montaj onayınız alındı'
+            ? ($alreadyApproved ? 'Montaj onayı daha önce alındı' : 'Montaj onayınız alındı')
             : ($rejected ? 'Montaj onayı reddedildi' : ($expired ? 'Onay bağlantısı geçerli değil' : 'Montaj onayı'));
         $approvalText = (string) config('services.evolution.customer_approval_text');
         $legalNote = (string) config('services.evolution.customer_approval_legal_note');
         $approveAction = route('service-job-confirmation.approve', ['token' => $confirmation->token], false);
         $rejectAction = route('service-job-confirmation.reject', ['token' => $confirmation->token], false);
         $button = match (true) {
+            $alreadyApproved => '<div class="success"><strong>Bu montaj onayı daha önce alınmıştır.</strong><br>İkinci bir durum değişikliği oluşturulmadı.</div>',
             $approved => '<div class="success"><strong>Montaj onayınız alınmıştır.</strong><br>Teşekkür ederiz. Operasyon ekibi süreci kontrol edecektir.</div>',
             $rejected => '<div class="danger"><strong>Geri bildiriminiz alınmıştır.</strong><br>Operasyon ekibimiz sizinle iletişime geçecektir.</div>',
             $expired => '<div class="danger"><strong>Bu onay bağlantısı artık geçerli değil.</strong><br>Yeni bağlantı gerekiyorsa operasyon ekibimizle iletişime geçin.</div>',

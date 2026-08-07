@@ -448,7 +448,7 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonPath('settings.back_url.global_back_url', 'http://127.0.0.1:8000/mount-payment/iyzico/callback');
     }
 
-    public function test_live_readiness_blocked_when_ip_whitelist_is_unconfirmed(): void
+    public function test_payment_readiness_is_false_when_required_ip_not_verified(): void
     {
         config([
             'payments.iyzico.live_send_approved' => true,
@@ -456,9 +456,21 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         ]);
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'provider_mode' => 'live',
+            'company_recipient' => [
+                'company_address' => 'Sentetik firma tahsilat adresi',
+            ],
+        ]);
         Route::post('/test/iyzico-callback', fn () => response()->json(['ok' => true]))
             ->name('mount-payment.callback');
         Route::getRoutes()->refreshNameLookups();
+
+        $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->assertJsonPath('settings.health_status.status', 'ip_whitelist_unverified')
+            ->assertJsonPath('settings.readiness.operational_readiness_ready', false);
 
         $this->actingAs($this->admin())
             ->patchJson('/api/technical-service/payment-provider-settings', [
@@ -471,7 +483,7 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ]);
     }
 
-    public function test_live_readiness_blocked_when_back_url_is_not_public_https_even_with_callback_route(): void
+    public function test_payment_readiness_is_false_when_callback_missing(): void
     {
         config([
             'payments.iyzico.live_send_approved' => true,
@@ -480,6 +492,19 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         ]);
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'provider_mode' => 'live',
+            'company_recipient' => [
+                'company_address' => 'Sentetik firma tahsilat adresi',
+            ],
+        ]);
+
+        $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->assertJsonPath('settings.health_status.status', 'back_url_unverified')
+            ->assertJsonPath('settings.readiness.back_url_ready', false)
+            ->assertJsonPath('settings.readiness.operational_readiness_ready', false);
 
         $this->actingAs($this->admin())
             ->patchJson('/api/technical-service/payment-provider-settings', [
@@ -532,7 +557,8 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonPath('settings.real_provider_enabled', true)
             ->assertJsonPath('settings.readiness.provider_send_ready', true)
             ->assertJsonPath('settings.back_url.ready', false)
-            ->assertJsonPath('settings.readiness.live_readiness_ready', false);
+            ->assertJsonPath('settings.readiness.live_readiness_ready', false)
+            ->assertJsonPath('settings.readiness.operational_readiness_ready', false);
     }
 
     public function test_settings_status_shows_gateway_and_credentials_missing_without_secrets(): void
