@@ -30,7 +30,8 @@ class TechnicalServicePaymentActionPresenter
         ));
         $isFakeProvider = $provider === 'fake' || $providerTransport === 'fake_local';
         $isIyzicoProvider = $provider === 'iyzico' || $providerTransport === 'direct_laravel';
-        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
+        $storedPaymentUrl = trim((string) ($payment->payment_url ?? ''));
+        $paymentUrl = $storedPaymentUrl;
         $publicUrlBlockerCode = null;
         try {
             $paymentUrl = $isIyzicoProvider
@@ -54,12 +55,17 @@ class TechnicalServicePaymentActionPresenter
         $canCopy = $paymentUrl !== '';
         $canFakeComplete = $isFakeProvider && $isPending && $fakeApproveUrl !== null;
         $canOpenProviderUrl = ! $isFakeProvider && $isPending && $paymentUrl !== '';
+        $canOpen = $isPending && $paymentUrl !== '';
+        $canCopyPending = $isPending && $paymentUrl !== '';
+        $canSend = $isPending && $paymentUrl !== '' && (float) $payment->amount > 0;
+        $canCheck = $isPending && $isIyzicoProvider && trim((string) $payment->provider_reference) !== '';
+        $canCancel = $isPending;
         $actionKind = 'none';
         $actionLabel = null;
         $disabledReason = null;
         $copyDisabledReason = $canCopy
             ? null
-            : ($publicUrlBlockerCode === null ? 'Kopyalanacak link yok.' : 'Kayıtlı ödeme linki güvenli biçimde çözümlenemedi.');
+            : ($storedPaymentUrl === '' ? 'Ödeme bağlantısı bu kayıt için bulunamadı.' : 'Kayıtlı ödeme linki güvenli biçimde çözümlenemedi.');
         $providerLabel = self::providerLabel($provider, $providerMode, $providerTransport);
 
         if ($canFakeComplete) {
@@ -73,16 +79,24 @@ class TechnicalServicePaymentActionPresenter
         } elseif ($isCancelled) {
             $disabledReason = 'Ödeme linki iptal edildi.';
         } elseif ($paymentUrl === '') {
-            $disabledReason = $publicUrlBlockerCode === null
-                ? 'Ödeme linki henüz hazır değil.'
+            $disabledReason = $storedPaymentUrl === ''
+                ? 'Ödeme bağlantısı bu kayıt için bulunamadı.'
                 : 'Kayıtlı ödeme linki güvenli biçimde çözümlenemedi.';
         } elseif ($isFakeProvider) {
             $disabledReason = 'Fake ödeme simülasyonu bu ekranda kapalı.';
         }
 
         return [
+            'canonical_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'status' => $payment->status,
             'payment_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'can_open' => $canOpen,
+            'can_copy' => $canCopyPending,
+            'can_send' => $canSend,
+            'can_check' => $canCheck,
+            'can_cancel' => $canCancel,
+            'disabled_reason' => $disabledReason,
             'provider' => $provider !== '' ? $provider : null,
             'provider_mode' => $providerMode !== '' ? $providerMode : null,
             'provider_transport' => $providerTransport !== '' ? $providerTransport : null,
@@ -108,7 +122,7 @@ class TechnicalServicePaymentActionPresenter
             'can_open_payment_url' => $canOpenProviderUrl,
             'can_copy_payment_url' => $canCopy,
             'can_fake_complete_payment' => $canFakeComplete,
-            'can_cancel_payment' => $isPending,
+            'can_cancel_payment' => $canCancel,
             'payment_action_kind' => $actionKind,
             'payment_action_label' => $actionLabel,
             'payment_action_disabled_reason' => $disabledReason,

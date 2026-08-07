@@ -914,6 +914,14 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('payment.is_external_provider', true)
             ->assertJsonPath('payment.payment_action_kind', 'open_provider_url')
             ->assertJsonPath('payment.payment_action_label', 'Iyzico ödeme ekranını aç')
+            ->assertJsonPath('payment.canonical_url', 'https://sandbox-payment.example.test/direct-copy-token')
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->assertJsonPath('payment.can_open', true)
+            ->assertJsonPath('payment.can_copy', true)
+            ->assertJsonPath('payment.can_send', true)
+            ->assertJsonPath('payment.can_check', true)
+            ->assertJsonPath('payment.can_cancel', true)
+            ->assertJsonPath('payment.disabled_reason', null)
             ->assertJsonPath('payment.can_open_payment_url', true)
             ->assertJsonPath('payment.can_fake_complete_payment', false)
             ->assertJsonPath('payment.copy_disabled_reason', null)
@@ -948,10 +956,36 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ],
         ]);
         $blocked = TechnicalServicePaymentActionPresenter::forPayment($gatewayProvenanceOnly);
+        $this->assertNull($blocked['canonical_url']);
         $this->assertNull($blocked['payment_url']);
         $this->assertNull($blocked['copy_url']);
+        $this->assertFalse($blocked['can_open']);
+        $this->assertFalse($blocked['can_copy']);
+        $this->assertFalse($blocked['can_send']);
+        $this->assertTrue($blocked['can_check']);
+        $this->assertTrue($blocked['can_cancel']);
+        $this->assertSame('Kayıtlı ödeme linki güvenli biçimde çözümlenemedi.', $blocked['disabled_reason']);
         $this->assertFalse($blocked['can_open_payment_url']);
         $this->assertSame('LEGACY_PUBLIC_URL_ORIGIN_NOT_ALLOWED', $blocked['public_url_blocker_code']);
+
+        $missingUrl = (new TechnicalServiceMountPayment)->forceFill([
+            'provider' => 'iyzico',
+            'provider_reference' => 'missing-url-token',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 150,
+            'currency' => 'TRY',
+            'payment_url' => null,
+            'raw_payload' => [
+                'provider_mode' => 'sandbox',
+                'provider_transport' => 'direct_laravel',
+            ],
+        ]);
+        $missing = TechnicalServicePaymentActionPresenter::forPayment($missingUrl);
+        $this->assertNull($missing['canonical_url']);
+        $this->assertSame('Ödeme bağlantısı bu kayıt için bulunamadı.', $missing['disabled_reason']);
+        $this->assertFalse($missing['can_open']);
+        $this->assertFalse($missing['can_copy']);
+        $this->assertFalse($missing['can_send']);
     }
 
     public function test_extra_mount_fee_payment_link_reuses_existing_pending_session(): void

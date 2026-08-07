@@ -1277,13 +1277,14 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_payment_link_send_button_and_amount_steps_are_queue_safe_in_frontend_source(): void
     {
         $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx')) ?: '';
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
         $compactDetailSource = preg_replace('/\s+/', '', $detailSource) ?? $detailSource;
 
-        $this->assertStringContainsString('Linki gönder', $detailSource);
+        $this->assertStringContainsString('Linki gönder', $actionsSource);
         $this->assertStringContainsString('onMountPaymentSend(payment.id, { resend_reason: resendReason })', $detailSource);
         $this->assertStringContainsString('placeholder="Yeniden gönderim nedeni"', $detailSource);
-        $this->assertStringContainsString('Ödeme linkini neden kaydıyla yeniden gönder', $detailSource);
+        $this->assertStringContainsString('Yeniden gönderim nedeni en az 3 karakter olmalıdır.', $detailSource);
         $this->assertStringContainsString('/payments/${paymentId}/send-link', $pageSource);
         $this->assertStringContainsString('step="1"', $detailSource);
         $this->assertStringContainsString('inputMode="decimal"', $detailSource);
@@ -1306,15 +1307,17 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_payment_card_actions_standard_pending_link_card_shows_open_copy_send_actions(): void
     {
         $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx')) ?: '';
         $standardPendingCardStart = strpos($detailSource, 'label="Bekleyen link"');
 
         $this->assertNotFalse($standardPendingCardStart);
 
         $standardPendingCard = substr($detailSource, (int) $standardPendingCardStart, 5000);
 
-        $this->assertStringContainsString('Ödeme linkini aç', $standardPendingCard);
-        $this->assertStringContainsString('Linki kopyala', $standardPendingCard);
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\(\s*extraMountPayment\s*,?\s*\)/', $standardPendingCard);
+        $this->assertStringContainsString('renderPendingPaymentLinkActions(extraMountPayment, pendingPaymentSurface)', $standardPendingCard);
+        $this->assertStringContainsString('Linki aç', $actionsSource);
+        $this->assertStringContainsString('Linki kopyala', $actionsSource);
+        $this->assertStringContainsString('Linki gönder', $actionsSource);
     }
 
     public function test_technical_service_detail_dialog_has_accessible_description(): void

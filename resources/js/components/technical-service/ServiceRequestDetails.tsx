@@ -6,17 +6,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import { PendingPaymentLinkActions, canonicalPendingPaymentUrl } from './PendingPaymentLinkActions'
+import type { PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
 type OpsDoorPhotoType = 'ops_door_front_photo' | 'ops_door_side_photo' | 'ops_door_back_photo' | 'ops_door_photo'
 type OpsExtraDocumentType = 'ops_extra_photo' | OpsDoorPhotoType | 'ops_additional_document'
 
-type PaymentLinkSendTarget = {
-  id?: number | string | null
-  status?: string | null
-  payment_url?: string | null
-  copy_url?: string | null
+type PaymentLinkSendTarget = PendingPaymentLinkActionPayment & {
   amount?: number | null
   message_send_count?: number | null
   last_message_sent_at?: string | null
@@ -1583,6 +1581,7 @@ export function ServiceRequestDetails({
   const documentInfo = request.documentInfo ?? null
   const invoiceSerials = request.invoiceSerials ?? null
   const serviceVisitHistory = request.serviceVisitHistory ?? null
+  const pendingPaymentSurface: PendingPaymentLinkSurface = serviceVisitHistory?.service_code ? 'child-srv' : 'root-mrn'
   const partnerPortalActions = request.partnerPortalActions ?? []
   const adminOverrides = request.adminOverrides ?? []
   const pendingAdminOverrides = adminOverrides.filter((override) => override.status === 'pending')
@@ -2906,7 +2905,7 @@ export function ServiceRequestDetails({
       setRouteFeeEditorMessage(null)
     }
   }
-  const handlePendingPaymentCancel = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
+  const handlePendingPaymentCancel = async (payment: PaymentLinkSendTarget) => {
     if (!payment.id) {
       setPaymentCancelError('İptal edilecek ödeme kaydı bulunamadı.')
 
@@ -2937,7 +2936,7 @@ export function ServiceRequestDetails({
       setPaymentCancelInFlight(null)
     }
   }
-  const handlePendingPaymentSync = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
+  const handlePendingPaymentSync = async (payment: PaymentLinkSendTarget) => {
     if (!payment.id) {
       setPaymentCancelError('Kontrol edilecek ödeme kaydı bulunamadı.')
 
@@ -2982,7 +2981,7 @@ export function ServiceRequestDetails({
       const resendReason = paymentResendReasons[String(payment.id)]?.trim() || null
 
       await onMountPaymentSend(payment.id, { resend_reason: resendReason })
-      setRouteFeeEditorMessage('Ödeme linki müşteriye gönderilmek üzere kuyruğa alındı.')
+      setRouteFeeEditorMessage('Ödeme bağlantısı müşteriye gönderim kuyruğuna alındı.')
     } catch (caught) {
       setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme linki müşteriye gönderilemedi.')
     } finally {
@@ -3006,16 +3005,30 @@ export function ServiceRequestDetails({
       return 'Yalnızca bekleyen ödeme linki müşteriye gönderilebilir.'
     }
 
+    if (!onMountPaymentSend) {
+      return 'Ödeme linki mesaj kuyruğu servisi bağlı değil.'
+    }
+
     return null
   }
-  const renderPaymentLinkSendAction = (payment: PaymentLinkSendTarget | null | undefined) => {
+  const renderPendingPaymentLinkActions = (
+    payment: PaymentLinkSendTarget | null | undefined,
+    surface: PendingPaymentLinkSurface,
+  ) => {
+    if (!payment) {
+      return null
+    }
+
     const blocker = paymentLinkSendBlocker(payment)
     const paymentId = payment?.id ?? null
     const sendCount = Math.max(0, Number(payment?.message_send_count ?? 0))
     const resendReason = paymentId === null ? '' : paymentResendReasons[String(paymentId)] ?? ''
+    const resendReasonBlocker = sendCount > 0 && resendReason.trim().length < 3
+      ? 'Yeniden gönderim nedeni en az 3 karakter olmalıdır.'
+      : null
 
     return (
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+      <div className="grid min-w-0 gap-2">
         {sendCount > 0 && paymentId !== null ? (
           <Input
             className="h-8 min-w-[220px] flex-1"
@@ -3025,16 +3038,20 @@ export function ServiceRequestDetails({
             aria-label="Ödeme linki yeniden gönderim nedeni"
           />
         ) : null}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={Boolean(blocker) || paymentSendInFlight === paymentId || (sendCount > 0 && resendReason.trim().length < 3)}
-          title={blocker ?? (sendCount > 0 ? 'Ödeme linkini neden kaydıyla yeniden gönder' : 'Ödeme linkini müşteriye WhatsApp ve SMS kuyruğuna al')}
-          onClick={() => payment && void handlePendingPaymentSend(payment)}
-        >
-          {paymentSendInFlight === paymentId ? 'Kuyruğa alınıyor...' : sendCount > 0 ? 'Yeniden gönder' : 'Linki gönder'}
-        </Button>
+        <PendingPaymentLinkActions
+          payment={payment}
+          surface={surface}
+          copyFeedback={renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))}
+          sendLabel={sendCount > 0 ? 'Yeniden gönder' : 'Linki gönder'}
+          sendDisabledReason={blocker ?? resendReasonBlocker}
+          sendBusy={paymentSendInFlight === paymentId}
+          checkBusy={paymentSyncInFlight === paymentId}
+          cancelBusy={paymentCancelInFlight === paymentId}
+          onCopy={(canonicalUrl) => void copyPaymentLinkValue(canonicalUrl, 'Ödeme bağlantısı kopyalandı.')}
+          onSend={onMountPaymentSend ? () => void handlePendingPaymentSend(payment) : undefined}
+          onCheck={onMountPaymentSync ? () => void handlePendingPaymentSync(payment) : undefined}
+          onCancel={onMountPaymentCancel ? () => void handlePendingPaymentCancel(payment) : undefined}
+        />
       </div>
     )
   }
@@ -3357,7 +3374,7 @@ export function ServiceRequestDetails({
     void onOperationControlChange?.({ [key]: value } as Partial<NonNullable<ServiceRequest['operationControl']>>)
   }
   const whatsappHref = whatsappHrefForPhone(request.phone)
-  const latestCustomerChargePaymentUrl = latestCustomerCharge?.payment_url ?? ''
+  const latestCustomerChargePaymentUrl = paymentLinkCopyUrl(latestCustomerCharge)
   const customerChargeDefaultMessage = latestCustomerCharge?.message_text
     ?? latestCustomerCharge?.message_template
     ?? (latestCustomerChargePaymentUrl
@@ -3417,26 +3434,22 @@ export function ServiceRequestDetails({
             <div className="grid gap-2 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
               <p className="font-semibold">Son ödeme linki: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
               <p>Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
-              {latestCustomerChargePaymentUrl ? (
+              {latestCustomerCharge.status === 'pending' ? (
                 <>
-                  <input
-                    readOnly
-                    value={latestCustomerChargePaymentUrl}
-                    className="w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-950"
-                  />
+                  {latestCustomerChargePaymentUrl ? (
+                    <input
+                      readOnly
+                      value={latestCustomerChargePaymentUrl}
+                      className="w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-950"
+                    />
+                  ) : null}
                   <textarea
                     readOnly
                     value={customerChargeMessageText}
                     className="min-h-24 w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-950"
                   />
+                  {renderPendingPaymentLinkActions(latestCustomerCharge, 'part-request')}
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerChargePaymentUrl, 'Link kopyalandı.')}>
-                      Linki kopyala
-                    </Button>
-                    {renderPaymentLinkSendAction(latestCustomerCharge)}
-                    <Button asChild type="button" size="sm" variant="outline">
-                      <a href={latestCustomerChargePaymentUrl} target="_blank" rel="noreferrer">Linki aç</a>
-                    </Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(customerChargeMessageText, 'Mesaj metni kopyalandı.')}>
                       Mesaj metnini kopyala
                     </Button>
@@ -3631,70 +3644,12 @@ export function ServiceRequestDetails({
                     <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
                     <Badge variant="outline">Bekliyor</Badge>
                   </div>
-                  {paymentLinkCopyUrl(payment) ? (
-                    <>
-                      <p className="break-all text-amber-900">{paymentLinkCopyUrl(payment)}</p>
-                      {payment.payment_action_kind === 'open_provider_url' ? (
-                        <p className="text-amber-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
-                      ) : null}
-                      {renderPaymentProviderReferences(payment)}
-                      <div className="flex flex-wrap gap-2">
-                        <Button asChild type="button" size="sm" variant="outline">
-                          <a href={paymentLinkCopyUrl(payment)} target="_blank" rel="noreferrer">
-                            Ödeme linkini aç
-                          </a>
-                        </Button>
-                        <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}>
-                          Linki kopyala
-                        </Button>
-                        {renderPaymentLinkSendAction(payment)}
-                        {payment.is_external_provider ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={paymentSyncInFlight === payment.id}
-                            onClick={() => void handlePendingPaymentSync(payment)}
-                          >
-                            {paymentSyncInFlight === payment.id ? 'Kontrol ediliyor...' : 'Durumu Kontrol Et'}
-                          </Button>
-                        ) : null}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="destructive"
-                          disabled={paymentCancelInFlight === payment.id}
-                          onClick={() => void handlePendingPaymentCancel(payment)}
-                        >
-                          {paymentCancelInFlight === payment.id ? 'İptal ediliyor...' : 'İptal et'}
-                        </Button>
-                      </div>
-                      {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))}
-                    </>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {payment.is_external_provider ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={paymentSyncInFlight === payment.id}
-                          onClick={() => void handlePendingPaymentSync(payment)}
-                        >
-                          {paymentSyncInFlight === payment.id ? 'Kontrol ediliyor...' : 'Durumu Kontrol Et'}
-                        </Button>
-                      ) : null}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="destructive"
-                        disabled={paymentCancelInFlight === payment.id}
-                        onClick={() => void handlePendingPaymentCancel(payment)}
-                      >
-                        {paymentCancelInFlight === payment.id ? 'İptal ediliyor...' : 'İptal et'}
-                      </Button>
-                    </div>
-                  )}
+                  {paymentLinkCopyUrl(payment) ? <p className="break-all text-amber-900">{paymentLinkCopyUrl(payment)}</p> : null}
+                  {payment.payment_action_kind === 'open_provider_url' ? (
+                    <p className="text-amber-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
+                  ) : null}
+                  {renderPaymentProviderReferences(payment)}
+                  {renderPendingPaymentLinkActions(payment, 'payment-modal')}
                 </div>
               ))}
             </div>
@@ -4435,7 +4390,7 @@ export function ServiceRequestDetails({
     return result.copied
   }
 
-  async function copyPaymentLinkValue(value: string | null | undefined, successMessage = 'Link kopyalandı.') {
+  async function copyPaymentLinkValue(value: string | null | undefined, successMessage = 'Ödeme bağlantısı kopyalandı.') {
     const text = String(value ?? '').trim()
 
     if (text === '') {
@@ -4455,7 +4410,7 @@ export function ServiceRequestDetails({
   }
 
   function paymentLinkCopyUrl(payment: PaymentLinkSendTarget | null | undefined): string {
-    return String(payment?.copy_url ?? payment?.payment_url ?? '').trim()
+    return payment ? canonicalPendingPaymentUrl(payment) : ''
   }
 
   function renderPaymentLinkCopyFeedback(value: string | null | undefined) {
@@ -5169,16 +5124,10 @@ export function ServiceRequestDetails({
             <div className="grid gap-2 rounded-2xl border border-blue-100 bg-white/80 p-3 text-xs text-blue-900">
               <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
               <p>Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
-              {latestCustomerCharge.payment_url ? (
+              {latestCustomerCharge.status === 'pending' ? (
                 <div className="grid gap-2">
-                  <div className="flex flex-wrap gap-2">
-                    <Button asChild size="sm" variant="outline">
-                      <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
-                    </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
-                    {renderPaymentLinkSendAction(latestCustomerCharge)}
-                  </div>
-                  {renderCustomerChargeCopyFeedback(latestCustomerCharge.payment_url)}
+                  {latestCustomerChargePaymentUrl ? <p className="break-all">{latestCustomerChargePaymentUrl}</p> : null}
+                  {renderPendingPaymentLinkActions(latestCustomerCharge, 'part-request')}
                 </div>
               ) : null}
             </div>
@@ -5480,16 +5429,10 @@ export function ServiceRequestDetails({
                   <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
                     <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
                     <p className="mt-1">Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
-                    {latestCustomerCharge.payment_url ? (
+                    {latestCustomerCharge.status === 'pending' ? (
                       <div className="mt-2 grid gap-2">
-                        <div className="flex flex-wrap gap-2">
-                          <Button asChild size="sm" variant="outline">
-                            <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
-                          </Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
-                          {renderPaymentLinkSendAction(latestCustomerCharge)}
-                        </div>
-                        {renderCustomerChargeCopyFeedback(latestCustomerCharge.payment_url)}
+                        {latestCustomerChargePaymentUrl ? <p className="break-all">{latestCustomerChargePaymentUrl}</p> : null}
+                        {renderPendingPaymentLinkActions(latestCustomerCharge, 'part-request')}
                       </div>
                     ) : null}
                   </div>
@@ -5687,31 +5630,26 @@ export function ServiceRequestDetails({
                     ) : null}
                   </div>
                 </div>
-                {activeCustomerDirectAmountLabel || companyPayableAmountLabel || companyCollectedAmountLabel || pendingPaymentTotalLabel || paymentLinkCopyUrl(extraMountPayment) ? (
+                {activeCustomerDirectAmountLabel || companyPayableAmountLabel || companyCollectedAmountLabel || pendingPaymentTotalLabel || extraMountPayment?.status === 'pending' ? (
                   <div className="grid gap-2 sm:grid-cols-3">
                     {shouldShowCustomerPaysTechnicianCard && activeCustomerDirectAmountLabel ? <MiniMetric label="Müşteriye bildirilecek tutar" value={activeCustomerDirectAmountLabel} /> : null}
                     {companyPayableAmountLabel ? <MiniMetric label="Şirket ödemesi" value={companyPayableAmountLabel} /> : null}
                     {companyCollectedAmountLabel && (payerStateKey === 'company_collected_online' || payerStateKey === 'company_collected_external') ? <MiniMetric label="Müşteri tahsilatı" value={companyCollectedAmountLabel} /> : null}
                     {pendingPaymentTotalLabel && payerStateKey === 'pending_online_payment' ? <MiniMetric label="Bekleyen tahsilat" value={pendingPaymentTotalLabel} /> : null}
-                    {paymentLinkCopyUrl(extraMountPayment) ? (
-                      <MiniMetric
-                        label="Bekleyen link"
-                        value={<span className="break-all">{paymentLinkCopyUrl(extraMountPayment)}</span>}
-                        hint={(
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button asChild type="button" size="sm" variant="outline">
-                              <a href={paymentLinkCopyUrl(extraMountPayment)} target="_blank" rel="noreferrer">
-                                Ödeme linkini aç
-                              </a>
-                            </Button>
-                            <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
-                              Linki kopyala
-                            </Button>
-                            {renderPaymentLinkSendAction(extraMountPayment)}
-                            {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(extraMountPayment))}
-                          </div>
-                        )}
-                      />
+                    {extraMountPayment?.status === 'pending' ? (
+                      <div
+                        data-testid="technical-service-pending-payment-block"
+                        data-payment-context={pendingPaymentSurface}
+                        className="grid gap-2 sm:col-span-3"
+                      >
+                        <MiniMetric
+                          label="Bekleyen link"
+                          value={paymentLinkCopyUrl(extraMountPayment)
+                            ? <span className="break-all">{paymentLinkCopyUrl(extraMountPayment)}</span>
+                            : <span>{extraMountPayment.disabled_reason ?? 'Ödeme bağlantısı bu kayıt için bulunamadı.'}</span>}
+                          hint={renderPendingPaymentLinkActions(extraMountPayment, pendingPaymentSurface)}
+                        />
+                      </div>
                     ) : null}
                   </div>
                 ) : null}
@@ -5809,10 +5747,17 @@ export function ServiceRequestDetails({
                   const showShipmentInputs = (partRequest.status === 'approved' || partRequest.status === 'ordered') && canShipPart
                   const partRequestPaymentId = partRequest.payment_id ?? partRequest.customer_charge?.id ?? null
                   const partRequestPayment = customerChargeSummary?.rows?.find((payment) => String(payment.id) === String(partRequestPaymentId)) ?? null
-                  const partRequestPaymentUrl = paymentLinkCopyUrl(partRequestPayment) || partRequest.copy_url || partRequest.payment_url || ''
                   const partRequestPaymentStatus = partRequestPayment?.status ?? partRequest.customer_charge?.status
                   const partRequestPaymentPending = partRequestPaymentStatus === 'pending'
-                  const partRequestPaymentTerminal = ['cancelled', 'expired', 'failed'].includes(String(partRequestPaymentStatus))
+                  const partRequestPaymentAction: PaymentLinkSendTarget | null = partRequestPayment ?? (partRequestPaymentId ? {
+                    id: partRequestPaymentId,
+                    status: partRequestPaymentStatus,
+                    canonical_url: partRequest.copy_url ?? partRequest.payment_url ?? null,
+                    amount: partRequest.customer_charge?.amount ?? ((Number(partRequest.service_amount ?? 0) || 0) + (Number(partRequest.part_amount ?? 0) || 0)),
+                    message_send_count: partRequest.customer_charge?.message_send_count,
+                    last_message_sent_at: partRequest.customer_charge?.last_message_sent_at,
+                  } : null)
+                  const partRequestPaymentUrl = partRequestPaymentAction ? paymentLinkCopyUrl(partRequestPaymentAction) : ''
                   const transition = (status: string) => onPartRequestTransition?.(partRequest.id, {
                     status,
                     note: note || null,
@@ -5855,35 +5800,10 @@ export function ServiceRequestDetails({
                               {partRequest.customer_charge?.payment_reference || partRequest.payment_reference || partRequest.provider_reference ? (
                                 <p>Referans: {displayOrEmpty(partRequest.customer_charge?.payment_reference ?? partRequest.payment_reference ?? partRequest.provider_reference, '-')}</p>
                               ) : null}
-                              {partRequestPaymentUrl ? (
+                              {partRequestPaymentPending && partRequestPaymentAction ? (
                                 <div className="grid gap-2">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {partRequestPaymentTerminal ? (
-                                      <Button type="button" size="sm" variant="outline" disabled>Ödeme linkini aç</Button>
-                                    ) : (
-                                      <a href={partRequestPaymentUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
-                                    )}
-                                    <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequestPaymentUrl, 'Ödeme bağlantısı kopyalandı.')}>Linki kopyala</Button>
-                                    {renderPaymentLinkSendAction({
-                                      id: partRequestPaymentId,
-                                      status: partRequestPayment?.status ?? partRequest.customer_charge?.status ?? 'pending',
-                                      payment_url: partRequestPaymentUrl,
-                                      amount: partRequest.customer_charge?.amount ?? ((Number(partRequest.service_amount ?? 0) || 0) + (Number(partRequest.part_amount ?? 0) || 0)),
-                                      message_send_count: partRequestPayment?.message_send_count ?? partRequest.customer_charge?.message_send_count,
-                                      last_message_sent_at: partRequestPayment?.last_message_sent_at ?? partRequest.customer_charge?.last_message_sent_at,
-                                    })}
-                                    {partRequestPaymentPending && partRequestPayment?.is_external_provider ? (
-                                      <Button type="button" size="sm" variant="outline" disabled={paymentSyncInFlight === partRequestPayment.id} onClick={() => void handlePendingPaymentSync(partRequestPayment)}>
-                                        {paymentSyncInFlight === partRequestPayment.id ? 'Kontrol ediliyor...' : 'Durumu kontrol et'}
-                                      </Button>
-                                    ) : null}
-                                    {partRequestPaymentPending && partRequestPayment ? (
-                                      <Button type="button" size="sm" variant="destructive" disabled={paymentCancelInFlight === partRequestPayment.id} onClick={() => void handlePendingPaymentCancel(partRequestPayment)}>
-                                        {paymentCancelInFlight === partRequestPayment.id ? 'İptal ediliyor...' : 'İptal et'}
-                                      </Button>
-                                    ) : null}
-                                  </div>
-                                  {renderCustomerChargeCopyFeedback(partRequestPaymentUrl)}
+                                  {partRequestPaymentUrl ? <p className="break-all text-violet-800">{partRequestPaymentUrl}</p> : null}
+                                  {renderPendingPaymentLinkActions(partRequestPaymentAction, 'part-request')}
                                 </div>
                               ) : null}
                               {partRequest.is_payment_paid !== true ? (
@@ -6557,38 +6477,18 @@ export function ServiceRequestDetails({
                         placeholder="Usta yol hakedişi veya müşteri onayı için operasyon notu"
                       />
                     </label>
-                    {paymentLinkCopyUrl(extraMountPayment) ? (
+                    {extraMountPayment?.status === 'pending' ? (
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
                         <p className="font-semibold">
                           {extraMountPayment.status === 'paid' ? 'Ödeme onaylandı' : `${paymentProviderLabel(extraMountPayment)} ödeme linki`}
                         </p>
-                        <p className="mt-1 break-all">{paymentLinkCopyUrl(extraMountPayment)}</p>
+                        {paymentLinkCopyUrl(extraMountPayment) ? <p className="mt-1 break-all">{paymentLinkCopyUrl(extraMountPayment)}</p> : null}
                         {extraMountPayment.payment_action_kind === 'open_provider_url' ? (
                           <p className="mt-1 text-emerald-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
                         ) : null}
-                        <div className="mt-2 flex flex-wrap gap-2">
-                        <Button asChild type="button" size="sm" variant="outline">
-                          <a href={paymentLinkCopyUrl(extraMountPayment)} target="_blank" rel="noreferrer">
-                            Ödeme linkini aç
-                          </a>
-                        </Button>
-                        <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
-                          Linki kopyala
-                        </Button>
-                        {renderPaymentLinkSendAction(extraMountPayment)}
-                          {extraMountPayment.is_external_provider && extraMountPayment.status === 'pending' ? (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={paymentSyncInFlight === extraMountPayment.id}
-                              onClick={() => void handlePendingPaymentSync(extraMountPayment)}
-                            >
-                              {paymentSyncInFlight === extraMountPayment.id ? 'Kontrol ediliyor...' : 'Durumu Kontrol Et'}
-                            </Button>
-                          ) : null}
+                        <div className="mt-2">
+                          {renderPendingPaymentLinkActions(extraMountPayment, 'payment-modal')}
                         </div>
-                        {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(extraMountPayment))}
                       </div>
                     ) : null}
                     <div className="flex flex-wrap justify-end gap-2">

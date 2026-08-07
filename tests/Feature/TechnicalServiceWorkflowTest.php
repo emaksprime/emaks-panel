@@ -3153,10 +3153,10 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('{customerChargeModal}', $source);
         $this->assertStringContainsString('Mesaj metnini kopyala', $source);
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
-        $this->assertStringContainsString('const renderPaymentLinkSendAction', $source);
-        $this->assertGreaterThanOrEqual(6, substr_count($source, 'renderPaymentLinkSendAction('));
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*latestCustomerCharge\\s*,?\\s*\\)/', $source);
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*extraMountPayment\\s*,?\\s*\\)/', $source);
+        $this->assertStringContainsString('const renderPendingPaymentLinkActions', $source);
+        $this->assertGreaterThanOrEqual(6, substr_count($source, 'renderPendingPaymentLinkActions('));
+        $this->assertMatchesRegularExpression('/renderPendingPaymentLinkActions\\(\\s*latestCustomerCharge\\s*,?/', $source);
+        $this->assertMatchesRegularExpression('/renderPendingPaymentLinkActions\\(\\s*extraMountPayment\\s*,?/', $source);
         $this->assertStringContainsString('const partRequestPaymentId = partRequest.payment_id ?? partRequest.customer_charge?.id ?? null', $source);
         $this->assertStringContainsString('id: partRequestPaymentId', $source);
         $this->assertStringContainsString('Servis ödemesi', $source);
@@ -3312,13 +3312,17 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_payment_link_copy_button_uses_copy_url_and_clipboard_fallback(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx'));
         $clipboardSource = file_get_contents(resource_path('js/lib/clipboard.ts'));
 
         $this->assertIsString($source);
+        $this->assertIsString($actionsSource);
         $this->assertIsString($clipboardSource);
         $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard'", $source);
+        $this->assertStringContainsString("import { PendingPaymentLinkActions, canonicalPendingPaymentUrl } from './PendingPaymentLinkActions'", $source);
         $this->assertStringContainsString('function paymentLinkCopyUrl(', $source);
-        $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
+        $this->assertStringContainsString('canonicalPendingPaymentUrl(payment)', $source);
+        $this->assertStringContainsString('payment.canonical_url ?? payment.copy_url ?? payment.payment_url', $actionsSource);
         $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $clipboardSource);
         $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $clipboardSource);
         $this->assertStringContainsString('navigator.clipboard?.writeText', $clipboardSource);
@@ -3331,7 +3335,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("setPaymentLinkCopyMessage('Kopyalanacak link yok.')", $source);
         $this->assertStringContainsString('paymentLinkCopyTarget', $source);
         $this->assertStringContainsString('renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))', $source);
-        $this->assertStringContainsString('renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(extraMountPayment))', $source);
+        $this->assertStringContainsString('copyFeedback={renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))}', $source);
         $this->assertStringContainsString('paymentLinkManualCopyValue', $source);
         $this->assertStringContainsString('Otomatik kopyalanamadı;', $source);
         $this->assertStringNotContainsString('Manuel kopyalama', $source);
@@ -3349,8 +3353,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('Provider işlem referansı', $source);
         $this->assertStringContainsString('Dekont referansı', $source);
         $this->assertStringContainsString('Sağlayıcı tarafından dönmedi', $source);
-        $this->assertStringContainsString('Ödeme linkini aç', $source);
-        $this->assertStringContainsString('renderPaymentLinkSendAction(', $source);
+        $this->assertStringContainsString('Linki aç', $actionsSource);
+        $this->assertStringContainsString('Linki kopyala', $actionsSource);
+        $this->assertStringContainsString('Linki gönder', $actionsSource);
+        $this->assertStringContainsString('Durumu Kontrol Et', $actionsSource);
+        $this->assertStringContainsString('İptal et', $actionsSource);
+        $this->assertStringContainsString('renderPendingPaymentLinkActions(', $source);
+        $this->assertStringContainsString('Ödeme bağlantısı kopyalandı.', $source);
         $this->assertStringContainsString('copyPaymentLinkValue(', $source);
         $this->assertStringContainsString('paymentLinkCopyUrl(', $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}", $source);
@@ -3385,8 +3394,10 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_payment_link_modal_stays_inside_detail_dialog_focus_scope_and_uses_iyzico_open_copy_wording(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx'));
 
         $this->assertIsString($source);
+        $this->assertIsString($actionsSource);
         $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringNotContainsString("import { createPortal } from 'react-dom'", $source);
         $this->assertStringNotContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
@@ -3395,6 +3406,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('IyzicoSandboxödemeekranıaçılacak.', $compactSource);
         $this->assertStringContainsString('Ödemeyapıldıktansonradurumkontrolü/reconciliationilegüncellenecek.', $compactSource);
         $this->assertMatchesRegularExpression('/\\{renderPaymentProviderReferences\\(payment,?\\)\\}/', $compactSource);
+        $this->assertStringContainsString("renderPendingPaymentLinkActions(payment, 'payment-modal')", $source);
+        $this->assertStringContainsString('Linki aç', $actionsSource);
+        $this->assertStringContainsString('Linki kopyala', $actionsSource);
         $this->assertStringContainsString('{paymentLinkEditorModal}', $source);
         $this->assertStringNotContainsString('{paymentLinkEditorPortal}', $source);
     }
@@ -3402,30 +3416,39 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_pointer_events_restored_for_payment_modal_action_buttons(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx'));
 
         $this->assertIsString($source);
+        $this->assertIsString($actionsSource);
         $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
         $this->assertStringNotContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
         $this->assertStringContainsString('{paymentLinkEditorModal}', $source);
         $this->assertStringContainsString("payment.payment_action_kind==='open_provider_url'", $compactSource);
-        $this->assertStringContainsString('Ödeme linkini aç', $source);
-        $this->assertMatchesRegularExpression('/onClick=\\{\\(\\)=>voidcopyPaymentLinkValue\\(paymentLinkCopyUrl\\(payment,?\\),?\\)\\}/', $compactSource);
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(payment,?\\)/', $compactSource);
-        $this->assertMatchesRegularExpression('/onClick=\\{\\(\\)=>voidhandlePendingPaymentCancel\\(payment,?\\)\\}/', $compactSource);
+        $this->assertStringContainsString("renderPendingPaymentLinkActions(payment, 'payment-modal')", $source);
+        $this->assertStringContainsString('data-testid={`${testId}-open`}', $actionsSource);
+        $this->assertStringContainsString('data-testid={`${testId}-copy`}', $actionsSource);
+        $this->assertStringContainsString('data-testid={`${testId}-send`}', $actionsSource);
+        $this->assertStringContainsString('data-testid={`${testId}-check`}', $actionsSource);
+        $this->assertStringContainsString('data-testid={`${testId}-cancel`}', $actionsSource);
     }
 
     public function test_payment_modal_preserves_open_copy_cancel_history_actions(): void
     {
         $presenter = file_get_contents(app_path('Services/TechnicalService/TechnicalServicePaymentActionPresenter.php'));
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx'));
 
         $this->assertIsString($presenter);
         $this->assertIsString($source);
+        $this->assertIsString($actionsSource);
         $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString("'can_open_payment_url' => \$canOpenProviderUrl", $presenter);
         $this->assertStringContainsString("'can_copy_payment_url' => \$canCopy", $presenter);
-        $this->assertStringContainsString("'can_cancel_payment' => \$isPending", $presenter);
+        $this->assertStringContainsString("'can_cancel_payment' => \$canCancel", $presenter);
+        $this->assertStringContainsString("'canonical_url' => \$paymentUrl", $presenter);
+        $this->assertStringContainsString("'can_send' => \$canSend", $presenter);
+        $this->assertStringContainsString("'can_check' => \$canCheck", $presenter);
         $this->assertStringContainsString("'payment_action_kind' => \$actionKind", $presenter);
         $this->assertStringContainsString("'provider_payment_reference' => \$payment->provider_payment_reference", $presenter);
         $this->assertStringContainsString("'provider_transaction_reference' => \$payment->provider_transaction_reference", $presenter);
@@ -3434,11 +3457,11 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("'provider_sync_attempts' => (int) (\$payment->provider_sync_attempts ?? 0)", $presenter);
         $this->assertStringContainsString("'provider_sync_message' => \$syncWaiting", $presenter);
         $this->assertStringContainsString("payment.payment_action_kind==='open_provider_url'", $compactSource);
-        $this->assertStringContainsString('Ödeme linkini aç', $source);
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(payment,?\\)/', $compactSource);
+        $this->assertStringContainsString('Linki aç', $actionsSource);
+        $this->assertStringContainsString("renderPendingPaymentLinkActions(payment, 'payment-modal')", $source);
         $this->assertStringContainsString('payment?.provider_sync_message', $source);
         $this->assertMatchesRegularExpression('/handlePendingPaymentSync\\(payment,?\\)/', $compactSource);
-        $this->assertStringContainsString('Durumu Kontrol Et', $source);
+        $this->assertStringContainsString('Durumu Kontrol Et', $actionsSource);
 
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
         $this->assertIsString($pageSource);
@@ -6528,27 +6551,29 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_pending_link_shows_open_copy_send_cancel_actions(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx')) ?: '';
         $partCardStart = strpos($source, 'const partRequestPaymentId = partRequest.payment_id');
 
         $this->assertNotFalse($partCardStart);
         $partCard = substr($source, (int) $partCardStart, 9000);
-        $this->assertStringContainsString('Ödeme linkini aç', $partCard);
-        $this->assertStringContainsString('Linki kopyala', $partCard);
-        $this->assertStringContainsString('renderPaymentLinkSendAction({', $partCard);
-        $this->assertStringContainsString('Durumu kontrol et', $partCard);
-        $this->assertStringContainsString('İptal et', $partCard);
+        $this->assertStringContainsString("renderPendingPaymentLinkActions(partRequestPaymentAction, 'part-request')", $partCard);
+        $this->assertStringContainsString('Linki aç', $actionsSource);
+        $this->assertStringContainsString('Linki kopyala', $actionsSource);
+        $this->assertStringContainsString('Linki gönder', $actionsSource);
+        $this->assertStringContainsString('Durumu Kontrol Et', $actionsSource);
+        $this->assertStringContainsString('İptal et', $actionsSource);
         $this->assertStringContainsString('Ödeme alındı', $partCard);
-        $this->assertStringContainsString("['cancelled', 'expired', 'failed'].includes", $partCard);
-        $this->assertStringContainsString('variant="outline" disabled>Ödeme linkini aç', $partCard);
+        $this->assertStringContainsString('Ödeme bağlantısı bu kayıt için bulunamadı.', $actionsSource);
     }
 
     public function test_copy_action_copies_exact_canonical_url(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $actionsSource = file_get_contents(resource_path('js/components/technical-service/PendingPaymentLinkActions.tsx')) ?: '';
 
-        $this->assertStringContainsString('const partRequestPaymentUrl = paymentLinkCopyUrl(partRequestPayment)', $source);
-        $this->assertStringContainsString("copyCustomerChargeValue(partRequestPaymentUrl, 'Ödeme bağlantısı kopyalandı.')", $source);
-        $this->assertStringContainsString('payment_url: partRequestPaymentUrl', $source);
+        $this->assertStringContainsString('const partRequestPaymentUrl = partRequestPaymentAction ? paymentLinkCopyUrl(partRequestPaymentAction)', $source);
+        $this->assertStringContainsString("onCopy={(canonicalUrl) => void copyPaymentLinkValue(canonicalUrl, 'Ödeme bağlantısı kopyalandı.')}", $source);
+        $this->assertStringContainsString('payment.canonical_url ?? payment.copy_url ?? payment.payment_url', $actionsSource);
         $this->assertStringContainsString('Number(selectedManualPartPaymentRequest.total_amount ?? 0) - Number(selectedManualPartPaymentRequest.paid_amount ?? 0)', $source);
     }
 

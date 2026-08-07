@@ -768,8 +768,14 @@ export type ServiceRequestExtraMountPayment = {
   amount?: number | null
   amount_label?: string | null
   currency?: string | null
+  canonical_url?: string | null
   payment_url?: string | null
   copy_url?: string | null
+  can_open?: boolean
+  can_copy?: boolean
+  can_send?: boolean
+  can_check?: boolean
+  disabled_reason?: string | null
   provider?: string | null
   provider_mode?: string | null
   provider_transport?: string | null
