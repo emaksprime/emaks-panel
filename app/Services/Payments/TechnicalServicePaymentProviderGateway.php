@@ -62,8 +62,19 @@ class TechnicalServicePaymentProviderGateway
         return $this->send($this->buildRequest(PaymentProviderGatewayRequest::OPERATION_SYNC_STATUS, $payment));
     }
 
+    public function reconcilePayment(
+        TechnicalServiceMountPayment $payment,
+        string $providerPaymentReference,
+    ): PaymentProviderGatewayResponse {
+        return $this->send($this->buildRequest(
+            PaymentProviderGatewayRequest::OPERATION_RECONCILE_PAYMENT,
+            $payment,
+            ['provider_payment_reference' => trim($providerPaymentReference)],
+        ));
+    }
+
     /**
-     * @param array<string, mixed> $metadata
+     * @param  array<string, mixed>  $metadata
      */
     public function buildRequest(string $operation, TechnicalServiceMountPayment $payment, array $metadata = []): PaymentProviderGatewayRequest
     {
@@ -169,7 +180,7 @@ class TechnicalServicePaymentProviderGateway
     }
 
     /**
-     * @param array<string, mixed> $metadata
+     * @param  array<string, mixed>  $metadata
      * @return array<string, mixed>
      */
     private function safeMetadata(array $metadata): array

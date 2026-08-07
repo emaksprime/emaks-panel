@@ -4,6 +4,7 @@ namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
@@ -30,6 +31,274 @@ class TechnicalServicePaymentProviderReconciliationService
         return $this->gateway
             ->buildRequest(PaymentProviderGatewayRequest::OPERATION_SYNC_STATUS, $payment)
             ->toArray();
+    }
+
+    /**
+     * Read-only verification for an exact Iyzico payment result. Provider reads
+     * are allowed, but no local reconciliation state is written.
+     *
+     * @return array<string, mixed>
+     */
+    public function verifyExactProviderPaymentResult(
+        TechnicalServiceMountPayment $payment,
+        string $providerPaymentReference,
+    ): array {
+        return $this->exactProviderPaymentResult($payment, $providerPaymentReference)['proof'];
+    }
+
+    /**
+     * @return array{payment:TechnicalServiceMountPayment,proof:array<string,mixed>}
+     */
+    public function reconcileExactProviderPaymentResult(
+        TechnicalServiceMountPayment $payment,
+        string $providerPaymentReference,
+    ): array {
+        $result = $this->exactProviderPaymentResult($payment, $providerPaymentReference);
+        $providerResponse = $result['provider_response'];
+        $providerResponse['meta'] = array_merge(
+            is_array($providerResponse['meta'] ?? null) ? $providerResponse['meta'] : [],
+            ['exact_reconciliation' => $result['proof']],
+        );
+
+        return [
+            'payment' => $this->markPaidFromTrustedProvider($payment->fresh() ?? $payment, $providerResponse, false),
+            'proof' => $result['proof'],
+        ];
+    }
+
+    /**
+     * @return array{proof:array<string,mixed>,provider_response:array<string,mixed>}
+     */
+    private function exactProviderPaymentResult(
+        TechnicalServiceMountPayment $payment,
+        string $providerPaymentReference,
+    ): array {
+        $payment = $payment->fresh() ?? $payment;
+        $providerPaymentReference = trim($providerPaymentReference);
+        if ($providerPaymentReference === '') {
+            $this->exactReconciliationMismatch('provider_payment_reference_missing');
+        }
+        if (! in_array($payment->status, [
+            TechnicalServiceMountPayment::STATUS_PENDING,
+            TechnicalServiceMountPayment::STATUS_PAID,
+        ], true)) {
+            $this->exactReconciliationMismatch('local_payment_not_reconcilable');
+        }
+        if (strtolower(trim((string) $payment->provider)) !== 'iyzico') {
+            $this->exactReconciliationMismatch('provider_family_mismatch');
+        }
+        if ($this->paymentProviderMode($payment) !== 'sandbox') {
+            $this->exactReconciliationMismatch('provider_mode_not_sandbox');
+        }
+        if ($this->stringValue($payment->provider_payment_reference) !== null
+            && ! hash_equals((string) $payment->provider_payment_reference, $providerPaymentReference)) {
+            $this->exactReconciliationMismatch('stored_provider_payment_reference_mismatch');
+        }
+
+        $expectedConversation = 'payment:'.$payment->id;
+        $expectedToken = $this->stringValue($payment->provider_reference);
+        if ($expectedToken === null) {
+            $this->exactReconciliationMismatch('stored_provider_link_token_missing');
+        }
+        $businessIdentity = $this->assertExactPaymentBusinessIdentity($payment);
+        $this->assertStoredSuccessfulProviderSession($payment, $expectedToken, $expectedConversation);
+
+        $linkResponse = $this->gateway->syncStatus($payment)->toArray();
+        $reportingResponse = $this->gateway
+            ->reconcilePayment($payment, $providerPaymentReference)
+            ->toArray();
+
+        $linkPayload = is_array($linkResponse['provider_response_redacted'] ?? null)
+            ? $linkResponse['provider_response_redacted']
+            : [];
+        if (! (bool) ($linkResponse['ok'] ?? false)
+            || (string) ($linkResponse['operation'] ?? '') !== PaymentProviderGatewayRequest::OPERATION_SYNC_STATUS
+            || strtolower((string) ($linkResponse['provider'] ?? '')) !== 'iyzico'
+            || strtolower((string) ($linkResponse['mode'] ?? '')) !== 'sandbox') {
+            $this->exactReconciliationMismatch('provider_link_response_invalid');
+        }
+        if (! hash_equals($expectedToken, (string) Arr::get($linkPayload, 'data.token', ''))
+            || ! hash_equals($expectedConversation, (string) Arr::get($linkPayload, 'data.conversationId', ''))
+            || (int) Arr::get($linkPayload, 'data.soldCount', 0) < 1
+            || ! $this->amountEquals(Arr::get($linkPayload, 'data.price'), $payment->amount)
+            || strtoupper((string) Arr::get($linkPayload, 'data.currencyCode', '')) !== strtoupper((string) $payment->currency)) {
+            $this->exactReconciliationMismatch('provider_link_identity_mismatch');
+        }
+
+        $reportPayload = is_array($reportingResponse['provider_response_redacted'] ?? null)
+            ? $reportingResponse['provider_response_redacted']
+            : [];
+        $payments = is_array($reportPayload['payments'] ?? null) ? array_values($reportPayload['payments']) : [];
+        if (! (bool) ($reportingResponse['ok'] ?? false)
+            || (string) ($reportingResponse['operation'] ?? '') !== PaymentProviderGatewayRequest::OPERATION_RECONCILE_PAYMENT
+            || strtolower((string) ($reportingResponse['provider'] ?? '')) !== 'iyzico'
+            || strtolower((string) ($reportingResponse['mode'] ?? '')) !== 'sandbox'
+            || count($payments) !== 1
+            || ! is_array($payments[0])) {
+            $this->exactReconciliationMismatch('provider_reporting_response_invalid');
+        }
+
+        $reportedPayment = $payments[0];
+        $reportedReference = $this->stringValue($reportedPayment['paymentId'] ?? null);
+        $reportedConversation = $this->stringValue($reportedPayment['paymentConversationId'] ?? null);
+        $reportedCurrency = strtoupper((string) ($reportedPayment['currency'] ?? ''));
+        $reportedStatus = strtolower((string) ($reportedPayment['paymentStatus'] ?? ''));
+        $refundStatus = strtoupper((string) ($reportedPayment['refundStatus'] ?? 'NOT_REFUNDED'));
+        if ($reportedReference === null
+            || ! hash_equals($providerPaymentReference, $reportedReference)
+            || $reportedConversation === null
+            || ! hash_equals($expectedConversation, $reportedConversation)
+            || ! in_array($reportedStatus, ['1', 'paid', 'success', 'successful'], true)
+            || $refundStatus !== 'NOT_REFUNDED'
+            || ! $this->amountEquals($reportedPayment['price'] ?? null, $payment->amount)
+            || ! $this->amountEquals($reportedPayment['paidPrice'] ?? null, $payment->amount)
+            || $reportedCurrency !== strtoupper((string) $payment->currency)) {
+            $this->exactReconciliationMismatch('provider_reporting_identity_mismatch');
+        }
+
+        $transactions = is_array($reportedPayment['itemTransactions'] ?? null)
+            ? array_values($reportedPayment['itemTransactions'])
+            : [];
+        $transaction = collect($transactions)->first(fn (mixed $item): bool => is_array($item)
+            && in_array(strtolower((string) ($item['transactionStatus'] ?? '')), ['2', 'paid', 'success', 'successful'], true)
+            && $this->stringValue($item['paymentTransactionId'] ?? null) !== null);
+        if (! is_array($transaction)) {
+            $this->exactReconciliationMismatch('provider_transaction_identity_missing');
+        }
+        if (array_key_exists('price', $transaction)
+            && ! $this->amountEquals($transaction['price'], $payment->amount)) {
+            $this->exactReconciliationMismatch('provider_transaction_amount_mismatch');
+        }
+
+        $transactionReference = (string) $transaction['paymentTransactionId'];
+        if (! hash_equals(
+            $providerPaymentReference,
+            (string) ($reportingResponse['provider_payment_reference'] ?? ''),
+        ) || ! hash_equals(
+            $transactionReference,
+            (string) ($reportingResponse['provider_transaction_reference'] ?? ''),
+        )) {
+            $this->exactReconciliationMismatch('normalized_provider_reference_mismatch');
+        }
+
+        $proof = [
+            'payment_id' => (int) $payment->id,
+            'request_id' => (int) $payment->technical_service_request_id,
+            'request_code' => $businessIdentity['request_code'],
+            'part_request_id' => $businessIdentity['part_request_id'],
+            'provider' => 'iyzico',
+            'provider_mode' => 'sandbox',
+            'provider_payment_reference' => $providerPaymentReference,
+            'provider_transaction_reference' => $transactionReference,
+            'amount' => number_format((float) $payment->amount, 2, '.', ''),
+            'currency' => strtoupper((string) $payment->currency),
+            'provider_paid_at' => $this->stringValue($reportedPayment['createdDate'] ?? null),
+            'link_sold_count' => (int) Arr::get($linkPayload, 'data.soldCount', 0),
+            'token_sha256' => hash('sha256', $expectedToken),
+            'conversation_sha256' => hash('sha256', $expectedConversation),
+            'stored_successful_session' => true,
+            'identity_match' => true,
+        ];
+
+        return [
+            'proof' => $proof,
+            'provider_response' => $reportingResponse,
+        ];
+    }
+
+    /** @return array{request_code:string,part_request_id:int|null} */
+    private function assertExactPaymentBusinessIdentity(TechnicalServiceMountPayment $payment): array
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $request = $payment->technicalServiceRequest()->first();
+        if (! $request instanceof TechnicalServiceRequest
+            || (int) ($payload['technical_service_request_id'] ?? 0) !== (int) $request->id) {
+            $this->exactReconciliationMismatch('payment_request_identity_mismatch');
+        }
+
+        $requestCode = $this->stringValue($payload['request_code'] ?? $payload['mrn'] ?? null);
+        if ($requestCode === null || ! hash_equals((string) $request->mrn, $requestCode)) {
+            $this->exactReconciliationMismatch('payment_mrn_identity_mismatch');
+        }
+        if (array_key_exists('total_amount', $payload)
+            && ! $this->amountEquals($payload['total_amount'], $payment->amount)) {
+            $this->exactReconciliationMismatch('payment_business_amount_mismatch');
+        }
+
+        $partRequestId = $payload['part_request_id'] ?? null;
+        if ($partRequestId === null) {
+            if (($payload['source'] ?? null) === 'operation_customer_charge') {
+                $this->exactReconciliationMismatch('part_request_identity_missing');
+            }
+
+            return ['request_code' => $requestCode, 'part_request_id' => null];
+        }
+        if (! is_numeric($partRequestId)) {
+            $this->exactReconciliationMismatch('part_request_identity_invalid');
+        }
+
+        $partRequest = TechnicalServicePartRequest::query()
+            ->whereKey((int) $partRequestId)
+            ->where('technical_service_request_id', $request->id)
+            ->first();
+        $partMetadata = $partRequest instanceof TechnicalServicePartRequest && is_array($partRequest->metadata)
+            ? $partRequest->metadata
+            : [];
+        $partPaymentId = $partMetadata['payment_id'] ?? $partMetadata['customer_charge_payment_id'] ?? null;
+        if (! $partRequest instanceof TechnicalServicePartRequest
+            || ! is_numeric($partPaymentId)
+            || (int) $partPaymentId !== (int) $payment->id) {
+            $this->exactReconciliationMismatch('part_request_payment_identity_mismatch');
+        }
+
+        return ['request_code' => $requestCode, 'part_request_id' => (int) $partRequest->id];
+    }
+
+    private function assertStoredSuccessfulProviderSession(
+        TechnicalServiceMountPayment $payment,
+        string $expectedToken,
+        string $expectedConversation,
+    ): void {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $session = Arr::get($payload, 'provider_gateway');
+        if (! is_array($session)
+            || ! (bool) ($session['ok'] ?? false)
+            || (string) ($session['operation'] ?? '') !== PaymentProviderGatewayRequest::OPERATION_CREATE_LINK
+            || strtolower((string) ($session['provider'] ?? '')) !== 'iyzico'
+            || strtolower((string) ($session['mode'] ?? '')) !== 'sandbox'
+            || (string) ($session['payment_id'] ?? '') !== (string) $payment->id
+            || ! $this->amountEquals($session['amount'] ?? null, $payment->amount)
+            || strtoupper((string) ($session['currency'] ?? '')) !== strtoupper((string) $payment->currency)
+            || ! hash_equals($expectedConversation, (string) ($session['conversation_id'] ?? ''))
+            || ! hash_equals($expectedToken, (string) ($session['provider_token'] ?? ''))
+            || (int) ($session['status_code'] ?? 0) < 200
+            || (int) ($session['status_code'] ?? 0) >= 300) {
+            $this->exactReconciliationMismatch('stored_successful_provider_session_invalid');
+        }
+    }
+
+    private function paymentProviderMode(TechnicalServiceMountPayment $payment): string
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $mode = Arr::get($payload, 'provider_mode')
+            ?? Arr::get($payload, 'provider_decision.provider_mode')
+            ?? Arr::get($payload, 'provider_gateway.mode');
+
+        return strtolower(trim((string) $mode));
+    }
+
+    private function amountEquals(mixed $actual, mixed $expected): bool
+    {
+        return is_numeric($actual)
+            && is_numeric($expected)
+            && (int) round((float) $actual * 100) === (int) round((float) $expected * 100);
+    }
+
+    private function exactReconciliationMismatch(string $reason): never
+    {
+        throw new TechnicalServicePaymentProviderClientException(
+            'EXACT_PAYMENT_RECONCILIATION_REJECTED: '.$reason,
+        );
     }
 
     /**
@@ -63,6 +332,7 @@ class TechnicalServicePaymentProviderReconciliationService
     public function markPaidFromTrustedProvider(
         TechnicalServiceMountPayment $payment,
         array $providerResponse,
+        bool $queueOpsDispatch = true,
     ): TechnicalServiceMountPayment {
         $providerResponse = PaymentProviderGatewayResponse::redactProviderResponse($providerResponse);
         $reference = $this->providerReference($providerResponse) ?: $payment->provider_reference;
@@ -135,7 +405,9 @@ class TechnicalServicePaymentProviderReconciliationService
 
         $paidPayment = $this->settlementService->markPaid($payment->fresh(), $settlementPayload);
 
-        $this->queuePaymentReceivedOpsDispatch($paidPayment->fresh(), $providerResponse);
+        if ($queueOpsDispatch) {
+            $this->queuePaymentReceivedOpsDispatch($paidPayment->fresh(), $providerResponse);
+        }
 
         return $paidPayment->fresh();
     }

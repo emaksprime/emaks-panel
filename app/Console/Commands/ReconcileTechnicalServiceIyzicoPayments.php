@@ -15,6 +15,8 @@ class ReconcileTechnicalServiceIyzicoPayments extends Command
     protected $signature = 'technical-service:reconcile-iyzico-payments
         {--limit=50 : Maximum pending payments to inspect}
         {--payment-id= : Reconcile one local mount payment id}
+        {--provider-payment-id= : Exact Iyzico payment number to bind through reporting reconciliation}
+        {--verify-only : Read provider state and verify exact identity without local writes}
         {--dry-run : List candidates without provider calls or writes}
         {--only-sandbox : Reconcile sandbox-mode Iyzico payments}
         {--only-live : Reconcile live-mode Iyzico payments only when live readiness is explicitly enabled}
@@ -30,6 +32,7 @@ class ReconcileTechnicalServiceIyzicoPayments extends Command
     ): int {
         if ($this->option('only-sandbox') && $this->option('only-live')) {
             $this->error('Use only one mode filter: --only-sandbox or --only-live.');
+
             return self::FAILURE;
         }
 
@@ -37,6 +40,19 @@ class ReconcileTechnicalServiceIyzicoPayments extends Command
         $maxAttempts = max(0, (int) $this->option('max-attempts'));
         $olderThanMinutes = max(0, (int) $this->option('older-than-minutes'));
         $paymentId = $this->option('payment-id');
+        $providerPaymentId = trim((string) $this->option('provider-payment-id'));
+        $verifyOnly = (bool) $this->option('verify-only');
+        if (($providerPaymentId !== '' || $verifyOnly)
+            && ($paymentId === null || trim((string) $paymentId) === '')) {
+            $this->error('Exact reconciliation requires --payment-id.');
+
+            return self::FAILURE;
+        }
+        if ($verifyOnly && $providerPaymentId === '') {
+            $this->error('--verify-only requires --provider-payment-id.');
+
+            return self::FAILURE;
+        }
 
         $query = TechnicalServiceMountPayment::query()
             ->where('provider', 'iyzico')
@@ -96,6 +112,37 @@ class ReconcileTechnicalServiceIyzicoPayments extends Command
             return self::SUCCESS;
         }
 
+        if ($providerPaymentId !== '') {
+            if ($candidates->count() !== 1) {
+                $this->error('Exact reconciliation requires one pending local payment candidate.');
+
+                return self::FAILURE;
+            }
+
+            $payment = $candidates->firstOrFail();
+            try {
+                if ($verifyOnly) {
+                    $proof = $paymentProviderManager->verifyExactPaymentReconciliation($payment, $providerPaymentId);
+                    $this->info('Exact verification PASS; no local writes performed.');
+                    $this->line($this->proofLine($proof));
+
+                    return self::SUCCESS;
+                }
+
+                $result = $paymentProviderManager->reconcileExactPayment($payment, $providerPaymentId);
+                $this->info('Exact reconciliation completed once.');
+                $this->line('payment_id='.$result['payment_id'].' status='.$result['status']);
+
+                return $result['status'] === TechnicalServiceMountPayment::STATUS_PAID
+                    ? self::SUCCESS
+                    : self::FAILURE;
+            } catch (Throwable $exception) {
+                $this->error($this->redactedError($exception));
+
+                return self::FAILURE;
+            }
+        }
+
         foreach ($skipped as [$payment, $reason]) {
             $this->warn('skipped payment_id='.$payment->id.' mode='.$this->paymentMode($payment).' reason='.$reason);
         }
@@ -143,5 +190,31 @@ class ReconcileTechnicalServiceIyzicoPayments extends Command
         return strlen($value) <= 8
             ? str_repeat('*', strlen($value))
             : substr($value, 0, 4).str_repeat('*', max(4, strlen($value) - 8)).substr($value, -4);
+    }
+
+    /** @param array<string, mixed> $proof */
+    private function proofLine(array $proof): string
+    {
+        return implode(' ', [
+            'payment_id='.(int) ($proof['payment_id'] ?? 0),
+            'provider=iyzico',
+            'mode='.(string) ($proof['provider_mode'] ?? ''),
+            'amount='.(string) ($proof['amount'] ?? ''),
+            'currency='.(string) ($proof['currency'] ?? ''),
+            'provider_payment_id='.(string) ($proof['provider_payment_reference'] ?? ''),
+            'identity_match='.(($proof['identity_match'] ?? false) ? 'true' : 'false'),
+        ]);
+    }
+
+    private function redactedError(Throwable $exception): string
+    {
+        $message = trim($exception->getMessage());
+        $message = preg_replace(
+            '/(Authorization|api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*[^,\s]+/i',
+            '$1=[redacted]',
+            $message,
+        ) ?? '[redacted]';
+
+        return mb_substr($message !== '' ? $message : 'Exact reconciliation failed.', 0, 500);
     }
 }

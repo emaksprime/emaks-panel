@@ -254,6 +254,43 @@ class PaymentProviderManager
         return [...$response, 'status' => (string) $preserved->status];
     }
 
+    /** @return array<string, mixed> */
+    public function verifyExactPaymentReconciliation(
+        TechnicalServiceMountPayment $payment,
+        string $providerPaymentReference,
+    ): array {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+        $this->messagingSettings->assertScopedLocalUatPaymentReconciliationAllowed($payment);
+
+        return $this->reconciliationService->verifyExactProviderPaymentResult(
+            $payment->fresh() ?? $payment,
+            $providerPaymentReference,
+        );
+    }
+
+    /** @return array<string, mixed> */
+    public function reconcileExactPayment(
+        TechnicalServiceMountPayment $payment,
+        string $providerPaymentReference,
+    ): array {
+        $this->messagingSettings->assertProviderHttpOutsideTransaction();
+        $this->messagingSettings->assertScopedLocalUatPaymentReconciliationAllowed($payment);
+        $result = $this->reconciliationService->reconcileExactProviderPaymentResult(
+            $payment->fresh() ?? $payment,
+            $providerPaymentReference,
+        );
+        $paid = $result['payment'];
+
+        return [
+            'payment_id' => (int) $paid->id,
+            'status' => (string) $paid->status,
+            'provider_payment_reference' => $paid->provider_payment_reference,
+            'provider_transaction_reference' => $paid->provider_transaction_reference,
+            'provider_receipt_reference' => $paid->provider_receipt_reference,
+            'verification' => $result['proof'],
+        ];
+    }
+
     /**
      * Normal production and local fake flows use the same canonical create
      * authority as scoped UAT, without borrowing scoped run state.

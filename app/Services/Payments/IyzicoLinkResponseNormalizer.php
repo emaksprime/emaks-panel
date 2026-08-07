@@ -20,6 +20,9 @@ class IyzicoLinkResponseNormalizer
     ): PaymentProviderGatewayResponse {
         $topLevelStatus = strtolower((string) ($providerPayload['status'] ?? ''));
         $ok = $statusCode >= 200 && $statusCode < 300 && $topLevelStatus !== 'failure';
+        $providerPayload = $operation === PaymentProviderGatewayRequest::OPERATION_RECONCILE_PAYMENT
+            ? $this->safeReportingPayload($providerPayload)
+            : $providerPayload;
 
         return PaymentProviderGatewayResponse::fromArray([
             'ok' => $ok,
@@ -40,7 +43,7 @@ class IyzicoLinkResponseNormalizer
             'provider_receipt_reference' => null,
             'payment_url' => $this->paymentUrl($providerPayload),
             'provider_status' => $ok ? $this->providerStatus($providerPayload, $operation) : 'provider_error',
-            'raw_status' => $this->rawStatus($providerPayload),
+            'raw_status' => $this->rawStatus($providerPayload, $operation),
             'error_code' => $ok ? null : $this->errorCode($providerPayload, $statusCode),
             'error_message' => $ok ? null : $this->errorMessage($providerPayload),
             'provider_response_redacted' => $providerPayload,
@@ -54,6 +57,7 @@ class IyzicoLinkResponseNormalizer
                 'transport' => TechnicalServicePaymentProviderTransportResolver::TRANSPORT_DIRECT_LARAVEL,
                 'iyzico_link_product_status' => $this->productStatus($providerPayload),
                 'iyzico_link_sold_count' => $this->soldCount($providerPayload),
+                'iyzico_reporting_payment_status' => Arr::get($providerPayload, 'payments.0.paymentStatus'),
             ],
         ]);
     }
@@ -164,6 +168,14 @@ class IyzicoLinkResponseNormalizer
      */
     private function providerStatus(array $payload, string $operation): string
     {
+        if ($operation === PaymentProviderGatewayRequest::OPERATION_RECONCILE_PAYMENT) {
+            $status = strtolower(trim((string) Arr::get($payload, 'payments.0.paymentStatus', '')));
+
+            return in_array($status, ['1', 'paid', 'success', 'successful'], true)
+                ? 'paid'
+                : ($status !== '' ? $status : 'pending');
+        }
+
         $soldCount = $this->soldCount($payload);
         if ($soldCount !== null && $soldCount > 0) {
             return 'sold';
@@ -192,9 +204,11 @@ class IyzicoLinkResponseNormalizer
     /**
      * @param  array<string, mixed>  $payload
      */
-    private function rawStatus(array $payload): ?string
+    private function rawStatus(array $payload, string $operation): ?string
     {
-        $value = $this->productStatus($payload) ?? Arr::get($payload, 'data.status') ?? $payload['status'] ?? null;
+        $value = $operation === PaymentProviderGatewayRequest::OPERATION_RECONCILE_PAYMENT
+            ? Arr::get($payload, 'payments.0.paymentStatus')
+            : ($this->productStatus($payload) ?? Arr::get($payload, 'data.status') ?? $payload['status'] ?? null);
 
         return is_scalar($value) && trim((string) $value) !== '' ? trim((string) $value) : null;
     }
@@ -244,5 +258,63 @@ class IyzicoLinkResponseNormalizer
         return is_scalar($value) && trim((string) $value) !== ''
             ? trim((string) $value)
             : 'Iyzico ödeme sağlayıcısı işlem yanıtı başarısız.';
+    }
+
+    /**
+     * Reporting responses can contain card and buyer data. Persist only fields
+     * required to prove and project the payment result.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function safeReportingPayload(array $payload): array
+    {
+        $safe = Arr::only($payload, [
+            'status',
+            'locale',
+            'systemTime',
+            'conversationId',
+            'errorCode',
+            'errorMessage',
+        ]);
+        $payments = is_array($payload['payments'] ?? null) ? $payload['payments'] : [];
+        $safe['payments'] = array_values(array_filter(array_map(function (mixed $payment): ?array {
+            if (! is_array($payment)) {
+                return null;
+            }
+
+            $safePayment = Arr::only($payment, [
+                'paymentId',
+                'paymentStatus',
+                'refundStatus',
+                'price',
+                'paidPrice',
+                'paymentConversationId',
+                'fraudStatus',
+                'currency',
+                'hostReference',
+                'createdDate',
+                'updatedDate',
+            ]);
+            $transactions = is_array($payment['itemTransactions'] ?? null)
+                ? $payment['itemTransactions']
+                : [];
+            $safePayment['itemTransactions'] = array_values(array_filter(array_map(
+                fn (mixed $transaction): ?array => is_array($transaction)
+                    ? Arr::only($transaction, [
+                        'paymentTransactionId',
+                        'transactionStatus',
+                        'price',
+                        'paidPrice',
+                        'merchantPayoutAmount',
+                    ])
+                    : null,
+                $transactions,
+            )));
+
+            return $safePayment;
+        }, $payments)));
+
+        return $safe;
     }
 }

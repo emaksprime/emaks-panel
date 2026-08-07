@@ -4,12 +4,14 @@ namespace App\Services\Payments;
 
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
 class DirectIyzicoLinkProviderClient implements PaymentProviderGatewayClient
 {
     public const SANDBOX_BASE_URL = 'https://sandbox-api.iyzipay.com';
+
     public const LIVE_BASE_URL = 'https://api.iyzipay.com';
 
     public function __construct(
@@ -42,7 +44,7 @@ class DirectIyzicoLinkProviderClient implements PaymentProviderGatewayClient
             );
         }
 
-        [$method, $path, $body] = $this->operationRequest($operation, $payload);
+        [$method, $path, $body, $query] = $this->operationRequest($operation, $payload);
         $bodyString = $body === null
             ? ''
             : json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -54,13 +56,20 @@ class DirectIyzicoLinkProviderClient implements PaymentProviderGatewayClient
         );
 
         try {
-            $response = Http::baseUrl($this->baseUrl($mode))
+            $pendingRequest = Http::baseUrl($this->baseUrl($mode))
                 ->timeout((int) config('payments.iyzico.timeout', 10))
                 ->connectTimeout((int) config('payments.iyzico.connect_timeout', 3))
                 ->acceptJson()
-                ->withHeaders($headers)
-                ->withBody($bodyString, 'application/json')
-                ->send($method, $path);
+                ->withHeaders($headers);
+            if ($body !== null) {
+                $pendingRequest = $pendingRequest->withBody($bodyString, 'application/json');
+            }
+
+            $response = $pendingRequest->send(
+                $method,
+                $path,
+                $query === [] ? [] : ['query' => $query],
+            );
         } catch (ConnectionException $exception) {
             throw new TechnicalServicePaymentProviderClientException('Iyzico bağlantısı kurulamadı. Lütfen daha sonra tekrar deneyin.', previous: $exception);
         } catch (Throwable $exception) {
@@ -94,8 +103,8 @@ class DirectIyzicoLinkProviderClient implements PaymentProviderGatewayClient
     }
 
     /**
-     * @param array<string, mixed> $payload
-     * @return array{0:string,1:string,2:array<string,mixed>|null}
+     * @param  array<string, mixed>  $payload
+     * @return array{0:string,1:string,2:array<string,mixed>|null,3:array<string,scalar>}
      */
     private function operationRequest(string $operation, array $payload): array
     {
@@ -106,27 +115,42 @@ class DirectIyzicoLinkProviderClient implements PaymentProviderGatewayClient
                 'POST',
                 '/v2/iyzilink/products',
                 $this->requestFactory->linkBody($payload),
+                [],
             ],
             PaymentProviderGatewayRequest::OPERATION_UPDATE_LINK => [
                 'PUT',
                 '/v2/iyzilink/products/'.$this->requiredToken($token),
                 $this->requestFactory->linkBody($payload),
+                [],
             ],
             PaymentProviderGatewayRequest::OPERATION_GET_LINK,
             PaymentProviderGatewayRequest::OPERATION_SYNC_STATUS => [
                 'GET',
                 '/v2/iyzilink/products/'.$this->requiredToken($token),
                 null,
+                [],
             ],
             PaymentProviderGatewayRequest::OPERATION_CANCEL_LINK => [
                 'PATCH',
                 '/v2/iyzilink/products/'.$this->requiredToken($token).'/status/PASSIVE',
                 null,
+                [],
             ],
             PaymentProviderGatewayRequest::OPERATION_LIST_LINKS => [
                 'GET',
                 '/v2/iyzilink/products',
                 null,
+                [],
+            ],
+            PaymentProviderGatewayRequest::OPERATION_RECONCILE_PAYMENT => [
+                'GET',
+                '/v2/reporting/payment/details',
+                null,
+                [
+                    'locale' => 'tr',
+                    'paymentId' => $this->requiredProviderPaymentReference($payload),
+                    'conversationId' => $this->requiredConversationId($payload),
+                ],
             ],
             default => throw new IyzicoProviderException('Desteklenmeyen Iyzico link operasyonu.'),
         };
@@ -139,6 +163,28 @@ class DirectIyzicoLinkProviderClient implements PaymentProviderGatewayClient
         }
 
         return rawurlencode($token);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function requiredProviderPaymentReference(array $payload): string
+    {
+        $value = Arr::get($payload, 'metadata.provider_payment_reference');
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            throw new TechnicalServicePaymentProviderClientException('Iyzico provider ödeme numarası bulunamadı.');
+        }
+
+        return trim((string) $value);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function requiredConversationId(array $payload): string
+    {
+        $value = $payload['conversation_id'] ?? null;
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            throw new TechnicalServicePaymentProviderClientException('Iyzico ödeme conversation kimliği bulunamadı.');
+        }
+
+        return trim((string) $value);
     }
 
     private function mode(mixed $mode): string
