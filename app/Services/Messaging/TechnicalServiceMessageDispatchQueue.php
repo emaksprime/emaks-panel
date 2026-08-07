@@ -101,27 +101,6 @@ class TechnicalServiceMessageDispatchQueue
         }
 
         if ($this->usesExternalProvider($input)) {
-            if (($input['metadata']['outbound_execution_mode'] ?? null) === TechnicalServiceMessagingSettingsService::OUTBOUND_EXECUTION_MODE_LOCAL
-                && ($input['metadata']['local_manual_acceptance_profile_id'] ?? null) !== TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
-                $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
-                    'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
-                    'queued_at' => null,
-                    'next_attempt_at' => null,
-                    'provider_status' => 'local_no_send',
-                    'last_error_code' => 'outbound_execution_mode_local',
-                    'last_error_message_redacted' => 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.',
-                    'metadata' => [
-                        ...((array) ($input['metadata'] ?? [])),
-                        'local_no_send_recorded' => true,
-                        'provider_send_attempted' => false,
-                        'external_provider_call' => false,
-                    ],
-                ]);
-                $this->recordEvent($dispatch, 'message_local_recorded', 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.');
-
-                return $dispatch;
-            }
-
             $authorization = $this->settings->outboundQueueAuthorization(
                 (string) ($input['provider_key'] ?? ''),
                 (string) ($input['channel'] ?? ''),

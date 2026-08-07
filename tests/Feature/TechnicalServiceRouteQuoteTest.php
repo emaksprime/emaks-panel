@@ -536,6 +536,71 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringContainsString("travelRoundTripKm.trim() === '' ? Number.NaN", $pageSource);
     }
 
+    public function test_canonical_zero_route_fee_is_rendered_as_zero_tl(): void
+    {
+        $request = $this->technicalServiceRequestWithLocation();
+        $request->forceFill([
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+        $technician = $this->technicianWithLocation();
+        $quote = $this->createCachedQuote($request, $technician, 0.0, 0.0);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'route_quote_id' => $quote->id,
+                'labor_amount' => 3000,
+                'confirm_assignment' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 0)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3000);
+
+        $offer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->firstOrFail();
+        $this->assertSame('0 TL', data_get($offer->metadata, 'message_payload.route_fee_formatted'));
+        $this->assertSame('3.000 TL', data_get($offer->metadata, 'message_payload.technician_earning_total_formatted'));
+    }
+
+    public function test_unresolved_route_fee_blocks_assignment_before_dispatch_creation(): void
+    {
+        config(['services.google.routes_fee_per_km' => null]);
+        $request = $this->technicalServiceRequestWithLocation();
+        $request->forceFill([
+            'travel_fee_amount' => null,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+        $technician = $this->technicianWithLocation();
+        $beforeTechnicianId = $request->technical_service_technician_id;
+        $beforeWorkflowStatus = $request->workflow_status;
+        $eventCount = $request->events()->count();
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => 3000,
+                'travel_round_trip_km' => 0,
+                'confirm_assignment' => true,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('route_quote_id')
+            ->assertJsonPath('errors.route_quote_id.0', 'Usta yol hakedişi hesaplanmadan atama tamamlanamaz.');
+
+        $request->refresh();
+        $this->assertSame($beforeTechnicianId, $request->technical_service_technician_id);
+        $this->assertSame($beforeWorkflowStatus, $request->workflow_status);
+        $this->assertSame($eventCount, $request->events()->count());
+        $this->assertDatabaseCount('technical_service_assignment_offers', 0);
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+    }
+
     public function test_route_failure_never_silently_becomes_zero(): void
     {
         $request = $this->technicalServiceRequestWithLocation();

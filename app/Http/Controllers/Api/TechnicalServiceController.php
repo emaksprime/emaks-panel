@@ -2047,6 +2047,15 @@ class TechnicalServiceController extends Controller
             $assignmentOfferPayload['confirmed_by_ops'] = (bool) $payload['confirm_assignment'];
         }
 
+        if ($technician instanceof TechnicalServiceTechnician) {
+            $assignmentOfferPayload['route_fee_amount'] = $this->canonicalAssignmentRouteFeeAmount(
+                $technicalServiceRequest,
+                $routeQuote,
+                $assignmentOfferPayload,
+                $payload,
+            );
+        }
+
         $isServiceVisit = $technicalServiceRequest->parent_request_id !== null
             || filled($technicalServiceRequest->service_code)
             || mb_strtolower(trim((string) $technicalServiceRequest->service_type)) === 'servis';
@@ -2555,6 +2564,40 @@ class TechnicalServiceController extends Controller
 
     /**
      * @param  array<string, mixed>  $offerPayload
+     * @param  array<string, mixed>  $requestPayload
+     */
+    private function canonicalAssignmentRouteFeeAmount(
+        TechnicalServiceRequest $request,
+        ?TechnicalServiceRouteQuote $routeQuote,
+        array $offerPayload,
+        array $requestPayload,
+    ): float {
+        $routeFeeAmount = $routeQuote instanceof TechnicalServiceRouteQuote
+            ? $this->nullableMoney($routeQuote->fee_amount)
+            : null;
+
+        if ($routeFeeAmount === null && array_key_exists('route_fee_amount', $offerPayload)) {
+            $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount']);
+        }
+        if ($routeFeeAmount === null && $request->travel_fee_amount !== null) {
+            $routeFeeAmount = $this->nullableMoney($request->travel_fee_amount);
+        }
+        if ($routeFeeAmount === null && array_key_exists('travel_round_trip_km', $requestPayload)) {
+            $calculated = $this->calculateTravelCosts((float) $requestPayload['travel_round_trip_km']);
+            $routeFeeAmount = $this->nullableMoney($calculated['travel_fee_amount'] ?? null);
+        }
+
+        if ($routeFeeAmount === null) {
+            throw ValidationException::withMessages([
+                'route_quote_id' => 'Usta yol hakedişi hesaplanmadan atama tamamlanamaz.',
+            ]);
+        }
+
+        return round($routeFeeAmount, 2);
+    }
+
+    /**
+     * @param  array<string, mixed>  $offerPayload
      */
     private function createAssignmentOfferFromAssignPayload(
         TechnicalServiceRequest $request,
@@ -2575,14 +2618,10 @@ class TechnicalServiceController extends Controller
             ]);
         }
         $laborAmount ??= 0.0;
-        $routeFeeAmount = $routeQuote instanceof TechnicalServiceRouteQuote
-            ? $this->nullableMoney($routeQuote->fee_amount)
-            : ($this->nullableMoney($offerPayload['route_fee_amount'] ?? null)
-                ?? $this->nullableMoney($request->travel_fee_amount)
-                ?? 0.0);
+        $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount'] ?? null);
         if ($routeFeeAmount === null) {
             throw ValidationException::withMessages([
-                'route_quote_id' => 'Canonical yol hakedişi tutarı bulunamadı.',
+                'route_quote_id' => 'Usta yol hakedişi hesaplanmadan atama tamamlanamaz.',
             ]);
         }
         $totalAmount = round($laborAmount + $routeFeeAmount, 2);
@@ -2834,6 +2873,11 @@ class TechnicalServiceController extends Controller
             ? $jobCardContext['canonical_url']
             : null;
 
+        $laborAmount = round((float) ($amounts['labor_amount'] ?? 0), 2);
+        $routeFeeAmount = round((float) ($amounts['route_fee_amount'] ?? 0), 2);
+        $totalAmount = round((float) ($amounts['total_amount'] ?? 0), 2);
+        $operationNote = $amounts['note'] ?? null;
+
         return [
             'channel' => 'system_payload',
             'recipient' => 'technician',
@@ -2842,10 +2886,12 @@ class TechnicalServiceController extends Controller
             'technician_phone' => $this->normalizedMessagePhone($phone) ?: $phone,
             'technician_tel_link' => $this->telLink($phone),
             'mrn' => $request->mrn,
+            'mrn_or_srv' => $request->service_code ?: $request->mrn,
             'customer_name' => $request->customer_name,
             'customer_phone' => $this->normalizedMessagePhone($request->customer_phone) ?: $request->customer_phone,
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $address,
+            'service_address' => $address,
             'sms_short_address' => Str::limit((string) $address, 72, '…'),
             'maps_link' => $mapsLink,
             'maps_url' => $mapsLink,
@@ -2865,11 +2911,16 @@ class TechnicalServiceController extends Controller
             'assignment_partner_technician_link_id' => $jobCardContext['partner_technician_link_id'] ?? null,
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
-            'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
-            'route_fee_amount' => round((float) ($amounts['route_fee_amount'] ?? 0), 2),
-            'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'labor_amount_formatted' => $this->messageMoney($laborAmount),
+            'route_fee_formatted' => $this->messageMoney($routeFeeAmount),
+            'total_amount_formatted' => $this->messageMoney($totalAmount),
+            'technician_earning_total_formatted' => $this->messageMoney($totalAmount),
             'currency' => $amounts['currency'] ?? 'TRY',
-            'note' => $amounts['note'] ?? null,
+            'note' => $operationNote,
+            'operation_note' => $operationNote,
             'payment_message_trigger' => 'appointment_approval',
             'payment_instruction_included' => false,
         ];

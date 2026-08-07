@@ -4479,7 +4479,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         );
     }
 
-    public function test_persistent_local_manual_acceptance_sends_only_new_allowlisted_normal_dispatches_once(): void
+    public function test_normal_local_event_sends_when_real_send_enabled_and_historical_rows_stay_suppressed(): void
     {
         config(['services.evolution.allow_unit_test_http_fake' => true]);
         Http::fake(fn ($request) => str_contains($request->url(), 'nac.example.test')
@@ -4498,7 +4498,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $historical->status);
 
         [$settings, $owner, $profile] = $this->configureLocalManualAcceptanceContext();
-        $this->assertTrue($profile['enabled']);
+        $this->assertFalse($profile['enabled']);
         $this->assertSame(TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE, $profile['profile']);
         $this->assertFalse((bool) data_get($settings->manualE2ELifecyclePayload(), 'manual_e2e.enabled'));
         $mountPolicy = collect($settings->payload()['message_types'])
@@ -4558,12 +4558,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertFalse($actualRecipientOutsideTestAllowlist->test_redirect_applied);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED, $duplicate->status);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $unsafeLink->status);
-        $this->assertSame('local_manual_acceptance_link_host_blocked', $unsafeLink->last_error_code);
+        $this->assertSame('normal_local_link_host_blocked', $unsafeLink->last_error_code);
         $this->assertNull(data_get($whatsapp->metadata, 'expected_body_token'));
-        $this->assertSame(
-            TechnicalServiceMessagingSettingsService::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
-            data_get($whatsapp->metadata, 'local_manual_acceptance_profile_id'),
-        );
+        $this->assertNull(data_get($whatsapp->metadata, 'local_manual_acceptance_profile_id'));
 
         $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
             'limit' => 10,
@@ -4622,7 +4619,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(3, Http::recorded()->count());
     }
 
-    public function test_admin_test_mode_routes_customer_and_technician_to_role_settings(): void
+    public function test_mount_request_and_assignment_use_same_execution_mode_authority_and_role_routing(): void
     {
         config(['services.evolution.allow_unit_test_http_fake' => true]);
         Http::fake(fn ($request) => str_contains($request->url(), 'nac.example.test')
@@ -4653,8 +4650,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'idempotency_key' => 'local-test-mode-customer-sms',
         ]);
         $technicianWhatsapp = $this->enqueueDispatch([
-            'event' => 'appointment_approved_technician',
-            'message_type' => 'appointment_approved_technician',
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
             'provider_key' => 'evo_whatsapp',
             'channel' => 'whatsapp',
             'recipient_role' => 'technician',
@@ -4782,8 +4779,124 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         ]);
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->status);
-        $this->assertSame('local_manual_acceptance_event_channel_blocked', $dispatch->last_error_code);
+        $this->assertSame('message_type_channel_disabled', $dispatch->last_error_code);
         $this->assertSame(0, $dispatch->attempt_count);
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_normal_local_event_suppresses_when_real_send_disabled(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update(['real_send_enabled' => false]);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'recipient_phone' => '905399999999',
+            'target_phone' => '905399999999',
+            'payload' => ['body' => 'Kill switch disabled normal message.'],
+            'idempotency_key' => 'normal-local-real-send-disabled',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $dispatch->status);
+        $this->assertSame('outbound_execution_mode_local', $dispatch->last_error_code);
+        $this->assertSame(0, $dispatch->attempt_count);
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_duplicate_assignment_event_creates_one_dispatch_per_channel(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake(fn ($request) => str_contains($request->url(), 'nac.example.test')
+            ? Http::response(['err' => null, 'data' => ['pkgID' => 778899]], 200)
+            : Http::response(['messageId' => 'EVO-ASSIGNMENT-ONCE'], 200));
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+
+        $base = [
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
+            'recipient_role' => 'technician',
+            'recipient_phone' => '905399999999',
+            'target_phone' => '905399999999',
+            'payload' => ['body' => "Yeni iş teklifi.\nİş Kartı\nhttp://10.0.28.64:8000/technician/job/once"],
+        ];
+        $whatsapp = $this->enqueueDispatch([
+            ...$base,
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'idempotency_key' => 'assignment-once-whatsapp',
+        ]);
+        $whatsappDuplicate = $this->enqueueDispatch([
+            ...$base,
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'idempotency_key' => 'assignment-once-whatsapp',
+        ]);
+        $sms = $this->enqueueDispatch([
+            ...$base,
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'idempotency_key' => 'assignment-once-sms',
+        ]);
+        $smsDuplicate = $this->enqueueDispatch([
+            ...$base,
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'idempotency_key' => 'assignment-once-sms',
+        ]);
+
+        $this->assertSame(2, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 2,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $whatsapp->fresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $sms->fresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED, $whatsappDuplicate->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED, $smsDuplicate->status);
+        Http::assertSentCount(2);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_historical_assignment_dispatches_are_not_replayed(): void
+    {
+        Http::fake();
+        $whatsapp = $this->enqueueDispatch([
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_phone' => '905000000002',
+            'payload' => ['body' => 'Historical WhatsApp audit row.'],
+            'idempotency_key' => 'historical-assignment-whatsapp',
+        ]);
+        $sms = $this->enqueueDispatch([
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'technician',
+            'target_phone' => '905000000002',
+            'payload' => ['body' => 'Historical SMS audit row.'],
+            'idempotency_key' => 'historical-assignment-sms',
+        ]);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $whatsapp->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $sms->status);
+
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $this->assertSame(0, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(0, $whatsapp->fresh()->attempt_count);
+        $this->assertSame(0, $sms->fresh()->attempt_count);
         Http::assertNothingSent();
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
@@ -5118,7 +5231,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->assertJsonPath('messaging_settings.global.real_send_enabled', true)
             ->assertJsonPath('messaging_settings.global.test_mode_enabled', $testMode);
         $profile = $settings->localManualAcceptancePayload();
-        $this->assertTrue((bool) $profile['enabled'], json_encode($profile, JSON_THROW_ON_ERROR));
+        $this->assertFalse((bool) $profile['enabled'], json_encode($profile, JSON_THROW_ON_ERROR));
         $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
 
         return [$settings, $owner, $profile];

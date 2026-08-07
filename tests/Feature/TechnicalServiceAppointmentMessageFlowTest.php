@@ -466,7 +466,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_assignment_offer_current_modal_path_creates_technician_whatsapp_sms_dispatches_with_manual_e2e_metadata(): void
+    public function test_assignment_whatsapp_and_sms_have_explicit_template_keys_and_same_earning_snapshot(): void
     {
         Http::fake();
         $actor = $this->admin();
@@ -494,6 +494,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'customer_phone' => '05372081633',
             'service_address' => 'REL4E12 test adresi Kadıköy İstanbul',
             'product_name' => 'REL4E12 Test Ürün',
+            'serial_number' => 'REL4E12-SERIAL-001',
             'operation_control_payload' => [
                 'door_photos_checked' => 'compatible',
             ],
@@ -501,7 +502,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             'operation_control_checked_by_user_id' => $actor->id,
         ]);
 
-        $this->actingAs($actor)
+        $response = $this->actingAs($actor)
             ->postJson("/api/technical-service/requests/{$request->id}/assign", [
                 'technical_service_technician_id' => $technician->id,
                 'confirm_assignment' => true,
@@ -512,8 +513,12 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                     'note' => 'REL4E12 atama testi.',
                 ],
             ])
-            ->assertOk()
-            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+            ->assertOk();
+        $this->assertSame(
+            TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            data_get($response->json(), 'request.assignment_offer.dispatch_status'),
+            $response->getContent(),
+        );
 
         $dispatches = TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)
@@ -524,6 +529,25 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertCount(2, $dispatches);
         $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->all());
         $this->assertSame(['nac_sms', 'evo_whatsapp'], $dispatches->pluck('provider_key')->all());
+        $smsContext = (array) data_get($dispatches->firstWhere('channel', 'sms')->request_payload, 'context', []);
+        $whatsappContext = (array) data_get($dispatches->firstWhere('channel', 'whatsapp')->request_payload, 'context', []);
+        foreach ([
+            'mrn_or_srv',
+            'customer_name',
+            'customer_phone',
+            'service_address',
+            'maps_url',
+            'product_name',
+            'serial_no',
+            'labor_amount_formatted',
+            'route_fee_formatted',
+            'total_amount_formatted',
+            'technician_earning_total_formatted',
+            'technician_job_card_url',
+            'operation_note',
+        ] as $contextKey) {
+            $this->assertSame($whatsappContext[$contextKey] ?? null, $smsContext[$contextKey] ?? null, $contextKey);
+        }
         $this->assertDatabaseMissing('technical_service_message_dispatches', [
             'technical_service_request_id' => $request->id,
             'recipient_role' => 'customer',
@@ -533,18 +557,21 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         foreach ($dispatches as $dispatch) {
             $body = (string) ($dispatch->request_payload['body'] ?? '');
             $this->assertSame('technician', $dispatch->recipient_role);
+            $this->assertSame('assignment_offer_technician.'.$dispatch->channel.'.default', $dispatch->template_key);
+            $this->assertNotNull($dispatch->template_version);
             $this->assertSame('905467647428', $dispatch->target_phone);
             $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
             $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
             $this->assertSame($activeRunId, data_get($dispatch->metadata, 'manual_e2e_run_id'));
             $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
+            $this->assertSame('905372081633', data_get($dispatch->request_payload, 'context.customer_phone'));
+            $this->assertSame('REL4E12 test adresi Kadıköy İstanbul', data_get($dispatch->request_payload, 'context.service_address'));
             $this->assertStringContainsString('MRN-REL4E12-ASSIGN', $body);
-            $this->assertStringContainsString('905372081633', $body);
             if ($dispatch->channel === 'sms') {
                 $this->assertStringContainsString('REL4E12 Musteri', $body);
-                $this->assertStringContainsString('Saat oner:', $body);
                 $this->assertStringContainsString('/pj/'.$request->id, $body);
             } else {
+                $this->assertStringContainsString('905372081633', $body);
                 $this->assertStringContainsString('REL4E12 Müşteri', $body);
                 $this->assertStringContainsString('randevu saati öneriniz', mb_strtolower($body, 'UTF-8'));
                 $this->assertStringContainsString('job_id='.$request->id, $body);
@@ -554,14 +581,13 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $whatsappBody = (string) ($dispatches->firstWhere('channel', 'whatsapp')->request_payload['body'] ?? '');
         $this->assertStringContainsString('Lütfen randevu saati öneriniz.', $whatsappBody);
         $this->assertStringContainsString('Hakediş Özeti', $whatsappBody);
-        $this->assertStringContainsString('İşçilik/Montaj: 900,00 TL', $whatsappBody);
-        $this->assertStringContainsString('Yol: 350,00 TL', $whatsappBody);
-        $this->assertStringContainsString('Toplam: 1.250,00 TL', $whatsappBody);
+        $this->assertStringContainsString('İşçilik/Montaj: 900 TL', $whatsappBody);
+        $this->assertStringContainsString('Yol: 350 TL', $whatsappBody);
+        $this->assertStringContainsString('Toplam: 1.250 TL', $whatsappBody);
         $smsBody = (string) ($dispatches->firstWhere('channel', 'sms')?->request_payload['body'] ?? '');
-        $this->assertStringContainsString('Yeni Is', $smsBody);
+        $this->assertStringContainsString('Yeni is', $smsBody);
         $this->assertStringContainsString('REL4E12 Test Urun', $smsBody);
-        $this->assertStringContainsString('REL4E12 test adresi Kadikoy Istanbul', $smsBody);
-        $this->assertStringContainsString('Top:1.250,00 TL', $smsBody);
+        $this->assertStringContainsString('Toplam hakedis: 1.250 TL', $smsBody);
         $this->assertStringContainsString('http://10.0.28.64:8000/pj/'.$request->id, $smsBody);
         $this->assertStringContainsString(
             'http://10.0.28.64:8000/partner/service-jobs?partner_id=',

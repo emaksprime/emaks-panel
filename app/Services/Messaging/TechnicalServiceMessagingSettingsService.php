@@ -583,7 +583,7 @@ class TechnicalServiceMessagingSettingsService
             'admin_sections' => $this->adminSections($settings, $readiness),
             'message_types' => $this->messageTypePayload($settings['message_types']),
             'warnings' => [
-                'Yerel gerçek gönderim Admin gerçek gönderim ve test modu ayarlarıyla açılır; yalnız aktivasyon sonrasında oluşan dispatch’ler işlenir.',
+                'Yerel gerçek gönderim Admin mesaj sistemi, gerçek gönderim ve test modu ayarlarıyla yönetilir.',
                 'Randevu mesajları usta seçildiğinde değil OPS randevu onayında gider.',
                 'Test modu açıkken hedef numara müşteri veya usta / OPS rolüne ait test numarasına çevrilir.',
                 'Provider dispatch’leri test allowlisti, queue, rate limit ve idempotency kontrollerinden geçer.',
@@ -592,7 +592,7 @@ class TechnicalServiceMessagingSettingsService
             ],
             'helper_texts' => [
                 'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
-                'queue' => 'Yerel provider kuyruğu gerçek gönderim açıkken yalnız aktivasyon sonrası dispatch’leri tek sender ve kalıcı claim ile işler.',
+                'queue' => 'Yerel provider kuyruğu gerçek gönderim açıkken normal dispatch’leri tek sender ve kalıcı claim ile işler.',
                 'test_phone' => 'Test modu açıkken müşteri ve usta / OPS mesajları ayrı kayıtlı test telefonlarına yönlenir.',
                 'active_provider' => 'Öncelikli sağlayıcı manuel test/readiness için varsayılan bakılan sağlayıcıdır.',
                 'default_provider' => 'Varsayılan test sağlayıcısı otomasyon değil, güvenli preview/test tercihidir.',
@@ -1253,8 +1253,9 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
-     * Authorize creation of a normal external dispatch. The persistent local
-     * profile is server-owned and never trusts caller-provided scope fields.
+     * Authorize creation of an external dispatch. Normal local business
+     * messages use the stored Admin authority; scoped UAT messages retain
+     * their immutable run snapshot contract.
      *
      * @param  array<string, mixed>  $metadata
      * @return array{allowed:bool,code:string|null,message:string|null}
@@ -1269,14 +1270,12 @@ class TechnicalServiceMessagingSettingsService
     ): array {
         $settings = $this->settings();
         if ($this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
-            && (bool) ($settings['local_manual_acceptance_enabled'] ?? false)) {
-            return $this->localManualAcceptanceTupleAuthorization(
+            && ! $this->metadataHasManualE2EScope($metadata)) {
+            return $this->normalLocalDispatchAuthorization(
                 $provider,
                 $channel,
                 $messageType,
                 $targetPhone,
-                $metadata,
-                CarbonImmutable::now(),
                 $body,
                 $settings,
             );
@@ -3849,9 +3848,9 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
-     * In non-production, the two Admin toggles are the delivery authority.
-     * The legacy profile fields remain server-owned compatibility metadata for
-     * the existing queue and sender; callers cannot set them directly.
+     * In non-production, the Admin messaging and real-send toggles are the
+     * normal delivery authority. Legacy profile fields are cleared so a
+     * release fingerprint cannot silently override those stored settings.
      *
      * @param  array<string, mixed>  $current
      * @param  array<string, mixed>  $next
@@ -3865,10 +3864,7 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if (! (bool) ($next['real_send_enabled'] ?? false)) {
-            return $this->deactivateLocalManualAcceptanceSettings(
-                $next,
-                'Admin gerçek gönderim ayarı kapalı.',
-            );
+            return $this->deactivateLocalManualAcceptanceSettings($next, 'Admin gerçek gönderim ayarı kapalı.');
         }
 
         $preflight = [
@@ -3887,33 +3883,15 @@ class TechnicalServiceMessagingSettingsService
             ]);
         }
 
-        $currentProfileIsCurrent = $this->localManualAcceptanceIsCurrent($current);
-        $activatedAt = $currentProfileIsCurrent
-            ? (string) $current['local_manual_acceptance_activated_at']
-            : CarbonImmutable::now()->toIso8601String();
-        $next = [
+        return [
             ...$next,
             'real_send_enabled' => true,
             'queue_paused' => false,
-            'local_manual_acceptance_enabled' => true,
-            'local_manual_acceptance_activated_at' => $activatedAt,
+            'local_manual_acceptance_enabled' => false,
+            'local_manual_acceptance_activated_at' => null,
             'local_manual_acceptance_profile_fingerprint' => null,
-            'local_manual_acceptance_reason' => 'Admin gerçek gönderim ayarı açık.',
+            'local_manual_acceptance_reason' => 'Admin ayarları normal yerel gönderim otoritesidir.',
         ];
-        $next['local_manual_acceptance_profile_fingerprint'] = $this->localManualAcceptanceFingerprint($next);
-
-        if ($currentProfileIsCurrent
-            && hash_equals(
-                (string) ($current['local_manual_acceptance_profile_fingerprint'] ?? ''),
-                (string) $next['local_manual_acceptance_profile_fingerprint'],
-            )) {
-            return $next;
-        }
-
-        $next['local_manual_acceptance_activated_at'] = CarbonImmutable::now()->toIso8601String();
-        $next['local_manual_acceptance_profile_fingerprint'] = $this->localManualAcceptanceFingerprint($next);
-
-        return $next;
     }
 
     /**
@@ -5928,7 +5906,6 @@ class TechnicalServiceMessagingSettingsService
         $settings = $this->settings();
 
         return (bool) $settings['messaging_enabled']
-            && $this->manualE2EExecutionScopeAllowed($settings)
             && (bool) $settings['real_send_enabled']
             && $this->readiness($settings)['can_send_real'];
     }
@@ -6839,9 +6816,10 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if ((bool) $settings['real_send_enabled']
-            && ! $this->manualE2EExecutionScopeAllowed($settings)) {
+            && ! $this->manualE2EExecutionScopeAllowed($settings)
+            && ! $this->normalLocalAdminExecutionAuthority($settings)) {
             throw ValidationException::withMessages([
-                'real_send_enabled' => 'Gerçek gönderim yalnız global Canlı veya exact allowlistli Yerel UAT run kapsamında açılabilir.',
+                'real_send_enabled' => 'Gerçek gönderim yalnız global Canlı, normal yerel Admin otoritesi veya exact allowlistli Yerel UAT kapsamında açılabilir.',
             ]);
         }
 
@@ -6979,7 +6957,7 @@ class TechnicalServiceMessagingSettingsService
                 || ($localAcceptanceEnabled && ! $localAcceptanceCurrent)
                 || ($productionLive
                     ? (! $realSend || $queuePaused || $localAcceptanceEnabled)
-                    : ($localAcceptanceCurrent ? (! $realSend || $queuePaused) : ($realSend || ! $queuePaused)))
+                    : ($localAcceptanceCurrent ? (! $realSend || $queuePaused) : ($realSend === $queuePaused)))
                 || $runId !== null
                 || $window !== null
                 || $claim !== null
@@ -7195,12 +7173,8 @@ class TechnicalServiceMessagingSettingsService
         }
         if ((bool) ($settings['queue_paused'] ?? true)) {
             $disabledReasons[] = 'Provider kuyruğu duraklatıldı.';
-        } elseif (! $this->localManualAcceptanceIsCurrent($settings)
-            && ! $manualE2eContext->isActive()) {
-            $disabledReasons[] = 'Provider kuyruğu açık ancak aktif Manual E2E run context yok.';
-        } elseif (! $this->localManualAcceptanceIsCurrent($settings)
-            && $manualE2eContext->workerCommand() === null) {
-            $disabledReasons[] = 'Manual E2E güvenli worker komutu hazır değil.';
+        } elseif (! $queueReady) {
+            $disabledReasons[] = 'Provider kuyruğu açık ancak current release sender heartbeat hazır değil.';
         }
 
         $canSendTest = (bool) $settings['messaging_enabled']
@@ -7315,11 +7289,15 @@ class TechnicalServiceMessagingSettingsService
                 && hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha);
         }
 
-        if ($this->localManualAcceptanceIsCurrent($settings)) {
+        if ($this->normalLocalAdminExecutionAuthority($settings)
+            || $this->localManualAcceptanceIsCurrent($settings)) {
             $worker = $this->outboundWorkerLeaseStatus();
             $releaseSha = $this->runtimeReleaseSha();
 
-            return $releaseSha !== null
+            return (bool) ($settings['messaging_enabled'] ?? false)
+                && (bool) ($settings['real_send_enabled'] ?? false)
+                && ! (bool) ($settings['queue_paused'] ?? true)
+                && $releaseSha !== null
                 && ($worker['state'] ?? null) === 'active'
                 && ($worker['profile'] ?? null) === self::LOCAL_MANUAL_ACCEPTANCE_PROFILE
                 && hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha);
@@ -7361,6 +7339,20 @@ class TechnicalServiceMessagingSettingsService
         return $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
             && $this->isScopedLocalUatSettings($settings)
             && app(ExternalExecutionControlPlaneService::class)->messagingRunSnapshotIsCurrent($snapshot);
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function normalLocalAdminExecutionAuthority(array $settings): bool
+    {
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+
+        return $this->runtimeEnvironment() !== 'production'
+            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
+            && $context->phase() === self::MANUAL_E2E_PHASE_FROZEN
+            && ! $context->enabled()
+            && $context->activeRunId() === null;
     }
 
     /**
@@ -7559,45 +7551,34 @@ class TechnicalServiceMessagingSettingsService
 
     /**
      * @param  array<string, mixed>  $metadata
+     */
+    private function metadataHasManualE2EScope(array $metadata): bool
+    {
+        return filter_var($metadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)
+            || TechnicalServiceManualE2ERunContext::dispatchRunId($metadata) !== null;
+    }
+
+    /**
+     * Canonical authorization shared by normal local enqueue and claim. It
+     * intentionally ignores the legacy per-event real-send bit while keeping
+     * event/channel/provider, recipient, readiness and URL gates fail-closed.
+     *
      * @param  array<string, mixed>  $settings
      * @return array{allowed:bool,code:string|null,message:string|null}
      */
-    private function localManualAcceptanceTupleAuthorization(
+    private function normalLocalDispatchAuthorization(
         string $provider,
         string $channel,
         string $messageType,
         string $targetPhone,
-        array $metadata,
-        CarbonImmutable $createdAt,
         string $body,
         array $settings,
     ): array {
-        if (! $this->localManualAcceptanceIsCurrent($settings)) {
-            return $this->executionBlock('local_manual_acceptance_snapshot_stale', 'Yerel manuel kabul profile fingerprinti current değil.');
-        }
-
-        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
-        if ($context->enabled()
-            || $context->activeRunId() !== null
-            || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
+        if (! $this->normalLocalAdminExecutionAuthority($settings)
             || ! (bool) ($settings['messaging_enabled'] ?? false)
             || ! (bool) ($settings['real_send_enabled'] ?? false)
             || (bool) ($settings['queue_paused'] ?? true)) {
-            return $this->executionBlock('local_manual_acceptance_gate_closed', 'Yerel manuel kabul lifecycle veya kill-switch kapısı açık değil.');
-        }
-
-        $storedFingerprint = (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? '');
-        $storedActivatedAt = (string) ($settings['local_manual_acceptance_activated_at'] ?? '');
-        if (($metadata['local_manual_acceptance_profile_id'] ?? null) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE
-            || (int) ($metadata['local_manual_acceptance_profile_version'] ?? 0) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE_VERSION
-            || ! hash_equals($storedFingerprint, (string) ($metadata['local_manual_acceptance_profile_fingerprint'] ?? ''))
-            || ! hash_equals($storedActivatedAt, (string) ($metadata['local_manual_acceptance_activated_at'] ?? ''))) {
-            return $this->executionBlock('local_manual_acceptance_dispatch_snapshot_mismatch', 'Dispatch yerel manuel kabul snapshotı current profile ile eşleşmiyor.');
-        }
-
-        $activatedAt = $this->safeDate($storedActivatedAt);
-        if ($activatedAt === null || $createdAt->lt($activatedAt)) {
-            return $this->executionBlock('local_manual_acceptance_created_before_activation', 'Activation öncesi dispatch provider tarafından claim edilemez.');
+            return $this->executionBlock('outbound_execution_mode_local', 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.');
         }
 
         $provider = $this->normalizeProviderKey($provider);
@@ -7606,7 +7587,7 @@ class TechnicalServiceMessagingSettingsService
             || ! in_array($channel, ['whatsapp', 'sms'], true)
             || ! (bool) ($typePolicy['enabled'] ?? false)
             || ! $this->messageTypeAllowsChannel($typePolicy, $channel, $provider)) {
-            return $this->executionBlock('local_manual_acceptance_event_channel_blocked', 'Dispatch event/channel/provider ayarı aktif değil.');
+            return $this->executionBlock('message_type_channel_disabled', 'Dispatch mesaj tipi, kanal veya provider ayarı aktif değil.');
         }
 
         $target = $this->normalizePhone($targetPhone);
@@ -7617,13 +7598,13 @@ class TechnicalServiceMessagingSettingsService
         if ($target === ''
             || ((bool) ($settings['test_mode_enabled'] ?? false)
                 && ! in_array($target, $allowlist, true))) {
-            return $this->executionBlock('local_manual_acceptance_recipient_blocked', 'Dispatch recipient allowlist dışında.');
+            return $this->executionBlock('normal_local_recipient_blocked', 'Dispatch recipient test allowlist dışında.');
         }
         if (! $this->providerRealReady($provider, $settings, false)) {
-            return $this->executionBlock('local_manual_acceptance_provider_not_ready', 'Dispatch provider readiness geçmedi.');
+            return $this->executionBlock('outbound_provider_set_not_ready', 'Dispatch provider readiness geçmedi.');
         }
         if (! $this->localManualAcceptanceBodyUrlsAreSafe($body, $settings)) {
-            return $this->executionBlock('local_manual_acceptance_link_host_blocked', 'Dispatch body yalnız locked private LAN origin ve canonical Google Maps bağlantıları içerebilir.');
+            return $this->executionBlock('normal_local_link_host_blocked', 'Dispatch body yalnız configured private LAN origin ve canonical Google Maps bağlantıları içerebilir.');
         }
 
         return ['allowed' => true, 'code' => null, 'message' => null];
@@ -9322,11 +9303,11 @@ SQL,
         $scopedManualE2E = $manualE2E
             && $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
             && $this->isScopedLocalUatSettings($settings);
-        $persistentLocalAcceptance = ! $manualE2E
+        $normalLocalOutbound = ! $manualE2E
             && $mode === self::OUTBOUND_EXECUTION_MODE_LOCAL
-            && $this->localManualAcceptanceIsCurrent($settings);
+            && $environment !== 'production';
 
-        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE && ! $scopedManualE2E && ! $persistentLocalAcceptance) {
+        if ($mode !== self::OUTBOUND_EXECUTION_MODE_LIVE && ! $scopedManualE2E && ! $normalLocalOutbound) {
             return $this->executionBlock('outbound_execution_mode_local', 'Global sistem çalışma modu Lokal; dış provider çağrısı kapalı.');
         }
         if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)
@@ -9335,7 +9316,7 @@ SQL,
             || ($dispatch->provider_key === 'nac_sms' && $dispatch->channel !== 'sms')) {
             return $this->executionBlock('outbound_provider_channel_mismatch', 'Dispatch provider/channel tuple çalışma modu için geçersiz.');
         }
-        if (! $persistentLocalAcceptance) {
+        if (! $normalLocalOutbound) {
             $globalAuthorization = $this->outboundSnapshotAuthorization(
                 (string) $dispatch->provider_key,
                 $metadata,
@@ -9344,7 +9325,7 @@ SQL,
                 return $globalAuthorization;
             }
         }
-        $providerReady = $persistentLocalAcceptance
+        $providerReady = $normalLocalOutbound
             ? ($dispatch->provider_key === 'evo_whatsapp'
                 ? $this->evoProviderReadyForLive($settings, false)
                 : $this->nacProviderReadyForLive($settings, false))
@@ -9369,17 +9350,12 @@ SQL,
             return ['allowed' => true, 'code' => null, 'message' => null];
         }
 
-        if ($persistentLocalAcceptance) {
-            $createdAt = $dispatch->created_at instanceof \DateTimeInterface
-                ? CarbonImmutable::instance($dispatch->created_at)
-                : CarbonImmutable::parse((string) $dispatch->created_at);
-            $localAuthorization = $this->localManualAcceptanceTupleAuthorization(
+        if ($normalLocalOutbound) {
+            $localAuthorization = $this->normalLocalDispatchAuthorization(
                 (string) $dispatch->provider_key,
                 (string) $dispatch->channel,
                 (string) $dispatch->message_type,
                 (string) $dispatch->target_phone,
-                $metadata,
-                $createdAt,
                 $dispatch->bodyForProvider(),
                 $settings,
             );
@@ -9396,14 +9372,16 @@ SQL,
             || (bool) ($settings['queue_paused'] ?? true)) {
             return $this->executionBlock('production_live_gate_closed', 'Production live provider gate veya queue state hazır değil.');
         }
-        $typePolicy = (array) data_get($settings, 'message_types.'.$dispatch->message_type, []);
-        if (! (bool) ($typePolicy['enabled'] ?? false)
-            || ! $this->messageTypeAllowsChannel(
-                $typePolicy,
-                (string) $dispatch->channel,
-                (string) $dispatch->provider_key,
-            )) {
-            return $this->executionBlock('message_type_channel_disabled', 'Dispatch mesaj tipi, kanal veya provider ayarı aktif değil.');
+        if (! $normalLocalOutbound) {
+            $typePolicy = (array) data_get($settings, 'message_types.'.$dispatch->message_type, []);
+            if (! (bool) ($typePolicy['enabled'] ?? false)
+                || ! $this->messageTypeAllowsChannel(
+                    $typePolicy,
+                    (string) $dispatch->channel,
+                    (string) $dispatch->provider_key,
+                )) {
+                return $this->executionBlock('message_type_channel_disabled', 'Dispatch mesaj tipi, kanal veya provider ayarı aktif değil.');
+            }
         }
         $worker = $this->outboundWorkerLeaseStatus();
         $rawWorker = $this->outboundWorkerLease();
@@ -9413,9 +9391,9 @@ SQL,
             || ! hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha)) {
             return $this->executionBlock('outbound_worker_not_healthy', 'Normal outbound worker heartbeat current release ile eşleşmiyor.');
         }
-        if ($persistentLocalAcceptance
+        if ($normalLocalOutbound
             && ($rawWorker['profile'] ?? null) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
-            return $this->executionBlock('outbound_worker_profile_mismatch', 'Normal outbound worker locked yerel profile ile eşleşmiyor.');
+            return $this->executionBlock('outbound_worker_profile_mismatch', 'Normal outbound worker yerel sender owner ile eşleşmiyor.');
         }
         $currentOwner = trim((string) ($rawWorker['lock_owner'] ?? ''));
         $expectedOwnerHash = $currentOwner === '' ? '' : hash('sha256', $currentOwner);
@@ -9759,14 +9737,17 @@ SQL,
         }
 
         if (($lease['profile'] ?? null) === self::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
-            if (! $this->localManualAcceptanceIsCurrent($settings)) {
+            if (! $this->normalLocalAdminExecutionAuthority($settings)
+                || ! (bool) ($settings['messaging_enabled'] ?? false)
+                || ! (bool) ($settings['real_send_enabled'] ?? false)
+                || (bool) ($settings['queue_paused'] ?? true)) {
                 return ['allowed' => false, 'profile' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE, 'created_after' => null, 'allowlisted_phones' => []];
             }
 
             return [
                 'allowed' => true,
                 'profile' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
-                'created_after' => (string) ($settings['local_manual_acceptance_activated_at'] ?? ''),
+                'created_after' => null,
                 'allowlisted_phones' => (bool) ($settings['test_mode_enabled'] ?? false)
                     ? array_values(array_filter(array_map(
                         fn (mixed $phone): string => $this->normalizePhone((string) $phone),
