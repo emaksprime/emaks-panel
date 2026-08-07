@@ -9,6 +9,9 @@ use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestEvent;
 use App\Models\TechnicalServiceTechnician;
@@ -27,6 +30,7 @@ use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceNacSmsTestClient;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
@@ -4619,6 +4623,111 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(3, Http::recorded()->count());
     }
 
+    #[DataProvider('canonicalPaymentMessageTypes')]
+    public function test_configured_sandbox_payment_url_is_allowed_for_payment_link_variable(string $messageType): void
+    {
+        config([
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox.iyzi.link'],
+        ]);
+        Http::fake(fn ($request) => str_contains($request->url(), 'nac.example.test')
+            ? Http::response(['err' => null, 'data' => ['pkgID' => 7654330]], 200)
+            : Http::response(['messageId' => 'EVO-PAYMENT-LINK-1'], 200));
+
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update([
+            'message_types' => [
+                $messageType => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        $payment = $this->canonicalSandboxIyzicoPayment('https://sandbox.iyzi.link/payment-link-allowed');
+
+        $whatsapp = $this->enqueueDispatch([
+            'event' => $messageType,
+            'message_type' => $messageType,
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => "Ödeme bağlantınız:\n{$payment->payment_url}"],
+            'metadata' => ['payment_id' => $payment->id, 'payment_provider' => 'iyzico'],
+            'idempotency_key' => 'sandbox-payment-link-'.$messageType.'-whatsapp',
+        ]);
+        $sms = $this->enqueueDispatch([
+            'event' => $messageType,
+            'message_type' => $messageType,
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'customer',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => "Ödeme: {$payment->payment_url}"],
+            'metadata' => ['payment_id' => $payment->id, 'payment_provider' => 'iyzico'],
+            'idempotency_key' => 'sandbox-payment-link-'.$messageType.'-sms',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $whatsapp->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $sms->status);
+        $this->assertSame(2, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 2,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $whatsapp->fresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $sms->fresh()->status);
+        Http::assertSentCount(2);
+    }
+
+    public static function canonicalPaymentMessageTypes(): array
+    {
+        return [
+            'root payment link' => ['payment_link_customer'],
+            'part fee payment link' => ['part_fee_payment_link_customer'],
+        ];
+    }
+
+    public function test_arbitrary_external_url_remains_blocked(): void
+    {
+        config(['services.public_urls.trusted_payment_provider_origins' => ['https://sandbox.iyzi.link']]);
+        Http::fake();
+        [$settings] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update([
+            'message_types' => [
+                'payment_link_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_only',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'disabled',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        $payment = $this->canonicalSandboxIyzicoPayment('https://sandbox.iyzi.link/payment-link-safe');
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'payment_link_customer',
+            'message_type' => 'payment_link_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Ödeme bağlantınız: https://external.example.test/payment-link-unsafe'],
+            'metadata' => ['payment_id' => $payment->id, 'payment_provider' => 'iyzico'],
+            'idempotency_key' => 'arbitrary-payment-link-blocked',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->status);
+        $this->assertSame('normal_local_link_host_blocked', $dispatch->last_error_code);
+        $this->assertSame(0, $dispatch->attempt_count);
+        Http::assertNothingSent();
+    }
+
     public function test_valid_post_activation_dispatch_is_claimed_once(): void
     {
         config(['services.evolution.allow_unit_test_http_fake' => true]);
@@ -5291,6 +5400,24 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                     'whatsapp_provider' => 'evo_whatsapp',
                     'sms_provider' => 'nac_sms',
                 ],
+                'payment_link_customer' => [
+                    'enabled' => true,
+                    'real_send_allowed' => false,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+                'part_fee_payment_link_customer' => [
+                    'enabled' => true,
+                    'real_send_allowed' => false,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
             ],
         ]);
         foreach ([
@@ -5331,6 +5458,73 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
 
         return [$settings, $owner, $profile];
+    }
+
+    private function canonicalSandboxIyzicoPayment(string $paymentUrl): TechnicalServiceMountPayment
+    {
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServicePaymentProviderSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::REAL_PROVIDER_ENABLED_KEY, true);
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::PROVIDER_KEY, 'iyzico');
+        Arr::set($layout, TechnicalServicePaymentProviderSettingsService::PROVIDER_MODE_KEY, 'sandbox');
+        $page->forceFill(['layout_json' => $layout])->save();
+
+        $serial = 'PAYMENT-LINK-'.Str::upper(Str::random(8));
+        $link = TechnicalServiceQrLink::query()->create([
+            'token_hash' => TechnicalServiceQrLink::hashToken('qr-'.$serial),
+            'public_token' => 'qr-'.$serial,
+            'serial_number' => $serial,
+            'product_name' => 'Payment Link Test Product',
+            'link_type' => TechnicalServiceQrLink::TYPE_MANUAL_TEST,
+            'status' => TechnicalServiceQrLink::STATUS_ACTIVE,
+        ]);
+        $session = TechnicalServiceMountSession::query()->create([
+            'technical_service_qr_link_id' => $link->id,
+            'session_token_hash' => TechnicalServiceMountSession::hashSessionToken('session-'.$serial),
+            'serial_number' => $serial,
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_SINGLE_PRODUCT,
+            'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
+        ]);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'provider' => 'iyzico',
+            'provider_reference' => 'sandbox-ref-'.Str::lower(Str::random(12)),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'payment_url' => $paymentUrl,
+            'raw_payload' => [],
+        ]);
+        $authority = [
+            'schema_version' => 1,
+            'create_status' => 'completed',
+            'payment_id' => $payment->id,
+            'provider' => 'iyzico',
+            'payment_url_hash' => hash('sha256', $paymentUrl),
+        ];
+        $payment->forceFill([
+            'raw_payload' => [
+                'provider_mode' => 'sandbox',
+                'provider_transport' => 'direct_laravel',
+                'provider_decision' => [
+                    'provider_mode' => 'sandbox',
+                    'provider_transport' => 'direct_laravel',
+                ],
+                'provider_gateway' => ['mode' => 'sandbox', 'payment_url' => $paymentUrl],
+                'canonical_payment_session_authority' => $authority,
+                'canonical_payment_create_history' => [[
+                    ...$authority,
+                    'operation' => 'payment_create',
+                    'status' => 'completed',
+                ]],
+            ],
+        ])->save();
+
+        return $payment->refresh();
     }
 
     private function activateProductionLiveQueueContext(): string

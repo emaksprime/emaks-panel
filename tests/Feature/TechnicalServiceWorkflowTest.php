@@ -3469,6 +3469,22 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('sync_provider=1', $pageSource);
     }
 
+    public function test_pending_payment_auto_reconciles_while_visible(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString(
+            '/payments/${paymentId}/status?sync_provider=1',
+            $source,
+        );
+        $this->assertStringContainsString('payment.status !== \'pending\'', $source);
+        $this->assertStringContainsString('window.setInterval(refreshPaymentStatus, 10000)', $source);
+        $this->assertStringContainsString('window.clearInterval(interval)', $source);
+        $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $source);
+        $this->assertStringNotContainsString('window.setInterval(refreshPaymentStatus, 3000)', $source);
+    }
+
     public function test_other_technicians_modal_keeps_first_four_visible(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));

@@ -1551,7 +1551,7 @@ export function TechnicalServiceOperationCenter() {
 
     const refreshPaymentStatus = async () => {
       try {
-        const response = await apiRequest(`/api/technical-service/requests/${requestId}/payments/${paymentId}/status`)
+        const response = await apiRequest(`/api/technical-service/requests/${requestId}/payments/${paymentId}/status?sync_provider=1`)
 
         if (cancelled || String(selectedId ?? '') !== requestId || !response.request) {
           return
@@ -1577,7 +1577,7 @@ export function TechnicalServiceOperationCenter() {
       }
     }
 
-    const interval = window.setInterval(refreshPaymentStatus, 3000)
+    const interval = window.setInterval(refreshPaymentStatus, 10000)
 
     return () => {
       cancelled = true

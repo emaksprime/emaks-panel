@@ -141,7 +141,7 @@ class TechnicalServiceMessageContextBuilder
         }
 
         return TechnicalServiceRequest::query()
-            ->with(['settlement', 'technicianRecord'])
+            ->with(['settlement', 'technicianRecord', 'parentRequest'])
             ->find($id);
     }
 
@@ -159,13 +159,22 @@ class TechnicalServiceMessageContextBuilder
         $totalAmount = round($laborAmount + $routeAmount, 2);
         $mapsUrl = $request->location_map_url ?: $this->mapsLink($request);
         $completedAt = $request->installation_completed_at ?: $request->completed_at ?: $request->field_completed_at;
+        $parentRequest = $request->parentRequest;
+        $rootMrn = $this->filledString($request->root_mrn)
+            ?: $this->filledString($parentRequest?->mrn)
+            ?: $this->filledString($request->mrn);
+        $currentSrv = $this->filledString($request->service_code);
+        $customerName = $this->filledString($parentRequest?->customer_name)
+            ?: $this->filledString($request->customer_name);
+        $customerPhone = $this->filledString($parentRequest?->customer_phone)
+            ?: $this->filledString($request->customer_phone);
 
         return [
-            'customer_name' => $request->customer_name,
-            'customer_phone' => $this->normalizePhone($request->customer_phone),
-            'request_code' => $request->mrn ?: $request->service_code,
-            'mrn' => $request->mrn,
-            'srv' => $request->service_code,
+            'customer_name' => $customerName,
+            'customer_phone' => $this->normalizePhone($customerPhone),
+            'request_code' => $currentSrv ?: $rootMrn,
+            'mrn' => $rootMrn,
+            'srv' => $currentSrv,
             'serial_no' => $request->serial_number,
             'product_name' => $request->product_name,
             'brand' => $request->brand,

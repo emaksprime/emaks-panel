@@ -16,6 +16,7 @@ use App\Services\Mikro\MikroOperationRegistry;
 use App\Services\Mikro\MikroRuntimeState;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Closure;
@@ -1277,6 +1278,7 @@ class TechnicalServiceMessagingSettingsService
                 $messageType,
                 $targetPhone,
                 $body,
+                $metadata,
                 $settings,
             );
         }
@@ -7566,6 +7568,7 @@ class TechnicalServiceMessagingSettingsService
      * event/channel/provider, recipient, readiness and URL gates fail-closed.
      *
      * @param  array<string, mixed>  $settings
+     * @param  array<string, mixed>  $metadata
      * @return array{allowed:bool,code:string|null,message:string|null}
      */
     private function normalLocalDispatchAuthorization(
@@ -7574,6 +7577,7 @@ class TechnicalServiceMessagingSettingsService
         string $messageType,
         string $targetPhone,
         string $body,
+        array $metadata,
         array $settings,
     ): array {
         if (! $this->normalLocalAdminExecutionAuthority($settings)
@@ -7605,8 +7609,8 @@ class TechnicalServiceMessagingSettingsService
         if (! $this->providerRealReady($provider, $settings, false)) {
             return $this->executionBlock('outbound_provider_set_not_ready', 'Dispatch provider readiness geçmedi.');
         }
-        if (! $this->localManualAcceptanceBodyUrlsAreSafe($body, $settings)) {
-            return $this->executionBlock('normal_local_link_host_blocked', 'Dispatch body yalnız configured private LAN origin ve canonical Google Maps bağlantıları içerebilir.');
+        if (! $this->localManualAcceptanceBodyUrlsAreSafe($body, $messageType, $metadata, $settings)) {
+            return $this->executionBlock('normal_local_link_host_blocked', 'Dispatch body yalnız configured uygulama originini, canonical Google Maps bağlantısını veya locked canonical ödeme linkini içerebilir.');
         }
 
         return ['allowed' => true, 'code' => null, 'message' => null];
@@ -9359,6 +9363,7 @@ SQL,
                 (string) $dispatch->message_type,
                 (string) $dispatch->target_phone,
                 $dispatch->bodyForProvider(),
+                $metadata,
                 $settings,
             );
             if (! $localAuthorization['allowed']) {
@@ -10004,9 +10009,14 @@ SQL,
 
     /**
      * @param  array<string, mixed>  $settings
+     * @param  array<string, mixed>  $metadata
      */
-    private function localManualAcceptanceBodyUrlsAreSafe(string $body, array $settings): bool
-    {
+    private function localManualAcceptanceBodyUrlsAreSafe(
+        string $body,
+        string $messageType,
+        array $metadata,
+        array $settings,
+    ): bool {
         preg_match_all('~https?://[^\s<>"\']+~iu', $body, $matches);
         $urls = array_map(
             static fn (string $url): string => rtrim($url, '.,;:!?)]}'),
@@ -10036,11 +10046,76 @@ SQL,
                 continue;
             }
             if (! $this->isCanonicalGoogleMapsUrl($parts)) {
-                return false;
+                if (! $this->isCanonicalPaymentLinkUrl($url, $messageType, $metadata)) {
+                    return false;
+                }
             }
         }
 
         return true;
+    }
+
+    /** @param array<string, mixed> $metadata */
+    private function isCanonicalPaymentLinkUrl(string $url, string $messageType, array $metadata): bool
+    {
+        if (! in_array($messageType, ['payment_link_customer', 'part_fee_payment_link_customer'], true)) {
+            return false;
+        }
+
+        $paymentId = (int) ($metadata['payment_id'] ?? 0);
+        if ($paymentId <= 0) {
+            return false;
+        }
+
+        $payment = TechnicalServiceMountPayment::query()->find($paymentId);
+        if (! $payment instanceof TechnicalServiceMountPayment
+            || $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING
+            || strtolower(trim((string) $payment->provider)) !== 'iyzico'
+            || ! hash_equals(trim((string) $payment->payment_url), trim($url))) {
+            return false;
+        }
+
+        $settings = app(TechnicalServicePaymentProviderSettingsService::class);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $storedMode = strtolower(trim((string) (
+            data_get($payload, 'provider_mode')
+            ?? data_get($payload, 'provider_decision.provider_mode')
+            ?? data_get($payload, 'provider_gateway.mode')
+            ?? ''
+        )));
+        if (! $settings->realProviderEnabled()
+            || $settings->configuredProvider() !== 'iyzico'
+            || ! in_array($storedMode, ['sandbox', 'live'], true)
+            || ! hash_equals($settings->providerMode(), $storedMode)) {
+            return false;
+        }
+
+        $paymentUrlHash = hash('sha256', trim($url));
+        $authority = data_get($payload, 'canonical_payment_session_authority');
+        $authorityMatches = is_array($authority)
+            && (string) ($authority['create_status'] ?? '') === 'completed'
+            && (int) ($authority['payment_id'] ?? 0) === $paymentId
+            && (string) ($authority['provider'] ?? '') === 'iyzico'
+            && hash_equals((string) ($authority['payment_url_hash'] ?? ''), $paymentUrlHash);
+        $historyMatches = collect((array) data_get($payload, 'canonical_payment_create_history', []))
+            ->contains(fn (mixed $entry): bool => is_array($entry)
+                && (string) ($entry['operation'] ?? '') === 'payment_create'
+                && (string) ($entry['status'] ?? '') === 'completed'
+                && (int) ($entry['payment_id'] ?? 0) === $paymentId
+                && (string) ($entry['provider'] ?? '') === 'iyzico'
+                && hash_equals((string) ($entry['payment_url_hash'] ?? ''), $paymentUrlHash));
+        if (! $authorityMatches || ! $historyMatches) {
+            return false;
+        }
+
+        try {
+            $presented = TechnicalServicePaymentActionPresenter::forPayment($payment);
+        } catch (Throwable) {
+            return false;
+        }
+
+        return (bool) ($presented['can_send'] ?? false)
+            && hash_equals((string) ($presented['canonical_url'] ?? ''), trim($url));
     }
 
     /** @param array<string, mixed> $parts */

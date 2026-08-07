@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMessageTemplate;
+use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
@@ -1586,6 +1587,70 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 $this->assertStringNotContainsString('Ödemeler nakit veya havale', $preview);
             }
         }
+    }
+
+    public function test_current_srv_customer_approval_passes_role_body_validation(): void
+    {
+        $root = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-APPROVAL-ROOT-001',
+            'customer_name' => 'Canonical Root Customer',
+            'customer_phone' => '05321112233',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Canonical root address',
+            'product_name' => 'Approval Product',
+            'service_type' => 'Montaj',
+            'status' => 'Tamamlandı',
+        ]);
+        $child = TechnicalServiceRequest::query()->create([
+            'mrn' => 'SRV-APPROVAL-001',
+            'root_mrn' => $root->mrn,
+            'service_code' => 'SRV-APPROVAL-001',
+            'parent_request_id' => $root->id,
+            'customer_name' => 'Stale Child Customer',
+            'customer_phone' => '05559998877',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Current SRV address',
+            'product_name' => 'Approval Product',
+            'service_type' => 'Servis',
+            'status' => 'Tamamlandı',
+        ]);
+        $approvalUrl = 'http://10.0.28.64:8000/mount-approval/canonical-approval-token';
+        $previews = [];
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'customer_approval_request',
+                    'channel' => $channel,
+                    'sample_context' => false,
+                    'technical_service_request_id' => $child->id,
+                    'context' => [
+                        'confirmation_link' => $approvalUrl,
+                        'confirmation_link_sms' => $approvalUrl,
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview');
+
+            $this->assertSame($root->mrn, data_get($preview, 'context.mrn'));
+            $this->assertSame($child->service_code, data_get($preview, 'context.srv'));
+            $this->assertSame($child->service_code, data_get($preview, 'context.customer_reference_code'));
+            $this->assertSame('Canonical Root Customer', data_get($preview, 'context.customer_name'));
+            $this->assertSame($root->mrn, data_get($preview, 'context.customer_hidden_internal_references.mrn'));
+            $this->assertStringContainsString($child->service_code, (string) $preview['rendered_body']);
+            $this->assertStringNotContainsString($root->mrn, (string) $preview['rendered_body']);
+            $this->assertStringContainsString($approvalUrl, (string) $preview['rendered_body']);
+            $previews[$channel] = $preview;
+        }
+
+        $this->assertSame(
+            data_get($previews, 'whatsapp.context.confirmation_link'),
+            data_get($previews, 'sms.context.confirmation_link_sms'),
+        );
+        Http::assertNothingSent();
     }
 
     public function test_sms_readability_policy_all_default_sms_templates(): void
