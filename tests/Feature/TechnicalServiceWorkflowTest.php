@@ -3472,17 +3472,25 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_pending_payment_auto_reconciles_while_visible(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $targets = file_get_contents(resource_path('js/components/technical-service/payment-reconciliation.ts'));
 
         $this->assertIsString($source);
+        $this->assertIsString($targets);
         $this->assertStringContainsString(
-            '/payments/${paymentId}/status?sync_provider=1',
+            '/payments/${target.paymentId}/status?sync_provider=1',
             $source,
         );
-        $this->assertStringContainsString('payment.status !== \'pending\'', $source);
-        $this->assertStringContainsString('window.setInterval(refreshPaymentStatus, 10000)', $source);
-        $this->assertStringContainsString('window.clearInterval(interval)', $source);
+        $this->assertStringContainsString('resolveVisiblePendingPaymentTargets(selectedDetailRequest)', $source);
+        $this->assertStringContainsString('PAYMENT_RECONCILIATION_POLL_INTERVAL_MS = 5000', $targets);
+        $this->assertStringContainsString('saleAndPayment?.mount_payments?.pending_rows', $targets);
+        $this->assertStringContainsString('saleAndPayment?.customer_charges?.rows', $targets);
+        $this->assertStringContainsString("String(payment.status ?? '').toLowerCase() !== 'pending'", $targets);
+        $this->assertStringContainsString('window.setTimeout(refreshPaymentStatus, delay)', $source);
+        $this->assertStringContainsString('window.clearTimeout(timer)', $source);
+        $this->assertStringContainsString('const selectedRequestId = String(selectedId)', $source);
+        $this->assertStringContainsString('if (String(updatedRequest.id) !== selectedRequestId)', $source);
         $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $source);
-        $this->assertStringNotContainsString('window.setInterval(refreshPaymentStatus, 3000)', $source);
+        $this->assertStringNotContainsString('window.setInterval(refreshPaymentStatus, 10000)', $source);
     }
 
     public function test_other_technicians_modal_keeps_first_four_visible(): void

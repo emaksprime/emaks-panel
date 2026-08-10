@@ -2,6 +2,10 @@ import { Head } from '@inertiajs/react'
 import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
+import {
+  PAYMENT_RECONCILIATION_POLL_INTERVAL_MS,
+  resolveVisiblePendingPaymentTargets,
+} from '@/components/technical-service/payment-reconciliation'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult } from '@/components/technical-service/PendingPaymentLinkActions'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
@@ -1538,59 +1542,88 @@ export function TechnicalServiceOperationCenter() {
     }
   }, [loadRequests])
 
-  useEffect(() => {
-    const request = selectedDetailRequest
-    const payment = request?.saleAndPayment?.extra_mount_payment
+  const pendingPaymentPollTargetKey = JSON.stringify(resolveVisiblePendingPaymentTargets(selectedDetailRequest))
 
-    if (!request?.id || !payment?.id || payment.status !== 'pending') {
+  useEffect(() => {
+    if (!selectedId || pendingPaymentPollTargetKey === '[]') {
       return
     }
 
-    const requestId = String(request.id)
-    const paymentId = String(payment.id)
+    const selectedRequestId = String(selectedId)
+    const targets = JSON.parse(pendingPaymentPollTargetKey) as Array<{ requestId: string, paymentId: string }>
     let cancelled = false
+    let timer: number | null = null
+    let inFlight = false
 
-    const refreshPaymentStatus = async () => {
-      try {
-        const response = await apiRequest(`/api/technical-service/requests/${requestId}/payments/${paymentId}/status?sync_provider=1`)
-
-        if (cancelled || String(selectedId ?? '') !== requestId || !response.request) {
-          return
-        }
-
-        const updatedRequest = mapApiRequest(response.request)
-
-        if (String(updatedRequest.id) !== requestId) {
-          return
-        }
-
-        preserveDetailScroll(() => {
-          setRequests((current) => current.map((item) => (
-            item.id === updatedRequest.id ? updatedRequest : item
-          )))
-          setSelectedListRequest((current) => (
-            current?.id === updatedRequest.id ? updatedRequest : current
-          ))
-          setSelectedDetailRequest(updatedRequest)
-        })
-      } catch {
-        // Polling is intentionally quiet; explicit create/assign actions still surface errors.
+    const scheduleNextPoll = (delay: number) => {
+      if (!cancelled) {
+        timer = window.setTimeout(refreshPaymentStatus, delay)
       }
     }
 
-    const interval = window.setInterval(refreshPaymentStatus, 10000)
+    const refreshPaymentStatus = async () => {
+      if (cancelled || inFlight) {
+        return
+      }
+
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        scheduleNextPoll(PAYMENT_RECONCILIATION_POLL_INTERVAL_MS)
+
+        return
+      }
+
+      inFlight = true
+      const startedAt = Date.now()
+
+      try {
+        for (const target of targets) {
+          const response = await apiRequest(`/api/technical-service/requests/${target.requestId}/payments/${target.paymentId}/status?sync_provider=1`)
+
+          if (cancelled || String(selectedId ?? '') !== selectedRequestId || !response.request) {
+            return
+          }
+
+          const updatedRequest = mapApiRequest(response.request)
+
+          if (String(updatedRequest.id) !== selectedRequestId) {
+            continue
+          }
+
+          preserveDetailScroll(() => {
+            setRequests((current) => current.map((item) => (
+              item.id === updatedRequest.id ? updatedRequest : item
+            )))
+            setSelectedListRequest((current) => (
+              current?.id === updatedRequest.id ? updatedRequest : current
+            ))
+            setSelectedDetailRequest(updatedRequest)
+          })
+        }
+      } catch {
+        // Polling is intentionally quiet; explicit create/assign actions still surface errors.
+      } finally {
+        inFlight = false
+
+        if (!cancelled) {
+          const elapsed = Date.now() - startedAt
+          scheduleNextPoll(Math.max(0, PAYMENT_RECONCILIATION_POLL_INTERVAL_MS - elapsed))
+        }
+      }
+    }
+
+    void refreshPaymentStatus()
 
     return () => {
       cancelled = true
-      window.clearInterval(interval)
+
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
     }
   }, [
+    pendingPaymentPollTargetKey,
     preserveDetailScroll,
     selectedId,
-    selectedDetailRequest,
-    selectedDetailRequest?.id,
-    selectedDetailRequest?.saleAndPayment?.extra_mount_payment?.id,
-    selectedDetailRequest?.saleAndPayment?.extra_mount_payment?.status,
   ])
 
   useEffect(() => {
