@@ -2,17 +2,18 @@
 
 namespace Tests\Feature;
 
-use App\Models\TechnicalServiceEarning;
-use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceAssignmentOffer;
-use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningPayment;
+use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
+use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceEarningService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
@@ -765,6 +766,58 @@ class TechnicalServiceEarningTest extends TestCase
         $this->assertDatabaseCount('technical_service_earning_payments', 1);
     }
 
+    public function test_company_payment_line_is_paid_through_existing_earning_payout_process(): void
+    {
+        [$user, $earning, $request, $settlement] = $this->earningWithSettlement(
+            companyPayable: 1500,
+            settlementOverrides: [
+                'labor_earning_amount' => 500,
+                'technician_earning_total' => 1500,
+                'company_payable_amount' => 1500,
+                'company_remaining_amount' => 1500,
+                'metadata' => [
+                    'base_company_payable_amount' => 500,
+                    'company_payment_amount' => 1000,
+                ],
+            ],
+        );
+        $line = new TechnicalServiceEarningPayment;
+        $line->forceFill([
+            'technical_service_settlement_id' => $settlement->id,
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $settlement->technical_service_technician_id,
+            'currency' => 'TRY',
+            'payment_type' => TechnicalServiceAssignmentSettlementService::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT,
+            'amount' => 1000,
+            'status' => TechnicalServiceEarningPayment::STATUS_PENDING,
+            'metadata' => ['payment_id' => 9901, 'payment_purpose' => 'service_payment'],
+        ])->save();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/earnings/{$earning->id}/mark-paid", [
+                'amount' => 1500,
+                'reference' => 'DEKONT-COMPANY-LINE',
+            ])
+            ->assertOk()
+            ->assertJsonPath('earning.company_paid_amount', 1500)
+            ->assertJsonPath('earning.company_remaining_amount', 0);
+
+        $this->assertDatabaseHas('technical_service_earning_payments', [
+            'payment_type' => TechnicalServiceEarningPayment::TYPE_COMPANY_PAYOUT,
+            'source_company_payment_line_id' => null,
+            'amount' => '500.00',
+            'status' => TechnicalServiceEarningPayment::STATUS_APPLIED,
+        ]);
+        $this->assertDatabaseHas('technical_service_earning_payments', [
+            'payment_type' => TechnicalServiceEarningPayment::TYPE_COMPANY_PAYOUT,
+            'source_company_payment_line_id' => $line->id,
+            'amount' => '1000.00',
+            'status' => TechnicalServiceEarningPayment::STATUS_APPLIED,
+        ]);
+        $this->assertSame(TechnicalServiceEarningPayment::STATUS_APPLIED, $line->fresh()->status);
+        $this->assertNotNull($line->fresh()->paid_at);
+    }
+
     public function test_srv_and_parent_earnings_are_summed_from_latest_assignment_offers(): void
     {
         $technician = $this->technician(['name' => 'SRV Toplam Usta']);
@@ -929,7 +982,7 @@ class TechnicalServiceEarningTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technician(array $overrides = []): TechnicalServiceTechnician
     {
@@ -944,7 +997,7 @@ class TechnicalServiceEarningTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function request(array $overrides = []): TechnicalServiceRequest
     {
@@ -967,7 +1020,7 @@ class TechnicalServiceEarningTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function assignmentOffer(TechnicalServiceRequest $request, array $overrides = []): TechnicalServiceAssignmentOffer
     {
@@ -984,8 +1037,8 @@ class TechnicalServiceEarningTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $requestOverrides
-     * @param array<string, mixed> $settlementOverrides
+     * @param  array<string, mixed>  $requestOverrides
+     * @param  array<string, mixed>  $settlementOverrides
      * @return array{0: User, 1: TechnicalServiceEarning, 2: TechnicalServiceRequest, 3: TechnicalServiceSettlement}
      */
     private function earningWithSettlement(float $companyPayable, array $requestOverrides = [], array $settlementOverrides = []): array
@@ -1023,7 +1076,7 @@ class TechnicalServiceEarningTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function settlement(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician, array $overrides = []): TechnicalServiceSettlement
     {

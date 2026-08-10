@@ -14,8 +14,7 @@ class TechnicalServiceEarningSettlementSummaryService
 {
     public function __construct(
         private readonly TechnicalServicePaymentOwnershipService $paymentOwnership,
-    ) {
-    }
+    ) {}
 
     /**
      * @return Collection<int, TechnicalServiceSettlement>
@@ -188,6 +187,11 @@ class TechnicalServiceEarningSettlementSummaryService
     public function settlementPayload(TechnicalServiceSettlement $settlement): array
     {
         $companyPaid = $this->appliedCompanyPayoutTotal($settlement);
+        $companyPaymentLines = $this->companyPaymentLines($settlement);
+        $companyPaymentAmount = $this->money($companyPaymentLines->sum('amount'));
+        $companyPaymentPaidAmount = $this->money($companyPaymentLines
+            ->where('status', 'paid')
+            ->sum('amount'));
         $payerState = $this->payerStateForSettlement($settlement);
 
         return [
@@ -202,6 +206,10 @@ class TechnicalServiceEarningSettlementSummaryService
             'company_payable_amount' => $this->money($settlement->company_payable_amount),
             'company_paid_amount' => $companyPaid,
             'company_remaining_amount' => $this->remainingAmount($settlement),
+            'company_payment_amount' => $companyPaymentAmount,
+            'company_payment_paid_amount' => $companyPaymentPaidAmount,
+            'company_payment_remaining_amount' => max($this->money($companyPaymentAmount - $companyPaymentPaidAmount), 0.0),
+            'company_payment_breakdown' => $companyPaymentLines->values()->all(),
             'customer_direct_to_technician_amount' => $this->money($settlement->customer_direct_to_technician_amount),
             'customer_direct_assumed_paid_amount' => $this->money($settlement->customer_direct_assumed_paid_amount),
             'customer_collection_amount' => $this->money($settlement->customer_collection_amount),
@@ -231,10 +239,45 @@ class TechnicalServiceEarningSettlementSummaryService
         /** @var EloquentCollection<int, TechnicalServiceEarningPayment> $payments */
         $payments = $settlement->earningPayments;
 
-        return $this->money($payments
-            ->filter(fn (TechnicalServiceEarningPayment $payment): bool => $payment->payment_type === TechnicalServiceEarningPayment::TYPE_COMPANY_PAYOUT
-                && $payment->status === TechnicalServiceEarningPayment::STATUS_APPLIED)
-            ->sum(fn (TechnicalServiceEarningPayment $payment): float => $this->money($payment->amount)));
+        return max($this->money($payments
+            ->filter(fn (TechnicalServiceEarningPayment $payment): bool => in_array($payment->payment_type, [
+                TechnicalServiceEarningPayment::TYPE_COMPANY_PAYOUT,
+                TechnicalServiceEarningPayment::TYPE_ADJUSTMENT,
+                TechnicalServiceEarningPayment::TYPE_REVERSAL,
+            ], true) && $payment->status === TechnicalServiceEarningPayment::STATUS_APPLIED)
+            ->sum(fn (TechnicalServiceEarningPayment $payment): float => $this->money($payment->amount))), 0.0);
+    }
+
+    /**
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function companyPaymentLines(TechnicalServiceSettlement $settlement): Collection
+    {
+        $settlement->loadMissing('earningPayments');
+
+        return $settlement->earningPayments
+            ->filter(fn (TechnicalServiceEarningPayment $payment): bool => $payment->payment_type === TechnicalServiceAssignmentSettlementService::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT
+                && in_array($payment->status, [
+                    TechnicalServiceEarningPayment::STATUS_PENDING,
+                    TechnicalServiceEarningPayment::STATUS_APPLIED,
+                ], true))
+            ->sortBy('id')
+            ->map(function (TechnicalServiceEarningPayment $payment): array {
+                $metadata = is_array($payment->metadata) ? $payment->metadata : [];
+
+                return [
+                    'line_id' => (int) $payment->id,
+                    'payment_id' => is_numeric($metadata['payment_id'] ?? null) ? (int) $metadata['payment_id'] : null,
+                    'purpose' => $metadata['payment_purpose'] ?? null,
+                    'purpose_label' => $metadata['payment_purpose_label'] ?? null,
+                    'source' => $metadata['allocation_source'] ?? null,
+                    'amount' => $this->money($payment->amount),
+                    'status' => $payment->status === TechnicalServiceEarningPayment::STATUS_APPLIED ? 'paid' : 'payable',
+                    'status_label' => $payment->status === TechnicalServiceEarningPayment::STATUS_APPLIED ? 'Ödendi' : 'Ödenecek',
+                    'paid_at' => $payment->paid_at?->toISOString(),
+                ];
+            })
+            ->values();
     }
 
     public function remainingAmount(TechnicalServiceSettlement $settlement): float
@@ -262,7 +305,7 @@ class TechnicalServiceEarningSettlementSummaryService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceSettlement> $settlements
+     * @param  Collection<int, TechnicalServiceSettlement>  $settlements
      * @return array{0: bool, 1: string|null}
      */
     private function payoutAvailability(
@@ -292,7 +335,7 @@ class TechnicalServiceEarningSettlementSummaryService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceSettlement> $settlements
+     * @param  Collection<int, TechnicalServiceSettlement>  $settlements
      * @return array{key: string, label: string, disabled_reason: string|null, payment_action_label: string}
      */
     private function earningState(
@@ -368,7 +411,7 @@ class TechnicalServiceEarningSettlementSummaryService
     }
 
     /**
-     * @param Collection<int, TechnicalServiceSettlement> $settlements
+     * @param  Collection<int, TechnicalServiceSettlement>  $settlements
      * @return array<string, mixed>
      */
     private function aggregatePayerState(Collection $settlements): array

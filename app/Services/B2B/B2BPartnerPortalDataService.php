@@ -17,6 +17,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceAdminOverrideService;
+use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
@@ -39,6 +40,7 @@ class B2BPartnerPortalDataService
         private readonly B2BPartnerAccessService $partnerAccess,
         private readonly B2BPartnerServiceJobScopeService $serviceJobScope,
         private readonly TechnicalServiceOperationalStatePresenter $operationalState,
+        private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
     ) {}
 
     /**
@@ -401,6 +403,9 @@ class B2BPartnerPortalDataService
         $assignmentOffer = $request->latestAssignmentOffer;
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
         $earningBreakdown = $this->earningBreakdown($request, $assignmentOffer);
+        $assignmentEarningSnapshot = $assignmentOffer instanceof TechnicalServiceAssignmentOffer
+            ? $this->assignmentSettlements->canonicalEarningSnapshot($assignmentOffer)
+            : null;
         $photoReadiness = $this->portalPhotoReadiness($request);
         $latestCustomerConfirmation = $request->customerConfirmations
             ->first(fn (TechnicalServiceCustomerConfirmation $confirmation): bool => ! $this->recordPredatesActiveReopen($request, $confirmation->created_at ?? $confirmation->updated_at));
@@ -743,7 +748,9 @@ class B2BPartnerPortalDataService
                 'id' => $assignmentOffer->id,
                 'labor_amount' => (float) $assignmentOffer->labor_amount,
                 'route_fee_amount' => (float) $assignmentOffer->route_fee_amount,
-                'total_amount' => (float) $assignmentOffer->total_amount,
+                'company_payment_amount' => (float) ($assignmentEarningSnapshot['company_payment_amount'] ?? 0),
+                'company_payment_breakdown' => $assignmentEarningSnapshot['company_payment_breakdown'] ?? [],
+                'total_amount' => (float) ($assignmentEarningSnapshot['total_amount'] ?? $assignmentOffer->total_amount),
                 'currency' => $assignmentOffer->currency,
                 'status' => $assignmentOffer->status,
                 'note' => TechnicalServiceUiLabelService::cleanDisplayText($assignmentOffer->note),
@@ -753,6 +760,8 @@ class B2BPartnerPortalDataService
             'earning_summary' => [
                 'labor_amount' => $earningSummary['labor_amount'],
                 'route_fee_amount' => $earningSummary['route_fee_amount'],
+                'company_payment_amount' => $earningSummary['company_payment_amount'],
+                'company_payment_breakdown' => $earningSummary['company_payment_breakdown'],
                 'total_amount' => $earningSummary['total_amount'],
                 'status' => $earningSummary['status'],
                 'job_count' => $earningSummary['job_count'],
@@ -1455,7 +1464,7 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @return array{labor_amount:float,route_fee_amount:float,total_amount:float,status:string|null,job_count:int,related_mrns:array<int, string>}
+     * @return array<string, mixed>
      */
     private function earningSummary(TechnicalServiceRequest $request, mixed $assignmentOffer): array
     {
@@ -1468,6 +1477,8 @@ class B2BPartnerPortalDataService
                 return [
                     'labor_amount' => 0.0,
                     'route_fee_amount' => 0.0,
+                    'company_payment_amount' => 0.0,
+                    'company_payment_breakdown' => [],
                     'total_amount' => 0.0,
                     'status' => $excluded['status'],
                     'job_count' => 1,
@@ -1500,6 +1511,13 @@ class B2BPartnerPortalDataService
         return [
             'labor_amount' => round((float) $summaries->sum('labor_amount'), 2),
             'route_fee_amount' => round((float) $summaries->sum('route_fee_amount'), 2),
+            'company_payment_amount' => round((float) $summaries->sum('company_payment_amount'), 2),
+            'company_payment_breakdown' => $summaries
+                ->flatMap(fn (array $summary): array => is_array($summary['company_payment_breakdown'] ?? null)
+                    ? $summary['company_payment_breakdown']
+                    : [])
+                ->values()
+                ->all(),
             'total_amount' => round((float) $summaries->sum('total_amount'), 2),
             'status' => $summaries->pluck('status')->filter()->last(),
             'job_count' => $requests->count(),
@@ -1543,6 +1561,8 @@ class B2BPartnerPortalDataService
                     'technician_source' => $summary['technician_source'],
                     'labor_amount' => 0.0,
                     'route_fee_amount' => 0.0,
+                    'company_payment_amount' => 0.0,
+                    'company_payment_breakdown' => [],
                     'total_amount' => 0.0,
                     'status' => $summary['status'],
                     'status_label' => $this->earningStatusLabel($summary['status']),
@@ -1556,6 +1576,8 @@ class B2BPartnerPortalDataService
                     'root_total' => [
                         'labor_amount' => 0.0,
                         'route_fee_amount' => 0.0,
+                        'company_payment_amount' => 0.0,
+                        'company_payment_breakdown' => [],
                         'total_amount' => 0.0,
                         'job_count' => 1,
                         'technician_count' => filled($summary['technician_name'] ?? null) ? 1 : 0,
@@ -1591,6 +1613,8 @@ class B2BPartnerPortalDataService
                     'technician_source' => $summary['technician_source'],
                     'labor_amount' => $summary['labor_amount'],
                     'route_fee_amount' => $summary['route_fee_amount'],
+                    'company_payment_amount' => $summary['company_payment_amount'],
+                    'company_payment_breakdown' => $summary['company_payment_breakdown'],
                     'total_amount' => $summary['total_amount'],
                     'status' => $summary['status'],
                     'status_label' => $this->earningStatusLabel($summary['status']),
@@ -1605,6 +1629,13 @@ class B2BPartnerPortalDataService
             'root_total' => [
                 'labor_amount' => round((float) $rows->sum('labor_amount'), 2),
                 'route_fee_amount' => round((float) $rows->sum('route_fee_amount'), 2),
+                'company_payment_amount' => round((float) $rows->sum('company_payment_amount'), 2),
+                'company_payment_breakdown' => $rows
+                    ->flatMap(fn (array $row): array => is_array($row['company_payment_breakdown'] ?? null)
+                        ? $row['company_payment_breakdown']
+                        : [])
+                    ->values()
+                    ->all(),
                 'total_amount' => round((float) $rows->sum('total_amount'), 2),
                 'job_count' => $rows->count(),
                 'technician_count' => $rows
@@ -1652,7 +1683,7 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @return array{labor_amount:float,route_fee_amount:float,total_amount:float,status:string|null}
+     * @return array<string, mixed>
      */
     private function singleEarningSummary(TechnicalServiceRequest $request, mixed $assignmentOffer): array
     {
@@ -1662,6 +1693,8 @@ class B2BPartnerPortalDataService
             return [
                 'labor_amount' => 0.0,
                 'route_fee_amount' => 0.0,
+                'company_payment_amount' => 0.0,
+                'company_payment_breakdown' => [],
                 'total_amount' => 0.0,
                 'status' => 'cancelled',
                 'technician_id' => $technician['technician_id'],
@@ -1675,7 +1708,14 @@ class B2BPartnerPortalDataService
             $technician = $this->earningTechnicianPayload($request, $assignmentOffer, $completedSnapshot);
             $laborAmount = $this->money($completedSnapshot['labor_amount'] ?? null) ?? 0.0;
             $routeFeeAmount = $this->money($completedSnapshot['route_fee_amount'] ?? null) ?? 0.0;
-            $totalAmount = $this->money($completedSnapshot['total_amount'] ?? null) ?? round($laborAmount + $routeFeeAmount, 2);
+            $currentSnapshot = $assignmentOffer instanceof TechnicalServiceAssignmentOffer
+                ? $this->assignmentSettlements->canonicalEarningSnapshot($assignmentOffer)
+                : null;
+            $companyPaymentAmount = $this->money($currentSnapshot['company_payment_amount'] ?? $completedSnapshot['company_payment_amount'] ?? null) ?? 0.0;
+            $companyPaymentBreakdown = is_array($currentSnapshot['company_payment_breakdown'] ?? null)
+                ? $currentSnapshot['company_payment_breakdown']
+                : (is_array($completedSnapshot['company_payment_breakdown'] ?? null) ? $completedSnapshot['company_payment_breakdown'] : []);
+            $totalAmount = round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2);
             $status = (string) ($completedSnapshot['status'] ?? $completedSnapshot['payout_status'] ?? 'sent');
             if ($this->hasOpsFinalPayoutApproval($request)
                 && in_array(mb_strtolower(trim($status)), ['', 'draft', 'pending', 'prepared_not_sent', 'proposed', 'estimate'], true)) {
@@ -1685,6 +1725,8 @@ class B2BPartnerPortalDataService
             return [
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
+                'company_payment_amount' => $companyPaymentAmount,
+                'company_payment_breakdown' => $companyPaymentBreakdown,
                 'total_amount' => round($totalAmount, 2),
                 'status' => $status,
                 'technician_id' => $technician['technician_id'],
@@ -1693,15 +1735,19 @@ class B2BPartnerPortalDataService
             ];
         }
 
-        if ($assignmentOffer !== null) {
+        if ($assignmentOffer instanceof TechnicalServiceAssignmentOffer) {
             $technician = $this->earningTechnicianPayload($request, $assignmentOffer);
-            $laborAmount = (float) ($assignmentOffer->labor_amount ?? 0);
-            $routeFeeAmount = (float) ($assignmentOffer->route_fee_amount ?? 0);
+            $earningSnapshot = $this->assignmentSettlements->canonicalEarningSnapshot($assignmentOffer);
+            $laborAmount = (float) $earningSnapshot['labor_amount'];
+            $routeFeeAmount = (float) $earningSnapshot['route_fee_amount'];
+            $companyPaymentAmount = (float) ($earningSnapshot['company_payment_amount'] ?? 0);
 
             return [
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
-                'total_amount' => round($laborAmount + $routeFeeAmount, 2),
+                'company_payment_amount' => $companyPaymentAmount,
+                'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
+                'total_amount' => round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2),
                 'status' => $assignmentOffer->status ?? null,
                 'technician_id' => $technician['technician_id'],
                 'technician_name' => $technician['technician_name'],
@@ -1718,11 +1764,16 @@ class B2BPartnerPortalDataService
             $routeFeeAmount = $this->money($earningPayload['route_fee_amount'] ?? null)
                 ?? $this->money($request->travel_fee_amount)
                 ?? 0.0;
+            $companyPaymentAmount = $this->money($earningPayload['company_payment_amount'] ?? null) ?? 0.0;
 
             return [
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
-                'total_amount' => round($laborAmount + $routeFeeAmount, 2),
+                'company_payment_amount' => $companyPaymentAmount,
+                'company_payment_breakdown' => is_array($earningPayload['company_payment_breakdown'] ?? null)
+                    ? $earningPayload['company_payment_breakdown']
+                    : [],
+                'total_amount' => round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2),
                 'status' => (string) ($earningPayload['status'] ?? 'sent'),
                 'technician_id' => $technician['technician_id'],
                 'technician_name' => $technician['technician_name'],
@@ -1737,6 +1788,8 @@ class B2BPartnerPortalDataService
         return [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
+            'company_payment_amount' => 0.0,
+            'company_payment_breakdown' => [],
             'total_amount' => round($laborAmount + $routeFeeAmount, 2),
             'status' => null,
             'technician_id' => $technician['technician_id'],

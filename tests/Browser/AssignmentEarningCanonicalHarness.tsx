@@ -7,9 +7,11 @@ import '../../resources/css/app.css'
 type HarnessState = {
   saveCount: number
   sendCount: number
+  completionApproveCount: number
   failNextSave: boolean
   lastSavedSnapshot: ServiceRequestCanonicalEarningSnapshot | null
   lastSendPayload: ServiceRequestTechnicianEarningMessagePayload | null
+  lastCompanyPaymentDecision: 'pay_technician' | 'retain_company' | null
 }
 
 declare global {
@@ -21,6 +23,7 @@ declare global {
 
 const initialRevision = 'a'.repeat(64)
 const savedRevision = 'b'.repeat(64)
+const companyPaymentRevision = 'c'.repeat(64)
 const initialPreview = [
   'Merhaba Test Usta,',
   'Hakediş bilgisi:',
@@ -105,12 +108,95 @@ const initialRequest: ServiceRequest = {
   previousFieldCompletionDocuments: [],
 }
 
+const companyPaymentRequest = (): ServiceRequest => ({
+  ...initialRequest,
+  workflowStatus: 'Son Kontrol',
+  kanbanColumn: 'final_check',
+  checklistStatus: 'tamamlandı',
+  customerClosureApprovalStatus: 'onaylandı',
+  settlement: {
+    id: 501,
+    technical_service_request_id: 9001,
+    technical_service_assignment_offer_id: 104,
+    technical_service_technician_id: 111,
+    currency: 'TRY',
+    labor_earning_amount: 3000,
+    route_earning_amount: 0,
+    technician_earning_total: 3000,
+    company_payment_amount: 0,
+    company_payment_breakdown: [],
+    company_retained_amount: 0,
+    company_retained_breakdown: [],
+    company_payment_decisions: {
+      schema_version: 1,
+      eligible_items: [{
+        payment_id: 196,
+        payment_purpose: 'service_payment',
+        payment_purpose_label: 'Ek servis',
+        provider: 'iyzico',
+        provider_label: 'Iyzico Sandbox',
+        paid_at: '2026-08-10T06:00:00+00:00',
+        source_paid_amount: 1000,
+        source_paid_amount_label: '1.000,00 TL',
+        covered_amount: 0,
+        covered_amount_label: '0,00 TL',
+        previously_allocated_amount: 0,
+        previously_allocated_amount_label: '0,00 TL',
+        eligible_amount: 1000,
+        eligible_amount_label: '1.000,00 TL',
+        currency: 'TRY',
+        request_id: 9001,
+        root_request_id: 9001,
+        current_srv_id: 9001,
+        mrn_or_srv: 'MRN-DOM-EARNING',
+        assignment_id: 104,
+        technician_id: 111,
+        technician_name: 'Test Usta',
+        can_pay_technician: true,
+        disabled_reason: null,
+      }],
+      decisions: [],
+      eligible_count: 1,
+      pending_decision_count: 1,
+      all_decisions_required: true,
+      context_ready: true,
+      context_blocker: null,
+      earning_revision: initialRevision,
+      visit_count_used: false,
+    },
+    customer_collection_amount: 4000,
+    company_payable_amount: 3000,
+    company_paid_amount: 0,
+    company_remaining_amount: 3000,
+  },
+  partnerPortalActions: [{
+    id: 801,
+    action: 'completion_submitted',
+    action_label: 'Tamamlamaya gönderildi',
+    status: 'ops_review',
+    payload: {
+      checklist_gate: 'server_checked',
+      checklist: {
+        installation_complete: true,
+      },
+    },
+    created_at: '2026-08-10T06:05:00+00:00',
+  }],
+  fieldCompletionDocuments: [
+    { id: 901, field_code: 'before_photo', label: 'Öncesi', review_status: 'accepted' },
+    { id: 902, field_code: 'after_photo', label: 'Sonrası', review_status: 'accepted' },
+    { id: 903, field_code: 'warranty_document_photo', label: 'Garanti Belgesi', review_status: 'accepted' },
+  ],
+})
+
 const state: HarnessState = {
   saveCount: 0,
   sendCount: 0,
+  completionApproveCount: 0,
   failNextSave: false,
   lastSavedSnapshot: null,
   lastSendPayload: null,
+  lastCompanyPaymentDecision: null,
 }
 
 window.__assignmentEarningDomState = state
@@ -130,6 +216,9 @@ function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot): str
     'Ürün / Seri: Test Ürün / SERI-DOM',
     `Montaj işçilik: ${money(snapshot.labor_amount)}`,
     `Usta yol hakedişi: ${money(snapshot.route_fee_amount)}`,
+    ...(snapshot.company_payment_breakdown ?? []).map((line) => (
+      `Şirket ödemesi — ${line.purpose_label ?? line.purpose ?? 'Ek tahsilat'}: ${money(line.amount)}`
+    )),
     `Toplam hakediş: ${money(snapshot.total_amount)}`,
     'Randevu: -',
     snapshot.operation_note ? `Not: ${snapshot.operation_note}` : null,
@@ -147,6 +236,17 @@ function Harness() {
 
   return (
     <>
+      <button
+        type="button"
+        data-testid="load-company-payment-scenario"
+        onClick={() => {
+          state.saveCount = 0
+          state.completionApproveCount = 0
+          state.lastCompanyPaymentDecision = null
+          setSaveCount(0)
+          setRequest(companyPaymentRequest())
+        }}
+      >Uygun şirket ödemesi senaryosunu yükle</button>
       <button
         type="button"
         data-testid="earning-fail-next-save"
@@ -193,16 +293,32 @@ function Harness() {
             return
           }
 
+          const companyPaymentDecision = payload.company_payment_decisions?.[0]?.decision ?? null
+          const companyPaymentAmount = companyPaymentDecision === 'pay_technician' ? 1000 : 0
+          const companyRetainedAmount = companyPaymentDecision === 'retain_company' ? 1000 : 0
           const snapshot: ServiceRequestCanonicalEarningSnapshot = {
-            schema_version: 1,
+            schema_version: companyPaymentDecision ? 2 : 1,
             assignment_id: 104,
             technician_id: 111,
             labor_amount: payload.labor_amount,
             route_fee_amount: payload.route_fee_amount,
-            total_amount: payload.labor_amount + payload.route_fee_amount,
+            base_total_amount: payload.labor_amount + payload.route_fee_amount,
+            company_payment_amount: companyPaymentAmount,
+            company_payment_breakdown: companyPaymentDecision === 'pay_technician' ? [{
+              line_id: 9901,
+              payment_id: 196,
+              purpose: 'service_payment',
+              purpose_label: 'Ek servis',
+              source: 'extra_service',
+              amount: 1000,
+              amount_label: '1.000,00 TL',
+              status: 'payable',
+              status_label: 'Ödenecek',
+            }] : [],
+            total_amount: payload.labor_amount + payload.route_fee_amount + companyPaymentAmount,
             currency: 'TRY',
             operation_note: payload.note ?? null,
-            revision: savedRevision,
+            revision: companyPaymentDecision ? companyPaymentRevision : savedRevision,
             persisted_at: '2026-08-10T05:30:00+00:00',
           }
           const messagePreview = canonicalPreview(snapshot)
@@ -220,9 +336,47 @@ function Harness() {
               message_preview: messagePreview,
               message_text: messagePreview,
             } : null,
+            settlement: request.settlement ? {
+              ...request.settlement,
+              technician_earning_total: snapshot.total_amount,
+              company_payment_amount: companyPaymentAmount,
+              company_payment_breakdown: snapshot.company_payment_breakdown,
+              company_retained_amount: companyRetainedAmount,
+              company_retained_breakdown: companyPaymentDecision === 'retain_company' ? [{
+                allocation_id: 9902,
+                payment_id: 196,
+                payment_purpose: 'service_payment',
+                payment_purpose_label: 'Ek servis',
+                decision: 'retain_company',
+                decision_label: 'Şirkette bırak',
+                eligible_amount: 1000,
+                eligible_amount_label: '1.000,00 TL',
+                status: 'retained',
+              }] : [],
+              company_payment_decisions: request.settlement.company_payment_decisions ? {
+                ...request.settlement.company_payment_decisions,
+                eligible_items: [],
+                decisions: companyPaymentDecision ? [{
+                  allocation_id: 9902,
+                  payment_id: 196,
+                  payment_purpose: 'service_payment',
+                  payment_purpose_label: 'Ek servis',
+                  decision: companyPaymentDecision,
+                  decision_label: companyPaymentDecision === 'pay_technician' ? 'Ustaya ödenecek' : 'Şirkette bırak',
+                  eligible_amount: 1000,
+                  eligible_amount_label: '1.000,00 TL',
+                  settlement_line_id: companyPaymentDecision === 'pay_technician' ? 9901 : null,
+                  status: companyPaymentDecision === 'pay_technician' ? 'payable' : 'retained',
+                }] : [],
+                eligible_count: 0,
+                pending_decision_count: 0,
+                earning_revision: snapshot.revision,
+              } : null,
+            } : null,
           }
 
           state.lastSavedSnapshot = snapshot
+          state.lastCompanyPaymentDecision = companyPaymentDecision
           setRequest(nextRequest)
 
           return {
@@ -246,6 +400,9 @@ function Harness() {
             whatsapp_url: '',
             dispatch: { id: 7001, status: 'queued', channel: 'whatsapp', provider_key: 'evolution' },
           }
+        }}
+        onPartnerCompletionApprove={async () => {
+          state.completionApproveCount += 1
         }}
       />
     </>

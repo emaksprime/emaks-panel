@@ -72,6 +72,7 @@ class TechnicalServiceWorkflowService
 
     public function __construct(
         private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+        private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
     ) {}
 
     public const WORKFLOW_STATUSES = [
@@ -933,6 +934,9 @@ class TechnicalServiceWorkflowService
         $messagePayload = $this->technicianEarningMessageDispatchPayload($request, $technician, [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
+            'base_total_amount' => $earningSnapshot['base_total_amount'] ?? round($laborAmount + $routeFeeAmount, 2),
+            'company_payment_amount' => $earningSnapshot['company_payment_amount'] ?? 0,
+            'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => $totalAmount,
             'currency' => 'TRY',
             'note' => $note !== '' ? $note : null,
@@ -954,6 +958,9 @@ class TechnicalServiceWorkflowService
             'technician_phone' => $this->technicianPhone($technician),
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
+            'base_total_amount' => (float) ($earningSnapshot['base_total_amount'] ?? round($laborAmount + $routeFeeAmount, 2)),
+            'company_payment_amount' => (float) ($earningSnapshot['company_payment_amount'] ?? 0),
+            'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => round($totalAmount, 2),
             'submitted_total_amount' => $submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null,
             'total_amount_corrected' => $totalAmountCorrected,
@@ -974,6 +981,9 @@ class TechnicalServiceWorkflowService
             'earning_snapshot_revision' => $earningSnapshot['revision'],
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
+            'base_total_amount' => (float) ($earningSnapshot['base_total_amount'] ?? round($laborAmount + $routeFeeAmount, 2)),
+            'company_payment_amount' => (float) ($earningSnapshot['company_payment_amount'] ?? 0),
+            'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => round($totalAmount, 2),
             'submitted_total_amount' => $submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null,
             'total_amount_corrected' => $totalAmountCorrected,
@@ -1040,6 +1050,9 @@ class TechnicalServiceWorkflowService
                 (float) $earningSnapshot['total_amount'],
                 (string) ($earningSnapshot['operation_note'] ?? ''),
                 $jobCardUrl,
+                is_array($earningSnapshot['company_payment_breakdown'] ?? null)
+                    ? $earningSnapshot['company_payment_breakdown']
+                    : [],
             ),
         ];
     }
@@ -1049,37 +1062,7 @@ class TechnicalServiceWorkflowService
      */
     public function canonicalTechnicianEarningSnapshot(TechnicalServiceAssignmentOffer $offer): array
     {
-        $laborAmount = round((float) $offer->labor_amount, 2);
-        $routeFeeAmount = round((float) $offer->route_fee_amount, 2);
-        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
-        if (abs(((float) $offer->total_amount) - $totalAmount) > 0.01) {
-            throw ValidationException::withMessages([
-                'assignment_offer' => 'Canonical hakediş toplamı işçilik ve yol toplamıyla eşleşmiyor.',
-            ]);
-        }
-
-        $operationNote = trim((string) ($offer->note ?? ''));
-        $persistedAt = $offer->updated_at?->toISOString();
-        $revisionPayload = [
-            'schema_version' => 1,
-            'assignment_id' => (int) $offer->id,
-            'technician_id' => (int) $offer->technical_service_technician_id,
-            'labor_amount' => number_format($laborAmount, 2, '.', ''),
-            'route_fee_amount' => number_format($routeFeeAmount, 2, '.', ''),
-            'total_amount' => number_format($totalAmount, 2, '.', ''),
-            'currency' => (string) ($offer->currency ?: 'TRY'),
-            'operation_note' => $operationNote,
-            'persisted_at' => $persistedAt,
-        ];
-
-        return [
-            ...$revisionPayload,
-            'labor_amount' => $laborAmount,
-            'route_fee_amount' => $routeFeeAmount,
-            'total_amount' => $totalAmount,
-            'operation_note' => $operationNote !== '' ? $operationNote : null,
-            'revision' => hash('sha256', json_encode($revisionPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)),
-        ];
+        return $this->assignmentSettlements->canonicalEarningSnapshot($offer);
     }
 
     /**
@@ -2584,20 +2567,35 @@ class TechnicalServiceWorkflowService
             $payload['last_error_message_redacted'] = $dispatch->last_error_message_redacted;
         }
 
-        $laborAmount = $this->nullableFloat($payload['labor_amount'] ?? null)
+        $earningSnapshot = is_array($payload['earning_snapshot'] ?? null)
+            ? $payload['earning_snapshot']
+            : [];
+        $laborAmount = $this->nullableFloat($earningSnapshot['labor_amount'] ?? null)
+            ?? $this->nullableFloat($payload['labor_amount'] ?? null)
             ?? $this->nullableFloat($request->technician_payment_amount)
             ?? $this->customerAmountForService($request->service_type)
             ?? 0.0;
-        $routeFeeAmount = $this->nullableFloat($payload['route_fee_amount'] ?? null)
+        $routeFeeAmount = $this->nullableFloat($earningSnapshot['route_fee_amount'] ?? null)
+            ?? $this->nullableFloat($payload['route_fee_amount'] ?? null)
             ?? $this->nullableFloat($request->travel_fee_amount)
             ?? 0.0;
+        $companyPaymentAmount = $this->nullableFloat($earningSnapshot['company_payment_amount'] ?? null)
+            ?? $this->nullableFloat($payload['company_payment_amount'] ?? null)
+            ?? 0.0;
+        $companyPaymentBreakdown = is_array($earningSnapshot['company_payment_breakdown'] ?? null)
+            ? $earningSnapshot['company_payment_breakdown']
+            : (is_array($payload['company_payment_breakdown'] ?? null) ? $payload['company_payment_breakdown'] : []);
         $submittedTotalAmount = $this->nullableFloat($payload['total_amount'] ?? null);
-        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        $totalAmount = $this->nullableFloat($earningSnapshot['total_amount'] ?? null)
+            ?? round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2);
         $technician = $request->technicianRecord;
 
         $payload['labor_amount'] = round($laborAmount, 2);
         $payload['route_fee_amount'] = round($routeFeeAmount, 2);
-        $payload['total_amount'] = $totalAmount;
+        $payload['base_total_amount'] = round($laborAmount + $routeFeeAmount, 2);
+        $payload['company_payment_amount'] = round($companyPaymentAmount, 2);
+        $payload['company_payment_breakdown'] = $companyPaymentBreakdown;
+        $payload['total_amount'] = round($totalAmount, 2);
         $payload['submitted_total_amount'] = $payload['submitted_total_amount'] ?? ($submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null);
         $payload['total_amount_corrected'] = (bool) ($payload['total_amount_corrected'] ?? ($submittedTotalAmount !== null && abs($submittedTotalAmount - $totalAmount) > 0.01));
 
@@ -2609,6 +2607,8 @@ class TechnicalServiceWorkflowService
                 $routeFeeAmount,
                 $totalAmount,
                 (string) ($payload['note'] ?? ''),
+                null,
+                $companyPaymentBreakdown,
             );
         }
 
@@ -2895,6 +2895,8 @@ class TechnicalServiceWorkflowService
         }
         $laborTotal = round((float) $includedRows->sum('labor_amount'), 2);
         $routeTotal = round((float) $includedRows->sum('route_fee_amount'), 2);
+        $companyPaymentTotal = round((float) $includedRows->sum('company_payment_amount'), 2);
+        $companyRetainedTotal = round((float) $includedRows->sum('company_retained_amount'), 2);
         $total = round((float) $includedRows->sum('total_amount'), 2);
         $technicianNames = $rows
             ->pluck('technician_name')
@@ -2911,9 +2913,13 @@ class TechnicalServiceWorkflowService
             'root_total' => [
                 'labor_amount' => $laborTotal,
                 'route_fee_amount' => $routeTotal,
+                'company_payment_amount' => $companyPaymentTotal,
+                'company_retained_amount' => $companyRetainedTotal,
                 'total_amount' => $total,
                 'labor_amount_label' => $this->moneyLabel($laborTotal),
                 'route_fee_amount_label' => $this->moneyLabel($routeTotal),
+                'company_payment_amount_label' => $this->moneyLabel($companyPaymentTotal),
+                'company_retained_amount_label' => $this->moneyLabel($companyRetainedTotal),
                 'total_amount_label' => $this->moneyLabel($total),
                 'job_count' => $rows->count(),
                 'technician_count' => $technicianNames->count(),
@@ -3033,12 +3039,15 @@ class TechnicalServiceWorkflowService
     private function earningBreakdownRow(TechnicalServiceRequest $currentRequest, TechnicalServiceRequest $request, array $payoutApproval = []): array
     {
         $request->loadMissing(['latestAssignmentOffer.technician', 'technicianRecord']);
+        $offer = $request->latestAssignmentOffer;
+        $companyPayment = $this->companyPaymentProjectionForRequest($request, $offer);
         $completedSnapshot = $this->completedEarningSnapshot($request);
         $approvalFields = $this->earningBreakdownApprovalFields($request, $payoutApproval);
         if ($completedSnapshot !== null) {
             $laborAmount = round((float) ($completedSnapshot['labor_amount'] ?? 0), 2);
             $routeFeeAmount = round((float) ($completedSnapshot['route_fee_amount'] ?? 0), 2);
-            $totalAmount = round((float) ($completedSnapshot['total_amount'] ?? ($laborAmount + $routeFeeAmount)), 2);
+            $companyPaymentAmount = round((float) $companyPayment['company_payment_amount'], 2);
+            $totalAmount = round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2);
             $payoutStatus = (string) ($completedSnapshot['payout_status'] ?? $this->locksmithPayoutStatus(null, $totalAmount));
             $kindLabel = $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj';
             $paymentStatus = $this->payoutPaymentStatusPayload($request);
@@ -3060,9 +3069,16 @@ class TechnicalServiceWorkflowService
                 'technician_source' => $technician['source'],
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
+                'company_payment_amount' => $companyPaymentAmount,
+                'company_payment_breakdown' => $companyPayment['company_payment_breakdown'],
+                'company_retained_amount' => $companyPayment['company_retained_amount'],
+                'company_retained_breakdown' => $companyPayment['company_retained_breakdown'],
+                'company_payment_decisions' => $companyPayment['decision_payload'],
                 'total_amount' => $totalAmount,
                 'labor_amount_label' => $this->moneyLabel($laborAmount),
                 'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+                'company_payment_amount_label' => $this->moneyLabel($companyPaymentAmount),
+                'company_retained_amount_label' => $this->moneyLabel((float) $companyPayment['company_retained_amount']),
                 'total_amount_label' => $this->moneyLabel($totalAmount),
                 'status' => $completedSnapshot['status'] ?? null,
                 'status_label' => (string) ($completedSnapshot['status_label'] ?? $this->assignmentOfferStatusLabel($completedSnapshot['status'] ?? null)),
@@ -3078,14 +3094,17 @@ class TechnicalServiceWorkflowService
                 'completed_at' => $this->dateTimeString($request->completed_at),
             ];
         }
-        $offer = $request->latestAssignmentOffer;
-        $laborAmount = $offer instanceof TechnicalServiceAssignmentOffer
-            ? (float) ($offer->labor_amount ?? 0)
+        $earningSnapshot = $offer instanceof TechnicalServiceAssignmentOffer
+            ? $this->canonicalTechnicianEarningSnapshot($offer)
+            : null;
+        $laborAmount = $earningSnapshot !== null
+            ? (float) $earningSnapshot['labor_amount']
             : (float) ($this->nullableFloat($request->technician_payment_amount) ?? 0);
-        $routeFeeAmount = $offer instanceof TechnicalServiceAssignmentOffer
-            ? (float) ($offer->route_fee_amount ?? 0)
+        $routeFeeAmount = $earningSnapshot !== null
+            ? (float) $earningSnapshot['route_fee_amount']
             : (float) ($this->nullableFloat($request->travel_fee_amount) ?? 0);
-        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        $companyPaymentAmount = (float) $companyPayment['company_payment_amount'];
+        $totalAmount = round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2);
         $offerStatus = $offer instanceof TechnicalServiceAssignmentOffer ? $offer->status : null;
         $payoutStatus = $this->locksmithPayoutStatus($offerStatus, $totalAmount);
         $kindLabel = $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj';
@@ -3108,9 +3127,16 @@ class TechnicalServiceWorkflowService
             'technician_source' => $technician['source'],
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
+            'company_payment_amount' => round($companyPaymentAmount, 2),
+            'company_payment_breakdown' => $companyPayment['company_payment_breakdown'],
+            'company_retained_amount' => $companyPayment['company_retained_amount'],
+            'company_retained_breakdown' => $companyPayment['company_retained_breakdown'],
+            'company_payment_decisions' => $companyPayment['decision_payload'],
             'total_amount' => $totalAmount,
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+            'company_payment_amount_label' => $this->moneyLabel($companyPaymentAmount),
+            'company_retained_amount_label' => $this->moneyLabel((float) $companyPayment['company_retained_amount']),
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'status' => $offerStatus,
             'status_label' => $this->assignmentOfferStatusLabel($offerStatus),
@@ -3126,6 +3152,36 @@ class TechnicalServiceWorkflowService
                 ? 'assignment_offer'
                 : ($totalAmount > 0 ? 'request_default' : 'none'),
             'completed_at' => $this->dateTimeString($request->completed_at),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function companyPaymentProjectionForRequest(
+        TechnicalServiceRequest $request,
+        ?TechnicalServiceAssignmentOffer $offer,
+    ): array {
+        $snapshot = $offer instanceof TechnicalServiceAssignmentOffer
+            ? $this->canonicalTechnicianEarningSnapshot($offer)
+            : [];
+        $decisionPayload = $this->assignmentSettlements->companyPaymentDecisionPayload($request);
+        $retained = collect($decisionPayload['decisions'] ?? [])
+            ->filter(fn (mixed $decision): bool => is_array($decision)
+                && ($decision['decision'] ?? null) === TechnicalServiceAssignmentSettlementService::DECISION_RETAIN_COMPANY)
+            ->values();
+        $retainedAmount = round((float) $retained->sum(
+            fn (array $decision): float => (float) ($decision['eligible_amount'] ?? 0),
+        ), 2);
+
+        return [
+            'company_payment_amount' => round((float) ($snapshot['company_payment_amount'] ?? 0), 2),
+            'company_payment_breakdown' => is_array($snapshot['company_payment_breakdown'] ?? null)
+                ? $snapshot['company_payment_breakdown']
+                : [],
+            'company_retained_amount' => $retainedAmount,
+            'company_retained_breakdown' => $retained->all(),
+            'decision_payload' => $decisionPayload,
         ];
     }
 
@@ -3209,6 +3265,10 @@ class TechnicalServiceWorkflowService
                 'technician_name' => TechnicalServiceUiLabelService::displayName((string) ($currentPayout['technician_name'] ?? $completedSnapshot['technician_name'] ?? $request->technician_name)),
                 'customer_collection' => $currentCollection,
                 'locksmith_payout' => $currentPayout,
+                'company_payment_amount' => $currentPayout['company_payment_amount'],
+                'company_payment_amount_label' => $currentPayout['company_payment_amount_label'],
+                'company_retained_amount' => $currentPayout['company_retained_amount'],
+                'company_retained_amount_label' => $currentPayout['company_retained_amount_label'],
                 'operation_cost' => $currentOperationCost,
                 'warranty_customer_charge' => $this->financeWarrantyCustomerChargePayload($currentCollection, $warrantyCovered),
                 'confirmed_locksmith_payout' => $confirmedPayout,
@@ -3231,6 +3291,10 @@ class TechnicalServiceWorkflowService
             'root_total' => [
                 'customer_collection' => $rootCollection,
                 'locksmith_payout' => $rootPayout,
+                'company_payment_amount' => $rootPayout['company_payment_amount'],
+                'company_payment_amount_label' => $rootPayout['company_payment_amount_label'],
+                'company_retained_amount' => $rootPayout['company_retained_amount'],
+                'company_retained_amount_label' => $rootPayout['company_retained_amount_label'],
                 'net_margin' => $this->financeNetMarginPayload($rootNetMargin),
             ],
         ];
@@ -3329,15 +3393,23 @@ class TechnicalServiceWorkflowService
     {
         $laborAmount = round((float) ($row['labor_amount'] ?? $this->nullableFloat($request->technician_payment_amount) ?? 0), 2);
         $routeFeeAmount = round((float) ($row['route_fee_amount'] ?? $this->nullableFloat($request->travel_fee_amount) ?? 0), 2);
-        $totalAmount = round((float) ($row['total_amount'] ?? ($laborAmount + $routeFeeAmount)), 2);
+        $companyPaymentAmount = round((float) ($row['company_payment_amount'] ?? 0), 2);
+        $companyRetainedAmount = round((float) ($row['company_retained_amount'] ?? 0), 2);
+        $totalAmount = round((float) ($row['total_amount'] ?? ($laborAmount + $routeFeeAmount + $companyPaymentAmount)), 2);
         $paymentStatus = $this->payoutPaymentStatusPayload($request);
 
         return [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
+            'company_payment_amount' => $companyPaymentAmount,
+            'company_payment_breakdown' => $row['company_payment_breakdown'] ?? [],
+            'company_retained_amount' => $companyRetainedAmount,
+            'company_retained_breakdown' => $row['company_retained_breakdown'] ?? [],
             'total_amount' => $totalAmount,
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+            'company_payment_amount_label' => $this->moneyLabel($companyPaymentAmount),
+            'company_retained_amount_label' => $this->moneyLabel($companyRetainedAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'technician_id' => $row['technician_id'] ?? $request->technical_service_technician_id,
             'technician_name' => $row['technician_name'] ?? TechnicalServiceUiLabelService::displayName($request->technician_name),
@@ -3406,14 +3478,20 @@ class TechnicalServiceWorkflowService
     {
         $laborAmount = round((float) ($rootTotal['labor_amount'] ?? 0), 2);
         $routeFeeAmount = round((float) ($rootTotal['route_fee_amount'] ?? 0), 2);
-        $totalAmount = round((float) ($rootTotal['total_amount'] ?? ($laborAmount + $routeFeeAmount)), 2);
+        $companyPaymentAmount = round((float) ($rootTotal['company_payment_amount'] ?? 0), 2);
+        $companyRetainedAmount = round((float) ($rootTotal['company_retained_amount'] ?? 0), 2);
+        $totalAmount = round((float) ($rootTotal['total_amount'] ?? ($laborAmount + $routeFeeAmount + $companyPaymentAmount)), 2);
 
         return [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
+            'company_payment_amount' => $companyPaymentAmount,
+            'company_retained_amount' => $companyRetainedAmount,
             'total_amount' => $totalAmount,
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+            'company_payment_amount_label' => $this->moneyLabel($companyPaymentAmount),
+            'company_retained_amount_label' => $this->moneyLabel($companyRetainedAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'job_count' => $rootTotal['job_count'] ?? 0,
             'technician_count' => $rootTotal['technician_count'] ?? 0,
@@ -3777,13 +3855,17 @@ class TechnicalServiceWorkflowService
     {
         $request->loadMissing('latestAssignmentOffer');
         $offer = $request->latestAssignmentOffer;
-        $laborAmount = $offer instanceof TechnicalServiceAssignmentOffer
-            ? (float) ($offer->labor_amount ?? 0)
+        $earningSnapshot = $offer instanceof TechnicalServiceAssignmentOffer
+            ? $this->canonicalTechnicianEarningSnapshot($offer)
+            : null;
+        $laborAmount = $earningSnapshot !== null
+            ? (float) $earningSnapshot['labor_amount']
             : (float) ($this->nullableFloat($request->technician_payment_amount) ?? 0);
-        $routeFeeAmount = $offer instanceof TechnicalServiceAssignmentOffer
-            ? (float) ($offer->route_fee_amount ?? 0)
+        $routeFeeAmount = $earningSnapshot !== null
+            ? (float) $earningSnapshot['route_fee_amount']
             : (float) ($this->nullableFloat($request->travel_fee_amount) ?? 0);
-        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        $companyPaymentAmount = (float) ($earningSnapshot['company_payment_amount'] ?? 0);
+        $totalAmount = round($laborAmount + $routeFeeAmount + $companyPaymentAmount, 2);
         $offerStatus = $offer instanceof TechnicalServiceAssignmentOffer ? $offer->status : null;
         $payoutStatus = $this->locksmithPayoutStatus($offerStatus, $totalAmount);
         $earningMessage = $this->technicianEarningMessagePayload($request);
@@ -3805,6 +3887,8 @@ class TechnicalServiceWorkflowService
             'technician_name' => TechnicalServiceUiLabelService::displayName($request->technician_name),
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
+            'company_payment_amount' => round($companyPaymentAmount, 2),
+            'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => $totalAmount,
             'status' => $offerStatus,
             'status_label' => $this->assignmentOfferStatusLabel($offerStatus),
@@ -4539,6 +4623,35 @@ class TechnicalServiceWorkflowService
         $paymentOwnership = $settlement->request instanceof TechnicalServiceRequest
             ? $this->paymentOwnershipForRequest($settlement->request, $settlement)
             : null;
+        $offer = is_numeric($settlement->technical_service_assignment_offer_id)
+            ? TechnicalServiceAssignmentOffer::query()->find((int) $settlement->technical_service_assignment_offer_id)
+            : null;
+        $companyPayment = $settlement->request instanceof TechnicalServiceRequest
+            ? $this->companyPaymentProjectionForRequest($settlement->request, $offer)
+            : [
+                'company_payment_amount' => 0.0,
+                'company_payment_breakdown' => [],
+                'company_retained_amount' => 0.0,
+                'company_retained_breakdown' => [],
+                'decision_payload' => [
+                    'schema_version' => 1,
+                    'eligible_items' => [],
+                    'decisions' => [],
+                    'eligible_count' => 0,
+                    'pending_decision_count' => 0,
+                    'all_decisions_required' => false,
+                    'context_ready' => false,
+                    'context_blocker' => null,
+                    'earning_revision' => null,
+                    'visit_count_used' => false,
+                ],
+            ];
+        $technicianEarningTotal = round(
+            (float) $settlement->labor_earning_amount
+            + (float) $settlement->route_earning_amount
+            + (float) $companyPayment['company_payment_amount'],
+            2,
+        );
 
         return [
             'id' => $settlement->id,
@@ -4549,7 +4662,12 @@ class TechnicalServiceWorkflowService
             'currency' => $settlement->currency,
             'labor_earning_amount' => (float) $settlement->labor_earning_amount,
             'route_earning_amount' => (float) $settlement->route_earning_amount,
-            'technician_earning_total' => (float) $settlement->technician_earning_total,
+            'technician_earning_total' => $technicianEarningTotal,
+            'company_payment_amount' => $companyPayment['company_payment_amount'],
+            'company_payment_breakdown' => $companyPayment['company_payment_breakdown'],
+            'company_retained_amount' => $companyPayment['company_retained_amount'],
+            'company_retained_breakdown' => $companyPayment['company_retained_breakdown'],
+            'company_payment_decisions' => $companyPayment['decision_payload'],
             'customer_collection_amount' => (float) $settlement->customer_collection_amount,
             'customer_direct_to_technician_amount' => (float) $settlement->customer_direct_to_technician_amount,
             'customer_direct_assumed_paid_amount' => (float) $settlement->customer_direct_assumed_paid_amount,
@@ -4839,6 +4957,11 @@ class TechnicalServiceWorkflowService
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
             'route_fee_amount' => round((float) ($amounts['route_fee_amount'] ?? 0), 2),
+            'base_total_amount' => round((float) ($amounts['base_total_amount'] ?? 0), 2),
+            'company_payment_amount' => round((float) ($amounts['company_payment_amount'] ?? 0), 2),
+            'company_payment_breakdown' => is_array($amounts['company_payment_breakdown'] ?? null)
+                ? $amounts['company_payment_breakdown']
+                : [],
             'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
@@ -5698,6 +5821,7 @@ class TechnicalServiceWorkflowService
         float $totalAmount,
         string $note,
         ?string $jobCardUrl = null,
+        array $companyPaymentBreakdown = [],
     ): string {
         $region = trim(implode(' / ', array_filter([$request->customer_city, $request->customer_district])));
         $lines = [
@@ -5708,9 +5832,19 @@ class TechnicalServiceWorkflowService
             'Ürün / Seri: '.trim(($request->product_name ?: '-').' / '.($request->serial_number ?: '-')),
             'Montaj işçilik: '.$this->moneyText($laborAmount),
             'Usta yol hakedişi: '.$this->moneyText($routeFeeAmount),
-            'Toplam hakediş: '.$this->moneyText($totalAmount),
-            'Randevu: '.($request->scheduled_at?->format('d.m.Y H:i') ?: ($request->scheduled_date?->format('d.m.Y') ?: '-')),
         ];
+
+        foreach ($companyPaymentBreakdown as $line) {
+            if (! is_array($line) || (float) ($line['amount'] ?? 0) <= 0) {
+                continue;
+            }
+
+            $purpose = trim((string) ($line['purpose_label'] ?? 'Ek tahsilat')) ?: 'Ek tahsilat';
+            $lines[] = 'Şirket ödemesi — '.$purpose.': '.$this->moneyText((float) $line['amount']);
+        }
+
+        $lines[] = 'Toplam hakediş: '.$this->moneyText($totalAmount);
+        $lines[] = 'Randevu: '.($request->scheduled_at?->format('d.m.Y H:i') ?: ($request->scheduled_date?->format('d.m.Y') ?: '-'));
 
         if ($note !== '') {
             $lines[] = 'Not: '.$note;
@@ -5922,6 +6056,13 @@ class TechnicalServiceWorkflowService
             ]);
         }
 
+        $companyPaymentDecisions = $this->assignmentSettlements->companyPaymentDecisionPayload($request);
+        if ((int) ($companyPaymentDecisions['pending_decision_count'] ?? 0) > 0) {
+            throw ValidationException::withMessages([
+                'company_payment_decisions' => 'Müşteriden alınan ek ödemeler için usta ödeme kararını tamamlayın.',
+            ]);
+        }
+
         $request->workflow_status = 'Tamamlandı';
         $request->field_status = 'tamamlandı';
         $request->field_completed_at = $this->castDateTime($payload['field_completed_at'] ?? now());
@@ -5935,6 +6076,7 @@ class TechnicalServiceWorkflowService
         $this->storeCompletedEarningSnapshot($request);
         $request->save();
         app(TechnicalServiceSettlementCompletionService::class)->apply($request->refresh(), $user);
+        $this->assignmentSettlements->refreshSettlementForRequest($request->refresh());
 
         $this->writeAuditLog($request, 'field_completed', $old, $this->snapshot($request), $user, $payload['note'] ?? null);
         $this->writeEvent($request, 'field_completed', $current, $this->currentWorkflowStatus($request), $user, $payload, 'Saha işi tamamlandı');

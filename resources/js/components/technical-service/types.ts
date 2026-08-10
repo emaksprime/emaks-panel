@@ -170,6 +170,83 @@ export type ServiceRequest = {
   } | null
 }
 
+export type ServiceRequestCompanyPaymentBreakdown = {
+  line_id?: number | string | null
+  payment_id?: number | string | null
+  purpose?: string | null
+  purpose_label?: string | null
+  source?: string | null
+  amount: number
+  amount_label?: string | null
+  status?: 'payable' | 'paid' | string | null
+  status_label?: string | null
+  revision?: string | null
+  paid_at?: string | null
+}
+
+export type ServiceRequestCompanyPaymentDecisionItem = {
+  payment_id: number | string
+  payment_purpose: string
+  payment_purpose_label: string
+  provider?: string | null
+  provider_label?: string | null
+  paid_at?: string | null
+  source_paid_amount: number
+  source_paid_amount_label?: string | null
+  covered_amount: number
+  covered_amount_label?: string | null
+  previously_allocated_amount: number
+  previously_allocated_amount_label?: string | null
+  eligible_amount: number
+  eligible_amount_label?: string | null
+  currency: string
+  request_id: number | string
+  root_request_id: number | string
+  current_srv_id?: number | string | null
+  mrn_or_srv?: string | null
+  assignment_id?: number | string | null
+  technician_id?: number | string | null
+  technician_name?: string | null
+  can_pay_technician: boolean
+  disabled_reason?: string | null
+}
+
+export type ServiceRequestCompanyPaymentDecision = {
+  allocation_id: number | string
+  payment_id: number | string
+  payment_purpose: string
+  payment_purpose_label: string
+  decision: 'pay_technician' | 'retain_company'
+  decision_label?: string | null
+  eligible_amount: number
+  eligible_amount_label?: string | null
+  decided_by?: number | string | null
+  decided_by_name?: string | null
+  decided_at?: string | null
+  settlement_line_id?: number | string | null
+  status?: string | null
+}
+
+export type ServiceRequestCompanyPaymentDecisionPayload = {
+  schema_version: number
+  eligible_items: ServiceRequestCompanyPaymentDecisionItem[]
+  decisions: ServiceRequestCompanyPaymentDecision[]
+  eligible_count: number
+  pending_decision_count: number
+  all_decisions_required: boolean
+  context_ready: boolean
+  context_blocker?: string | null
+  earning_revision?: string | null
+  visit_count_used: false
+}
+
+export type ServiceRequestCompanyPaymentDecisionSubmit = {
+  payment_id: number | string
+  decision: 'pay_technician' | 'retain_company'
+  note?: string | null
+  expected_earning_revision: string
+}
+
 export type ServiceRequestSettlement = {
   id: number | string
   technical_service_request_id?: number | string | null
@@ -180,6 +257,11 @@ export type ServiceRequestSettlement = {
   labor_earning_amount?: number | null
   route_earning_amount?: number | null
   technician_earning_total?: number | null
+  company_payment_amount?: number | null
+  company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
+  company_retained_amount?: number | null
+  company_retained_breakdown?: ServiceRequestCompanyPaymentDecision[]
+  company_payment_decisions?: ServiceRequestCompanyPaymentDecisionPayload | null
   customer_collection_amount?: number | null
   customer_direct_to_technician_amount?: number | null
   customer_direct_assumed_paid_amount?: number | null
@@ -388,6 +470,9 @@ export type ServiceRequestCanonicalEarningSnapshot = {
   technician_id: number | string
   labor_amount: number
   route_fee_amount: number
+  base_total_amount?: number
+  company_payment_amount?: number
+  company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
   total_amount: number
   currency: string
   operation_note?: string | null
@@ -438,9 +523,16 @@ export type ServiceRequestEarningBreakdownRow = {
   technician_source?: string | null
   labor_amount: number
   route_fee_amount: number
+  company_payment_amount?: number
+  company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
+  company_retained_amount?: number
+  company_retained_breakdown?: ServiceRequestCompanyPaymentDecision[]
+  company_payment_decisions?: ServiceRequestCompanyPaymentDecisionPayload | null
   total_amount: number
   labor_amount_label?: string | null
   route_fee_amount_label?: string | null
+  company_payment_amount_label?: string | null
+  company_retained_amount_label?: string | null
   total_amount_label?: string | null
   status?: string | null
   status_label?: string | null
@@ -458,9 +550,13 @@ export type ServiceRequestEarningBreakdown = {
   root_total: {
     labor_amount: number
     route_fee_amount: number
+    company_payment_amount?: number
+    company_retained_amount?: number
     total_amount: number
     labor_amount_label?: string | null
     route_fee_amount_label?: string | null
+    company_payment_amount_label?: string | null
+    company_retained_amount_label?: string | null
     total_amount_label?: string | null
     job_count?: number
     technician_count?: number
@@ -496,9 +592,15 @@ export type ServiceRequestFinanceCollection = {
 export type ServiceRequestFinancePayout = {
   labor_amount: number
   route_fee_amount: number
+  company_payment_amount?: number
+  company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
+  company_retained_amount?: number
+  company_retained_breakdown?: ServiceRequestCompanyPaymentDecision[]
   total_amount: number
   labor_amount_label?: string | null
   route_fee_amount_label?: string | null
+  company_payment_amount_label?: string | null
+  company_retained_amount_label?: string | null
   total_amount_label?: string | null
   status?: string | null
   status_label?: string | null
@@ -537,6 +639,10 @@ export type ServiceRequestFinanceSummary = {
     technician_name?: string | null
     customer_collection: ServiceRequestFinanceCollection
     locksmith_payout: ServiceRequestFinancePayout
+    company_payment_amount?: number
+    company_payment_amount_label?: string | null
+    company_retained_amount?: number
+    company_retained_amount_label?: string | null
     operation_cost?: (ServiceRequestFinancePayout & { applies?: boolean }) | null
     warranty_customer_charge?: {
       service_amount: number
@@ -563,6 +669,10 @@ export type ServiceRequestFinanceSummary = {
   root_total: {
     customer_collection: ServiceRequestFinanceCollection
     locksmith_payout: ServiceRequestFinancePayout
+    company_payment_amount?: number
+    company_payment_amount_label?: string | null
+    company_retained_amount?: number
+    company_retained_amount_label?: string | null
     net_margin: ServiceRequestFinanceNetMargin
   }
 }
@@ -893,6 +1003,9 @@ export type ServiceRequestTechnicianEarningMessage = {
   technician_phone?: string | null
   labor_amount?: number | null
   route_fee_amount?: number | null
+  base_total_amount?: number | null
+  company_payment_amount?: number | null
+  company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
   total_amount?: number | null
   manual_override?: boolean
   note?: string | null

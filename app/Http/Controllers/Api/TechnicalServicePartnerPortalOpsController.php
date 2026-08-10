@@ -292,6 +292,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'note' => ['nullable', 'string', 'max:2000'],
             'approved_visit_ids' => ['nullable', 'array'],
             'approved_visit_ids.*' => ['integer'],
+            'company_payment_decisions' => ['nullable', 'array'],
+            'company_payment_decisions.*.payment_id' => ['required', 'integer', 'distinct'],
+            'company_payment_decisions.*.decision' => ['required', 'string', Rule::in([
+                TechnicalServiceAssignmentSettlementService::DECISION_PAY_TECHNICIAN,
+                TechnicalServiceAssignmentSettlementService::DECISION_RETAIN_COMPANY,
+            ])],
+            'company_payment_decisions.*.note' => ['nullable', 'string', 'max:2000'],
+            'company_payment_decisions.*.expected_earning_revision' => ['required', 'string', 'size:64'],
         ]);
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
@@ -338,6 +346,17 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 $job,
                 $validated['approved_visit_ids'] ?? null,
             );
+            $submittedCompanyPaymentDecisions = $validated['company_payment_decisions'] ?? [];
+            $companyPaymentDecisionPayload = $this->assignmentSettlements->companyPaymentDecisionPayload($job);
+            $companyPaymentAllocation = null;
+            if ((int) ($companyPaymentDecisionPayload['eligible_count'] ?? 0) > 0
+                || $submittedCompanyPaymentDecisions !== []) {
+                $companyPaymentAllocation = $this->assignmentSettlements->applyCompanyPaymentDecisions(
+                    $job,
+                    $submittedCompanyPaymentDecisions,
+                    $request->user(),
+                );
+            }
             $from = $job->workflow_status;
             $job->forceFill([
                 'photo_status' => 'tamamlandı',
@@ -384,6 +403,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'note' => $validated['note'] ?? null,
                 'closed_parent_request_id' => $closedParent?->id,
                 'payout_approval' => ($payoutApproval['required'] ?? false) === true ? $storedPayoutApproval : null,
+                'company_payment_allocation' => $companyPaymentAllocation,
             ];
             $action->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
@@ -400,6 +420,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'metadata' => [
                     'partner_job_action_id' => $action->id,
                     'payout_approval' => ($payoutApproval['required'] ?? false) === true ? $storedPayoutApproval : null,
+                    'company_payment_allocation' => $companyPaymentAllocation,
                 ],
             ]);
 
@@ -628,6 +649,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'route_fee_amount' => ['required', 'numeric', 'min:0'],
             'total_amount' => ['nullable', 'numeric', 'min:0'],
             'note' => ['nullable', 'string', 'max:2000'],
+            'company_payment_decisions' => ['nullable', 'array'],
+            'company_payment_decisions.*.payment_id' => ['required', 'integer', 'distinct'],
+            'company_payment_decisions.*.decision' => ['required', 'string', Rule::in([
+                TechnicalServiceAssignmentSettlementService::DECISION_PAY_TECHNICIAN,
+                TechnicalServiceAssignmentSettlementService::DECISION_RETAIN_COMPANY,
+            ])],
+            'company_payment_decisions.*.note' => ['nullable', 'string', 'max:2000'],
+            'company_payment_decisions.*.expected_earning_revision' => ['required', 'string', 'size:64'],
         ]);
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $assignmentOffer, $validated, $request): array {
@@ -652,6 +681,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $totalAmount = round($laborAmount + $routeFeeAmount, 2);
             $note = isset($validated['note']) ? trim((string) $validated['note']) : null;
             $note = $note !== '' ? $note : null;
+            $companyPaymentDecisions = $validated['company_payment_decisions'] ?? [];
             $hasPendingRevision = TechnicalServicePartnerJobAction::query()
                 ->where('technical_service_request_id', $job->id)
                 ->where('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED)
@@ -663,15 +693,26 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ->lockForUpdate()
                 ->exists();
 
-            if (! $hasPendingRevision
+            $baseEarningUnchanged = ! $hasPendingRevision
                 && abs((float) $offer->labor_amount - $laborAmount) < 0.005
                 && abs((float) $offer->route_fee_amount - $routeFeeAmount) < 0.005
                 && abs((float) $offer->total_amount - $totalAmount) < 0.005
-                && (($offer->note !== null ? trim((string) $offer->note) : null) === $note)) {
+                && (($offer->note !== null ? trim((string) $offer->note) : null) === $note);
+            if ($companyPaymentDecisions !== [] && ! $baseEarningUnchanged) {
+                throw ValidationException::withMessages([
+                    'company_payment_decisions' => 'Önce hakediş değişikliklerini kaydedin.',
+                ]);
+            }
+
+            if ($baseEarningUnchanged) {
+                $allocation = $companyPaymentDecisions !== []
+                    ? $this->assignmentSettlements->applyCompanyPaymentDecisions($job, $companyPaymentDecisions, $request->user())
+                    : null;
                 $presentation = $this->workflow->technicianEarningPresentation($job, $offer->technician, $offer);
 
                 return [
-                    'status' => 'duplicate_noop',
+                    'status' => $allocation !== null ? $allocation['status'] : 'duplicate_noop',
+                    'company_payment_allocation' => $allocation,
                     ...$presentation,
                     'request' => $this->workflow->serialize($job->refresh(), true),
                 ];

@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import type { ServiceRequestCanonicalEarningSnapshot } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
@@ -28,6 +28,11 @@ type AssignmentEarningDraft = {
   routeFeeAmount: string
   operationNote: string
   baseRevision: string
+}
+
+type CompanyPaymentDecisionDraft = {
+  decision?: 'pay_technician' | 'retain_company'
+  note: string
 }
 
 type AssignmentOfferUpdateResult = {
@@ -173,13 +178,13 @@ type ServiceRequestDetailsProps = {
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
-  onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string> }) => void | Promise<void>
+  onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string>, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<void>
   onRevisitServiceVisitCreate?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onPartRequestCreate?: (payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onPartRequestManualPaymentConfirm?: (partRequestId: number | string, payload: { explanation: string }) => void | Promise<void>
-  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<AssignmentOfferUpdateResult | void>
+  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<AssignmentOfferUpdateResult | void>
   onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
   onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null, document_type?: string | null }) => void | Promise<void>
@@ -1843,6 +1848,7 @@ export function ServiceRequestDetails({
   const [earningMessageText, setEarningMessageText] = useState('')
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
   const [assignmentEarningDraftByRequest, setAssignmentEarningDraftByRequest] = useState<Record<string, AssignmentEarningDraft>>({})
+  const [companyPaymentDecisionDraftByRequest, setCompanyPaymentDecisionDraftByRequest] = useState<Record<string, Record<string, CompanyPaymentDecisionDraft>>>({})
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
   const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
   const [completionReviewNote, setCompletionReviewNote] = useState('')
@@ -2518,18 +2524,56 @@ export function ServiceRequestDetails({
   const persistedEarningSnapshot = activeAssignmentOffer?.earning_snapshot ?? null
   const persistedEarningLaborAmount = persistedEarningSnapshot?.labor_amount ?? assignmentOfferLaborAmount ?? technicianLaborCostAmount
   const persistedEarningRouteAmount = persistedEarningSnapshot?.route_fee_amount ?? assignmentOfferRouteAmount ?? (hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0)
+  const persistedCompanyPaymentAmount = Number(persistedEarningSnapshot?.company_payment_amount ?? settlement?.company_payment_amount ?? 0)
+  const persistedCompanyPaymentBreakdown = persistedEarningSnapshot?.company_payment_breakdown ?? settlement?.company_payment_breakdown ?? []
   const persistedEarningNote = persistedEarningSnapshot?.operation_note ?? activeAssignmentOffer?.note ?? ''
   const persistedEarningRevision = persistedEarningSnapshot?.revision ?? ''
+  const companyPaymentDecisionPayload = settlement?.company_payment_decisions
+    ?? earningBreakdown?.current_visit?.company_payment_decisions
+    ?? null
+  const companyPaymentEligibleItems = companyPaymentDecisionPayload?.eligible_items ?? []
+  const companyPaymentDecisionDrafts = companyPaymentDecisionDraftByRequest[requestStateKey] ?? {}
+  const companyPaymentDecisionSubmissions = companyPaymentEligibleItems
+    .map((item): ServiceRequestCompanyPaymentDecisionSubmit | null => {
+      const draft = companyPaymentDecisionDrafts[String(item.payment_id)]
+
+      if (!draft?.decision || !persistedEarningRevision) {
+        return null
+      }
+
+      return {
+        payment_id: item.payment_id,
+        decision: draft.decision,
+        note: draft.note.trim() || null,
+        expected_earning_revision: persistedEarningRevision,
+      }
+    })
+    .filter((decision): decision is ServiceRequestCompanyPaymentDecisionSubmit => decision !== null)
+  const allCompanyPaymentDecisionsSelected = companyPaymentEligibleItems.length === 0
+    || companyPaymentDecisionSubmissions.length === companyPaymentEligibleItems.length
+  const companyPaymentDecisionContextReady = companyPaymentEligibleItems.length === 0
+    || Boolean(companyPaymentDecisionPayload?.context_ready)
+  const companyPaymentDecisionReady = allCompanyPaymentDecisionsSelected && companyPaymentDecisionContextReady
+  const draftCompanyPaymentAmount = companyPaymentEligibleItems.reduce((total, item) => (
+    companyPaymentDecisionDrafts[String(item.payment_id)]?.decision === 'pay_technician'
+      ? total + Number(item.eligible_amount ?? 0)
+      : total
+  ), 0)
+  const draftCompanyRetainedAmount = companyPaymentEligibleItems.reduce((total, item) => (
+    companyPaymentDecisionDrafts[String(item.payment_id)]?.decision === 'retain_company'
+      ? total + Number(item.eligible_amount ?? 0)
+      : total
+  ), 0)
   const assignmentEarningDraft = assignmentEarningDraftByRequest[requestStateKey]
   const earningLaborInput = assignmentEarningDraft?.laborAmount ?? numericInputValue(persistedEarningLaborAmount)
   const earningRouteInput = assignmentEarningDraft?.routeFeeAmount ?? numericInputValue(persistedEarningRouteAmount)
   const earningOperationNote = assignmentEarningDraft?.operationNote ?? persistedEarningNote
   const earningLaborAmount = parseNumericInput(earningLaborInput)
   const earningRouteAmount = parseNumericInput(earningRouteInput)
-  const earningTotalAmount = earningLaborAmount === null || earningRouteAmount === null
+  const earningBaseTotalAmount = earningLaborAmount === null || earningRouteAmount === null
     ? null
     : roundTwo(earningLaborAmount + earningRouteAmount)
-  const earningDraftDirty = Boolean(assignmentEarningDraft && (
+  const earningBaseDraftDirty = Boolean(assignmentEarningDraft && (
     assignmentEarningDraft.baseRevision !== persistedEarningRevision
     || earningLaborAmount === null
     || earningRouteAmount === null
@@ -2537,6 +2581,24 @@ export function ServiceRequestDetails({
     || Math.abs(earningRouteAmount - Number(persistedEarningRouteAmount ?? 0)) > 0.005
     || earningOperationNote.trim() !== String(persistedEarningNote ?? '').trim()
   ))
+  const companyPaymentDecisionDirty = companyPaymentDecisionSubmissions.length > 0
+  const earningDraftDirty = earningBaseDraftDirty || companyPaymentDecisionDirty
+  const earningTotalAmount = earningBaseTotalAmount === null
+    ? null
+    : roundTwo(earningBaseTotalAmount + persistedCompanyPaymentAmount + draftCompanyPaymentAmount)
+  const previewCompanyPaymentBreakdown = [
+    ...persistedCompanyPaymentBreakdown,
+    ...companyPaymentEligibleItems
+      .filter((item) => companyPaymentDecisionDrafts[String(item.payment_id)]?.decision === 'pay_technician')
+      .map((item) => ({
+        payment_id: item.payment_id,
+        purpose: item.payment_purpose,
+        purpose_label: item.payment_purpose_label,
+        amount: Number(item.eligible_amount),
+        amount_label: item.eligible_amount_label,
+        status: 'payable',
+      })),
+  ]
   const totalTechnicianCostLabel = !hasPayoutTechnicianContext
     ? 'Usta seçilmedi'
     : hasCanonicalPayout
@@ -2601,7 +2663,11 @@ export function ServiceRequestDetails({
   )
   const canonicalEarningSaveRequested = Boolean(activeAssignmentOffer && !hasAssignmentChange && earningDraftDirty)
   const primaryAssignmentActionDisabled = canonicalEarningSaveRequested
-    ? !onAssignmentOfferUpdate || assignmentOfferUpdateInFlight || earningLaborAmount === null || earningRouteAmount === null
+    ? !onAssignmentOfferUpdate
+      || assignmentOfferUpdateInFlight
+      || earningLaborAmount === null
+      || earningRouteAmount === null
+      || (!earningBaseDraftDirty && !companyPaymentDecisionReady)
     : assignmentSubmitDisabled
   const primaryAssignmentActionLoading = canonicalEarningSaveRequested ? assignmentOfferUpdateInFlight : assignLoading
   const technicianEarningPreviewText = selectedTechnician && earningTotalAmount !== null
@@ -2613,6 +2679,7 @@ export function ServiceRequestDetails({
       `Ürün / Seri: ${[request.product || '-', request.serialNumber || '-'].join(' / ')}`,
       `Montaj işçilik: ${formatMoneyValue(earningLaborAmount)}`,
       `Usta yol hakedişi: ${formatMoneyValue(earningRouteAmount)}`,
+      ...previewCompanyPaymentBreakdown.map((line) => `Şirket ödemesi — ${line.purpose_label || 'Ek tahsilat'}: ${line.amount_label ?? formatMoneyValue(line.amount)}`),
       `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
       `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
       earningOperationNote.trim() ? `Not: ${earningOperationNote.trim()}` : null,
@@ -3453,11 +3520,42 @@ export function ServiceRequestDetails({
     setEarningMessageText('')
     setEarningMessageUrl('')
     setRouteFeeEditorMessage(null)
+    setCompanyPaymentDecisionDraftByRequest((current) => {
+      if (!current[requestStateKey]) {
+        return current
+      }
+
+      const next = { ...current }
+      delete next[requestStateKey]
+
+      return next
+    })
+  }
+  const updateCompanyPaymentDecision = (
+    paymentId: number | string,
+    patch: Partial<CompanyPaymentDecisionDraft>,
+  ) => {
+    const paymentKey = String(paymentId)
+    setCompanyPaymentDecisionDraftByRequest((current) => ({
+      ...current,
+      [requestStateKey]: {
+        ...(current[requestStateKey] ?? {}),
+        [paymentKey]: {
+          decision: current[requestStateKey]?.[paymentKey]?.decision,
+          note: current[requestStateKey]?.[paymentKey]?.note ?? '',
+          ...patch,
+        },
+      },
+    }))
+    setEarningMessageText('')
+    setEarningMessageUrl('')
+    setRouteFeeEditorMessage(null)
   }
   const persistAssignmentEarning = async (
     laborAmount: number,
     routeFeeAmount: number,
     operationNote: string,
+    companyPaymentDecisions: ServiceRequestCompanyPaymentDecisionSubmit[] = [],
   ): Promise<AssignmentOfferUpdateResult | void> => {
     if (!activeAssignmentOffer || !onAssignmentOfferUpdate) {
       setRouteFeeEditorMessage('Güncellenecek canonical hakediş kaydı bulunamadı.')
@@ -3476,10 +3574,17 @@ export function ServiceRequestDetails({
       route_fee_amount: routeFeeAmount,
       total_amount: roundTwo(laborAmount + routeFeeAmount),
       note: operationNote.trim() || null,
+      company_payment_decisions: companyPaymentDecisions.length > 0 ? companyPaymentDecisions : undefined,
     })
 
     if (response && typeof response === 'object') {
       setAssignmentEarningDraftByRequest((current) => {
+        const next = { ...current }
+        delete next[requestStateKey]
+
+        return next
+      })
+      setCompanyPaymentDecisionDraftByRequest((current) => {
         const next = { ...current }
         delete next[requestStateKey]
 
@@ -3498,7 +3603,21 @@ export function ServiceRequestDetails({
       return
     }
 
-    await persistAssignmentEarning(earningLaborAmount, earningRouteAmount, earningOperationNote)
+    if (!earningBaseDraftDirty && !companyPaymentDecisionReady) {
+      setRouteFeeEditorMessage(
+        companyPaymentDecisionPayload?.context_blocker
+        || 'Tüm uygun tahsilatlar için usta ödeme kararını seçin.',
+      )
+
+      return
+    }
+
+    await persistAssignmentEarning(
+      earningLaborAmount,
+      earningRouteAmount,
+      earningOperationNote,
+      earningBaseDraftDirty ? [] : companyPaymentDecisionSubmissions,
+    )
   }
   const handleAssignmentSave = async () => {
     if (activeAssignmentOffer && !hasAssignmentChange && earningDraftDirty) {
@@ -4377,6 +4496,8 @@ export function ServiceRequestDetails({
     ]),
     ...(request.customerClosureApprovalStatus === 'onaylandı' ? [] : ['Müşteri onayı bekliyor']),
     ...(backendControlComplete ? [] : ['Backend kontrol eksik']),
+    ...(earningBaseDraftDirty ? ['Önce işçilik/yol hakedişi değişikliklerini kaydedin'] : []),
+    ...(companyPaymentDecisionReady ? [] : ['Müşteriden alınan ek ödemeler için usta ödeme kararı eksik']),
   ]
   const finalPayoutRows = earningBreakdown?.rows ?? []
   const finalPayoutApprovalRequired = Boolean(earningBreakdown?.root_total?.payout_approval_required)
@@ -4389,6 +4510,9 @@ export function ServiceRequestDetails({
   const finalPayoutSelectedRows = finalPayoutRows.filter((row) => finalPayoutSelectedSet.has(String(row.id)))
   const currentVisitPayoutSelected = !finalPayoutApprovalRequired || finalPayoutSelectedSet.has(String(request.id))
   const finalPayoutSelectedTotal = finalPayoutSelectedRows.reduce((total, row) => total + Number(row.total_amount ?? 0), 0)
+  const finalPayoutSelectedTotalWithDecisions = roundTwo(
+    finalPayoutSelectedTotal + (currentVisitPayoutSelected ? draftCompanyPaymentAmount : 0),
+  )
   const toggleFinalPayoutRow = (rowId: number | string) => {
     const id = String(rowId)
     setFinalPayoutSelectionByRequest((current) => {
@@ -4939,6 +5063,109 @@ export function ServiceRequestDetails({
     }
 
     onWorkflowAction?.(action)
+  }
+
+  const renderCompanyPaymentDecisionSection = (surface: 'earning' | 'completion') => {
+    if (companyPaymentEligibleItems.length === 0) {
+      return null
+    }
+
+    const selectionDisabled = earningBaseDraftDirty || assignmentOfferUpdateInFlight
+
+    return (
+      <section
+        data-testid={`company-payment-decisions-${surface}`}
+        className="grid gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-blue-950"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold">Müşteriden alınan ek ödemeler</p>
+            <p className="mt-1 text-xs text-blue-800">Her tahsilat için ustaya aktarım kararını ayrı verin. Ziyaret sayısı bu hesaba dahil değildir.</p>
+          </div>
+          <Badge variant={companyPaymentDecisionReady ? 'secondary' : 'outline'}>
+            {companyPaymentDecisionSubmissions.length}/{companyPaymentEligibleItems.length} karar
+          </Badge>
+        </div>
+        {earningBaseDraftDirty ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+            Önce işçilik/yol hakedişi değişikliklerini kaydedin; aktarılabilir tutar backend tarafından yeniden hesaplanacaktır.
+          </p>
+        ) : null}
+        {companyPaymentDecisionPayload?.context_blocker ? (
+          <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+            {companyPaymentDecisionPayload.context_blocker}
+          </p>
+        ) : null}
+        <div className="grid gap-2">
+          {companyPaymentEligibleItems.map((item) => {
+            const paymentKey = String(item.payment_id)
+            const draft = companyPaymentDecisionDrafts[paymentKey]
+            const payTechnicianDisabled = selectionDisabled || !item.can_pay_technician
+
+            return (
+              <article key={paymentKey} data-testid={`company-payment-decision-${paymentKey}`} className="grid gap-3 rounded-lg border border-blue-200 bg-white p-3">
+                <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                  <MiniMetric label="Payment ID" value={String(item.payment_id)} />
+                  <MiniMetric label="Tahsilat amacı" value={item.payment_purpose_label} />
+                  <MiniMetric label="Müşteriden alınan" value={item.source_paid_amount_label ?? formatMoneyValue(item.source_paid_amount)} />
+                  <MiniMetric label="Aktarılabilir" value={item.eligible_amount_label ?? formatMoneyValue(item.eligible_amount)} />
+                  <MiniMetric label="Mevcut hakedişte karşılanan" value={item.covered_amount_label ?? formatMoneyValue(item.covered_amount)} />
+                  <MiniMetric label="Daha önce bağlanan" value={item.previously_allocated_amount_label ?? formatMoneyValue(item.previously_allocated_amount)} />
+                  <MiniMetric label="Usta" value={displayOrEmpty(item.technician_name, 'Usta belirlenmedi')} />
+                  <MiniMetric label="MRN / SRV" value={displayOrEmpty(item.mrn_or_srv, '-')} />
+                </div>
+                <p className="text-xs text-slate-600">
+                  {displayOrEmpty(item.provider_label, item.provider ?? 'Kaynak bilinmiyor')} · {dateTimeOrEmpty(item.paid_at, 'Ödeme zamanı yok')}
+                </p>
+                <fieldset className="grid gap-2" disabled={selectionDisabled}>
+                  <legend className="text-xs font-semibold text-slate-800">Bu tahsilat ustaya ödenecek mi?</legend>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${draft?.decision === 'pay_technician' ? 'border-emerald-300 bg-emerald-50 text-emerald-950' : 'border-slate-200 bg-white text-slate-700'} ${payTechnicianDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                      <input
+                        data-testid={`company-payment-${paymentKey}-pay-technician`}
+                        type="radio"
+                        name={`company-payment-${requestStateKey}-${surface}-${paymentKey}`}
+                        checked={draft?.decision === 'pay_technician'}
+                        disabled={payTechnicianDisabled}
+                        onChange={() => updateCompanyPaymentDecision(item.payment_id, { decision: 'pay_technician' })}
+                        className="mt-0.5 h-4 w-4"
+                      />
+                      Evet, şirket ödemesi olarak ustaya ekle
+                    </label>
+                    <label className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${draft?.decision === 'retain_company' ? 'border-blue-300 bg-blue-50 text-blue-950' : 'border-slate-200 bg-white text-slate-700'}`}>
+                      <input
+                        data-testid={`company-payment-${paymentKey}-retain-company`}
+                        type="radio"
+                        name={`company-payment-${requestStateKey}-${surface}-${paymentKey}`}
+                        checked={draft?.decision === 'retain_company'}
+                        onChange={() => updateCompanyPaymentDecision(item.payment_id, { decision: 'retain_company' })}
+                        className="mt-0.5 h-4 w-4"
+                      />
+                      Hayır, şirkette bırak
+                    </label>
+                  </div>
+                </fieldset>
+                {!item.can_pay_technician && item.disabled_reason ? (
+                  <p className="text-xs font-semibold text-rose-700">{item.disabled_reason}</p>
+                ) : null}
+                <Input
+                  data-testid={`company-payment-${paymentKey}-note`}
+                  value={draft?.note ?? ''}
+                  disabled={selectionDisabled}
+                  onChange={(event) => updateCompanyPaymentDecision(item.payment_id, { note: event.target.value })}
+                  placeholder="Karar notu (opsiyonel)"
+                />
+              </article>
+            )
+          })}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <MiniMetric label="Ustaya eklenecek" value={formatMoneyValue(draftCompanyPaymentAmount)} />
+          <MiniMetric label="Şirkette bırakılacak" value={formatMoneyValue(draftCompanyRetainedAmount)} />
+          <MiniMetric label="Taslak toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
+        </div>
+      </section>
+    )
   }
 
   return (
@@ -6286,10 +6513,11 @@ export function ServiceRequestDetails({
                       <p className="font-semibold">Onaylanan hakediş</p>
                       <Badge variant="positive">{assignmentOfferStatusLabel(assignmentOffer.status)}</Badge>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-4">
+                    <div className="grid gap-2 sm:grid-cols-5">
                       <MiniMetric label="İşçilik" value={formatMoneyValue(assignmentOffer.labor_amount)} />
                       <MiniMetric label="Yol" value={formatMoneyValue(assignmentOffer.route_fee_amount)} />
-                      <MiniMetric label="Toplam" value={formatMoneyValue(assignmentOffer.total_amount)} />
+                      <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(assignmentOffer.earning_snapshot?.company_payment_amount ?? 0)} />
+                      <MiniMetric label="Toplam" value={formatMoneyValue(assignmentOffer.earning_snapshot?.total_amount ?? assignmentOffer.total_amount)} />
                       <MiniMetric label="Durum" value={assignmentOfferStatusLabel(assignmentOffer.status)} />
                     </div>
                     {settlement ? (
@@ -6345,7 +6573,8 @@ export function ServiceRequestDetails({
                       <Button
                         type="button"
                         variant="outline"
-                        disabled={!onAssignmentOfferUpdate || !earningDraftDirty || earningLaborAmount === null || earningRouteAmount === null || assignmentOfferUpdateInFlight}
+                        disabled={!onAssignmentOfferUpdate || !earningDraftDirty || earningLaborAmount === null || earningRouteAmount === null || assignmentOfferUpdateInFlight || (!earningBaseDraftDirty && !companyPaymentDecisionReady)}
+                        title={!earningBaseDraftDirty && !companyPaymentDecisionReady ? 'Tüm uygun tahsilatlar için usta ödeme kararı verilmelidir.' : undefined}
                         onClick={() => void handleCanonicalEarningSave()}
                       >
                         {assignmentOfferUpdateInFlight ? 'Hakediş güncelleniyor...' : 'Hakedişi revize et'}
@@ -6777,13 +7006,14 @@ export function ServiceRequestDetails({
                   ) : null}
                   <div className="grid gap-1">
                     {earningBreakdown.rows.map((row) => (
-                      <div key={`${row.id}-${row.mrn}`} className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_110px_110px_110px]">
+                      <div key={`${row.id}-${row.mrn}`} className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_100px_100px_120px_100px]">
                         <span className="min-w-0">
                           <span className="block truncate font-semibold">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (açık detay)' : ''}</span>
                           <span className="mt-0.5 block truncate text-[11px] font-semibold text-slate-500">Usta: {displayOrEmpty(row.technician_name, 'Usta bilgisi yok')}</span>
                         </span>
                         <span>İşçilik: {row.labor_amount_label ?? formatMoneyValue(row.labor_amount)}</span>
                         <span>Yol: {row.route_fee_amount_label ?? formatMoneyValue(row.route_fee_amount)}</span>
+                        <span>Şirket ödemesi: {row.company_payment_amount_label ?? formatMoneyValue(row.company_payment_amount ?? 0)}</span>
                         <strong>Toplam: {row.total_amount_label ?? formatMoneyValue(row.total_amount)}</strong>
                       </div>
                     ))}
@@ -6842,11 +7072,13 @@ export function ServiceRequestDetails({
                     <span className="text-xs font-medium text-slate-500">Son kayıt: {dateTimeOrEmpty(persistedEarningSnapshot.persisted_at, '-')}</span>
                   ) : null}
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-4">
                   <MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />
                   <MiniMetric label="Yol" value={formatMoneyValue(earningRouteAmount)} />
+                  <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(persistedCompanyPaymentAmount + draftCompanyPaymentAmount)} />
                   <MiniMetric label="Toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
                 </div>
+                {renderCompanyPaymentDecisionSection('earning')}
                 {(technicianJobCard?.ops_support_url || technicianJobCard?.preview_url) ? (
                   <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t border-slate-200 bg-white/95 py-2 backdrop-blur">
                     {technicianJobCard?.ops_support_url ? (
@@ -7348,7 +7580,7 @@ export function ServiceRequestDetails({
                         const checked = finalPayoutSelectedSet.has(rowId)
 
                         return (
-                          <label key={`${row.id}-${row.mrn}`} className={`grid cursor-pointer gap-2 rounded-xl border px-3 py-2 text-xs sm:grid-cols-[auto_minmax(0,1fr)_90px_90px_100px] ${checked ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                          <label key={`${row.id}-${row.mrn}`} className={`grid cursor-pointer gap-2 rounded-xl border px-3 py-2 text-xs sm:grid-cols-[auto_minmax(0,1fr)_80px_80px_110px_90px] ${checked ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
                             <input
                               type="checkbox"
                               checked={checked}
@@ -7361,13 +7593,14 @@ export function ServiceRequestDetails({
                             </span>
                             <span>İşçilik: {row.labor_amount_label ?? formatMoneyValue(row.labor_amount)}</span>
                             <span>Yol: {row.route_fee_amount_label ?? formatMoneyValue(row.route_fee_amount)}</span>
+                            <span>Şirket ödemesi: {row.company_payment_amount_label ?? formatMoneyValue(row.company_payment_amount ?? 0)}</span>
                             <strong>Toplam: {row.total_amount_label ?? formatMoneyValue(row.total_amount)}</strong>
                           </label>
                         )
                       })}
                     </div>
                     <p className="text-xs font-semibold text-violet-900">
-                      Onaylanacak hakediş toplamı: {formatMoneyValue(finalPayoutSelectedTotal)}
+                      Onaylanacak hakediş toplamı: {formatMoneyValue(finalPayoutSelectedTotalWithDecisions)}
                     </p>
                     {!currentVisitPayoutSelected ? (
                       <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
@@ -7376,6 +7609,7 @@ export function ServiceRequestDetails({
                     ) : null}
                   </div>
                 ) : null}
+                {renderCompanyPaymentDecisionSection('completion')}
                 <label className="grid gap-1 text-xs font-semibold text-violet-900">
                   Son kontrol notu
                   <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
@@ -7812,13 +8046,15 @@ export function ServiceRequestDetails({
           ) : null}
           {!isActionDisabled && finalCheckCompletionAction ? (
             <Button
+              data-testid="final-completion-approve-button"
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
-              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
-              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : finalPayoutApprovalRequired && !currentVisitPayoutSelected ? 'Mevcut SRV hakedişi açıkça seçilmelidir.' : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
+              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || !companyPaymentDecisionReady || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
+              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : !companyPaymentDecisionReady ? 'Tüm uygun tahsilatlar için usta ödeme kararı verilmelidir.' : finalPayoutApprovalRequired && !currentVisitPayoutSelected ? 'Mevcut SRV hakedişi açıkça seçilmelidir.' : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
               onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, {
                 note: completionReviewNote || null,
                 approved_visit_ids: finalPayoutApprovalRequired ? finalPayoutSelectedIds : undefined,
+                company_payment_decisions: companyPaymentDecisionSubmissions.length > 0 ? companyPaymentDecisionSubmissions : undefined,
               })}
             >
               {finalPayoutApprovalRequired ? 'İşaretlileri onayla' : 'Son kontrolü tamamla'}
