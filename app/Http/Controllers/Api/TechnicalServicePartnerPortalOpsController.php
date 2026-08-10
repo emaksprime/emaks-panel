@@ -668,8 +668,11 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 && abs((float) $offer->route_fee_amount - $routeFeeAmount) < 0.005
                 && abs((float) $offer->total_amount - $totalAmount) < 0.005
                 && (($offer->note !== null ? trim((string) $offer->note) : null) === $note)) {
+                $presentation = $this->workflow->technicianEarningPresentation($job, $offer->technician, $offer);
+
                 return [
                     'status' => 'duplicate_noop',
+                    ...$presentation,
                     'request' => $this->workflow->serialize($job->refresh(), true),
                 ];
             }
@@ -735,7 +738,6 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 $customerDirectAmount,
                 $request->user(),
             );
-
             $resolvedPriceRevisionActionIds = $this->resolvePendingPriceRevisionActions(
                 $job,
                 $offer,
@@ -750,35 +752,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             if ($resolvedPriceRevisionActionIds !== []) {
                 $metadata['resolved_price_revision_action_ids'] = $resolvedPriceRevisionActionIds;
                 $metadata['revision_response_status'] = 'resolved';
+                $offer->forceFill(['metadata' => $metadata])->save();
             }
 
-            $technicianPhone = $offer->technician->phone_e164
-                ?: ($offer->technician->phone_display ?: $offer->technician->phone);
-            $dispatch = $this->workflowMessages->queueSystemMessage(
-                $job,
-                'price_revision_response_technician',
-                'technician',
-                $this->assignmentOfferMessageText($metadata['message_payload'] ?? []),
-                [
-                    ...(is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : []),
-                    'manual_ui_send' => true,
-                ],
-                $request->user(),
-                null,
-                [
-                    'recipient_phone' => $technicianPhone,
-                    'triggered_by' => 'ops_price_revision_response',
-                    'metadata' => [
-                        'assignment_offer_id' => $offer->id,
-                        'manual_ui_send' => true,
-                    ],
-                ],
+            $presentation = $this->workflow->technicianEarningPresentation(
+                $job->refresh(),
+                $offer->technician,
+                $offer->refresh(),
             );
-            $metadata['message_dispatch'] = [
-                'id' => $dispatch->id,
-                'status' => $dispatch->status,
-            ];
-            $offer->forceFill(['metadata' => $metadata])->save();
 
             $job->events()->create([
                 'event_type' => 'assignment_offer_revised',
@@ -795,6 +776,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     'route_fee_amount' => $routeFeeAmount,
                     'total_amount' => $totalAmount,
                     'message_payload' => $metadata['message_payload'],
+                    'earning_snapshot' => $presentation['earning_snapshot'],
+                    'earning_snapshot_revision' => $presentation['earning_snapshot']['revision'],
                     'resolved_price_revision_action_ids' => $resolvedPriceRevisionActionIds,
                     'actor_user_id' => $request->user()?->id,
                     'actor_role' => $request->user()?->role_code ?: 'authenticated_user',
@@ -808,6 +791,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             return [
                 'status' => 'revised',
+                ...$presentation,
                 'request' => $this->workflow->serialize($job->refresh(), true),
             ];
         });

@@ -710,10 +710,11 @@ class TechnicalServiceController extends Controller
         $validated = $request->validate([
             'labor_amount' => ['nullable', 'numeric', 'min:0'],
             'route_fee_amount' => ['nullable', 'numeric', 'min:0'],
-            'total_amount' => ['required', 'numeric', 'min:0'],
+            'total_amount' => ['nullable', 'numeric', 'min:0'],
             'note' => ['nullable', 'string', 'max:2000'],
             'message_text' => ['nullable', 'string', 'max:5000'],
             'manual_override' => ['nullable', 'boolean'],
+            'earning_revision' => ['required', 'string', 'size:64'],
         ]);
 
         if (blank($technician->phone_e164) && blank($technician->phone_display) && blank($technician->phone)) {
@@ -751,6 +752,15 @@ class TechnicalServiceController extends Controller
                 ]);
             }
 
+            $presentation = $this->workflowService->technicianEarningPresentation($job, $technician, $offer);
+            $earningSnapshot = $presentation['earning_snapshot'];
+            $earningSnapshotRevision = (string) $earningSnapshot['revision'];
+            if (! hash_equals($earningSnapshotRevision, (string) $validated['earning_revision'])) {
+                throw ValidationException::withMessages([
+                    'earning_revision' => 'Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.',
+                ]);
+            }
+
             $jobCardContext = $this->partnerJobScope->technicianJobCardContext($job);
             if (($jobCardContext['ready'] ?? false) !== true) {
                 throw ValidationException::withMessages([
@@ -758,15 +768,7 @@ class TechnicalServiceController extends Controller
                 ]);
             }
 
-            $earningSnapshotFingerprint = hash('sha256', implode('|', [
-                'assignment-offer',
-                $offer->id,
-                number_format((float) $offer->labor_amount, 2, '.', ''),
-                number_format((float) $offer->route_fee_amount, 2, '.', ''),
-                number_format((float) $offer->total_amount, 2, '.', ''),
-                (string) $offer->currency,
-                $offer->updated_at?->toISOString() ?? '',
-            ]));
+            $earningSnapshotFingerprint = $earningSnapshotRevision;
             $existingDispatch = TechnicalServiceMessageDispatch::query()
                 ->where('technical_service_request_id', $job->id)
                 ->where('message_type', 'earnings_message_technician')
@@ -790,6 +792,8 @@ class TechnicalServiceController extends Controller
                 return [
                     'request' => $job,
                     'assignment_offer' => $offer,
+                    'earning_snapshot' => $earningSnapshot,
+                    'message_preview' => $presentation['message_preview'],
                     'message_text' => $messageText,
                     'copy_text' => $messageText,
                     'whatsapp_url' => $whatsappPhone !== ''
@@ -823,6 +827,8 @@ class TechnicalServiceController extends Controller
                     'labor_amount' => $earningPayload['labor_amount'] ?? null,
                     'route_fee_amount' => $earningPayload['route_fee_amount'] ?? null,
                     'total_amount' => $earningPayload['total_amount'] ?? null,
+                    'earning_snapshot' => $earningSnapshot,
+                    'earning_revision' => $earningSnapshotRevision,
                     'submitted_total_amount' => $earningPayload['submitted_total_amount'] ?? null,
                     'total_amount_corrected' => $earningPayload['total_amount_corrected'] ?? false,
                 ],
@@ -836,6 +842,8 @@ class TechnicalServiceController extends Controller
                     'metadata' => [
                         'assignment_offer_id' => $offer->id,
                         'earning_snapshot_fingerprint' => $earningSnapshotFingerprint,
+                        'earning_snapshot_revision' => $earningSnapshotRevision,
+                        'earning_snapshot' => $earningSnapshot,
                         'manual_ui_send' => true,
                     ],
                 ],
@@ -864,6 +872,8 @@ class TechnicalServiceController extends Controller
 
         return response()->json([
             'ok' => true,
+            'earning_snapshot' => $result['earning_snapshot'],
+            'message_preview' => $result['message_preview'],
             'message_text' => $result['message_text'],
             'copy_text' => $result['copy_text'],
             'whatsapp_url' => $result['whatsapp_url'],

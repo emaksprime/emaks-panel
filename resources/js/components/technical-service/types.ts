@@ -375,9 +375,24 @@ export type ServiceRequestAssignmentOffer = {
   sent_at?: string | null
   metadata?: Record<string, unknown>
   message_payload?: Record<string, unknown>
+  earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null
+  message_preview?: string | null
   message_text?: string | null
   job_link?: string | null
   dispatch_status?: string | null
+}
+
+export type ServiceRequestCanonicalEarningSnapshot = {
+  schema_version: number
+  assignment_id: number | string
+  technician_id: number | string
+  labor_amount: number
+  route_fee_amount: number
+  total_amount: number
+  currency: string
+  operation_note?: string | null
+  revision: string
+  persisted_at?: string | null
 }
 
 export type ServiceRequestTechnicianJobCard = {
@@ -882,6 +897,8 @@ export type ServiceRequestTechnicianEarningMessage = {
   manual_override?: boolean
   note?: string | null
   message_text?: string | null
+  earning_snapshot_revision?: string | null
+  earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null
 }
 
 export type ServiceRequestDocumentInfo = {
@@ -1096,9 +1113,10 @@ export type ServiceRequestExtraMountPaymentPayload = {
 
 export type ServiceRequestTechnicianEarningMessagePayload = {
   technician_id: number | string
+  earning_revision: string
   labor_amount?: number | null
   route_fee_amount?: number | null
-  total_amount: number
+  total_amount?: number | null
   note?: string | null
   message_text?: string | null
   manual_override?: boolean

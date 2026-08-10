@@ -4282,6 +4282,7 @@ export function TechnicalServiceOperationCenter() {
           : 'Hakediş ve mutabakat toplamları güncellendi.')
       }
 
+      return response
     } catch (caught) {
       if (selectedIdRef.current === requestId) {
         setAssignmentOfferUpdateError(caught instanceof Error ? caught.message : 'Hakediş güncellenemedi.')

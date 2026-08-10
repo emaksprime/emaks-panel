@@ -903,7 +903,7 @@ class TechnicalServiceWorkflowService
 
     /**
      * @param  array<string, mixed>  $payload
-     * @return array{request:TechnicalServiceRequest,assignment_offer:TechnicalServiceAssignmentOffer,message_text:string,copy_text:string,whatsapp_url:string}
+     * @return array{request:TechnicalServiceRequest,assignment_offer:TechnicalServiceAssignmentOffer,earning_snapshot:array<string,mixed>,message_preview:string,message_text:string,copy_text:string,whatsapp_url:string}
      */
     public function recordTechnicianEarningsMessage(
         TechnicalServiceRequest $request,
@@ -921,18 +921,15 @@ class TechnicalServiceWorkflowService
         }
 
         $old = $this->snapshot($request);
-        $laborAmount = round((float) $offer->labor_amount, 2);
-        $routeFeeAmount = round((float) $offer->route_fee_amount, 2);
+        $presentation = $this->technicianEarningPresentation($request, $technician, $offer);
+        $earningSnapshot = $presentation['earning_snapshot'];
+        $laborAmount = (float) $earningSnapshot['labor_amount'];
+        $routeFeeAmount = (float) $earningSnapshot['route_fee_amount'];
         $submittedTotalAmount = $this->nullableFloat($payload['total_amount'] ?? null);
-        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
-        if (abs(((float) $offer->total_amount) - $totalAmount) > 0.01) {
-            throw ValidationException::withMessages([
-                'assignment_offer' => 'Canonical hakediş toplamı işçilik ve yol toplamıyla eşleşmiyor.',
-            ]);
-        }
+        $totalAmount = (float) $earningSnapshot['total_amount'];
         $totalAmountCorrected = $submittedTotalAmount !== null && abs($submittedTotalAmount - $totalAmount) > 0.01;
-        $note = trim((string) ($payload['note'] ?? ''));
-        $messageText = $this->technicianEarningsMessageText($request, $technician, $laborAmount, $routeFeeAmount, $totalAmount, $note);
+        $note = (string) ($earningSnapshot['operation_note'] ?? '');
+        $messageText = $presentation['message_preview'];
         $messagePayload = $this->technicianEarningMessageDispatchPayload($request, $technician, [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
@@ -940,6 +937,8 @@ class TechnicalServiceWorkflowService
             'currency' => 'TRY',
             'note' => $note !== '' ? $note : null,
         ]);
+        $messagePayload['earning_snapshot'] = $earningSnapshot;
+        $messagePayload['earning_revision'] = $earningSnapshot['revision'];
 
         $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $operationControl['technician_earning_message'] = [
@@ -948,6 +947,8 @@ class TechnicalServiceWorkflowService
             'sent_at' => null,
             'dispatch_id' => null,
             'assignment_offer_id' => $offer->id,
+            'earning_snapshot_revision' => $earningSnapshot['revision'],
+            'earning_snapshot' => $earningSnapshot,
             'technician_id' => $technician->id,
             'technician_name' => $technician->name,
             'technician_phone' => $this->technicianPhone($technician),
@@ -970,6 +971,7 @@ class TechnicalServiceWorkflowService
         $eventPayload = [
             'technician_id' => $technician->id,
             'technical_service_assignment_offer_id' => $offer->id,
+            'earning_snapshot_revision' => $earningSnapshot['revision'],
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
             'total_amount' => round($totalAmount, 2),
@@ -998,9 +1000,85 @@ class TechnicalServiceWorkflowService
         return [
             'request' => $request->refresh(),
             'assignment_offer' => $offer->refresh(),
+            'earning_snapshot' => $earningSnapshot,
+            'message_preview' => $messageText,
             'message_text' => $messageText,
             'copy_text' => $messageText,
             'whatsapp_url' => $whatsappUrl,
+        ];
+    }
+
+    /**
+     * @return array{earning_snapshot:array<string,mixed>,message_preview:string}
+     */
+    public function technicianEarningPresentation(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        TechnicalServiceAssignmentOffer $offer,
+    ): array {
+        if ((int) $offer->technical_service_request_id !== (int) $request->id
+            || (int) $offer->technical_service_technician_id !== (int) $technician->id
+        ) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Canonical hakediş kaydı aktif talep ve usta ile eşleşmiyor.',
+            ]);
+        }
+
+        $earningSnapshot = $this->canonicalTechnicianEarningSnapshot($offer);
+        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $jobCardUrl = is_string($jobCardContext['canonical_url'] ?? null)
+            ? $jobCardContext['canonical_url']
+            : null;
+
+        return [
+            'earning_snapshot' => $earningSnapshot,
+            'message_preview' => $this->technicianEarningsMessageText(
+                $request,
+                $technician,
+                (float) $earningSnapshot['labor_amount'],
+                (float) $earningSnapshot['route_fee_amount'],
+                (float) $earningSnapshot['total_amount'],
+                (string) ($earningSnapshot['operation_note'] ?? ''),
+                $jobCardUrl,
+            ),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function canonicalTechnicianEarningSnapshot(TechnicalServiceAssignmentOffer $offer): array
+    {
+        $laborAmount = round((float) $offer->labor_amount, 2);
+        $routeFeeAmount = round((float) $offer->route_fee_amount, 2);
+        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        if (abs(((float) $offer->total_amount) - $totalAmount) > 0.01) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Canonical hakediş toplamı işçilik ve yol toplamıyla eşleşmiyor.',
+            ]);
+        }
+
+        $operationNote = trim((string) ($offer->note ?? ''));
+        $persistedAt = $offer->updated_at?->toISOString();
+        $revisionPayload = [
+            'schema_version' => 1,
+            'assignment_id' => (int) $offer->id,
+            'technician_id' => (int) $offer->technical_service_technician_id,
+            'labor_amount' => number_format($laborAmount, 2, '.', ''),
+            'route_fee_amount' => number_format($routeFeeAmount, 2, '.', ''),
+            'total_amount' => number_format($totalAmount, 2, '.', ''),
+            'currency' => (string) ($offer->currency ?: 'TRY'),
+            'operation_note' => $operationNote,
+            'persisted_at' => $persistedAt,
+        ];
+
+        return [
+            ...$revisionPayload,
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'operation_note' => $operationNote !== '' ? $operationNote : null,
+            'revision' => hash('sha256', json_encode($revisionPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)),
         ];
     }
 
@@ -1708,7 +1786,7 @@ class TechnicalServiceWorkflowService
         $payload['previous_field_completion_documents'] = $this->fieldCompletionDocumentPayload($request, onlyPrevious: true);
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
-        $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
+        $payload['assignment_offer'] = $this->assignmentOfferPayload($request, $request->latestAssignmentOffer);
         $payload['technician_job_card'] = $this->partnerJobScope->technicianJobCardContext($request);
         $payload['settlement'] = $this->settlementPayload($request->settlement);
         $payload['technician_revision_offer'] = $this->technicianRevisionOfferPayload($request);
@@ -4407,8 +4485,10 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>|null
      */
-    private function assignmentOfferPayload(?TechnicalServiceAssignmentOffer $offer): ?array
-    {
+    private function assignmentOfferPayload(
+        TechnicalServiceRequest $request,
+        ?TechnicalServiceAssignmentOffer $offer,
+    ): ?array {
         if (! $offer instanceof TechnicalServiceAssignmentOffer) {
             return null;
         }
@@ -4416,6 +4496,10 @@ class TechnicalServiceWorkflowService
         $metadata = is_array($offer->metadata) ? $offer->metadata : [];
         $messagePayload = is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : [];
         $messageDispatch = is_array($metadata['message_dispatch'] ?? null) ? $metadata['message_dispatch'] : [];
+        $offer->loadMissing('technician');
+        $presentation = $offer->technician instanceof TechnicalServiceTechnician
+            ? $this->technicianEarningPresentation($request, $offer->technician, $offer)
+            : null;
 
         return [
             'id' => $offer->id,
@@ -4432,7 +4516,9 @@ class TechnicalServiceWorkflowService
             'sent_at' => $this->dateTimeString($offer->sent_at),
             'metadata' => $metadata,
             'message_payload' => $messagePayload,
-            'message_text' => $messagePayload['message_text'] ?? null,
+            'earning_snapshot' => $presentation['earning_snapshot'] ?? $this->canonicalTechnicianEarningSnapshot($offer),
+            'message_preview' => $presentation['message_preview'] ?? null,
+            'message_text' => $presentation['message_preview'] ?? ($messagePayload['message_text'] ?? null),
             'job_link' => $messagePayload['job_link'] ?? null,
             'dispatch_status' => $messageDispatch['status'] ?? null,
             'created_at' => $this->dateTimeString($offer->created_at),
@@ -5610,7 +5696,8 @@ class TechnicalServiceWorkflowService
         float $laborAmount,
         float $routeFeeAmount,
         float $totalAmount,
-        string $note
+        string $note,
+        ?string $jobCardUrl = null,
     ): string {
         $region = trim(implode(' / ', array_filter([$request->customer_city, $request->customer_district])));
         $lines = [
@@ -5627,6 +5714,10 @@ class TechnicalServiceWorkflowService
 
         if ($note !== '') {
             $lines[] = 'Not: '.$note;
+        }
+        if (filled($jobCardUrl)) {
+            $lines[] = 'İş kartı:';
+            $lines[] = $jobCardUrl;
         }
 
         return implode("\n", $lines);

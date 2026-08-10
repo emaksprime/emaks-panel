@@ -5224,6 +5224,8 @@ class TechnicalServiceWorkflowTest extends TestCase
     {
         Http::fake();
         [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $earningRevision = app(TechnicalServiceWorkflowService::class)
+            ->canonicalTechnicianEarningSnapshot($offer)['revision'];
 
         $response = $this->actingAs($user)
             ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
@@ -5232,6 +5234,7 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'total_amount' => 3200,
                 'manual_override' => true,
                 'note' => 'Operasyon düzeltmesi',
+                'earning_revision' => $earningRevision,
             ])
             ->assertOk()
             ->assertJsonPath('ok', true)
@@ -5282,11 +5285,13 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_duplicate_earning_send_creates_no_second_provider_call(): void
     {
         Http::fake();
-        [$user, $technician, $request] = $this->activeEarningMessageFixture();
+        [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
         $payload = [
             'labor_amount' => 3000,
             'route_fee_amount' => 150,
             'total_amount' => 3150,
+            'earning_revision' => app(TechnicalServiceWorkflowService::class)
+                ->canonicalTechnicianEarningSnapshot($offer)['revision'],
         ];
 
         $first = $this->actingAs($user)
@@ -5300,6 +5305,155 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertSame($first->json('dispatch.id'), $second->json('dispatch.id'));
         $this->assertDatabaseCount('technical_service_message_dispatches', 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_earning_update_recalculates_total_from_labor_and_route(): void
+    {
+        [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
+                'labor_amount' => 4000,
+                'route_fee_amount' => 125,
+                'total_amount' => 9999,
+                'note' => 'Canonical toplam testi',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'revised')
+            ->assertJsonPath('earning_snapshot.labor_amount', 4000)
+            ->assertJsonPath('earning_snapshot.route_fee_amount', 125)
+            ->assertJsonPath('earning_snapshot.total_amount', 4125)
+            ->assertJsonPath('request.assignment_offer.total_amount', 4125);
+
+        $this->assertSame(4125.0, (float) $offer->fresh()->total_amount);
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+    }
+
+    public function test_save_returns_canonical_earning_snapshot(): void
+    {
+        [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+
+        $response = $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
+                'labor_amount' => 4000,
+                'route_fee_amount' => 0,
+                'note' => 'Kaydedilen operasyon notu',
+            ])
+            ->assertOk()
+            ->assertJsonPath('earning_snapshot.total_amount', 4000)
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.total_amount', 4000)
+            ->assertJsonPath('request.assignment_offer.message_preview', fn ($value) => is_string($value) && str_contains($value, 'Toplam hakediş: 4.000,00 TL'));
+
+        $revision = $response->json('earning_snapshot.revision');
+        $this->assertIsString($revision);
+        $this->assertSame(64, strlen($revision));
+        $this->assertSame($revision, $response->json('request.assignment_offer.earning_snapshot.revision'));
+        $this->assertSame($response->json('message_preview'), $response->json('request.assignment_offer.message_preview'));
+    }
+
+    public function test_message_render_uses_saved_canonical_snapshot(): void
+    {
+        Http::fake();
+        [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $save = $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
+                'labor_amount' => 4000,
+                'route_fee_amount' => 0,
+                'note' => 'Güncel snapshot',
+            ])
+            ->assertOk();
+
+        $send = $this->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
+            'earning_revision' => $save->json('earning_snapshot.revision'),
+        ])
+            ->assertOk();
+
+        $this->assertSame($save->json('message_preview'), $send->json('message_preview'));
+        $this->assertStringContainsString('Montaj işçilik: 4.000,00 TL', $send->json('message_text'));
+        $this->assertStringContainsString('Usta yol hakedişi: 0,00 TL', $send->json('message_text'));
+        $this->assertStringContainsString('Toplam hakediş: 4.000,00 TL', $send->json('message_text'));
+        $this->assertStringNotContainsString('3.000,00 TL', $send->json('message_text'));
+        Http::assertNothingSent();
+    }
+
+    public function test_stale_revision_cannot_create_dispatch(): void
+    {
+        Http::fake();
+        [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $staleRevision = app(TechnicalServiceWorkflowService::class)
+            ->canonicalTechnicianEarningSnapshot($offer)['revision'];
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
+                'labor_amount' => 4000,
+                'route_fee_amount' => 0,
+                'note' => 'Revision değişti',
+            ])
+            ->assertOk();
+
+        $eventCount = $request->events()->count();
+        $this->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
+            'earning_revision' => $staleRevision,
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('earning_revision')
+            ->assertJsonPath('errors.earning_revision.0', 'Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.');
+
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+        $this->assertSame($eventCount, $request->events()->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_identical_earning_update_is_noop(): void
+    {
+        [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+        $payload = [
+            'labor_amount' => 4000,
+            'route_fee_amount' => 0,
+            'note' => 'No-op snapshot',
+        ];
+        $first = $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'revised');
+        $eventCount = $request->events()->where('event_type', 'assignment_offer_revised')->count();
+        $settlementUpdatedAt = TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->sole()
+            ->updated_at?->toISOString();
+
+        $second = $this->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop');
+
+        $this->assertSame($first->json('earning_snapshot.revision'), $second->json('earning_snapshot.revision'));
+        $this->assertSame($eventCount, $request->events()->where('event_type', 'assignment_offer_revised')->count());
+        $this->assertSame($settlementUpdatedAt, TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->sole()
+            ->updated_at?->toISOString());
+        $this->assertDatabaseCount('technical_service_message_dispatches', 0);
+    }
+
+    public function test_dispatch_stores_exact_earning_revision(): void
+    {
+        Http::fake();
+        [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $revision = app(TechnicalServiceWorkflowService::class)
+            ->canonicalTechnicianEarningSnapshot($offer)['revision'];
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
+                'earning_revision' => $revision,
+            ])
+            ->assertOk()
+            ->assertJsonPath('earning_snapshot.revision', $revision);
+
+        $dispatch = TechnicalServiceMessageDispatch::query()->sole();
+        $this->assertSame($revision, data_get($dispatch->metadata, 'earning_snapshot_revision'));
+        $this->assertSame($revision, data_get($dispatch->metadata, 'earning_snapshot.revision'));
+        $this->assertSame($revision, data_get($request->fresh()->operation_control_payload, 'technician_earning_message.earning_snapshot_revision'));
         Http::assertNothingSent();
     }
 

@@ -384,7 +384,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
         $opsActionIndex = strpos($source, 'Usta İş Kartını OPS Olarak Yönet');
         $previewActionIndex = strpos($source, 'Usta Portalını Önizle');
-        $messagePreviewIndex = strpos($source, '<summary className="cursor-pointer font-semibold">Hakediş mesajını göster</summary>');
+        $messagePreviewIndex = strpos($source, "? 'Taslak hakediş mesajını göster' : 'Hakediş mesajını göster'");
 
         $this->assertIsInt($opsActionIndex);
         $this->assertIsInt($previewActionIndex);
@@ -396,6 +396,44 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('grid w-full max-w-full grid-cols-2', $source);
         $this->assertStringContainsString('İş kartı aksiyonları usta ataması tamamlandığında kullanılabilir.', $source);
         $this->assertStringContainsString("{technicianEarningMessageLoading ? 'Hazırlanıyor...' : 'Hakediş bilgisini gönder'}", $source);
+    }
+
+    public function test_earning_draft_uses_one_state_for_inputs_summary_and_preview(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const [assignmentEarningDraftByRequest, setAssignmentEarningDraftByRequest]', $source);
+        $this->assertStringContainsString('value={earningLaborInput}', $source);
+        $this->assertStringContainsString('value={earningRouteInput}', $source);
+        $this->assertStringContainsString('<MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />', $source);
+        $this->assertStringContainsString('<MiniMetric label="Yol" value={formatMoneyValue(earningRouteAmount)} />', $source);
+        $this->assertStringContainsString('`Montaj işçilik: ${formatMoneyValue(earningLaborAmount)}`', $source);
+        $this->assertStringContainsString('`Usta yol hakedişi: ${formatMoneyValue(earningRouteAmount)}`', $source);
+        $this->assertStringContainsString('`Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`', $source);
+        $this->assertStringNotContainsString('earningTotalOverrideByRequest', $source);
+        $this->assertStringNotContainsString('offerLaborInput', $source);
+    }
+
+    public function test_dirty_earning_is_labelled_and_cannot_be_sent(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString("'Taslak — henüz kaydedilmedi'", $source);
+        $this->assertStringContainsString("setRouteFeeEditorMessage('Önce hakediş değişikliklerini kaydedin.')", $source);
+        $this->assertStringContainsString('&& !earningDraftDirty', $source);
+        $this->assertStringContainsString('earning_revision: persistedEarningRevision', $source);
+        $this->assertStringNotContainsString('message_text: earningMessageText.trim()', $source);
+    }
+
+    public function test_successful_earning_save_uses_returned_canonical_snapshot_and_preview(): void
+    {
+        $detailsSource = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $pageSource = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        $this->assertStringContainsString('setEarningMessageText(response.message_preview ??', $detailsSource);
+        $this->assertStringContainsString('delete next[requestStateKey]', $detailsSource);
+        $this->assertStringContainsString('return response', $pageSource);
+        $this->assertStringContainsString('onClick={() => void handleAssignmentSave()}', $detailsSource);
     }
 
     public function test_terminal_payment_retry_ui_requires_reason_and_never_renders_raw_contract_code(): void

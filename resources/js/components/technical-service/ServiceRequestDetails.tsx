@@ -9,6 +9,7 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
+import type { ServiceRequestCanonicalEarningSnapshot } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
 type OpsDoorPhotoType = 'ops_door_front_photo' | 'ops_door_side_photo' | 'ops_door_back_photo' | 'ops_door_photo'
@@ -21,6 +22,20 @@ type PaymentLinkSendTarget = PendingPaymentLinkActionPayment & {
 }
 
 type ExtraPaymentPurpose = NonNullable<ServiceRequestExtraMountPaymentPayload['purpose']>
+
+type AssignmentEarningDraft = {
+  laborAmount: string
+  routeFeeAmount: string
+  operationNote: string
+  baseRevision: string
+}
+
+type AssignmentOfferUpdateResult = {
+  status?: string
+  earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null
+  message_preview?: string | null
+  request?: ServiceRequest
+}
 
 const OPS_DOOR_PHOTO_FIELD_CODES = new Set<string>([
   'ops_door_front_photo',
@@ -154,7 +169,7 @@ type ServiceRequestDetailsProps = {
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
   onMountPaymentSend?: (paymentId: number | string, payload: PaymentLinkSendPayload) => Promise<PaymentLinkSendResult | void>
-  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
+  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
@@ -164,7 +179,7 @@ type ServiceRequestDetailsProps = {
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onPartRequestManualPaymentConfirm?: (partRequestId: number | string, payload: { explanation: string }) => void | Promise<void>
-  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
+  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<AssignmentOfferUpdateResult | void>
   onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
   onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null, document_type?: string | null }) => void | Promise<void>
@@ -1825,17 +1840,13 @@ export function ServiceRequestDetails({
   const [customerChargeCopyTarget, setCustomerChargeCopyTarget] = useState<string | null>(null)
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
-  const [earningNoteInput, setEarningNoteInput] = useState('')
   const [earningMessageText, setEarningMessageText] = useState('')
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
-  const [earningTotalOverrideByRequest, setEarningTotalOverrideByRequest] = useState<Record<string, string>>({})
-  const [earningTotalOverrideTouchedByRequest, setEarningTotalOverrideTouchedByRequest] = useState<Record<string, boolean>>({})
+  const [assignmentEarningDraftByRequest, setAssignmentEarningDraftByRequest] = useState<Record<string, AssignmentEarningDraft>>({})
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
   const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
   const [completionReviewNote, setCompletionReviewNote] = useState('')
   const [finalPayoutSelectionByRequest, setFinalPayoutSelectionByRequest] = useState<Record<string, string[]>>({})
-  const [offerLaborInput, setOfferLaborInput] = useState('')
-  const [offerRouteInput, setOfferRouteInput] = useState('')
   const [offerNoteInput, setOfferNoteInput] = useState('')
   const [partnerActionNotes, setPartnerActionNotes] = useState<Record<string, string>>({})
   const [partRequestNotes, setPartRequestNotes] = useState<Record<string, string>>({})
@@ -2504,12 +2515,28 @@ export function ServiceRequestDetails({
       ? roundTwo(technicianLaborCostAmount + (hasRouteCostEvidence && routeFeeAmount !== null ? routeFeeAmount : 0))
       : null
   const requestStateKey = String(request.id)
-  const earningTotalOverride = earningTotalOverrideByRequest[requestStateKey] ?? ''
-  const earningTotalOverrideTouched = Boolean(earningTotalOverrideTouchedByRequest[requestStateKey])
-  const parsedEarningTotalOverride = parseNumericInput(earningTotalOverride)
-  const earningLaborAmount = earningTotalOverrideTouched ? parsedEarningTotalOverride : technicianLaborCostAmount
-  const earningRouteAmount = hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0
-  const earningTotalAmount = earningLaborAmount === null ? null : roundTwo(earningLaborAmount + earningRouteAmount)
+  const persistedEarningSnapshot = activeAssignmentOffer?.earning_snapshot ?? null
+  const persistedEarningLaborAmount = persistedEarningSnapshot?.labor_amount ?? assignmentOfferLaborAmount ?? technicianLaborCostAmount
+  const persistedEarningRouteAmount = persistedEarningSnapshot?.route_fee_amount ?? assignmentOfferRouteAmount ?? (hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0)
+  const persistedEarningNote = persistedEarningSnapshot?.operation_note ?? activeAssignmentOffer?.note ?? ''
+  const persistedEarningRevision = persistedEarningSnapshot?.revision ?? ''
+  const assignmentEarningDraft = assignmentEarningDraftByRequest[requestStateKey]
+  const earningLaborInput = assignmentEarningDraft?.laborAmount ?? numericInputValue(persistedEarningLaborAmount)
+  const earningRouteInput = assignmentEarningDraft?.routeFeeAmount ?? numericInputValue(persistedEarningRouteAmount)
+  const earningOperationNote = assignmentEarningDraft?.operationNote ?? persistedEarningNote
+  const earningLaborAmount = parseNumericInput(earningLaborInput)
+  const earningRouteAmount = parseNumericInput(earningRouteInput)
+  const earningTotalAmount = earningLaborAmount === null || earningRouteAmount === null
+    ? null
+    : roundTwo(earningLaborAmount + earningRouteAmount)
+  const earningDraftDirty = Boolean(assignmentEarningDraft && (
+    assignmentEarningDraft.baseRevision !== persistedEarningRevision
+    || earningLaborAmount === null
+    || earningRouteAmount === null
+    || Math.abs(earningLaborAmount - Number(persistedEarningLaborAmount ?? 0)) > 0.005
+    || Math.abs(earningRouteAmount - Number(persistedEarningRouteAmount ?? 0)) > 0.005
+    || earningOperationNote.trim() !== String(persistedEarningNote ?? '').trim()
+  ))
   const totalTechnicianCostLabel = !hasPayoutTechnicianContext
     ? 'Usta seçilmedi'
     : hasCanonicalPayout
@@ -2567,9 +2594,16 @@ export function ServiceRequestDetails({
     && selectedTechnician
     && selectedTechnician.phone
     && onTechnicianEarningMessageCreate
+    && !earningDraftDirty
+    && persistedEarningRevision
     && earningTotalAmount !== null
     && earningTotalAmount >= 0,
   )
+  const canonicalEarningSaveRequested = Boolean(activeAssignmentOffer && !hasAssignmentChange && earningDraftDirty)
+  const primaryAssignmentActionDisabled = canonicalEarningSaveRequested
+    ? !onAssignmentOfferUpdate || assignmentOfferUpdateInFlight || earningLaborAmount === null || earningRouteAmount === null
+    : assignmentSubmitDisabled
+  const primaryAssignmentActionLoading = canonicalEarningSaveRequested ? assignmentOfferUpdateInFlight : assignLoading
   const technicianEarningPreviewText = selectedTechnician && earningTotalAmount !== null
     ? [
       `Merhaba ${selectedTechnician.name},`,
@@ -2577,14 +2611,18 @@ export function ServiceRequestDetails({
       `MRN: ${displayMrn || request.mrn}`,
       `Bölge: ${[request.city, request.district].filter(Boolean).join(' / ') || '-'}`,
       `Ürün / Seri: ${[request.product || '-', request.serialNumber || '-'].join(' / ')}`,
-      `Montaj işçilik: ${formatMoneyValue(technicianLaborCostAmount ?? 0)}`,
-      `Usta yol hakedişi: ${formatMoneyValue(assignmentOfferRouteAmount ?? (hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0))}`,
+      `Montaj işçilik: ${formatMoneyValue(earningLaborAmount)}`,
+      `Usta yol hakedişi: ${formatMoneyValue(earningRouteAmount)}`,
       `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
       `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
-      earningNoteInput.trim() ? `Not: ${earningNoteInput.trim()}` : null,
+      earningOperationNote.trim() ? `Not: ${earningOperationNote.trim()}` : null,
+      technicianJobCard?.canonical_url ? 'İş kartı:' : null,
+      technicianJobCard?.canonical_url ?? null,
     ].filter((line): line is string => typeof line === 'string' && line.trim() !== '').join('\n')
     : ''
-  const displayedEarningMessageText = earningMessageText || assignmentOfferMessageText || technicianEarningMessage?.message_text || technicianEarningPreviewText || ''
+  const displayedEarningMessageText = earningDraftDirty
+    ? technicianEarningPreviewText
+    : activeAssignmentOffer?.message_preview || earningMessageText || assignmentOfferMessageText || technicianEarningMessage?.message_text || technicianEarningPreviewText || ''
   const displayedEarningWhatsappUrl = earningMessageUrl
     || (displayedEarningMessageText && (selectedTechnician?.phone || request.technicianPhone)
       ? `${whatsappHrefForPhone(selectedTechnician?.phone ?? request.technicianPhone)}?text=${encodeURIComponent(displayedEarningMessageText)}`
@@ -3397,6 +3435,80 @@ export function ServiceRequestDetails({
       setManualPartPaymentSubmitting(false)
     }
   }
+  const updateAssignmentEarningDraft = (patch: Partial<Omit<AssignmentEarningDraft, 'baseRevision'>>) => {
+    setAssignmentEarningDraftByRequest((current) => {
+      const existing = current[requestStateKey]
+
+      return {
+        ...current,
+        [requestStateKey]: {
+          laborAmount: existing?.laborAmount ?? numericInputValue(persistedEarningLaborAmount),
+          routeFeeAmount: existing?.routeFeeAmount ?? numericInputValue(persistedEarningRouteAmount),
+          operationNote: existing?.operationNote ?? String(persistedEarningNote ?? ''),
+          baseRevision: existing?.baseRevision ?? persistedEarningRevision,
+          ...patch,
+        },
+      }
+    })
+    setEarningMessageText('')
+    setEarningMessageUrl('')
+    setRouteFeeEditorMessage(null)
+  }
+  const persistAssignmentEarning = async (
+    laborAmount: number,
+    routeFeeAmount: number,
+    operationNote: string,
+  ): Promise<AssignmentOfferUpdateResult | void> => {
+    if (!activeAssignmentOffer || !onAssignmentOfferUpdate) {
+      setRouteFeeEditorMessage('Güncellenecek canonical hakediş kaydı bulunamadı.')
+
+      return
+    }
+
+    if (laborAmount < 0 || routeFeeAmount < 0) {
+      setRouteFeeEditorMessage('İşçilik ve yol hakedişi sıfırdan küçük olamaz.')
+
+      return
+    }
+
+    const response = await onAssignmentOfferUpdate(activeAssignmentOffer.id, {
+      labor_amount: laborAmount,
+      route_fee_amount: routeFeeAmount,
+      total_amount: roundTwo(laborAmount + routeFeeAmount),
+      note: operationNote.trim() || null,
+    })
+
+    if (response && typeof response === 'object') {
+      setAssignmentEarningDraftByRequest((current) => {
+        const next = { ...current }
+        delete next[requestStateKey]
+
+        return next
+      })
+      setEarningMessageText(response.message_preview ?? '')
+      setEarningMessageUrl('')
+    }
+
+    return response
+  }
+  const handleCanonicalEarningSave = async () => {
+    if (earningLaborAmount === null || earningRouteAmount === null) {
+      setRouteFeeEditorMessage('İşçilik ve yol hakedişi geçerli bir tutar olmalıdır.')
+
+      return
+    }
+
+    await persistAssignmentEarning(earningLaborAmount, earningRouteAmount, earningOperationNote)
+  }
+  const handleAssignmentSave = async () => {
+    if (activeAssignmentOffer && !hasAssignmentChange && earningDraftDirty) {
+      await handleCanonicalEarningSave()
+
+      return
+    }
+
+    await onAssignSelectedTechnician?.()
+  }
   const handleTechnicianEarningMessageCreate = async () => {
     if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
       setRouteFeeEditorMessage('Önce usta seçin.')
@@ -3406,6 +3518,18 @@ export function ServiceRequestDetails({
 
     if (!canonicalEarningAssignmentReady) {
       setRouteFeeEditorMessage('Hakediş mesajı için önce seçili ustayla Servise Ata işlemini tamamlayın.')
+
+      return
+    }
+
+    if (earningDraftDirty) {
+      setRouteFeeEditorMessage('Önce hakediş değişikliklerini kaydedin.')
+
+      return
+    }
+
+    if (!persistedEarningRevision) {
+      setRouteFeeEditorMessage('Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.')
 
       return
     }
@@ -3424,16 +3548,11 @@ export function ServiceRequestDetails({
 
     const response = await onTechnicianEarningMessageCreate({
       technician_id: selectedTechnician.id,
-      labor_amount: earningLaborAmount,
-      route_fee_amount: earningRouteAmount,
-      total_amount: earningTotalAmount,
-      note: earningNoteInput.trim() || null,
-      message_text: earningMessageText.trim() || null,
-      manual_override: earningTotalOverrideTouched,
+      earning_revision: persistedEarningRevision,
     })
 
     if (response && typeof response === 'object') {
-      setEarningMessageText(response.message_text ?? response.copy_text ?? '')
+      setEarningMessageText(response.message_preview ?? response.message_text ?? response.copy_text ?? '')
       setEarningMessageUrl(response.whatsapp_url ?? '')
     }
 
@@ -6147,13 +6266,12 @@ export function ServiceRequestDetails({
                           </Button>
                           <Button
                             type="button"
-                            disabled={!assignmentOffer || !onAssignmentOfferUpdate || assignmentOfferUpdateInFlight}
-                            onClick={() => assignmentOffer && void onAssignmentOfferUpdate?.(assignmentOffer.id, {
-                              labor_amount: technicianRevisionOffer.labor_earning ?? assignmentOffer.labor_amount,
-                              route_fee_amount: technicianRevisionOffer.route_earning ?? assignmentOffer.route_fee_amount,
-                              total_amount: technicianRevisionOffer.total_earning ?? assignmentOffer.total_amount,
-                              note: offerNoteInput || null,
-                            })}
+                            disabled={!activeAssignmentOffer || !onAssignmentOfferUpdate || assignmentOfferUpdateInFlight}
+                            onClick={() => activeAssignmentOffer && void persistAssignmentEarning(
+                              technicianRevisionOffer.labor_earning ?? activeAssignmentOffer.labor_amount,
+                              technicianRevisionOffer.route_earning ?? activeAssignmentOffer.route_fee_amount,
+                              offerNoteInput,
+                            )}
                           >
                             {assignmentOfferUpdateInFlight ? 'Kaydediliyor...' : 'Teklifi onayla'}
                           </Button>
@@ -6213,9 +6331,9 @@ export function ServiceRequestDetails({
                       </div>
                     ) : null}
                     <div className="grid gap-2 sm:grid-cols-[140px_140px_minmax(0,1fr)]">
-                      <Input type="number" min="0" step="1" value={offerLaborInput} onChange={(event) => setOfferLaborInput(event.target.value)} placeholder={String(assignmentOffer.labor_amount)} />
-                      <Input type="number" min="0" step="1" value={offerRouteInput} onChange={(event) => setOfferRouteInput(event.target.value)} placeholder={String(assignmentOffer.route_fee_amount)} />
-                      <Input value={offerNoteInput} onChange={(event) => setOfferNoteInput(event.target.value)} placeholder="Revize notu" />
+                      <Input type="number" min="0" step="1" value={earningLaborInput} onChange={(event) => updateAssignmentEarningDraft({ laborAmount: event.target.value })} placeholder={String(assignmentOffer.labor_amount)} />
+                      <Input type="number" min="0" step="1" value={earningRouteInput} onChange={(event) => updateAssignmentEarningDraft({ routeFeeAmount: event.target.value })} placeholder={String(assignmentOffer.route_fee_amount)} />
+                      <Input value={earningOperationNote} onChange={(event) => updateAssignmentEarningDraft({ operationNote: event.target.value })} placeholder="Revize notu" />
                     </div>
                     {assignmentOfferUpdateError ? (
                       <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{assignmentOfferUpdateError}</p>
@@ -6227,18 +6345,8 @@ export function ServiceRequestDetails({
                       <Button
                         type="button"
                         variant="outline"
-                        disabled={!onAssignmentOfferUpdate || assignmentOfferUpdateInFlight}
-                        onClick={() => {
-                          const labor = parseNumericInput(offerLaborInput) ?? assignmentOffer.labor_amount
-                          const route = parseNumericInput(offerRouteInput) ?? assignmentOffer.route_fee_amount
-
-                          void onAssignmentOfferUpdate?.(assignmentOffer.id, {
-                            labor_amount: labor,
-                            route_fee_amount: route,
-                            total_amount: roundTwo(labor + route),
-                            note: offerNoteInput || null,
-                          })
-                        }}
+                        disabled={!onAssignmentOfferUpdate || !earningDraftDirty || earningLaborAmount === null || earningRouteAmount === null || assignmentOfferUpdateInFlight}
+                        onClick={() => void handleCanonicalEarningSave()}
                       >
                         {assignmentOfferUpdateInFlight ? 'Hakediş güncelleniyor...' : 'Hakedişi revize et'}
                       </Button>
@@ -6689,31 +6797,50 @@ export function ServiceRequestDetails({
               ) : null}
               {!isCancelledOrReviewContext ? (
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <div className="grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="grid gap-3 sm:grid-cols-[180px_180px_minmax(0,1fr)]">
                   <label className="grid gap-1 text-xs font-semibold text-slate-600">
                     İşçilik hakedişi
                     <Input
+                      data-testid="earning-labor-input"
                       type="number"
                       inputMode="decimal"
                       min="0"
                       step="1"
-                      value={earningTotalOverrideTouched ? earningTotalOverride : earningLaborAmount !== null ? numericInputValue(earningLaborAmount) : ''}
-                      onChange={(event) => {
-                        const nextValue = event.target.value
-                        setEarningTotalOverrideByRequest((current) => ({ ...current, [requestStateKey]: nextValue }))
-                        setEarningTotalOverrideTouchedByRequest((current) => ({ ...current, [requestStateKey]: true }))
-                      }}
-                      placeholder={technicianLaborCostAmount !== null ? String(technicianLaborCostAmount) : '0'}
+                      value={earningLaborInput}
+                      onChange={(event) => updateAssignmentEarningDraft({ laborAmount: event.target.value })}
+                      placeholder={persistedEarningLaborAmount !== null ? String(persistedEarningLaborAmount) : '0'}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Yol hakedişi
+                    <Input
+                      data-testid="earning-route-input"
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="1"
+                      value={earningRouteInput}
+                      onChange={(event) => updateAssignmentEarningDraft({ routeFeeAmount: event.target.value })}
+                      placeholder={persistedEarningRouteAmount !== null ? String(persistedEarningRouteAmount) : '0'}
                     />
                   </label>
                   <label className="grid gap-1 text-xs font-semibold text-slate-600">
                     Hakediş notu / mesaj
                     <Input
-                      value={earningNoteInput}
-                      onChange={(event) => setEarningNoteInput(event.target.value)}
+                      data-testid="earning-note-input"
+                      value={earningOperationNote}
+                      onChange={(event) => updateAssignmentEarningDraft({ operationNote: event.target.value })}
                       placeholder="Ustaya gönderilecek mesaj için operasyon notu"
                     />
                   </label>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge data-testid="earning-draft-state" variant={earningDraftDirty ? 'warning' : 'positive'}>
+                    {earningDraftDirty ? 'Taslak — henüz kaydedilmedi' : 'Canonical hakediş kaydedildi'}
+                  </Badge>
+                  {persistedEarningSnapshot?.persisted_at ? (
+                    <span className="text-xs font-medium text-slate-500">Son kayıt: {dateTimeOrEmpty(persistedEarningSnapshot.persisted_at, '-')}</span>
+                  ) : null}
                 </div>
                 <div className="grid gap-2 sm:grid-cols-3">
                   <MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />
@@ -6744,8 +6871,10 @@ export function ServiceRequestDetails({
                 )}
                 {displayedEarningMessageText ? (
                   <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
-                    <summary className="cursor-pointer font-semibold">Hakediş mesajını göster</summary>
-                    <pre className="mt-3 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
+                    <summary className="cursor-pointer font-semibold">
+                      {earningDraftDirty ? 'Taslak hakediş mesajını göster' : 'Hakediş mesajını göster'}
+                    </summary>
+                    <pre data-testid="earning-message-preview" className="mt-3 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button type="button" size="sm" variant="outline" onClick={() => void copyReferenceValue(displayedEarningMessageText, 'Hakediş mesajı kopyalandı.', 'hakediş mesajını')}>
                         Mesajı kopyala
@@ -6762,11 +6891,14 @@ export function ServiceRequestDetails({
                 ) : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-500">
-                    {canonicalEarningAssignmentReady
+                    {earningDraftDirty
+                      ? 'Önce hakediş değişikliklerini kaydedin.'
+                      : canonicalEarningAssignmentReady
                       ? 'Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu aksiyon canonical atama hakedişini ayrıca kuyruğa alır.'
                       : 'Hakediş mesajı ancak seçili usta için Servise Ata tamamlandıktan sonra gönderilebilir.'}
                   </p>
                   <Button
+                    data-testid="earning-send-button"
                     type="button"
                     variant="outline"
                     onClick={() => void handleTechnicianEarningMessageCreate()}
@@ -6801,12 +6933,13 @@ export function ServiceRequestDetails({
                 Gelişmiş atama ayarları
               </Button>
               <Button
+                data-testid="earning-save-button"
                 type="button"
-                onClick={() => void onAssignSelectedTechnician?.()}
-                disabled={assignmentSubmitDisabled}
+                onClick={() => void handleAssignmentSave()}
+                disabled={primaryAssignmentActionDisabled}
                 title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
               >
-                {assignLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
+                {primaryAssignmentActionLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
             ) : null}
