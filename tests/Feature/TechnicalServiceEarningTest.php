@@ -557,8 +557,9 @@ class TechnicalServiceEarningTest extends TestCase
         $this->assertStringContainsString('Tutarları düzelt', $earningsSource);
         $this->assertStringContainsString('Hakedişe dahil değil', $earningsSource);
         $this->assertStringContainsString('Usta hakedişi revizyonu ayrı akıştan yapılır.', $earningsSource);
-        $this->assertStringContainsString('Hakediş admin incelemesi gerekiyor', $detailSource);
-        $this->assertStringContainsString('Hakediş inceleme kararı', $detailSource);
+        $this->assertStringContainsString('selectedFinancialResultLabel', $detailSource);
+        $this->assertStringContainsString('financialBlockedReason', $detailSource);
+        $this->assertStringContainsString("settlement_review_approved: 'Hakediş mutabakatı onaylandı'", $detailSource);
     }
 
     public function test_hakedişe_dahil_degil_admin_review_decision_is_visible_in_frontend_sources(): void

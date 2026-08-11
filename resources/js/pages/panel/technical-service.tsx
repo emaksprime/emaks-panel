@@ -1127,6 +1127,8 @@ export function TechnicalServiceOperationCenter() {
   const [createForm, setCreateForm] = useState<NewRequestForm>(initialRequestForm)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [financialWorkspaceLoading, setFinancialWorkspaceLoading] = useState(false)
+  const [financialWorkspaceError, setFinancialWorkspaceError] = useState<string | null>(null)
   const [, setSummaryLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -1270,6 +1272,7 @@ export function TechnicalServiceOperationCenter() {
   const datePickerRef = useRef<HTMLDivElement | null>(null)
   const selectedIdRef = useRef<string | null>(null)
   const detailRequestTokenRef = useRef(0)
+  const paymentWorkspacePromiseRef = useRef<Record<string, Promise<void>>>({})
   const serialLookupTokenRef = useRef(0)
   const detailScrollRef = useRef<HTMLDivElement | null>(null)
   const requestsRef = useRef<ServiceRequest[]>([])
@@ -1444,11 +1447,20 @@ export function TechnicalServiceOperationCenter() {
     const preserveCurrentDetail = selectedDetailRequestRef.current?.id === requestId
     setDetailLoading(!preserveCurrentDetail)
     setDetailError(null)
+    setFinancialWorkspaceLoading(true)
+    setFinancialWorkspaceError(null)
 
     if (!preserveCurrentDetail) {
       setSelectedDetailRequest(null)
       setSelectedEvents([])
     }
+
+    const financialWorkspacePromise = apiRequest(`/api/technical-service/requests/${id}?section=financial`)
+      .then((workspace) => ({ workspace, error: null as Error | null }))
+      .catch((caught) => ({
+        workspace: null,
+        error: caught instanceof Error ? caught : new Error('Finans ve hakediş özeti yüklenemedi.'),
+      }))
 
     try {
       const response = await apiRequest(`/api/technical-service/requests/${id}`)
@@ -1462,6 +1474,7 @@ export function TechnicalServiceOperationCenter() {
       if (!request) {
         setDetailError('Talep detayları bulunamadı.')
         setDetailLoading(false)
+        setFinancialWorkspaceLoading(false)
 
         return
       }
@@ -1482,6 +1495,7 @@ export function TechnicalServiceOperationCenter() {
         }
 
         setDetailLoading(false)
+        setFinancialWorkspaceLoading(false)
 
         return
       }
@@ -1492,6 +1506,33 @@ export function TechnicalServiceOperationCenter() {
 
       setSelectedDetailRequest(mappedDetail)
       setSelectedEvents(Array.isArray(request?.events) ? request.events : [])
+
+      void financialWorkspacePromise
+        .then(({ workspace, error }) => {
+          if (!isCurrentRequest()) {
+            return
+          }
+
+          if (error || !workspace) {
+            setFinancialWorkspaceError(error?.message ?? 'Finans ve hakediş özeti yüklenemedi.')
+
+            return
+          }
+
+          preserveDetailScroll(() => {
+            setSelectedDetailRequest((current) => current?.id === requestId ? {
+              ...current,
+              earningBreakdown: workspace.earning_breakdown ?? null,
+              financeSummary: workspace.finance_summary ?? null,
+              settlement: workspace.settlement ?? current.settlement ?? null,
+            } : current)
+          })
+        })
+        .finally(() => {
+          if (isCurrentRequest()) {
+            setFinancialWorkspaceLoading(false)
+          }
+        })
     } catch (caught) {
       if (!isCurrentRequest()) {
         return
@@ -1503,12 +1544,44 @@ export function TechnicalServiceOperationCenter() {
         setSelectedEvents([])
         setSelectedDetailRequest(null)
       }
+
+      setFinancialWorkspaceLoading(false)
     } finally {
       if (isCurrentRequest()) {
         setDetailLoading(false)
       }
     }
-  }, [])
+  }, [preserveDetailScroll])
+
+  const loadPaymentWorkspace = useCallback((id: string): Promise<void> => {
+    const requestId = String(id)
+    const existing = paymentWorkspacePromiseRef.current[requestId]
+
+    if (existing) {
+      return existing
+    }
+
+    const promise = apiRequest(`/api/technical-service/requests/${requestId}?section=payments`)
+      .then((workspace) => {
+        if (selectedIdRef.current !== requestId || !workspace?.sale_and_payment) {
+          return
+        }
+
+        preserveDetailScroll(() => {
+          setSelectedDetailRequest((current) => current?.id === requestId ? {
+            ...current,
+            saleAndPayment: workspace.sale_and_payment,
+          } : current)
+        })
+      })
+      .finally(() => {
+        delete paymentWorkspacePromiseRef.current[requestId]
+      })
+
+    paymentWorkspacePromiseRef.current[requestId] = promise
+
+    return promise
+  }, [preserveDetailScroll])
 
   useEffect(() => {
     void Promise.resolve().then(() => loadExecutionControl())
@@ -1652,6 +1725,8 @@ export function TechnicalServiceOperationCenter() {
         setShowNearbyTechnicians(false)
         setDetailError(null)
         setDetailLoading(false)
+        setFinancialWorkspaceError(null)
+        setFinancialWorkspaceLoading(false)
       })
 
       return () => {
@@ -4722,6 +4797,8 @@ export function TechnicalServiceOperationCenter() {
     setSelectedDetailRequest(null)
     setSelectedEvents([])
     setDetailError(null)
+    setFinancialWorkspaceError(null)
+    setFinancialWorkspaceLoading(true)
     setMikroMountCheck(null)
     setMikroMountError(null)
     setMikroMountLoading(false)
@@ -6313,6 +6390,8 @@ export function TechnicalServiceOperationCenter() {
             setSelectedEvents([])
             setSelectedDetailRequest(null)
             setDetailError(null)
+            setFinancialWorkspaceError(null)
+            setFinancialWorkspaceLoading(false)
             setWarranty(null)
             setWarrantyError(null)
             setWarrantyLoading(false)
@@ -6350,11 +6429,7 @@ export function TechnicalServiceOperationCenter() {
               </DialogHeader>
 
               <div ref={detailScrollRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:py-5 xl:px-7">
-                {detailLoading ? (
-                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
-                    Detay yükleniyor...
-                  </div>
-                ) : (selectedDetailRequest || modalRequest) ? (
+                {(selectedDetailRequest || modalRequest) ? (
                   <ServiceRequestDetails
                     request={selectedDetailRequest ?? modalRequest!}
                     opsDetailVisibility={opsDetailVisibility}
@@ -6362,6 +6437,9 @@ export function TechnicalServiceOperationCenter() {
                     events={selectedEvents}
                     loading={detailLoading}
                     error={detailError}
+                    financialWorkspaceLoading={financialWorkspaceLoading}
+                    financialWorkspaceError={financialWorkspaceError}
+                    onPaymentHistoryLoad={() => loadPaymentWorkspace((selectedDetailRequest ?? modalRequest!).id)}
                     mikroMountCheck={mikroMountCheck}
                     mikroMountLoading={mikroMountLoading}
                     mikroMountError={mikroMountError}

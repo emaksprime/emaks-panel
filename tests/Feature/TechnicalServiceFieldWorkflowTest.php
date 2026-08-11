@@ -205,8 +205,8 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
         $this->assertStringContainsString('Kararı değiştir', $source);
         $this->assertStringContainsString('Son kontrolü tamamla', $source);
         $this->assertStringContainsString('Saha belgeleri uygunluk kararı bekliyor', $source);
-        $this->assertStringContainsString('assignmentOfferStatusLabel', $source);
-        $this->assertMatchesRegularExpression('/assignmentOfferStatusLabel\(assignmentOffer\.status,?\)/', $compactSource);
+        $this->assertStringContainsString('selectedFinancialResultLabel', $source);
+        $this->assertStringContainsString("financialScope==='current'?locksmithPayoutStatusLabel", $compactSource);
         $this->assertStringNotContainsString('value={assignmentOffer.status}', $source);
     }
 

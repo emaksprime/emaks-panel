@@ -233,6 +233,8 @@ export type ServiceRequestCompanyPaymentDecisionPayload = {
   decisions: ServiceRequestCompanyPaymentDecision[]
   eligible_count: number
   pending_decision_count: number
+  pending_decision_amount?: number
+  pending_decision_amount_label?: string | null
   all_decisions_required: boolean
   context_ready: boolean
   context_blocker?: string | null
@@ -528,11 +530,19 @@ export type ServiceRequestEarningBreakdownRow = {
   company_retained_amount?: number
   company_retained_breakdown?: ServiceRequestCompanyPaymentDecision[]
   company_payment_decisions?: ServiceRequestCompanyPaymentDecisionPayload | null
+  company_paid_amount?: number
+  customer_direct_paid_amount?: number
+  technician_paid_amount?: number
+  technician_remaining_amount?: number
   total_amount: number
   labor_amount_label?: string | null
   route_fee_amount_label?: string | null
   company_payment_amount_label?: string | null
   company_retained_amount_label?: string | null
+  company_paid_amount_label?: string | null
+  customer_direct_paid_amount_label?: string | null
+  technician_paid_amount_label?: string | null
+  technician_remaining_amount_label?: string | null
   total_amount_label?: string | null
   status?: string | null
   status_label?: string | null
@@ -576,17 +586,25 @@ export type ServiceRequestFinanceCollection = {
   service_amount: number
   part_amount: number
   extra_amount: number
+  route_amount?: number
+  unclassified_amount?: number
+  service_total_amount?: number
   total_amount: number
   mount_amount_label?: string | null
   service_amount_label?: string | null
   part_amount_label?: string | null
   extra_amount_label?: string | null
+  route_amount_label?: string | null
+  unclassified_amount_label?: string | null
+  service_total_amount_label?: string | null
   total_amount_label?: string | null
   has_collection?: boolean
   has_mount_collection?: boolean
   has_service_charge?: boolean
   has_part_charge?: boolean
   has_extra_charge?: boolean
+  has_route_charge?: boolean
+  classification_pending?: boolean
 }
 
 export type ServiceRequestFinancePayout = {
@@ -596,11 +614,20 @@ export type ServiceRequestFinancePayout = {
   company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
   company_retained_amount?: number
   company_retained_breakdown?: ServiceRequestCompanyPaymentDecision[]
+  company_payment_decisions?: ServiceRequestCompanyPaymentDecisionPayload | null
+  company_paid_amount?: number
+  customer_direct_paid_amount?: number
+  technician_paid_amount?: number
+  technician_remaining_amount?: number
   total_amount: number
   labor_amount_label?: string | null
   route_fee_amount_label?: string | null
   company_payment_amount_label?: string | null
   company_retained_amount_label?: string | null
+  company_paid_amount_label?: string | null
+  customer_direct_paid_amount_label?: string | null
+  technician_paid_amount_label?: string | null
+  technician_remaining_amount_label?: string | null
   total_amount_label?: string | null
   status?: string | null
   status_label?: string | null
@@ -623,11 +650,34 @@ export type ServiceRequestFinancePayout = {
 export type ServiceRequestFinanceNetMargin = {
   amount: number
   amount_label?: string | null
+  provisional_amount_label?: string | null
   is_negative?: boolean
+  is_definitive?: boolean
 }
 
+export type ServiceRequestFinancialResultState = 'definitive' | 'draft_pending' | 'allocation_pending' | 'classification_pending'
+
 export type ServiceRequestFinanceSummary = {
+  generated_at?: string | null
   currency?: string | null
+  scope?: {
+    request_id: number | string
+    root_request_id: number | string
+    current_srv_id?: number | string | null
+    request_code?: string | null
+    root_mrn?: string | null
+    scope_type?: string | null
+  }
+  technician?: {
+    technician_id?: number | string | null
+    technician_name?: string | null
+    assignment_id?: number | string | null
+  }
+  history?: {
+    loaded: boolean
+    current_count?: number | null
+    root_count?: number | null
+  }
   current_visit_customer_collection?: ServiceRequestFinanceCollection
   current_visit_locksmith_payout?: ServiceRequestFinancePayout
   current_visit_operation_cost?: ServiceRequestFinancePayout & { applies?: boolean }
@@ -643,6 +693,7 @@ export type ServiceRequestFinanceSummary = {
     company_payment_amount_label?: string | null
     company_retained_amount?: number
     company_retained_amount_label?: string | null
+    company_payment_decisions?: ServiceRequestCompanyPaymentDecisionPayload | null
     operation_cost?: (ServiceRequestFinancePayout & { applies?: boolean }) | null
     warranty_customer_charge?: {
       service_amount: number
@@ -662,6 +713,9 @@ export type ServiceRequestFinanceSummary = {
     paid_at?: string | null
     completed_earning_snapshot?: Record<string, unknown> | null
     net_margin: ServiceRequestFinanceNetMargin
+    result_state?: ServiceRequestFinancialResultState | string | null
+    result_state_label?: string | null
+    is_definitive?: boolean
     warranty_covered?: boolean
     warranty_note?: string | null
     operation_cost_note?: string | null
@@ -674,6 +728,9 @@ export type ServiceRequestFinanceSummary = {
     company_retained_amount?: number
     company_retained_amount_label?: string | null
     net_margin: ServiceRequestFinanceNetMargin
+    result_state?: ServiceRequestFinancialResultState | string | null
+    result_state_label?: string | null
+    is_definitive?: boolean
   }
 }
 
@@ -795,6 +852,7 @@ export type ServiceRequestProductInfo = {
 }
 
 export type ServiceRequestSaleAndPayment = {
+  history_loaded?: boolean
   sale_mount_status?: string | null
   sale_mount_label?: string | null
   mount_payment_status?: string | null

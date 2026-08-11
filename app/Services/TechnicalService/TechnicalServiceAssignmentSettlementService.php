@@ -39,6 +39,8 @@ class TechnicalServiceAssignmentSettlementService
 
     private const PURPOSE_ROUTE_FEE = 'route_fee';
 
+    private ?bool $allocationSchemaAvailableCache = null;
+
     public function __construct(
         private readonly TechnicalServiceSettlementCalculator $calculator,
         private readonly TechnicalServicePaymentOwnershipService $paymentOwnership,
@@ -312,6 +314,12 @@ class TechnicalServiceAssignmentSettlementService
             'decisions' => $decisions->values()->all(),
             'eligible_count' => $items->count(),
             'pending_decision_count' => $items->count(),
+            'pending_decision_amount' => $this->fromMinorUnits((int) $items->sum(
+                fn (array $item): int => $this->minorUnits($item['eligible_amount'] ?? 0),
+            )),
+            'pending_decision_amount_label' => $this->moneyLabel((int) $items->sum(
+                fn (array $item): int => $this->minorUnits($item['eligible_amount'] ?? 0),
+            )),
             'all_decisions_required' => $items->isNotEmpty(),
             'context_ready' => (bool) ($context['ready'] ?? false),
             'context_blocker' => $context['blocker'] ?? null,
@@ -1046,7 +1054,7 @@ class TechnicalServiceAssignmentSettlementService
 
     private function allocationSchemaAvailable(): bool
     {
-        return Schema::hasTable(self::ALLOCATION_TABLE)
+        return $this->allocationSchemaAvailableCache ??= Schema::hasTable(self::ALLOCATION_TABLE)
             && Schema::hasColumn('technical_service_earning_payments', 'technical_service_assignment_offer_id')
             && Schema::hasColumn('technical_service_earning_payments', 'source_company_payment_line_id');
     }
@@ -1060,6 +1068,8 @@ class TechnicalServiceAssignmentSettlementService
             'decisions' => [],
             'eligible_count' => 0,
             'pending_decision_count' => 0,
+            'pending_decision_amount' => 0.0,
+            'pending_decision_amount_label' => '0,00 TL',
             'all_decisions_required' => false,
             'context_ready' => false,
             'context_blocker' => null,

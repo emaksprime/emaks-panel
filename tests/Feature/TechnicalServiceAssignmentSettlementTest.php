@@ -226,6 +226,42 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(app(TechnicalServiceAssignmentSettlementService::class)->canonicalEarningSnapshot($offer)['revision'], $payload['earning_revision']);
     }
 
+    public function test_financial_workspace_counts_paid_only_and_exposes_late_allocation_without_mixing_part(): void
+    {
+        [$request] = $this->assignedSettlementFixture();
+        $servicePayment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $this->paidChargePayment($request, 'part_payment', 250, '2026-08-10 09:01:00', ['part_request_id' => 77]);
+        $this->paidChargePayment($request, 'service_payment', 900, '2026-08-10 09:02:00')
+            ->forceFill(['status' => TechnicalServiceMountPayment::STATUS_PENDING])
+            ->save();
+
+        $workspace = app(TechnicalServiceWorkflowService::class)->financialWorkspacePayload($request->refresh());
+        $summary = $workspace['finance_summary']['current_visit'];
+
+        $this->assertSame($request->id, $workspace['finance_summary']['scope']['request_id']);
+        $this->assertSame(600.0, $summary['customer_collection']['extra_amount']);
+        $this->assertSame(600.0, $summary['customer_collection']['service_total_amount']);
+        $this->assertSame(250.0, $summary['customer_collection']['part_amount']);
+        $this->assertSame(850.0, $summary['customer_collection']['total_amount']);
+        $this->assertSame('allocation_pending', $summary['result_state']);
+        $this->assertFalse($summary['net_margin']['is_definitive']);
+        $this->assertSame('Hesap bekliyor', $summary['net_margin']['amount_label']);
+        $this->assertSame(1, $summary['company_payment_decisions']['pending_decision_count']);
+        $this->assertSame(600.0, $summary['company_payment_decisions']['pending_decision_amount']);
+        $this->assertSame($servicePayment->id, $summary['company_payment_decisions']['eligible_items'][0]['payment_id']);
+        $this->assertSame(0.0, $summary['locksmith_payout']['technician_paid_amount']);
+        $this->assertSame(1500.0, $summary['locksmith_payout']['technician_remaining_amount']);
+
+        $this->paidChargePayment($request, 'other_collection', 100, '2026-08-10 09:03:00');
+        $classified = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($request->refresh())['finance_summary']['current_visit'];
+
+        $this->assertSame(100.0, $classified['customer_collection']['unclassified_amount']);
+        $this->assertSame(600.0, $classified['customer_collection']['service_total_amount']);
+        $this->assertSame('classification_pending', $classified['result_state']);
+        $this->assertFalse($classified['net_margin']['is_definitive']);
+    }
+
     public function test_paid_route_payment_prompts_only_uncovered_route_excess(): void
     {
         [$request] = $this->assignedSettlementFixture();

@@ -1697,15 +1697,16 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $service->preloadSerializationContext($items);
         $payloads = $items
-            ->map(fn (TechnicalServiceRequest $request): array => $service->serialize($request))
+            ->map(fn (TechnicalServiceRequest $request): array => $service->serialize($request, false, false, false))
             ->values();
 
         $queries = collect(DB::getQueryLog());
         DB::disableQueryLog();
 
         $this->assertCount(8, $payloads);
-        $this->assertSame(3500.0, data_get($payloads->first(), 'finance_summary.root_total.customer_collection.total_amount'));
-        $this->assertSame(3200.0, data_get($payloads->first(), 'earning_breakdown.root_total.total_amount'));
+        $this->assertArrayNotHasKey('finance_summary', $payloads->first());
+        $this->assertArrayNotHasKey('earning_breakdown', $payloads->first());
+        $this->assertFalse((bool) data_get($payloads->first(), 'sale_and_payment.history_loaded'));
         $this->assertLessThan(220, $queries->count());
         $this->assertLessThanOrEqual(6, $queries->filter(fn (array $query): bool => str_contains($query['query'], 'technical_service_mount_payments'))->count());
         $this->assertLessThanOrEqual(2, $queries->filter(fn (array $query): bool => str_contains($query['query'], 'technical_service_earning_items'))->count());
@@ -3161,8 +3162,8 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('id: partRequestPaymentId', $source);
         $this->assertStringContainsString('Servis ödemesi', $source);
         $this->assertStringContainsString('Parça ödemesi', $source);
-        $this->assertStringContainsString('Müşteriden alınan servis ücreti', $source);
-        $this->assertStringContainsString('Müşteriden alınan parça ücreti', $source);
+        $this->assertStringContainsString('Servis: <strong>{selectedFinancialCollection?.service_amount_label', $source);
+        $this->assertStringContainsString('Parça (ayrı): <strong>{selectedFinancialCollection?.part_amount_label', $source);
         $this->assertSame(1, substr_count($source, 'aria-label="Servis/parça ödeme linki oluştur"'));
 
         $actionPosition = strpos($source, 'data-testid="service-part-payment-action"');
@@ -4032,6 +4033,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(750.0, $payload['total_customer_collected']);
         $this->assertSame(680.0, $payload['earning_breakdown']['current_visit']['total_amount']);
         $this->assertSame(1780.0, $payload['earning_breakdown']['root_total']['total_amount']);
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['locksmith_payout']['technician_paid_amount']);
+        $this->assertSame(680.0, $payload['finance_summary']['current_visit']['locksmith_payout']['technician_remaining_amount']);
+        $this->assertSame(0.0, $payload['finance_summary']['root_total']['locksmith_payout']['technician_paid_amount']);
+        $this->assertSame(1780.0, $payload['finance_summary']['root_total']['locksmith_payout']['technician_remaining_amount']);
+        $this->assertSame($child->id, $payload['finance_summary']['scope']['request_id']);
+        $this->assertSame($parent->id, $payload['finance_summary']['scope']['root_request_id']);
+        $this->assertSame($child->id, $payload['finance_summary']['scope']['current_srv_id']);
     }
 
     public function test_warranty_srv_labor_is_locksmith_payout_not_customer_collection_and_warranty_service_shows_zero_customer_collection(): void
@@ -4143,6 +4151,10 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($payout['is_confirmed']);
         $this->assertNull($payload['finance_summary']['current_visit']['confirmed_locksmith_payout']);
         $this->assertSame(1920.0, $payload['finance_summary']['current_visit']['draft_locksmith_payout']['total_amount']);
+        $this->assertSame('draft_pending', $payload['finance_summary']['current_visit']['result_state']);
+        $this->assertFalse($payload['finance_summary']['current_visit']['is_definitive']);
+        $this->assertFalse($payload['finance_summary']['current_visit']['net_margin']['is_definitive']);
+        $this->assertSame('Hesap bekliyor', $payload['finance_summary']['current_visit']['net_margin']['amount_label']);
     }
 
     public function test_confirmed_assignment_payout_displays_as_confirmed_locksmith_earning(): void
@@ -4371,9 +4383,12 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
         $this->assertIsString($source);
 
-        $this->assertStringContainsString('totalCustomerCollectionDisplayLabel', $source);
-        $this->assertStringContainsString('financeRootCustomerCollectionDisplayLabel', $source);
+        $this->assertSame(1, substr_count($source, 'FİNANS VE HAKEDİŞ'));
+        $this->assertStringContainsString('selectedFinancialCollection?.service_total_amount_label', $source);
+        $this->assertStringContainsString('selectedFinancialPayout?.technician_paid_amount_label', $source);
         $this->assertStringContainsString('Ödeme kaydı yok', $source);
+        $this->assertStringNotContainsString('totalCustomerCollectionDisplayLabel', $source);
+        $this->assertStringNotContainsString('financeRootCustomerCollectionDisplayLabel', $source);
     }
 
     public function test_selected_technician_change_recomputes_draft_payout_and_route_fee(): void
@@ -4406,11 +4421,9 @@ class TechnicalServiceWorkflowTest extends TestCase
             $detailSource,
         );
         $this->assertStringContainsString("!hasPayoutTechnicianContext ? 'Usta seçilmedi'", $compactDetailSource);
-        $this->assertMatchesRegularExpression(
-            '/const\s+showFinanceCollectionMetrics\s*=\s*!hasAssignmentChange\s*&&\s*Boolean\(\s*requestTechnicianIdString\s*\|\|\s*activeFinanceLocksmithPayout\s*\|\|\s*activeAssignmentOffer\s*,?\s*\)/s',
-            $detailSource,
-        );
-        $this->assertStringContainsString('{showFinanceCollectionMetrics && earningBreakdown?.root_total ? (', $compactDetailSource);
+        $this->assertStringContainsString('data-testid="technical-service-financial-workspace"', $detailSource);
+        $this->assertStringContainsString("const selectedFinancialPayload = financialScope === 'root' ? financeRootTotal : financeCurrentVisit", $compactDetailSource);
+        $this->assertStringNotContainsString('showFinanceCollectionMetrics', $detailSource);
     }
 
     public function test_stale_route_quote_for_previous_technician_is_ignored(): void
@@ -4462,10 +4475,12 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsString($detailSource);
         $this->assertIsString($panelSource);
 
-        $this->assertStringContainsString('Usta Hakedişi / Operasyon Maliyeti', $detailSource);
-        $this->assertStringContainsString('ödeme/tahsilat değildir', $detailSource);
-        $this->assertStringContainsString('Önerilen / taslak usta hakedişi', $detailSource);
+        $this->assertSame(1, substr_count($detailSource, 'FİNANS VE HAKEDİŞ'));
+        $this->assertStringContainsString('Müşteri hizmet tahsilatı', $detailSource);
+        $this->assertStringContainsString('Usta hakediş kırılımı', $detailSource);
         $this->assertStringContainsString('Onaylanan usta hakedişi', $detailSource);
+        $this->assertStringContainsString('Operasyon farkı', $detailSource);
+        $this->assertStringNotContainsString('Usta Hakedişi / Operasyon Maliyeti', $detailSource);
         $this->assertStringContainsString('Bu tutar müşteri tahsilatı değildir', $panelSource);
         $this->assertStringContainsString('Onaylanacak usta hakedişi', $panelSource);
         $this->assertStringContainsString('Net operasyon farkı', $panelSource);
@@ -6557,7 +6572,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'routeFeeEditorMessage',
             'Servis onay durumu',
             'Hakedi',
-            'Maliyet',
+            'Usta toplam hakedişi',
             'Farkl',
             'Seçili seriler için farkl',
             'Önce usta seçin',

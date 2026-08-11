@@ -109,14 +109,14 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
 
+        $this->assertSame(1, substr_count($source, 'FİNANS VE HAKEDİŞ'));
+        $this->assertStringContainsString('data-testid="technical-service-financial-workspace"', $source);
+        $this->assertStringContainsString('selectedFinancialCollection?.service_total_amount_label', $source);
+        $this->assertStringContainsString('selectedFinancialCollection?.part_amount_label', $source);
         $this->assertStringContainsString('const showServicePartPaymentSummary', $source);
         $this->assertStringContainsString('const showPaymentTechnicalDetails', $source);
         $this->assertStringContainsString('{showServicePartPaymentSummary ? (', $source);
         $this->assertStringContainsString('{showPaymentTechnicalDetails ? (', $source);
-        $this->assertStringContainsString('hasServiceCustomerPayment ? (', $source);
-        $this->assertStringContainsString('hasPartCustomerPayment ? (', $source);
-        $this->assertStringNotContainsString("paidServiceCustomerAmount > 0 ? formatMoneyValue(paidServiceCustomerAmount) : 'Yok'", $source);
-        $this->assertStringNotContainsString("paidPartCustomerAmount > 0 ? formatMoneyValue(paidPartCustomerAmount) : 'Yok'", $source);
     }
 
     public function test_part_payment_copy_feedback_is_rendered_next_to_visible_actions(): void
@@ -185,15 +185,11 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_earning_summary_displays_selected_locksmith_name(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
-        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
         $this->assertStringContainsString('const earningSummaryTechnicianName', $source);
         $this->assertStringContainsString('const earningDispatchStatus = technicianEarningMessage?.status ?? assignmentOfferDispatchStatus', $source);
-        $this->assertStringContainsString('technicianAmountSourceLabel', $source);
-        $this->assertStringContainsString('Kaynak: ${technicianLaborCostSourceLabel}', $source);
-        $this->assertStringContainsString('Usta Hakedişi / Operasyon Maliyeti', $source);
-        $this->assertStringContainsString('{financeSummaryTitle}—{earningSummaryTechnicianName}', $compactSource);
-        $this->assertStringContainsString('{earningSummaryTechnicianName}', $source);
+        $this->assertStringContainsString('{earningSummaryTechnicianName} · {displayOrEmpty(financeSummary?.scope?.request_code ?? request.mrn', $source);
+        $this->assertStringContainsString('Usta toplam hakedişi', $source);
         $this->assertStringContainsString("selectedTechnician?.name || request.technicianName || 'Usta seçilmedi'", $source);
     }
 
@@ -290,11 +286,11 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
 
-        $this->assertStringContainsString('totalCustomerCollectionDisplayLabel', $source);
-        $this->assertStringContainsString('financeRootCustomerCollectionDisplayLabel', $source);
-        $this->assertStringContainsString('financeSummaryTitle', $source);
-        $this->assertStringContainsString('locksmithPayoutTotalMetricLabel', $source);
-        $this->assertStringContainsString('netDifferenceMetricLabel', $source);
+        $this->assertStringContainsString('selectedFinancialCollection?.service_total_amount_label', $source);
+        $this->assertStringContainsString('selectedFinancialPayout?.total_amount_label', $source);
+        $this->assertStringContainsString('selectedFinancialDifferenceLabel', $source);
+        $this->assertStringContainsString("financialScope === 'root' ? financeRootTotal : financeCurrentVisit", $source);
+        $this->assertStringNotContainsString('totalCustomerCollectionDisplayLabel', $source);
     }
 
     public function test_no_generic_islem_kaydi_in_detail_history(): void

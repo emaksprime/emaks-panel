@@ -162,6 +162,11 @@ class TechnicalServiceWorkflowService
     private array $rootFinancialRequestsCache = [];
 
     /**
+     * @var array<int, array<string, mixed>>
+     */
+    private array $companyPaymentDecisionPayloadCache = [];
+
+    /**
      * @return array<string, string>
      */
     public static function actionLabels(): array
@@ -1703,8 +1708,12 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
-    public function serialize(TechnicalServiceRequest $request, bool $includeHistory = false): array
-    {
+    public function serialize(
+        TechnicalServiceRequest $request,
+        bool $includeHistory = false,
+        bool $includeFinancialWorkspace = true,
+        bool $includePaymentHistory = true,
+    ): array {
         $this->applyDerivedState($request);
         $request->loadMissing([
             'events' => fn ($query) => $query->orderBy('created_at'),
@@ -1758,7 +1767,7 @@ class TechnicalServiceWorkflowService
         $payload = array_merge($payload, $this->financialAliases($request));
         $payload['qr_source'] = $this->qrSourcePayload($request);
         $payload['product'] = $this->qrProductPayload($request);
-        $payload['sale_and_payment'] = $this->saleAndPaymentPayload($request);
+        $payload['sale_and_payment'] = $this->saleAndPaymentPayload($request, $includePaymentHistory);
         $payload['documents'] = $this->documentPayload($request);
         $payload['operation_control'] = $this->operationControlPayload($request);
         $payload['assignment_blockers'] = $this->assignmentBlockers($request);
@@ -1773,8 +1782,12 @@ class TechnicalServiceWorkflowService
         $payload['technician_job_card'] = $this->partnerJobScope->technicianJobCardContext($request);
         $payload['settlement'] = $this->settlementPayload($request->settlement);
         $payload['technician_revision_offer'] = $this->technicianRevisionOfferPayload($request);
-        $payload['earning_breakdown'] = $this->earningBreakdownPayload($request);
-        $payload['finance_summary'] = $this->financeSummaryPayload($request, $payload['earning_breakdown']);
+        if ($includeFinancialWorkspace) {
+            $workspace = $this->financialWorkspacePayload($request);
+            $payload['earning_breakdown'] = $workspace['earning_breakdown'];
+            $payload['finance_summary'] = $workspace['finance_summary'];
+            $payload['settlement'] = $workspace['settlement'];
+        }
         $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
         $payload['part_requests'] = $request->partRequests
             ->map(fn ($partRequest): array => app(TechnicalServicePartRequestService::class)->serialize($partRequest))
@@ -1829,6 +1842,40 @@ class TechnicalServiceWorkflowService
         }
 
         return $payload;
+    }
+
+    /** @return array<string, mixed> */
+    public function financialWorkspacePayload(TechnicalServiceRequest $request): array
+    {
+        $this->applyDerivedState($request);
+        $request->loadMissing([
+            'latestAssignmentOffer.technician',
+            'settlement',
+            'technicianRecord',
+            'parentRequest.latestAssignmentOffer.technician',
+            'parentRequest.settlement',
+            'childRequests.latestAssignmentOffer.technician',
+            'childRequests.settlement',
+        ]);
+
+        $earningBreakdown = $this->earningBreakdownPayload($request);
+
+        return [
+            'request_id' => (int) $request->id,
+            'generated_at' => now()->toISOString(),
+            'earning_breakdown' => $earningBreakdown,
+            'finance_summary' => $this->financeSummaryPayload($request, $earningBreakdown),
+            'settlement' => $this->settlementPayload($request->settlement),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function paymentWorkspacePayload(TechnicalServiceRequest $request): array
+    {
+        return [
+            'request_id' => (int) $request->id,
+            'sale_and_payment' => $this->saleAndPaymentPayload($request, true),
+        ];
     }
 
     /**
@@ -2382,7 +2429,7 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
-    private function saleAndPaymentPayload(TechnicalServiceRequest $request): array
+    private function saleAndPaymentPayload(TechnicalServiceRequest $request, bool $includePaymentHistory = true): array
     {
         $mountPayments = $this->mountCustomerPaymentSummaryPayload($request);
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
@@ -2392,7 +2439,13 @@ class TechnicalServiceWorkflowService
         $paidAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment, $mountPayments);
         $paymentSummary = $this->paymentSummaryPayload($request, $paymentStatus, $extraPayment, $customerCharges, $paidAmount, $mountPayments);
 
+        if (! $includePaymentHistory) {
+            $mountPayments = Arr::except($mountPayments, ['rows', 'paid_rows', 'pending_rows', 'cancelled_rows']);
+            $customerCharges = Arr::except($customerCharges, ['rows']);
+        }
+
         return [
+            'history_loaded' => $includePaymentHistory,
             'sale_mount_status' => $request->sale_mount_status,
             'sale_mount_label' => $this->saleMountLabel($request->sale_mount_status),
             'mount_payment_status' => $request->mount_payment_status,
@@ -2897,6 +2950,12 @@ class TechnicalServiceWorkflowService
         $routeTotal = round((float) $includedRows->sum('route_fee_amount'), 2);
         $companyPaymentTotal = round((float) $includedRows->sum('company_payment_amount'), 2);
         $companyRetainedTotal = round((float) $includedRows->sum('company_retained_amount'), 2);
+        $technicianPaidTotal = $this->fromMinorUnits((int) $includedRows->sum(
+            fn (array $row): int => $this->minorUnits($row['technician_paid_amount'] ?? 0),
+        ));
+        $technicianRemainingTotal = $this->fromMinorUnits((int) $includedRows->sum(
+            fn (array $row): int => $this->minorUnits($row['technician_remaining_amount'] ?? 0),
+        ));
         $total = round((float) $includedRows->sum('total_amount'), 2);
         $technicianNames = $rows
             ->pluck('technician_name')
@@ -2915,11 +2974,15 @@ class TechnicalServiceWorkflowService
                 'route_fee_amount' => $routeTotal,
                 'company_payment_amount' => $companyPaymentTotal,
                 'company_retained_amount' => $companyRetainedTotal,
+                'technician_paid_amount' => $technicianPaidTotal,
+                'technician_remaining_amount' => $technicianRemainingTotal,
                 'total_amount' => $total,
                 'labor_amount_label' => $this->moneyLabel($laborTotal),
                 'route_fee_amount_label' => $this->moneyLabel($routeTotal),
                 'company_payment_amount_label' => $this->moneyLabel($companyPaymentTotal),
                 'company_retained_amount_label' => $this->moneyLabel($companyRetainedTotal),
+                'technician_paid_amount_label' => $this->moneyLabel($technicianPaidTotal),
+                'technician_remaining_amount_label' => $this->moneyLabel($technicianRemainingTotal),
                 'total_amount_label' => $this->moneyLabel($total),
                 'job_count' => $rows->count(),
                 'technician_count' => $technicianNames->count(),
@@ -3051,6 +3114,7 @@ class TechnicalServiceWorkflowService
             $payoutStatus = (string) ($completedSnapshot['payout_status'] ?? $this->locksmithPayoutStatus(null, $totalAmount));
             $kindLabel = $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj';
             $paymentStatus = $this->payoutPaymentStatusPayload($request);
+            $paymentAmounts = $this->technicianPaymentAmountsForRequest($request, $totalAmount, $paymentStatus);
             $technician = $this->earningRowTechnicianPayload($request, $completedSnapshot, $request->latestAssignmentOffer);
 
             return [
@@ -3087,6 +3151,7 @@ class TechnicalServiceWorkflowService
                 'payment_status' => $paymentStatus['status'],
                 'payment_status_label' => $paymentStatus['status_label'],
                 'paid_at' => $paymentStatus['paid_at'],
+                ...$paymentAmounts,
                 'is_confirmed' => $payoutStatus === 'confirmed',
                 'is_draft' => $payoutStatus === 'draft',
                 ...$approvalFields,
@@ -3109,6 +3174,7 @@ class TechnicalServiceWorkflowService
         $payoutStatus = $this->locksmithPayoutStatus($offerStatus, $totalAmount);
         $kindLabel = $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj';
         $paymentStatus = $this->payoutPaymentStatusPayload($request);
+        $paymentAmounts = $this->technicianPaymentAmountsForRequest($request, $totalAmount, $paymentStatus);
         $technician = $this->earningRowTechnicianPayload($request, null, $offer);
 
         return [
@@ -3145,6 +3211,7 @@ class TechnicalServiceWorkflowService
             'payment_status' => $paymentStatus['status'],
             'payment_status_label' => $paymentStatus['status_label'],
             'paid_at' => $paymentStatus['paid_at'],
+            ...$paymentAmounts,
             'is_confirmed' => $payoutStatus === 'confirmed',
             'is_draft' => $payoutStatus === 'draft',
             ...$approvalFields,
@@ -3152,6 +3219,49 @@ class TechnicalServiceWorkflowService
                 ? 'assignment_offer'
                 : ($totalAmount > 0 ? 'request_default' : 'none'),
             'completed_at' => $this->dateTimeString($request->completed_at),
+        ];
+    }
+
+    /**
+     * @param  array{status:string,status_label:string,paid_at:string|null,earning_id:int|null}  $legacyPaymentStatus
+     * @return array<string, float|string>
+     */
+    private function technicianPaymentAmountsForRequest(
+        TechnicalServiceRequest $request,
+        float $totalAmount,
+        array $legacyPaymentStatus,
+    ): array {
+        $totalUnits = max($this->minorUnits($totalAmount), 0);
+        $settlement = $request->relationLoaded('settlement')
+            ? $request->settlement
+            : $request->settlement()->with('earningPayments')->first();
+
+        if ($settlement instanceof TechnicalServiceSettlement) {
+            $settlement->loadMissing('earningPayments');
+            $summary = app(TechnicalServiceEarningSettlementSummaryService::class);
+            $companyPaidUnits = max($this->minorUnits($summary->appliedCompanyPayoutTotal($settlement)), 0);
+            $customerDirectPaidUnits = max($this->minorUnits($settlement->customer_direct_assumed_paid_amount), 0);
+        } else {
+            $companyPaidUnits = ($legacyPaymentStatus['status'] ?? null) === 'paid' ? $totalUnits : 0;
+            $customerDirectPaidUnits = 0;
+        }
+
+        $technicianPaidUnits = min($companyPaidUnits + $customerDirectPaidUnits, $totalUnits);
+        $technicianRemainingUnits = max($totalUnits - $technicianPaidUnits, 0);
+        $companyPaidAmount = $this->fromMinorUnits($companyPaidUnits);
+        $customerDirectPaidAmount = $this->fromMinorUnits($customerDirectPaidUnits);
+        $technicianPaidAmount = $this->fromMinorUnits($technicianPaidUnits);
+        $technicianRemainingAmount = $this->fromMinorUnits($technicianRemainingUnits);
+
+        return [
+            'company_paid_amount' => $companyPaidAmount,
+            'company_paid_amount_label' => $this->moneyLabel($companyPaidAmount),
+            'customer_direct_paid_amount' => $customerDirectPaidAmount,
+            'customer_direct_paid_amount_label' => $this->moneyLabel($customerDirectPaidAmount),
+            'technician_paid_amount' => $technicianPaidAmount,
+            'technician_paid_amount_label' => $this->moneyLabel($technicianPaidAmount),
+            'technician_remaining_amount' => $technicianRemainingAmount,
+            'technician_remaining_amount_label' => $this->moneyLabel($technicianRemainingAmount),
         ];
     }
 
@@ -3165,7 +3275,7 @@ class TechnicalServiceWorkflowService
         $snapshot = $offer instanceof TechnicalServiceAssignmentOffer
             ? $this->canonicalTechnicianEarningSnapshot($offer)
             : [];
-        $decisionPayload = $this->assignmentSettlements->companyPaymentDecisionPayload($request);
+        $decisionPayload = $this->companyPaymentDecisionPayloadForRequest($request);
         $retained = collect($decisionPayload['decisions'] ?? [])
             ->filter(fn (mixed $decision): bool => is_array($decision)
                 && ($decision['decision'] ?? null) === TechnicalServiceAssignmentSettlementService::DECISION_RETAIN_COMPANY)
@@ -3231,6 +3341,13 @@ class TechnicalServiceWorkflowService
         return null;
     }
 
+    /** @return array<string, mixed> */
+    private function companyPaymentDecisionPayloadForRequest(TechnicalServiceRequest $request): array
+    {
+        return $this->companyPaymentDecisionPayloadCache[(int) $request->id]
+            ??= $this->assignmentSettlements->companyPaymentDecisionPayload($request);
+    }
+
     /**
      * @param  array<string, mixed>  $earningBreakdown
      * @return array<string, mixed>
@@ -3241,8 +3358,14 @@ class TechnicalServiceWorkflowService
         $rootCollection = $this->financeRootCustomerCollection($request);
         $currentPayout = $this->financePayoutFromRow($earningBreakdown['current_visit'] ?? null, $request);
         $rootPayout = $this->financePayoutFromRootTotal($earningBreakdown['root_total'] ?? null);
-        $currentNetMargin = round($currentCollection['total_amount'] - $currentPayout['total_amount'], 2);
-        $rootNetMargin = round($rootCollection['total_amount'] - $rootPayout['total_amount'], 2);
+        $currentResultState = $this->financialResultState($currentCollection, $currentPayout);
+        $rootResultState = $this->financialResultState($rootCollection, $rootPayout, $earningBreakdown['rows'] ?? []);
+        $currentNetMargin = $this->fromMinorUnits(
+            $this->minorUnits($currentCollection['service_total_amount']) - $this->minorUnits($currentPayout['total_amount']),
+        );
+        $rootNetMargin = $this->fromMinorUnits(
+            $this->minorUnits($rootCollection['service_total_amount']) - $this->minorUnits($rootPayout['total_amount']),
+        );
         $isServiceVisit = $this->isServiceVisitRequest($request);
         $warrantyCovered = $isServiceVisit
             && $currentCollection['service_amount'] <= 0
@@ -3251,9 +3374,30 @@ class TechnicalServiceWorkflowService
         $currentOperationCost = $this->financeOperationCostPayload($currentPayout, $warrantyCovered);
         $confirmedPayout = ($currentPayout['payout_status'] ?? null) === 'confirmed' ? $currentPayout : null;
         $draftPayout = ($currentPayout['payout_status'] ?? null) === 'draft' ? $currentPayout : null;
+        $currentDecisionPayload = $currentPayout['company_payment_decisions']
+            ?? $this->companyPaymentDecisionPayloadForRequest($request);
 
         return [
+            'generated_at' => now()->toISOString(),
             'currency' => 'TRY',
+            'scope' => [
+                'request_id' => (int) $request->id,
+                'root_request_id' => (int) ($earningBreakdown['root_request_id'] ?? $request->parent_request_id ?? $request->id),
+                'current_srv_id' => $request->parent_request_id !== null || filled($request->service_code) ? (int) $request->id : null,
+                'request_code' => $request->service_code ?: $request->mrn,
+                'root_mrn' => $earningBreakdown['root_mrn'] ?? $request->root_mrn ?? $request->mrn,
+                'scope_type' => 'current_job',
+            ],
+            'technician' => [
+                'technician_id' => $currentPayout['technician_id'] ?? $request->technical_service_technician_id,
+                'technician_name' => $currentPayout['technician_name'] ?? $request->technician_name,
+                'assignment_id' => $request->latestAssignmentOffer?->id,
+            ],
+            'history' => [
+                'loaded' => false,
+                'current_count' => null,
+                'root_count' => null,
+            ],
             'current_visit_customer_collection' => $currentCollection,
             'current_visit_locksmith_payout' => $currentPayout,
             'current_visit_operation_cost' => $currentOperationCost,
@@ -3269,6 +3413,7 @@ class TechnicalServiceWorkflowService
                 'company_payment_amount_label' => $currentPayout['company_payment_amount_label'],
                 'company_retained_amount' => $currentPayout['company_retained_amount'],
                 'company_retained_amount_label' => $currentPayout['company_retained_amount_label'],
+                'company_payment_decisions' => $currentDecisionPayload,
                 'operation_cost' => $currentOperationCost,
                 'warranty_customer_charge' => $this->financeWarrantyCustomerChargePayload($currentCollection, $warrantyCovered),
                 'confirmed_locksmith_payout' => $confirmedPayout,
@@ -3279,7 +3424,10 @@ class TechnicalServiceWorkflowService
                 'payment_status_label' => $currentPayout['payment_status_label'] ?? $this->payoutPaymentStatusLabel('not_recorded'),
                 'paid_at' => $currentPayout['paid_at'] ?? null,
                 'completed_earning_snapshot' => $completedSnapshot,
-                'net_margin' => $this->financeNetMarginPayload($currentNetMargin),
+                'net_margin' => $this->financeNetMarginPayload($currentNetMargin, $currentResultState),
+                'result_state' => $currentResultState,
+                'result_state_label' => $this->financialResultStateLabel($currentResultState),
+                'is_definitive' => $currentResultState === 'definitive',
                 'warranty_covered' => $warrantyCovered,
                 'warranty_note' => $warrantyCovered
                     ? 'Garanti kapsamında - müşteriden servis/parça tahsilatı yok'
@@ -3295,7 +3443,10 @@ class TechnicalServiceWorkflowService
                 'company_payment_amount_label' => $rootPayout['company_payment_amount_label'],
                 'company_retained_amount' => $rootPayout['company_retained_amount'],
                 'company_retained_amount_label' => $rootPayout['company_retained_amount_label'],
-                'net_margin' => $this->financeNetMarginPayload($rootNetMargin),
+                'net_margin' => $this->financeNetMarginPayload($rootNetMargin, $rootResultState),
+                'result_state' => $rootResultState,
+                'result_state_label' => $this->financialResultStateLabel($rootResultState),
+                'is_definitive' => $rootResultState === 'definitive',
             ],
         ];
     }
@@ -3306,36 +3457,80 @@ class TechnicalServiceWorkflowService
     private function financeCustomerCollectionForRequest(TechnicalServiceRequest $request): array
     {
         $isServiceVisit = $this->isServiceVisitRequest($request);
-        $paymentStatus = $this->paymentStatusForRequest($request);
-        $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $mountPayments = $this->mountCustomerPaymentSummaryPayload($request);
         $customerCharges = $this->customerChargeSummaryForRequests(collect([$request]));
-        $mountAmount = $isServiceVisit
-            ? 0.0
-            : round((float) ($this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment, $mountPayments) ?? 0), 2);
-        $extraAmount = $isServiceVisit
-            ? 0.0
-            : round((float) ($mountPayments['paid_extra_amount'] ?? 0), 2);
-        $serviceAmount = round((float) ($customerCharges['paid_service_amount'] ?? 0), 2);
-        $partAmount = round((float) ($customerCharges['paid_part_amount'] ?? 0), 2);
-        $totalAmount = round($mountAmount + $extraAmount + $serviceAmount + $partAmount, 2);
+        $classifiedMountPayments = collect($mountPayments['paid_rows'] ?? [])
+            ->filter(fn (mixed $row): bool => is_array($row))
+            ->reduce(function (array $totals, array $row) use ($isServiceVisit): array {
+                $purpose = strtolower(trim((string) ($row['purpose'] ?? '')));
+                $amount = $this->minorUnits($row['amount'] ?? 0);
+                $bucket = match (true) {
+                    $purpose === 'service_payment' => 'extra',
+                    $purpose === 'route_fee' => 'route',
+                    $purpose === 'part_payment' => 'part',
+                    (bool) ($row['is_extra_payment'] ?? false) => 'extra',
+                    in_array($purpose, [
+                        'mount_payment',
+                        'manual_mount_payment',
+                        'mount_extra',
+                        'multi_product_mount',
+                        'montage_difference',
+                        'multi_product',
+                        'public_mount_payment',
+                    ], true) => 'mount',
+                    default => $purpose === '' && ! $isServiceVisit ? 'mount' : 'unclassified',
+                };
+                $totals[$bucket] += $amount;
+
+                return $totals;
+            }, ['mount' => 0, 'service' => 0, 'extra' => 0, 'route' => 0, 'part' => 0, 'unclassified' => 0]);
+
+        $mountMinor = (int) $classifiedMountPayments['mount'];
+        $serviceMinor = $this->minorUnits($customerCharges['paid_service_amount'] ?? 0);
+        $extraMinor = (int) $classifiedMountPayments['extra']
+            + $this->minorUnits($customerCharges['paid_extra_amount'] ?? 0);
+        $routeMinor = (int) $classifiedMountPayments['route']
+            + $this->minorUnits($customerCharges['paid_route_amount'] ?? 0);
+        $partMinor = (int) $classifiedMountPayments['part']
+            + $this->minorUnits($customerCharges['paid_part_amount'] ?? 0);
+        $unclassifiedMinor = (int) $classifiedMountPayments['unclassified']
+            + $this->minorUnits($customerCharges['paid_unclassified_amount'] ?? 0);
+        $serviceTotalMinor = $mountMinor + $serviceMinor + $extraMinor + $routeMinor;
+        $totalMinor = $serviceTotalMinor + $partMinor + $unclassifiedMinor;
+
+        $mountAmount = $this->fromMinorUnits($mountMinor);
+        $serviceAmount = $this->fromMinorUnits($serviceMinor);
+        $extraAmount = $this->fromMinorUnits($extraMinor);
+        $routeAmount = $this->fromMinorUnits($routeMinor);
+        $partAmount = $this->fromMinorUnits($partMinor);
+        $unclassifiedAmount = $this->fromMinorUnits($unclassifiedMinor);
+        $serviceTotalAmount = $this->fromMinorUnits($serviceTotalMinor);
+        $totalAmount = $this->fromMinorUnits($totalMinor);
 
         return [
             'mount_amount' => $mountAmount,
             'service_amount' => $serviceAmount,
             'part_amount' => $partAmount,
             'extra_amount' => $extraAmount,
+            'route_amount' => $routeAmount,
+            'unclassified_amount' => $unclassifiedAmount,
+            'service_total_amount' => $serviceTotalAmount,
             'total_amount' => $totalAmount,
             'mount_amount_label' => $this->moneyLabel($mountAmount),
             'service_amount_label' => $this->moneyLabel($serviceAmount),
             'part_amount_label' => $this->moneyLabel($partAmount),
             'extra_amount_label' => $this->moneyLabel($extraAmount),
+            'route_amount_label' => $this->moneyLabel($routeAmount),
+            'unclassified_amount_label' => $this->moneyLabel($unclassifiedAmount),
+            'service_total_amount_label' => $this->moneyLabel($serviceTotalAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'has_collection' => $totalAmount > 0,
             'has_mount_collection' => $mountAmount > 0,
             'has_service_charge' => $serviceAmount > 0,
             'has_part_charge' => $partAmount > 0,
             'has_extra_charge' => $extraAmount > 0,
+            'has_route_charge' => $routeAmount > 0,
+            'classification_pending' => $unclassifiedAmount > 0,
         ];
     }
 
@@ -3352,6 +3547,8 @@ class TechnicalServiceWorkflowService
                 $carry['service_amount'] += (float) ($row['service_amount'] ?? 0);
                 $carry['part_amount'] += (float) ($row['part_amount'] ?? 0);
                 $carry['extra_amount'] += (float) ($row['extra_amount'] ?? 0);
+                $carry['route_amount'] += (float) ($row['route_amount'] ?? 0);
+                $carry['unclassified_amount'] += (float) ($row['unclassified_amount'] ?? 0);
 
                 return $carry;
             }, [
@@ -3359,29 +3556,42 @@ class TechnicalServiceWorkflowService
                 'service_amount' => 0.0,
                 'part_amount' => 0.0,
                 'extra_amount' => 0.0,
+                'route_amount' => 0.0,
+                'unclassified_amount' => 0.0,
             ]);
         $mountAmount = round((float) $totals['mount_amount'], 2);
         $serviceAmount = round((float) $totals['service_amount'], 2);
         $partAmount = round((float) $totals['part_amount'], 2);
         $extraAmount = round((float) $totals['extra_amount'], 2);
-        $totalAmount = round($mountAmount + $serviceAmount + $partAmount + $extraAmount, 2);
+        $routeAmount = round((float) $totals['route_amount'], 2);
+        $unclassifiedAmount = round((float) $totals['unclassified_amount'], 2);
+        $serviceTotalAmount = round($mountAmount + $serviceAmount + $extraAmount + $routeAmount, 2);
+        $totalAmount = round($serviceTotalAmount + $partAmount + $unclassifiedAmount, 2);
 
         return [
             'mount_amount' => $mountAmount,
             'service_amount' => $serviceAmount,
             'part_amount' => $partAmount,
             'extra_amount' => $extraAmount,
+            'route_amount' => $routeAmount,
+            'unclassified_amount' => $unclassifiedAmount,
+            'service_total_amount' => $serviceTotalAmount,
             'total_amount' => $totalAmount,
             'mount_amount_label' => $this->moneyLabel($mountAmount),
             'service_amount_label' => $this->moneyLabel($serviceAmount),
             'part_amount_label' => $this->moneyLabel($partAmount),
             'extra_amount_label' => $this->moneyLabel($extraAmount),
+            'route_amount_label' => $this->moneyLabel($routeAmount),
+            'unclassified_amount_label' => $this->moneyLabel($unclassifiedAmount),
+            'service_total_amount_label' => $this->moneyLabel($serviceTotalAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'has_collection' => $totalAmount > 0,
             'has_mount_collection' => $mountAmount > 0,
             'has_service_charge' => $serviceAmount > 0,
             'has_part_charge' => $partAmount > 0,
             'has_extra_charge' => $extraAmount > 0,
+            'has_route_charge' => $routeAmount > 0,
+            'classification_pending' => $unclassifiedAmount > 0,
         ];
     }
 
@@ -3397,6 +3607,18 @@ class TechnicalServiceWorkflowService
         $companyRetainedAmount = round((float) ($row['company_retained_amount'] ?? 0), 2);
         $totalAmount = round((float) ($row['total_amount'] ?? ($laborAmount + $routeFeeAmount + $companyPaymentAmount)), 2);
         $paymentStatus = $this->payoutPaymentStatusPayload($request);
+        $paymentAmounts = is_array($row) && array_key_exists('technician_paid_amount', $row)
+            ? Arr::only($row, [
+                'company_paid_amount',
+                'company_paid_amount_label',
+                'customer_direct_paid_amount',
+                'customer_direct_paid_amount_label',
+                'technician_paid_amount',
+                'technician_paid_amount_label',
+                'technician_remaining_amount',
+                'technician_remaining_amount_label',
+            ])
+            : $this->technicianPaymentAmountsForRequest($request, $totalAmount, $paymentStatus);
 
         return [
             'labor_amount' => $laborAmount,
@@ -3405,6 +3627,7 @@ class TechnicalServiceWorkflowService
             'company_payment_breakdown' => $row['company_payment_breakdown'] ?? [],
             'company_retained_amount' => $companyRetainedAmount,
             'company_retained_breakdown' => $row['company_retained_breakdown'] ?? [],
+            'company_payment_decisions' => $row['company_payment_decisions'] ?? null,
             'total_amount' => $totalAmount,
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
@@ -3422,6 +3645,7 @@ class TechnicalServiceWorkflowService
             'payment_status' => $row['payment_status'] ?? $paymentStatus['status'],
             'payment_status_label' => $row['payment_status_label'] ?? $paymentStatus['status_label'],
             'paid_at' => $row['paid_at'] ?? $paymentStatus['paid_at'],
+            ...$paymentAmounts,
             'is_confirmed' => (bool) ($row['is_confirmed'] ?? (($row['payout_status'] ?? null) === 'confirmed')),
             'is_draft' => (bool) ($row['is_draft'] ?? (($row['payout_status'] ?? null) === 'draft')),
             'source' => $row['source'] ?? ($totalAmount > 0 ? 'request_default' : 'none'),
@@ -3480,6 +3704,8 @@ class TechnicalServiceWorkflowService
         $routeFeeAmount = round((float) ($rootTotal['route_fee_amount'] ?? 0), 2);
         $companyPaymentAmount = round((float) ($rootTotal['company_payment_amount'] ?? 0), 2);
         $companyRetainedAmount = round((float) ($rootTotal['company_retained_amount'] ?? 0), 2);
+        $technicianPaidAmount = round((float) ($rootTotal['technician_paid_amount'] ?? 0), 2);
+        $technicianRemainingAmount = round((float) ($rootTotal['technician_remaining_amount'] ?? 0), 2);
         $totalAmount = round((float) ($rootTotal['total_amount'] ?? ($laborAmount + $routeFeeAmount + $companyPaymentAmount)), 2);
 
         return [
@@ -3487,11 +3713,15 @@ class TechnicalServiceWorkflowService
             'route_fee_amount' => $routeFeeAmount,
             'company_payment_amount' => $companyPaymentAmount,
             'company_retained_amount' => $companyRetainedAmount,
+            'technician_paid_amount' => $technicianPaidAmount,
+            'technician_remaining_amount' => $technicianRemainingAmount,
             'total_amount' => $totalAmount,
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
             'company_payment_amount_label' => $this->moneyLabel($companyPaymentAmount),
             'company_retained_amount_label' => $this->moneyLabel($companyRetainedAmount),
+            'technician_paid_amount_label' => $this->moneyLabel($technicianPaidAmount),
+            'technician_remaining_amount_label' => $this->moneyLabel($technicianRemainingAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'job_count' => $rootTotal['job_count'] ?? 0,
             'technician_count' => $rootTotal['technician_count'] ?? 0,
@@ -3509,13 +3739,57 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
-    private function financeNetMarginPayload(float $amount): array
+    private function financeNetMarginPayload(float $amount, string $resultState = 'definitive'): array
     {
         return [
             'amount' => round($amount, 2),
-            'amount_label' => $this->moneyLabel($amount),
+            'amount_label' => $resultState === 'definitive' ? $this->moneyLabel($amount) : 'Hesap bekliyor',
+            'provisional_amount_label' => $this->moneyLabel($amount),
             'is_negative' => $amount < 0,
+            'is_definitive' => $resultState === 'definitive',
         ];
+    }
+
+    /** @param array<int, mixed> $earningRows */
+    private function financialResultState(array $collection, array $payout, array $earningRows = []): string
+    {
+        if ((bool) ($collection['classification_pending'] ?? false)) {
+            return 'classification_pending';
+        }
+
+        $pendingDecisions = (int) data_get($payout, 'company_payment_decisions.pending_decision_count', 0);
+        if ($pendingDecisions <= 0 && $earningRows !== []) {
+            $pendingDecisions = collect($earningRows)->sum(
+                fn (mixed $row): int => is_array($row)
+                    ? (int) data_get($row, 'company_payment_decisions.pending_decision_count', 0)
+                    : 0,
+            );
+        }
+
+        if ($pendingDecisions > 0) {
+            return 'allocation_pending';
+        }
+
+        $hasDraftPayout = (bool) ($payout['is_draft'] ?? false)
+            || ($payout['payout_status'] ?? null) === 'draft';
+        if (! $hasDraftPayout && $earningRows !== []) {
+            $hasDraftPayout = collect($earningRows)->contains(
+                fn (mixed $row): bool => is_array($row)
+                    && ((bool) ($row['is_draft'] ?? false) || ($row['payout_status'] ?? null) === 'draft'),
+            );
+        }
+
+        return $hasDraftPayout ? 'draft_pending' : 'definitive';
+    }
+
+    private function financialResultStateLabel(string $state): string
+    {
+        return match ($state) {
+            'draft_pending' => 'Hakediş taslağı kaydedilmeyi bekliyor',
+            'allocation_pending' => 'Ek ödeme dağıtım kararı bekliyor',
+            'classification_pending' => 'Tahsilat sınıflandırması bekliyor',
+            default => 'Kesinleşmiş',
+        };
     }
 
     /**
@@ -3546,7 +3820,10 @@ class TechnicalServiceWorkflowService
             'total_part_amount' => round((float) $rows->sum('part_amount'), 2),
             'total_amount' => round((float) $rows->sum('amount'), 2),
             'paid_service_amount' => round((float) $paidRows->sum('service_amount'), 2),
+            'paid_extra_amount' => round((float) $paidRows->sum('extra_amount'), 2),
             'paid_part_amount' => round((float) $paidRows->sum('part_amount'), 2),
+            'paid_route_amount' => round((float) $paidRows->sum('route_amount'), 2),
+            'paid_unclassified_amount' => round((float) $paidRows->sum('unclassified_amount'), 2),
             'paid_total_amount' => round((float) $paidRows->sum('amount'), 2),
             'pending_total_amount' => round((float) $rows
                 ->filter(fn (array $row): bool => ($row['status'] ?? null) !== TechnicalServiceMountPayment::STATUS_PAID)
@@ -3625,15 +3902,21 @@ class TechnicalServiceWorkflowService
         $messageState = $this->paymentLinkMessageState($payment);
         $serviceAmount = (float) ($payload['service_amount'] ?? 0);
         $partAmount = (float) ($payload['part_amount'] ?? 0);
+        $extraAmount = 0.0;
+        $routeAmount = 0.0;
+        $unclassifiedAmount = 0.0;
         $amount = (float) $payment->amount;
 
         if ($serviceAmount <= 0 && $partAmount <= 0) {
-            $purpose = (string) ($payload['purpose'] ?? $payload['charge_type'] ?? '');
-            if ($purpose === 'part_payment') {
-                $partAmount = $amount;
-            } else {
-                $serviceAmount = $amount;
-            }
+            $purpose = strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')));
+            match ($purpose) {
+                'part_payment' => $partAmount = $amount,
+                'service_payment' => $extraAmount = $amount,
+                'route_fee' => $routeAmount = $amount,
+                default => $unclassifiedAmount = $amount,
+            };
+        } elseif (round($serviceAmount + $partAmount + $extraAmount + $routeAmount, 2) < round($amount, 2)) {
+            $unclassifiedAmount = round($amount - $serviceAmount - $partAmount - $extraAmount - $routeAmount, 2);
         }
         $messageTemplate = TechnicalServiceUiLabelService::cleanDisplayText($payload['message_template'] ?? null);
         $paymentUrl = (string) ($payment->payment_url ?? '');
@@ -3656,8 +3939,14 @@ class TechnicalServiceWorkflowService
             'amount_label' => $this->moneyLabel($amount),
             'service_amount' => round($serviceAmount, 2),
             'service_amount_label' => $this->moneyLabel($serviceAmount),
+            'extra_amount' => round($extraAmount, 2),
+            'extra_amount_label' => $this->moneyLabel($extraAmount),
             'part_amount' => round($partAmount, 2),
             'part_amount_label' => $this->moneyLabel($partAmount),
+            'route_amount' => round($routeAmount, 2),
+            'route_amount_label' => $this->moneyLabel($routeAmount),
+            'unclassified_amount' => round($unclassifiedAmount, 2),
+            'unclassified_amount_label' => $this->moneyLabel($unclassifiedAmount),
             'currency' => $payment->currency,
             'payment_url' => $payment->payment_url,
             'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
@@ -3711,8 +4000,10 @@ class TechnicalServiceWorkflowService
         $root->loadMissing([
             'latestAssignmentOffer.technician',
             'technicianRecord',
+            'settlement.earningPayments',
             'childRequests.latestAssignmentOffer.technician',
             'childRequests.technicianRecord',
+            'childRequests.settlement.earningPayments',
         ]);
 
         $requests = collect([$root])
@@ -5638,6 +5929,16 @@ class TechnicalServiceWorkflowService
         return number_format($amount, $decimals, ',', '.').' TL';
     }
 
+    private function minorUnits(mixed $amount): int
+    {
+        return (int) round(((float) ($amount ?? 0)) * 100);
+    }
+
+    private function fromMinorUnits(int $amount): float
+    {
+        return round($amount / 100, 2);
+    }
+
     /**
      * @param  array<string, mixed>  $paymentStatus
      */
@@ -6056,7 +6357,7 @@ class TechnicalServiceWorkflowService
             ]);
         }
 
-        $companyPaymentDecisions = $this->assignmentSettlements->companyPaymentDecisionPayload($request);
+        $companyPaymentDecisions = $this->companyPaymentDecisionPayloadForRequest($request);
         if ((int) ($companyPaymentDecisions['pending_decision_count'] ?? 0) > 0) {
             throw ValidationException::withMessages([
                 'company_payment_decisions' => 'Müşteriden alınan ek ödemeler için usta ödeme kararını tamamlayın.',

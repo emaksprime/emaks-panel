@@ -124,7 +124,7 @@ class TechnicalServiceController extends Controller
 
         return response()->json([
             'items' => $items
-                ->map(fn (TechnicalServiceRequest $request) => $this->workflowService->serialize($request))
+                ->map(fn (TechnicalServiceRequest $request) => $this->workflowService->serialize($request, false, false, false))
                 ->all(),
             'pagination' => [
                 'total' => $paginator->total(),
@@ -135,10 +135,18 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
-    public function show(TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    public function show(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
+        if ($request->query('section') === 'financial') {
+            return response()->json($this->workflowService->financialWorkspacePayload($technicalServiceRequest));
+        }
+
+        if ($request->query('section') === 'payments') {
+            return response()->json($this->workflowService->paymentWorkspacePayload($technicalServiceRequest));
+        }
+
         return response()->json([
-            'request' => $this->workflowService->serialize($technicalServiceRequest, true),
+            'request' => $this->workflowService->serialize($technicalServiceRequest, true, false, false),
         ]);
     }
 
