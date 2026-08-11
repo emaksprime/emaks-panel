@@ -34,12 +34,15 @@ class TechnicalServiceMessageContextBuilder
             ];
         }
 
-        $overrides = is_array($input['context'] ?? null) ? $input['context'] : [];
+        $overrides = is_array($input['context'] ?? null)
+            ? $this->normalizeOverrides($input['context'])
+            : [];
         $context = [
             ...$context,
-            ...$this->normalizeOverrides($overrides),
+            ...$overrides,
         ];
         $context = $this->clearSampleDerivedValues($context, $overrides);
+        $context = $this->withCanonicalEarningContext($context, $overrides);
 
         $amount = $this->money($context['customer_payment_amount'] ?? null);
         if ($amount > 0.0 && empty($context['customer_payment_amount_formatted'])) {
@@ -217,6 +220,62 @@ class TechnicalServiceMessageContextBuilder
 
     /**
      * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function withCanonicalEarningContext(array $context, array $overrides): array
+    {
+        foreach ([
+            'labor_amount' => 'labor_amount_formatted',
+            'route_fee_amount' => 'route_fee_formatted',
+            'total_amount' => 'technician_earning_total_formatted',
+            'company_payment_amount' => 'company_payment_amount_formatted',
+            'technician_paid_amount' => 'technician_paid_amount_formatted',
+            'technician_remaining_amount' => 'technician_remaining_amount_formatted',
+            'customer_collection_amount' => 'customer_collection_amount_formatted',
+        ] as $amountKey => $formattedKey) {
+            if (array_key_exists($amountKey, $overrides)
+                && is_numeric($overrides[$amountKey])
+                && ! array_key_exists($formattedKey, $overrides)
+            ) {
+                $context[$formattedKey] = $this->formatTry($this->money($overrides[$amountKey]));
+            }
+        }
+
+        if (array_key_exists('total_amount', $overrides)
+            && is_numeric($overrides['total_amount'])
+            && ! array_key_exists('total_amount_formatted', $overrides)
+        ) {
+            $context['total_amount_formatted'] = $this->formatTry($this->money($overrides['total_amount']));
+        }
+
+        $payerState = $this->filledString($context['payer_state_key'] ?? $context['payer_state'] ?? null);
+        $companyPaymentAmount = $this->money($context['company_payment_amount'] ?? null);
+        $companyFunded = $companyPaymentAmount > 0.0
+            || str_starts_with((string) $payerState, 'company_collected');
+        $customerPaysTechnician = $payerState === TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN;
+
+        $context['technician_payment_model_label'] = $this->filledString($context['technician_payment_model_label'] ?? null)
+            ?: ($companyFunded ? 'Şirket ödemesi' : ($customerPaysTechnician ? 'Müşteri ödemesi' : 'Ödeme modeli belirlenmedi'));
+        $context['technician_payment_source_label'] = $this->filledString($context['technician_payment_source_label'] ?? null)
+            ?: ($companyFunded ? 'EMAKS Prime' : ($customerPaysTechnician ? 'Müşteri' : 'Belirlenmedi'));
+
+        $remainingAmount = $this->money($context['technician_remaining_amount'] ?? null);
+        $totalAmount = $this->money($context['total_amount'] ?? null);
+        $context['technician_payment_status_key'] = $this->filledString($context['technician_payment_status_key'] ?? null)
+            ?: ($totalAmount > 0.0 && $remainingAmount <= 0.0 ? 'paid' : 'payable');
+        $context['technician_payment_status_label'] = $this->filledString($context['technician_payment_status_label'] ?? null)
+            ?: ($context['technician_payment_status_key'] === 'paid' ? 'Ödendi' : 'Ödenecek');
+        $context['customer_collection_source_label'] = $this->filledString($context['customer_collection_source_label'] ?? null)
+            ?: ($companyFunded && $this->money($context['customer_collection_amount'] ?? null) > 0.0
+                ? 'EMAKS Prime tarafından alındı'
+                : ($customerPaysTechnician ? 'Ustaya doğrudan ödenecek' : 'Bulunmuyor'));
+
+        return $context;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
      * @return array<string, mixed>
      */
     private function withDerivedContext(array $context): array
@@ -290,6 +349,7 @@ class TechnicalServiceMessageContextBuilder
 
         $context['technician_earning_summary_text'] = $this->earningSummary($context);
         $context['technician_earning_summary_block'] = $this->earningSummaryBlock($context);
+        $context['technician_earning_sms_summary'] = $this->earningSmsSummary($context);
         $context['internal_job_reference'] = $this->filledString($context['internal_job_reference'] ?? null)
             ?: $this->internalJobReference($context);
         $context['actor_name'] = $this->filledString($context['actor_name'] ?? null)
@@ -705,11 +765,28 @@ class TechnicalServiceMessageContextBuilder
         $total = $this->filledString($context['technician_earning_total_formatted'] ?? null);
 
         if ($labor !== null || $route !== null || $total !== null) {
-            return implode("\n", array_filter([
+            $lines = array_filter([
                 $labor !== null ? "İşçilik/Montaj: {$labor}" : null,
                 $route !== null ? "Yol: {$route}" : null,
-                $total !== null ? "Toplam: {$total}" : null,
-            ]));
+            ]);
+
+            foreach ((array) ($context['company_payment_breakdown'] ?? []) as $companyPayment) {
+                if (! is_array($companyPayment) || $this->money($companyPayment['amount'] ?? null) <= 0.0) {
+                    continue;
+                }
+
+                $purpose = $this->filledString($companyPayment['purpose_label'] ?? $companyPayment['purpose'] ?? null)
+                    ?: 'Ek tahsilat';
+                $amount = $this->filledString($companyPayment['amount_label'] ?? null)
+                    ?: $this->formatTry($this->money($companyPayment['amount']));
+                $lines[] = "Şirket ödemesi - {$purpose}: {$amount}";
+            }
+
+            if ($total !== null) {
+                $lines[] = "Toplam: {$total}";
+            }
+
+            return implode("\n", $lines);
         }
 
         return 'Hakediş bilgisi paneldeki iş kartında görülebilir.';
@@ -725,6 +802,44 @@ class TechnicalServiceMessageContextBuilder
         return str_contains($summary, ':')
             ? "Hakediş Özeti\n{$summary}"
             : $summary;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function earningSmsSummary(array $context): string
+    {
+        $lines = [];
+        $labor = $this->filledString($context['labor_amount_formatted'] ?? null);
+        $route = $this->filledString($context['route_fee_formatted'] ?? null);
+        $total = $this->filledString($context['technician_earning_total_formatted'] ?? null);
+
+        if ($labor !== null) {
+            $lines[] = "İşçilik {$labor}";
+        }
+        if ($route !== null) {
+            $lines[] = "Yol {$route}";
+        }
+
+        foreach ((array) ($context['company_payment_breakdown'] ?? []) as $companyPayment) {
+            if (! is_array($companyPayment) || $this->money($companyPayment['amount'] ?? null) <= 0.0) {
+                continue;
+            }
+
+            $purpose = $this->filledString($companyPayment['purpose_label'] ?? $companyPayment['purpose'] ?? null)
+                ?: 'Ek tahsilat';
+            $amount = $this->filledString($companyPayment['amount_label'] ?? null)
+                ?: $this->formatTry($this->money($companyPayment['amount']));
+            $lines[] = "Şirket/{$purpose} {$amount}";
+        }
+
+        if ($total !== null) {
+            $lines[] = "Toplam {$total}";
+        }
+
+        return $lines === []
+            ? 'Hakediş iş kartında.'
+            : implode("\n", $lines);
     }
 
     /**

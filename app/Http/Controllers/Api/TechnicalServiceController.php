@@ -61,6 +61,10 @@ use Throwable;
 
 class TechnicalServiceController extends Controller
 {
+    private const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni düzeltmesi';
+
+    private const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 2;
+
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,
         private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
@@ -723,6 +727,7 @@ class TechnicalServiceController extends Controller
             'message_text' => ['nullable', 'string', 'max:5000'],
             'manual_override' => ['nullable', 'boolean'],
             'earning_revision' => ['required', 'string', 'size:64'],
+            'corrective_resend_reason' => ['nullable', 'string', 'max:500'],
         ]);
 
         if (blank($technician->phone_e164) && blank($technician->phone_display) && blank($technician->phone)) {
@@ -777,15 +782,21 @@ class TechnicalServiceController extends Controller
             }
 
             $earningSnapshotFingerprint = $earningSnapshotRevision;
-            $existingDispatch = TechnicalServiceMessageDispatch::query()
+            $earningDispatches = TechnicalServiceMessageDispatch::query()
                 ->where('technical_service_request_id', $job->id)
                 ->where('message_type', 'earnings_message_technician')
                 ->where('recipient_role', 'technician')
                 ->latest('id')
-                ->get()
+                ->get();
+            $companyPaymentContractRequired = (float) ($earningSnapshot['company_payment_amount'] ?? 0) > 0.0;
+            $existingDispatch = $earningDispatches
                 ->first(fn (TechnicalServiceMessageDispatch $dispatch): bool => hash_equals(
                     $earningSnapshotFingerprint,
                     (string) data_get($dispatch->metadata, 'earning_snapshot_fingerprint', ''),
+                ) && (
+                    ! $companyPaymentContractRequired
+                    || (int) data_get($dispatch->metadata, 'earning_message_contract_version', 0)
+                        >= self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION
                 ));
             if ($existingDispatch instanceof TechnicalServiceMessageDispatch) {
                 $operationControl = is_array($job->operation_control_payload) ? $job->operation_control_payload : [];
@@ -809,7 +820,23 @@ class TechnicalServiceController extends Controller
                         : '',
                     'dispatch' => $existingDispatch,
                     'duplicate_noop' => true,
+                    'corrective_resend' => false,
                 ];
+            }
+
+            $legacySameEconomicsDispatches = $earningDispatches
+                ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                    && $this->dispatchMatchesEarningEconomics($dispatch, $earningSnapshot, $offer)
+                    && (int) data_get($dispatch->metadata, 'earning_message_contract_version', 0)
+                        < self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION);
+            $correctiveResend = $companyPaymentContractRequired
+                && $legacySameEconomicsDispatches->isNotEmpty();
+
+            $correctiveResendReason = trim((string) ($validated['corrective_resend_reason'] ?? ''));
+            if ($correctiveResend && $correctiveResendReason !== self::COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON) {
+                throw ValidationException::withMessages([
+                    'corrective_resend_reason' => 'Düzeltici yeniden gönderim nedeni zorunludur: '.self::COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON,
+                ]);
             }
 
             $result = $this->workflowService->recordTechnicianEarningsMessage(
@@ -847,12 +874,20 @@ class TechnicalServiceController extends Controller
                     'triggered_by' => 'technical_service_earnings_message',
                     'event_version' => 'assignment-offer:'.$offer->id.':earnings-summary:'.$earningSnapshotFingerprint,
                     'requires_public_url' => $jobCardContext['canonical_url'],
+                    'force_resend' => $correctiveResend,
+                    'force_resend_reason' => $correctiveResend ? $correctiveResendReason : null,
                     'metadata' => [
                         'assignment_offer_id' => $offer->id,
                         'earning_snapshot_fingerprint' => $earningSnapshotFingerprint,
                         'earning_snapshot_revision' => $earningSnapshotRevision,
+                        'earning_snapshot_hash' => $earningSnapshot['snapshot_hash'] ?? $earningSnapshotRevision,
+                        'earning_message_contract_version' => self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION,
                         'earning_snapshot' => $earningSnapshot,
                         'manual_ui_send' => true,
+                        'corrective_resend' => $correctiveResend,
+                        'corrective_resend_source_dispatch_ids' => $correctiveResend
+                            ? $legacySameEconomicsDispatches->pluck('id')->map(fn ($id): int => (int) $id)->values()->all()
+                            : [],
                     ],
                 ],
             );
@@ -867,6 +902,9 @@ class TechnicalServiceController extends Controller
                     : null,
                 'last_error_code' => $dispatch->last_error_code,
                 'last_error_message_redacted' => $dispatch->last_error_message_redacted,
+                'earning_message_contract_version' => self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION,
+                'corrective_resend' => $correctiveResend,
+                'corrective_resend_reason' => $correctiveResend ? $correctiveResendReason : null,
             ];
             $job->forceFill(['operation_control_payload' => $operationControl])->save();
 
@@ -875,6 +913,7 @@ class TechnicalServiceController extends Controller
                 'request' => $job->refresh(),
                 'dispatch' => $dispatch,
                 'duplicate_noop' => false,
+                'corrective_resend' => $correctiveResend,
             ];
         });
 
@@ -892,8 +931,31 @@ class TechnicalServiceController extends Controller
                 'provider_key' => $result['dispatch']->provider_key,
             ],
             'duplicate_noop' => (bool) ($result['duplicate_noop'] ?? false),
+            'corrective_resend' => (bool) ($result['corrective_resend'] ?? false),
             'request' => $this->workflowService->serialize($result['request'], true),
         ]);
+    }
+
+    /** @param array<string, mixed> $snapshot */
+    private function dispatchMatchesEarningEconomics(
+        TechnicalServiceMessageDispatch $dispatch,
+        array $snapshot,
+        TechnicalServiceAssignmentOffer $offer,
+    ): bool {
+        $dispatchSnapshot = data_get($dispatch->metadata, 'earning_snapshot');
+        if (! is_array($dispatchSnapshot)
+            || (int) data_get($dispatch->metadata, 'assignment_offer_id', 0) !== (int) $offer->id
+        ) {
+            return false;
+        }
+
+        foreach (['labor_amount', 'route_fee_amount', 'company_payment_amount', 'total_amount'] as $key) {
+            if (abs((float) ($dispatchSnapshot[$key] ?? 0) - (float) ($snapshot[$key] ?? 0)) > 0.01) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function paymentCreateFailureMessage(Throwable $exception): string

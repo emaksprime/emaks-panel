@@ -476,9 +476,20 @@ export type ServiceRequestCanonicalEarningSnapshot = {
   company_payment_amount?: number
   company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
   total_amount: number
+  technician_paid_amount?: number
+  technician_remaining_amount?: number
+  customer_collection_amount?: number
+  payer_state?: string | null
+  payer_state_key?: string | null
+  technician_payment_model_label?: string | null
+  technician_payment_source_label?: string | null
+  technician_payment_status_key?: 'payable' | 'paid' | string | null
+  technician_payment_status_label?: string | null
+  customer_collection_source_label?: string | null
   currency: string
   operation_note?: string | null
   revision: string
+  snapshot_hash?: string | null
   persisted_at?: string | null
 }
 
@@ -1069,7 +1080,10 @@ export type ServiceRequestTechnicianEarningMessage = {
   note?: string | null
   message_text?: string | null
   earning_snapshot_revision?: string | null
+  earning_message_contract_version?: number | null
   earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null
+  corrective_resend?: boolean
+  corrective_resend_reason?: string | null
 }
 
 export type ServiceRequestDocumentInfo = {
@@ -1291,6 +1305,7 @@ export type ServiceRequestTechnicianEarningMessagePayload = {
   note?: string | null
   message_text?: string | null
   manual_override?: boolean
+  corrective_resend_reason?: string | null
 }
 
 export type ServiceTechnician = {

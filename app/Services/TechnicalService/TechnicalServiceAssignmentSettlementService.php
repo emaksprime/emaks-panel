@@ -156,8 +156,10 @@ class TechnicalServiceAssignmentSettlementService
     /**
      * @return array<string, mixed>
      */
-    public function canonicalEarningSnapshot(TechnicalServiceAssignmentOffer $offer): array
-    {
+    public function canonicalEarningSnapshot(
+        TechnicalServiceAssignmentOffer $offer,
+        ?TechnicalServiceSettlement $settlement = null,
+    ): array {
         $laborAmount = $this->money($offer->labor_amount);
         $routeFeeAmount = $this->money($offer->route_fee_amount);
         $baseTotalAmount = $this->money($laborAmount + $routeFeeAmount);
@@ -170,16 +172,63 @@ class TechnicalServiceAssignmentSettlementService
         $companyPayments = $this->companyPaymentBreakdownForOffer($offer);
         $companyPaymentAmount = $this->money($companyPayments->sum('amount'));
         $totalAmount = $this->money($baseTotalAmount + $companyPaymentAmount);
+        if (! $settlement instanceof TechnicalServiceSettlement
+            || (int) $settlement->technical_service_assignment_offer_id !== (int) $offer->id
+            || (int) $settlement->technical_service_technician_id !== (int) $offer->technical_service_technician_id
+        ) {
+            $settlement = TechnicalServiceSettlement::query()
+                ->where('technical_service_request_id', $offer->technical_service_request_id)
+                ->where('technical_service_assignment_offer_id', $offer->id)
+                ->where('technical_service_technician_id', $offer->technical_service_technician_id)
+                ->first();
+        }
+
+        $technicianPaidAmount = $this->money(
+            (float) ($settlement?->company_paid_amount ?? 0)
+            + (float) ($settlement?->customer_direct_assumed_paid_amount ?? 0),
+        );
+        $technicianRemainingAmount = max($this->money($totalAmount - $technicianPaidAmount), 0);
+        $customerCollectionAmount = $this->money($settlement?->customer_collection_amount);
+        $settlementMetadata = is_array($settlement?->metadata) ? $settlement->metadata : [];
+        $basePayerState = trim((string) ($settlementMetadata['payer_state_key'] ?? ''));
+        $companyFunded = $companyPaymentAmount > 0
+            || in_array($basePayerState, [
+                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
+                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL,
+            ], true);
+        $customerPaysTechnician = $basePayerState === TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN;
+        $payerState = $companyFunded
+            ? 'company_collected_company_pays_technician'
+            : ($basePayerState !== '' ? $basePayerState : TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED);
+        $paymentModelLabel = $companyFunded
+            ? 'Şirket ödemesi'
+            : ($customerPaysTechnician ? 'Müşteri ödemesi' : 'Ödeme modeli belirlenmedi');
+        $paymentSourceLabel = $companyFunded
+            ? 'EMAKS Prime'
+            : ($customerPaysTechnician ? 'Müşteri' : 'Belirlenmedi');
+        $paymentStatusKey = $technicianRemainingAmount <= 0.0 && $totalAmount > 0.0 ? 'paid' : 'payable';
+        $paymentStatusLabel = $paymentStatusKey === 'paid' ? 'Ödendi' : 'Ödenecek';
+        $customerCollectionSourceLabel = $companyFunded && $customerCollectionAmount > 0.0
+            ? 'EMAKS Prime tarafından alındı'
+            : ($customerPaysTechnician ? 'Ustaya doğrudan ödenecek' : null);
         $operationNote = trim((string) ($offer->note ?? ''));
         $latestCompanyPaymentAt = $companyPayments->pluck('updated_at')->filter()->sort()->last();
         $persistedAt = $latestCompanyPaymentAt ?: $offer->updated_at?->toISOString();
         $revisionPayload = [
-            'schema_version' => $companyPayments->isEmpty() ? 1 : 2,
+            'schema_version' => 3,
             'assignment_id' => (int) $offer->id,
             'technician_id' => (int) $offer->technical_service_technician_id,
             'labor_amount' => number_format($laborAmount, 2, '.', ''),
             'route_fee_amount' => number_format($routeFeeAmount, 2, '.', ''),
             'total_amount' => number_format($totalAmount, 2, '.', ''),
+            'technician_paid_amount' => number_format($technicianPaidAmount, 2, '.', ''),
+            'technician_remaining_amount' => number_format($technicianRemainingAmount, 2, '.', ''),
+            'customer_collection_amount' => number_format($customerCollectionAmount, 2, '.', ''),
+            'payer_state' => $payerState,
+            'technician_payment_model_label' => $paymentModelLabel,
+            'technician_payment_source_label' => $paymentSourceLabel,
+            'technician_payment_status_key' => $paymentStatusKey,
+            'technician_payment_status_label' => $paymentStatusLabel,
             'currency' => (string) ($offer->currency ?: 'TRY'),
             'operation_note' => $operationNote,
             'persisted_at' => $persistedAt,
@@ -193,12 +242,17 @@ class TechnicalServiceAssignmentSettlementService
                     'line_id' => $line['line_id'],
                     'payment_id' => $line['payment_id'],
                     'purpose' => $line['purpose'],
+                    'purpose_label' => $line['purpose_label'],
+                    'source' => $line['source'],
+                    'status' => $line['status'],
                     'amount' => number_format((float) $line['amount'], 2, '.', ''),
                     'revision' => $line['revision'],
                 ])
                 ->values()
                 ->all();
         }
+
+        $revision = hash('sha256', json_encode($revisionPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
 
         return [
             ...$revisionPayload,
@@ -208,8 +262,19 @@ class TechnicalServiceAssignmentSettlementService
             'company_payment_amount' => $companyPaymentAmount,
             'company_payment_breakdown' => $companyPayments->values()->all(),
             'total_amount' => $totalAmount,
+            'technician_paid_amount' => $technicianPaidAmount,
+            'technician_remaining_amount' => $technicianRemainingAmount,
+            'customer_collection_amount' => $customerCollectionAmount,
+            'payer_state' => $payerState,
+            'payer_state_key' => $payerState,
+            'technician_payment_model_label' => $paymentModelLabel,
+            'technician_payment_source_label' => $paymentSourceLabel,
+            'technician_payment_status_key' => $paymentStatusKey,
+            'technician_payment_status_label' => $paymentStatusLabel,
+            'customer_collection_source_label' => $customerCollectionSourceLabel,
             'operation_note' => $operationNote !== '' ? $operationNote : null,
-            'revision' => hash('sha256', json_encode($revisionPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)),
+            'revision' => $revision,
+            'snapshot_hash' => $revision,
         ];
     }
 

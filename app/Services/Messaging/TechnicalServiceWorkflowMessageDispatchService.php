@@ -353,6 +353,9 @@ class TechnicalServiceWorkflowMessageDispatchService
             'business_event_id' => $businessEventId,
             'channel_policy' => $channel === 'whatsapp' ? 'whatsapp_only' : 'system_queue_only',
             'triggered_by' => (string) ($options['triggered_by'] ?? 'workflow_action'),
+            'parent_dispatch_id' => $options['parent_dispatch_id'] ?? null,
+            'force_resend' => (bool) ($options['force_resend'] ?? false),
+            'force_resend_reason' => $options['force_resend_reason'] ?? null,
             'payload' => [
                 'body' => $body,
                 'message_text' => $body,

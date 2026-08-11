@@ -4018,9 +4018,32 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'earnings_message_technician',
             'technician',
             [
-                'labor_amount_formatted' => '3.000,00 TL',
-                'route_fee_formatted' => '150,00 TL',
-                'technician_earning_total_formatted' => '3.150,00 TL',
+                'labor_amount' => 3000,
+                'route_fee_amount' => 1400,
+                'base_total_amount' => 4400,
+                'company_payment_amount' => 600,
+                'company_payment_breakdown' => [[
+                    'line_id' => 11,
+                    'payment_id' => 198,
+                    'purpose' => 'service_payment',
+                    'purpose_label' => 'Ek servis',
+                    'source' => 'extra_service',
+                    'amount' => 600,
+                    'amount_label' => '600,00 TL',
+                    'status' => 'payable',
+                ]],
+                'total_amount' => 5000,
+                'technician_paid_amount' => 0,
+                'technician_remaining_amount' => 5000,
+                'customer_collection_amount' => 5000,
+                'payer_state_key' => 'company_collected_company_pays_technician',
+                'technician_payment_model_label' => 'Şirket ödemesi',
+                'technician_payment_source_label' => 'EMAKS Prime',
+                'technician_payment_status_key' => 'payable',
+                'technician_payment_status_label' => 'Ödenecek',
+                'customer_collection_source_label' => 'EMAKS Prime tarafından alındı',
+                'earning_revision' => str_repeat('c', 64),
+                'snapshot_hash' => str_repeat('c', 64),
             ],
             $this->admin(),
         );
@@ -4033,7 +4056,13 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(2, $summary['queued']);
         $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->sort()->values()->all());
         foreach ($dispatches as $dispatch) {
-            $this->assertStringContainsString('3.150,00 TL', $dispatch->bodyForProvider());
+            $this->assertStringContainsString('600,00 TL', $dispatch->bodyForProvider());
+            $this->assertStringContainsString('5.000,00 TL', $dispatch->bodyForProvider());
+            $this->assertStringContainsString('EMAKS Prime', $dispatch->bodyForProvider());
+            $this->assertStringContainsString('Ödenecek', $dispatch->bodyForProvider());
+            $this->assertStringNotContainsString('4.400,00 TL', $dispatch->bodyForProvider());
+            $this->assertSame(str_repeat('c', 64), data_get($dispatch->request_payload, 'context.earning_revision'));
+            $this->assertSame(str_repeat('c', 64), data_get($dispatch->request_payload, 'context.snapshot_hash'));
         }
         $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
             'limit' => 2,

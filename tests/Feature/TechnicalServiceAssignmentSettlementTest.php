@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarningPayment;
@@ -589,6 +590,129 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(2500.0, data_get($partnerReadModel, 'earning_summary.total_amount'));
     }
 
+    public function test_earning_message_uses_canonical_company_payment_snapshot(): void
+    {
+        [$request, $technician, , $offer, , $actor] = $this->assignedSettlementFixture();
+        $payment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $this->decideCompanyPayments($request, $actor, [$payment->id => 'pay_technician']);
+
+        $presentation = app(TechnicalServiceWorkflowService::class)
+            ->technicianEarningPresentation($request->refresh(), $technician, $offer->refresh());
+        $snapshot = $presentation['earning_snapshot'];
+
+        $this->assertSame(3, $snapshot['schema_version']);
+        $this->assertSame(1000.0, $snapshot['labor_amount']);
+        $this->assertSame(500.0, $snapshot['route_fee_amount']);
+        $this->assertSame(600.0, $snapshot['company_payment_amount']);
+        $this->assertSame(2100.0, $snapshot['total_amount']);
+        $this->assertSame(0.0, $snapshot['technician_paid_amount']);
+        $this->assertSame(2100.0, $snapshot['technician_remaining_amount']);
+        $this->assertSame('company_collected_company_pays_technician', $snapshot['payer_state']);
+        $this->assertSame('Şirket ödemesi', $snapshot['technician_payment_model_label']);
+        $this->assertSame('EMAKS Prime', $snapshot['technician_payment_source_label']);
+        $this->assertSame('payable', $snapshot['technician_payment_status_key']);
+        $this->assertSame('Ödenecek', $snapshot['technician_payment_status_label']);
+        $this->assertSame($snapshot['revision'], $snapshot['snapshot_hash']);
+        $this->assertStringContainsString('Şirket ödemesi — Ek servis: 600,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Toplam hakediş: 2.100,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Ustaya ödeme kaynağı: EMAKS Prime', $presentation['message_preview']);
+        $this->assertStringContainsString('Ustaya ödeme durumu: Ödenecek', $presentation['message_preview']);
+    }
+
+    public function test_customer_pays_technician_state_does_not_render_company_payment(): void
+    {
+        [$request, $technician, , $offer, $settlement] = $this->assignedSettlementFixture();
+        $settlement->forceFill([
+            'metadata' => [
+                ...(is_array($settlement->metadata) ? $settlement->metadata : []),
+                'payer_state_key' => 'customer_pays_technician',
+            ],
+        ])->save();
+
+        $presentation = app(TechnicalServiceWorkflowService::class)
+            ->technicianEarningPresentation($request->refresh(), $technician, $offer->refresh());
+        $snapshot = $presentation['earning_snapshot'];
+
+        $this->assertSame('customer_pays_technician', $snapshot['payer_state']);
+        $this->assertSame('Müşteri', $snapshot['technician_payment_source_label']);
+        $this->assertSame(0.0, $snapshot['company_payment_amount']);
+        $this->assertSame([], $snapshot['company_payment_breakdown']);
+        $this->assertStringNotContainsString('Şirket ödemesi —', $presentation['message_preview']);
+        $this->assertStringContainsString('Ustaya ödeme kaynağı: Müşteri', $presentation['message_preview']);
+    }
+
+    public function test_corrective_resend_requires_reason(): void
+    {
+        [$request, $technician, $partner, $offer, , $actor] = $this->assignedSettlementFixture();
+        $this->enableLocksmithJobCard($partner);
+        $payment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $this->decideCompanyPayments($request, $actor, [$payment->id => 'pay_technician']);
+        $snapshot = app(TechnicalServiceWorkflowService::class)
+            ->canonicalTechnicianEarningSnapshot($offer->refresh());
+        $historical = $this->historicalWrongCompanyPaymentDispatch($request, $offer, $snapshot, $actor);
+
+        $this->assertSame($snapshot['revision'], data_get($historical->metadata, 'earning_snapshot_revision'));
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
+                'earning_revision' => $snapshot['revision'],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('corrective_resend_reason')
+            ->assertJsonPath(
+                'errors.corrective_resend_reason.0',
+                'Düzeltici yeniden gönderim nedeni zorunludur: Şirket ödemesi bileşeni düzeltmesi',
+            );
+
+        $this->assertSame(1, TechnicalServiceMessageDispatch::query()
+            ->where('message_type', 'earnings_message_technician')
+            ->count());
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $historical->fresh()->status);
+        $this->assertSame(1, $historical->fresh()->attempt_count);
+        $this->assertStringContainsString('Toplam hakediş: 1.500,00 TL', $historical->fresh()->bodyForProvider());
+    }
+
+    public function test_duplicate_corrective_resend_creates_one_dispatch_per_channel(): void
+    {
+        [$request, $technician, $partner, $offer, , $actor] = $this->assignedSettlementFixture();
+        $this->enableLocksmithJobCard($partner);
+        $payment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $this->decideCompanyPayments($request, $actor, [$payment->id => 'pay_technician']);
+        $snapshot = app(TechnicalServiceWorkflowService::class)
+            ->canonicalTechnicianEarningSnapshot($offer->refresh());
+        $historical = $this->historicalWrongCompanyPaymentDispatch($request, $offer, $snapshot, $actor);
+        $payload = [
+            'earning_revision' => $snapshot['revision'],
+            'corrective_resend_reason' => 'Şirket ödemesi bileşeni düzeltmesi',
+        ];
+
+        $first = $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", $payload)
+            ->assertOk()
+            ->assertJsonPath('duplicate_noop', false)
+            ->assertJsonPath('corrective_resend', true);
+        $second = $this->postJson(
+            "/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message",
+            $payload,
+        )
+            ->assertOk()
+            ->assertJsonPath('duplicate_noop', true);
+
+        $this->assertSame($first->json('dispatch.id'), $second->json('dispatch.id'));
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+            ->where('message_type', 'earnings_message_technician')
+            ->count());
+        $corrective = TechnicalServiceMessageDispatch::query()->whereKey($first->json('dispatch.id'))->firstOrFail();
+        $this->assertTrue($corrective->force_resend);
+        $this->assertSame('Şirket ödemesi bileşeni düzeltmesi', $corrective->force_resend_reason);
+        $this->assertSame($snapshot['revision'], data_get($corrective->metadata, 'earning_snapshot_revision'));
+        $this->assertSame($snapshot['snapshot_hash'], data_get($corrective->metadata, 'earning_snapshot_hash'));
+        $this->assertSame(2, data_get($corrective->metadata, 'earning_message_contract_version'));
+        $this->assertSame([$historical->id], data_get($corrective->metadata, 'corrective_resend_source_dispatch_ids'));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $historical->fresh()->status);
+        $this->assertSame(1, $historical->fresh()->attempt_count);
+    }
+
     /**
      * @return array{0: TechnicalServiceRequest, 1: TechnicalServiceTechnician, 2: B2BPartner, 3: TechnicalServiceAssignmentOffer, 4: TechnicalServiceSettlement, 5: User}
      */
@@ -654,6 +778,67 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ])->values()->all(),
             $actor,
         );
+    }
+
+    /** @param array<string, mixed> $snapshot */
+    private function historicalWrongCompanyPaymentDispatch(
+        TechnicalServiceRequest $request,
+        TechnicalServiceAssignmentOffer $offer,
+        array $snapshot,
+        User $actor,
+    ): TechnicalServiceMessageDispatch {
+        $oldRevision = (string) $snapshot['revision'];
+        $historicalSnapshot = [
+            ...$snapshot,
+            'revision' => $oldRevision,
+            'snapshot_hash' => $oldRevision,
+        ];
+        $oldBody = "Hakediş bilgisi\nToplam hakediş: 1.500,00 TL";
+
+        return TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'earnings_message_technician',
+            'technical_service_request_id' => $request->id,
+            'technical_service_assignment_offer_id' => $offer->id,
+            'request_id' => $request->id,
+            'root_mrn' => $request->root_mrn ?: $request->mrn,
+            'mrn' => $request->mrn,
+            'srv' => $request->service_code,
+            'message_type' => 'earnings_message_technician',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'technician',
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
+            'attempt_count' => 1,
+            'max_attempts' => 1,
+            'rendered_body_hash' => hash('sha256', $oldBody),
+            'payload_hash' => hash('sha256', 'old-company-payment-body'),
+            'idempotency_key' => hash('sha256', 'old-company-payment-dispatch|'.$request->id),
+            'metadata' => [
+                'assignment_offer_id' => $offer->id,
+                'earning_snapshot_fingerprint' => $oldRevision,
+                'earning_snapshot_revision' => $oldRevision,
+                'earning_snapshot_hash' => $oldRevision,
+                'earning_snapshot' => $historicalSnapshot,
+            ],
+            'request_payload' => [
+                'body' => $oldBody,
+                'rendered_body' => $oldBody,
+            ],
+            'created_by' => $actor->id,
+            'sent_by' => $actor->id,
+            'sent_at' => now()->subMinute(),
+        ]);
+    }
+
+    private function enableLocksmithJobCard(B2BPartner $partner): void
+    {
+        config(['services.partner_portal.public_url' => 'https://dashboard.test']);
+        B2BPartnerCapability::query()->firstOrCreate([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+        ], [
+            'active' => true,
+        ]);
     }
 
     /**

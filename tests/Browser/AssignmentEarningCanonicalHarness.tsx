@@ -28,6 +28,8 @@ declare global {
 const initialRevision = 'a'.repeat(64)
 const savedRevision = 'b'.repeat(64)
 const companyPaymentRevision = 'c'.repeat(64)
+const companyPaymentMessageRevision = 'd'.repeat(64)
+const historicalWrongMessageRevision = companyPaymentMessageRevision
 const initialPreview = [
   'Merhaba Test Usta,',
   'Hakediş bilgisi:',
@@ -303,6 +305,81 @@ const companyPaymentRequest = (): ServiceRequest => ({
   ],
 })
 
+const companyPaymentMessageRequest = (): ServiceRequest => {
+  const snapshot: ServiceRequestCanonicalEarningSnapshot = {
+    schema_version: 3,
+    assignment_id: 104,
+    technician_id: 111,
+    labor_amount: 3000,
+    route_fee_amount: 1400,
+    base_total_amount: 4400,
+    company_payment_amount: 600,
+    company_payment_breakdown: [{
+      line_id: 11,
+      payment_id: 198,
+      purpose: 'service_payment',
+      purpose_label: 'Ek servis',
+      source: 'extra_service',
+      amount: 600,
+      amount_label: '600,00 TL',
+      status: 'payable',
+      status_label: 'Ödenecek',
+    }],
+    total_amount: 5000,
+    technician_paid_amount: 0,
+    technician_remaining_amount: 5000,
+    customer_collection_amount: 5000,
+    payer_state: 'company_collected_company_pays_technician',
+    payer_state_key: 'company_collected_company_pays_technician',
+    technician_payment_model_label: 'Şirket ödemesi',
+    technician_payment_source_label: 'EMAKS Prime',
+    technician_payment_status_key: 'payable',
+    technician_payment_status_label: 'Ödenecek',
+    customer_collection_source_label: 'EMAKS Prime tarafından alındı',
+    currency: 'TRY',
+    operation_note: null,
+    revision: companyPaymentMessageRevision,
+    snapshot_hash: companyPaymentMessageRevision,
+    persisted_at: '2026-08-11T06:30:00+00:00',
+  }
+  const historicalSnapshot: ServiceRequestCanonicalEarningSnapshot = {
+    ...snapshot,
+    revision: historicalWrongMessageRevision,
+    snapshot_hash: historicalWrongMessageRevision,
+  }
+
+  return {
+    ...initialRequest,
+    technicianPaymentAmount: 3000,
+    travelFeeAmount: 1400,
+    assignmentOffer: {
+      ...initialRequest.assignmentOffer!,
+      route_fee_amount: 1400,
+      total_amount: 5000,
+      earning_snapshot: snapshot,
+      message_preview: canonicalPreview(snapshot),
+      message_text: canonicalPreview(snapshot),
+    },
+    saleAndPayment: {
+      technician_earning_message: {
+        status: 'sent',
+        sent_at: '2026-08-11T06:00:00+00:00',
+        technician_id: 111,
+        technician_name: 'Test Usta',
+        labor_amount: 3000,
+        route_fee_amount: 1400,
+        base_total_amount: 4400,
+        company_payment_amount: 600,
+        company_payment_breakdown: snapshot.company_payment_breakdown,
+        total_amount: 5000,
+        earning_snapshot_revision: historicalWrongMessageRevision,
+        earning_snapshot: historicalSnapshot,
+        message_text: 'Montaj işçilik: 3.000,00 TL\nUsta yol hakedişi: 1.400,00 TL\nToplam hakediş: 4.400,00 TL',
+      },
+    },
+  }
+}
+
 const state: HarnessState = {
   saveCount: 0,
   sendCount: 0,
@@ -338,6 +415,10 @@ function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot): str
       `Şirket ödemesi — ${line.purpose_label ?? line.purpose ?? 'Ek tahsilat'}: ${money(line.amount)}`
     )),
     `Toplam hakediş: ${money(snapshot.total_amount)}`,
+    snapshot.customer_collection_source_label ? `Müşteri tahsilatı: ${snapshot.customer_collection_source_label}` : null,
+    snapshot.technician_payment_model_label ? `Ödeme modeli: ${snapshot.technician_payment_model_label}` : null,
+    snapshot.technician_payment_source_label ? `Ustaya ödeme kaynağı: ${snapshot.technician_payment_source_label}` : null,
+    snapshot.technician_payment_status_label ? `Ustaya ödeme durumu: ${snapshot.technician_payment_status_label}` : null,
     'Randevu: -',
     snapshot.operation_note ? `Not: ${snapshot.operation_note}` : null,
     'İş kartı:',
@@ -358,6 +439,7 @@ function Harness() {
   const [lastAllocationPayload, setLastAllocationPayload] = useState<ServiceRequestCompanyPaymentDecisionSubmit[] | null>(null)
   const [allocationError, setAllocationError] = useState<string | null>(null)
   const [lastSendRevision, setLastSendRevision] = useState('')
+  const [lastSendPayload, setLastSendPayload] = useState<ServiceRequestTechnicianEarningMessagePayload | null>(null)
   const [failNextSave, setFailNextSave] = useState(false)
 
   return (
@@ -381,6 +463,19 @@ function Harness() {
       >Uygun şirket ödemesi senaryosunu yükle</button>
       <button
         type="button"
+        data-testid="load-company-payment-message-scenario"
+        onClick={() => {
+          state.sendCount = 0
+          state.lastSendPayload = null
+          state.boardRefetchCount = 0
+          setSendCount(0)
+          setLastSendRevision('')
+          setLastSendPayload(null)
+          setRequest(companyPaymentMessageRequest())
+        }}
+      >Şirket ödemeli mesaj senaryosunu yükle</button>
+      <button
+        type="button"
         data-testid="earning-fail-next-save"
         onClick={() => {
           state.failNextSave = true
@@ -391,6 +486,7 @@ function Harness() {
       <output data-testid="earning-save-count" className="sr-only">{saveCount}</output>
       <output data-testid="earning-send-count" className="sr-only">{sendCount}</output>
       <output data-testid="earning-last-send-revision" className="sr-only">{lastSendRevision}</output>
+      <output data-testid="earning-last-send-payload" className="sr-only">{JSON.stringify(lastSendPayload)}</output>
       <output data-testid="company-payment-decision-submit-count" className="sr-only">{allocationSubmitCount}</output>
       <output data-testid="company-payment-decision-last-payload" className="sr-only">{JSON.stringify(lastAllocationPayload)}</output>
       <output data-testid="financial-board-refetch-count" className="sr-only">{state.boardRefetchCount}</output>
@@ -750,6 +846,7 @@ function Harness() {
           state.lastSendPayload = payload
           setSendCount(state.sendCount)
           setLastSendRevision(payload.earning_revision)
+          setLastSendPayload(payload)
 
           return {
             earning_snapshot: request.assignmentOffer?.earning_snapshot,
@@ -757,6 +854,7 @@ function Harness() {
             message_text: request.assignmentOffer?.message_preview ?? '',
             copy_text: request.assignmentOffer?.message_preview ?? '',
             whatsapp_url: '',
+            corrective_resend: Boolean(payload.corrective_resend_reason),
             dispatch: { id: 7001, status: 'queued', channel: 'whatsapp', provider_key: 'evolution' },
           }
         }}

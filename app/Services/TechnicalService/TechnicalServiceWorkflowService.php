@@ -943,6 +943,15 @@ class TechnicalServiceWorkflowService
             'company_payment_amount' => $earningSnapshot['company_payment_amount'] ?? 0,
             'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => $totalAmount,
+            'technician_paid_amount' => $earningSnapshot['technician_paid_amount'] ?? 0,
+            'technician_remaining_amount' => $earningSnapshot['technician_remaining_amount'] ?? $totalAmount,
+            'customer_collection_amount' => $earningSnapshot['customer_collection_amount'] ?? 0,
+            'payer_state' => $earningSnapshot['payer_state'] ?? null,
+            'technician_payment_model_label' => $earningSnapshot['technician_payment_model_label'] ?? null,
+            'technician_payment_source_label' => $earningSnapshot['technician_payment_source_label'] ?? null,
+            'technician_payment_status_key' => $earningSnapshot['technician_payment_status_key'] ?? null,
+            'technician_payment_status_label' => $earningSnapshot['technician_payment_status_label'] ?? null,
+            'customer_collection_source_label' => $earningSnapshot['customer_collection_source_label'] ?? null,
             'currency' => 'TRY',
             'note' => $note !== '' ? $note : null,
         ]);
@@ -967,6 +976,15 @@ class TechnicalServiceWorkflowService
             'company_payment_amount' => (float) ($earningSnapshot['company_payment_amount'] ?? 0),
             'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => round($totalAmount, 2),
+            'technician_paid_amount' => (float) ($earningSnapshot['technician_paid_amount'] ?? 0),
+            'technician_remaining_amount' => (float) ($earningSnapshot['technician_remaining_amount'] ?? $totalAmount),
+            'customer_collection_amount' => (float) ($earningSnapshot['customer_collection_amount'] ?? 0),
+            'payer_state' => $earningSnapshot['payer_state'] ?? null,
+            'technician_payment_model_label' => $earningSnapshot['technician_payment_model_label'] ?? null,
+            'technician_payment_source_label' => $earningSnapshot['technician_payment_source_label'] ?? null,
+            'technician_payment_status_key' => $earningSnapshot['technician_payment_status_key'] ?? null,
+            'technician_payment_status_label' => $earningSnapshot['technician_payment_status_label'] ?? null,
+            'customer_collection_source_label' => $earningSnapshot['customer_collection_source_label'] ?? null,
             'submitted_total_amount' => $submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null,
             'total_amount_corrected' => $totalAmountCorrected,
             'manual_override' => (bool) ($payload['manual_override'] ?? false),
@@ -990,6 +1008,14 @@ class TechnicalServiceWorkflowService
             'company_payment_amount' => (float) ($earningSnapshot['company_payment_amount'] ?? 0),
             'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
             'total_amount' => round($totalAmount, 2),
+            'technician_paid_amount' => (float) ($earningSnapshot['technician_paid_amount'] ?? 0),
+            'technician_remaining_amount' => (float) ($earningSnapshot['technician_remaining_amount'] ?? $totalAmount),
+            'customer_collection_amount' => (float) ($earningSnapshot['customer_collection_amount'] ?? 0),
+            'payer_state' => $earningSnapshot['payer_state'] ?? null,
+            'technician_payment_model_label' => $earningSnapshot['technician_payment_model_label'] ?? null,
+            'technician_payment_source_label' => $earningSnapshot['technician_payment_source_label'] ?? null,
+            'technician_payment_status_key' => $earningSnapshot['technician_payment_status_key'] ?? null,
+            'technician_payment_status_label' => $earningSnapshot['technician_payment_status_label'] ?? null,
             'submitted_total_amount' => $submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null,
             'total_amount_corrected' => $totalAmountCorrected,
             'manual_override' => (bool) ($payload['manual_override'] ?? false),
@@ -1039,7 +1065,13 @@ class TechnicalServiceWorkflowService
             ]);
         }
 
-        $earningSnapshot = $this->canonicalTechnicianEarningSnapshot($offer);
+        $settlement = $request->relationLoaded('settlement')
+            ? $request->settlement
+            : $request->settlement()->first();
+        $earningSnapshot = $this->canonicalTechnicianEarningSnapshot(
+            $offer,
+            $settlement instanceof TechnicalServiceSettlement ? $settlement : null,
+        );
         $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
         $jobCardUrl = is_string($jobCardContext['canonical_url'] ?? null)
             ? $jobCardContext['canonical_url']
@@ -1058,6 +1090,10 @@ class TechnicalServiceWorkflowService
                 is_array($earningSnapshot['company_payment_breakdown'] ?? null)
                     ? $earningSnapshot['company_payment_breakdown']
                     : [],
+                (string) ($earningSnapshot['technician_payment_model_label'] ?? ''),
+                (string) ($earningSnapshot['technician_payment_source_label'] ?? ''),
+                (string) ($earningSnapshot['technician_payment_status_label'] ?? ''),
+                (string) ($earningSnapshot['customer_collection_source_label'] ?? ''),
             ),
         ];
     }
@@ -1065,9 +1101,11 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
-    public function canonicalTechnicianEarningSnapshot(TechnicalServiceAssignmentOffer $offer): array
-    {
-        return $this->assignmentSettlements->canonicalEarningSnapshot($offer);
+    public function canonicalTechnicianEarningSnapshot(
+        TechnicalServiceAssignmentOffer $offer,
+        ?TechnicalServiceSettlement $settlement = null,
+    ): array {
+        return $this->assignmentSettlements->canonicalEarningSnapshot($offer, $settlement);
     }
 
     /**
@@ -2618,6 +2656,8 @@ class TechnicalServiceWorkflowService
             $payload['sent_at'] = $this->dateTimeString($dispatch->sent_at);
             $payload['last_error_code'] = $dispatch->last_error_code;
             $payload['last_error_message_redacted'] = $dispatch->last_error_message_redacted;
+            $payload['earning_message_contract_version'] = (int) ($payload['earning_message_contract_version']
+                ?? data_get($dispatch->metadata, 'earning_message_contract_version', 0));
         }
 
         $earningSnapshot = is_array($payload['earning_snapshot'] ?? null)
@@ -2649,6 +2689,15 @@ class TechnicalServiceWorkflowService
         $payload['company_payment_amount'] = round($companyPaymentAmount, 2);
         $payload['company_payment_breakdown'] = $companyPaymentBreakdown;
         $payload['total_amount'] = round($totalAmount, 2);
+        $payload['technician_paid_amount'] = round((float) ($earningSnapshot['technician_paid_amount'] ?? $payload['technician_paid_amount'] ?? 0), 2);
+        $payload['technician_remaining_amount'] = round((float) ($earningSnapshot['technician_remaining_amount'] ?? $payload['technician_remaining_amount'] ?? $totalAmount), 2);
+        $payload['customer_collection_amount'] = round((float) ($earningSnapshot['customer_collection_amount'] ?? $payload['customer_collection_amount'] ?? 0), 2);
+        $payload['payer_state'] = $earningSnapshot['payer_state'] ?? $payload['payer_state'] ?? null;
+        $payload['technician_payment_model_label'] = $earningSnapshot['technician_payment_model_label'] ?? $payload['technician_payment_model_label'] ?? null;
+        $payload['technician_payment_source_label'] = $earningSnapshot['technician_payment_source_label'] ?? $payload['technician_payment_source_label'] ?? null;
+        $payload['technician_payment_status_key'] = $earningSnapshot['technician_payment_status_key'] ?? $payload['technician_payment_status_key'] ?? null;
+        $payload['technician_payment_status_label'] = $earningSnapshot['technician_payment_status_label'] ?? $payload['technician_payment_status_label'] ?? null;
+        $payload['customer_collection_source_label'] = $earningSnapshot['customer_collection_source_label'] ?? $payload['customer_collection_source_label'] ?? null;
         $payload['submitted_total_amount'] = $payload['submitted_total_amount'] ?? ($submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null);
         $payload['total_amount_corrected'] = (bool) ($payload['total_amount_corrected'] ?? ($submittedTotalAmount !== null && abs($submittedTotalAmount - $totalAmount) > 0.01));
 
@@ -2662,6 +2711,10 @@ class TechnicalServiceWorkflowService
                 (string) ($payload['note'] ?? ''),
                 null,
                 $companyPaymentBreakdown,
+                (string) ($payload['technician_payment_model_label'] ?? ''),
+                (string) ($payload['technician_payment_source_label'] ?? ''),
+                (string) ($payload['technician_payment_status_label'] ?? ''),
+                (string) ($payload['customer_collection_source_label'] ?? ''),
             );
         }
 
@@ -5254,6 +5307,15 @@ class TechnicalServiceWorkflowService
                 ? $amounts['company_payment_breakdown']
                 : [],
             'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
+            'technician_paid_amount' => round((float) ($amounts['technician_paid_amount'] ?? 0), 2),
+            'technician_remaining_amount' => round((float) ($amounts['technician_remaining_amount'] ?? 0), 2),
+            'customer_collection_amount' => round((float) ($amounts['customer_collection_amount'] ?? 0), 2),
+            'payer_state_key' => $amounts['payer_state'] ?? $amounts['payer_state_key'] ?? null,
+            'technician_payment_model_label' => $amounts['technician_payment_model_label'] ?? null,
+            'technician_payment_source_label' => $amounts['technician_payment_source_label'] ?? null,
+            'technician_payment_status_key' => $amounts['technician_payment_status_key'] ?? null,
+            'technician_payment_status_label' => $amounts['technician_payment_status_label'] ?? null,
+            'customer_collection_source_label' => $amounts['customer_collection_source_label'] ?? null,
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
             'payment_message_trigger' => 'appointment_approval',
@@ -6123,6 +6185,10 @@ class TechnicalServiceWorkflowService
         string $note,
         ?string $jobCardUrl = null,
         array $companyPaymentBreakdown = [],
+        string $paymentModelLabel = '',
+        string $paymentSourceLabel = '',
+        string $paymentStatusLabel = '',
+        string $customerCollectionSourceLabel = '',
     ): string {
         $region = trim(implode(' / ', array_filter([$request->customer_city, $request->customer_district])));
         $lines = [
@@ -6145,6 +6211,18 @@ class TechnicalServiceWorkflowService
         }
 
         $lines[] = 'Toplam hakediş: '.$this->moneyText($totalAmount);
+        if ($customerCollectionSourceLabel !== '') {
+            $lines[] = 'Müşteri tahsilatı: '.$customerCollectionSourceLabel;
+        }
+        if ($paymentModelLabel !== '') {
+            $lines[] = 'Ödeme modeli: '.$paymentModelLabel;
+        }
+        if ($paymentSourceLabel !== '') {
+            $lines[] = 'Ustaya ödeme kaynağı: '.$paymentSourceLabel;
+        }
+        if ($paymentStatusLabel !== '') {
+            $lines[] = 'Ustaya ödeme durumu: '.$paymentStatusLabel;
+        }
         $lines[] = 'Randevu: '.($request->scheduled_at?->format('d.m.Y H:i') ?: ($request->scheduled_date?->format('d.m.Y') ?: '-'));
 
         if ($note !== '') {

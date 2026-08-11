@@ -1447,6 +1447,82 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertTrue($templates->every(fn (array $template): bool => trim((string) $template['body']) !== ''));
     }
 
+    public function test_whatsapp_includes_company_payment_component_and_total(): void
+    {
+        $preview = $this->earningMessagePreview('whatsapp', $this->companyPaymentEarningContext());
+        $body = (string) $preview['rendered_body'];
+
+        $this->assertStringContainsString('İşçilik/Montaj: 3.000,00 TL', $body);
+        $this->assertStringContainsString('Yol: 1.400,00 TL', $body);
+        $this->assertStringContainsString('Şirket ödemesi - Ek servis: 600,00 TL', $body);
+        $this->assertStringContainsString('Toplam: 5.000,00 TL', $body);
+        $this->assertStringNotContainsString('Toplam: 4.400,00 TL', $body);
+    }
+
+    public function test_sms_includes_company_payment_component_and_total(): void
+    {
+        $preview = $this->earningMessagePreview('sms', $this->companyPaymentEarningContext());
+        $body = (string) $preview['rendered_body'];
+
+        $this->assertStringContainsString('İşçilik 3.000,00 TL', $body);
+        $this->assertStringContainsString('Yol 1.400,00 TL', $body);
+        $this->assertStringContainsString('Şirket/Ek servis 600,00 TL', $body);
+        $this->assertStringContainsString('Toplam 5.000,00 TL', $body);
+        $this->assertStringContainsString('B028', $body);
+        $this->assertStringNotContainsString('Toplam 4.400,00 TL', $body);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_company_payable_is_not_presented_as_technician_paid(): void
+    {
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $body = (string) $this->earningMessagePreview($channel, $this->companyPaymentEarningContext())['rendered_body'];
+
+            $this->assertStringContainsString('Ödenecek', $body);
+            $this->assertStringNotContainsString('Ödendi', $body);
+        }
+    }
+
+    public function test_payer_state_company_is_rendered_in_both_channels(): void
+    {
+        $context = $this->companyPaymentEarningContext();
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $this->earningMessagePreview($channel, $context);
+            $body = (string) $preview['rendered_body'];
+
+            $this->assertStringContainsString('EMAKS Prime', $body);
+            $this->assertSame($context['earning_revision'], data_get($preview, 'context.earning_revision'));
+            $this->assertSame($context['snapshot_hash'], data_get($preview, 'context.snapshot_hash'));
+        }
+    }
+
+    public function test_customer_pays_technician_state_does_not_render_company_payment(): void
+    {
+        $context = [
+            ...$this->companyPaymentEarningContext(),
+            'company_payment_amount' => 0,
+            'company_payment_breakdown' => [],
+            'total_amount' => 4400,
+            'technician_remaining_amount' => 4400,
+            'customer_collection_amount' => 0,
+            'payer_state_key' => 'customer_pays_technician',
+            'technician_payment_model_label' => 'Müşteri ödemesi',
+            'technician_payment_source_label' => 'Müşteri',
+            'technician_payment_status_label' => 'Ödenecek',
+            'customer_collection_source_label' => 'Ustaya doğrudan ödenecek',
+        ];
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $body = (string) $this->earningMessagePreview($channel, $context)['rendered_body'];
+
+            $this->assertStringNotContainsString('Şirket ödemesi', $body);
+            $this->assertStringNotContainsString('Şirket/', $body);
+            $this->assertStringContainsString('Müşteri', $body);
+            $this->assertStringContainsString('4.400,00 TL', $body);
+        }
+    }
+
     public function test_mount_request_customer_template_uses_business_context_without_internal_reference_labels(): void
     {
         foreach (['whatsapp', 'sms'] as $channel) {
@@ -2239,6 +2315,60 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=433',
             'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/433',
         ];
+    }
+
+    /** @return array<string, mixed> */
+    private function companyPaymentEarningContext(): array
+    {
+        $revision = str_repeat('c', 64);
+
+        return [
+            'mrn' => 'MRN-COMPANY-PAYMENT-198',
+            'srv' => 'SRV-COMPANY-PAYMENT-198-001',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1400,
+            'base_total_amount' => 4400,
+            'company_payment_amount' => 600,
+            'company_payment_breakdown' => [[
+                'line_id' => 11,
+                'payment_id' => 198,
+                'purpose' => 'service_payment',
+                'purpose_label' => 'Ek servis',
+                'source' => 'extra_service',
+                'amount' => 600,
+                'amount_label' => '600,00 TL',
+                'status' => 'payable',
+            ]],
+            'total_amount' => 5000,
+            'technician_paid_amount' => 0,
+            'technician_remaining_amount' => 5000,
+            'customer_collection_amount' => 5000,
+            'payer_state_key' => 'company_collected_company_pays_technician',
+            'technician_payment_model_label' => 'Şirket ödemesi',
+            'technician_payment_source_label' => 'EMAKS Prime',
+            'technician_payment_status_key' => 'payable',
+            'technician_payment_status_label' => 'Ödenecek',
+            'customer_collection_source_label' => 'EMAKS Prime tarafından alındı',
+            'earning_revision' => $revision,
+            'snapshot_hash' => $revision,
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?job_id=198',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/198',
+        ];
+    }
+
+    /** @param array<string, mixed> $context @return array<string, mixed> */
+    private function earningMessagePreview(string $channel, array $context): array
+    {
+        return $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => $channel,
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
     }
 
     private function admin(): User

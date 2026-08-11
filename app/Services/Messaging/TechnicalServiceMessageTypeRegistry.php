@@ -165,6 +165,10 @@ class TechnicalServiceMessageTypeRegistry
                 'labor_amount_formatted',
                 'route_fee_formatted',
                 'technician_earning_total_formatted',
+                'technician_earning_summary_text',
+                'technician_payment_model_label',
+                'technician_payment_source_label',
+                'technician_payment_status_label',
             ],
             'price_revision_response_technician' => [
                 'mrn',
@@ -357,6 +361,26 @@ class TechnicalServiceMessageTypeRegistry
                     'technician_earning_summary_block',
                     'srv_line',
                     'technician_visible_note_block',
+                ],
+                'earnings_message_technician' => [
+                    'technician_name',
+                    'technician_phone',
+                    'technician_job_card_short_url',
+                    'labor_amount_formatted',
+                    'route_fee_formatted',
+                    'company_payment_amount_formatted',
+                    'technician_earning_total_formatted',
+                    'technician_paid_amount_formatted',
+                    'technician_remaining_amount_formatted',
+                    'customer_collection_amount_formatted',
+                    'customer_collection_source_label',
+                    'technician_payment_model_label',
+                    'technician_payment_source_label',
+                    'technician_payment_status_label',
+                    'technician_earning_summary_text',
+                    'technician_earning_summary_block',
+                    'technician_earning_sms_summary',
+                    'srv_line',
                 ],
                 'customer_approval_request' => [
                     'technician_name',
@@ -567,8 +591,8 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
                 : "EMAKS Prime Teknik Servis\n\nUsta randevu önerdi.\n\nUsta: {technician_name}\nMüşteri: {customer_name}\nMRN: {mrn}\nÖnerilen zaman: {proposed_appointment_options}\nNot: {technician_note}\n\nOPS aksiyonu: {ops_next_action_text}",
             'earnings_message_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\nHakediş güncellendi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nİş Kartı: {technician_job_card_short_url}"
-                : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",
+                ? "EMAKS\nMRN {mrn}\n{technician_earning_sms_summary}\nKaynak {technician_payment_source_label}\nDurum {technician_payment_status_label}\nKart {technician_job_card_short_url}\nB028"
+                : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\n{technician_earning_summary_block}\n\nMüşteri tahsilatı: {customer_collection_source_label}\nÖdeme modeli: {technician_payment_model_label}\nUstaya ödeme kaynağı: {technician_payment_source_label}\nUstaya ödeme durumu: {technician_payment_status_label}",
             'price_revision_response_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\nHakediş revize edildi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nKart: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nHakediş revizyon cevabı hazır.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",
@@ -684,7 +708,12 @@ class TechnicalServiceMessageTypeRegistry
             ],
             'earnings_message_technician' => [
                 'mrn',
+                'labor_amount_formatted',
+                'route_fee_formatted',
                 'technician_earning_total_formatted',
+                'technician_earning_sms_summary',
+                'technician_payment_source_label',
+                'technician_payment_status_label',
                 'technician_job_card_short_url',
             ],
             'price_revision_response_technician' => [

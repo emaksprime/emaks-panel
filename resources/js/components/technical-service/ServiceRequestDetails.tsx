@@ -30,6 +30,9 @@ type AssignmentEarningDraft = {
   baseRevision: string
 }
 
+const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni düzeltmesi'
+const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 2
+
 type CompanyPaymentDecisionDraft = {
   decision?: 'pay_technician' | 'retain_company'
   note: string
@@ -177,7 +180,7 @@ type ServiceRequestDetailsProps = {
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
   onMountPaymentSend?: (paymentId: number | string, payload: PaymentLinkSendPayload) => Promise<PaymentLinkSendResult | void>
-  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
+  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, corrective_resend?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
@@ -1818,6 +1821,7 @@ export function ServiceRequestDetails({
   const [companyPaymentDecisionDraftByRequest, setCompanyPaymentDecisionDraftByRequest] = useState<Record<string, Record<string, CompanyPaymentDecisionDraft>>>({})
   const [companyPaymentDecisionSubmitInFlight, setCompanyPaymentDecisionSubmitInFlight] = useState(false)
   const companyPaymentDecisionSubmitLock = useRef(false)
+  const technicianEarningMessageSubmitLock = useRef(false)
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
   const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
   const [completionReviewNote, setCompletionReviewNote] = useState('')
@@ -2411,6 +2415,28 @@ export function ServiceRequestDetails({
   const persistedCompanyPaymentBreakdown = persistedEarningSnapshot?.company_payment_breakdown ?? settlement?.company_payment_breakdown ?? []
   const persistedEarningNote = persistedEarningSnapshot?.operation_note ?? activeAssignmentOffer?.note ?? ''
   const persistedEarningRevision = persistedEarningSnapshot?.revision ?? ''
+  const persistedEarningSnapshotHash = persistedEarningSnapshot?.snapshot_hash ?? persistedEarningRevision
+  const earningPaymentModelLabel = persistedEarningSnapshot?.technician_payment_model_label
+    ?? (persistedCompanyPaymentAmount > 0 ? 'Şirket ödemesi' : 'Müşteri ödemesi')
+  const earningPaymentSourceLabel = persistedEarningSnapshot?.technician_payment_source_label
+    ?? (persistedCompanyPaymentAmount > 0 ? 'EMAKS Prime' : 'Müşteri')
+  const earningPaymentStatusLabel = persistedEarningSnapshot?.technician_payment_status_label
+    ?? (Number(persistedEarningSnapshot?.technician_remaining_amount ?? persistedEarningSnapshot?.total_amount ?? 0) <= 0 ? 'Ödendi' : 'Ödenecek')
+  const earningCustomerCollectionSourceLabel = persistedEarningSnapshot?.customer_collection_source_label
+    ?? (persistedCompanyPaymentAmount > 0 ? 'EMAKS Prime tarafından alındı' : null)
+  const previousSentEarningSnapshot = technicianEarningMessage?.earning_snapshot ?? null
+  const samePersistedEarningEconomics = Boolean(previousSentEarningSnapshot && persistedEarningSnapshot && (
+    Math.abs(Number(previousSentEarningSnapshot.labor_amount ?? 0) - Number(persistedEarningSnapshot.labor_amount ?? 0)) <= 0.005
+    && Math.abs(Number(previousSentEarningSnapshot.route_fee_amount ?? 0) - Number(persistedEarningSnapshot.route_fee_amount ?? 0)) <= 0.005
+    && Math.abs(Number(previousSentEarningSnapshot.company_payment_amount ?? 0) - Number(persistedEarningSnapshot.company_payment_amount ?? 0)) <= 0.005
+    && Math.abs(Number(previousSentEarningSnapshot.total_amount ?? 0) - Number(persistedEarningSnapshot.total_amount ?? 0)) <= 0.005
+  ))
+  const correctiveEarningResendRequired = Boolean(
+    persistedCompanyPaymentAmount > 0
+    && samePersistedEarningEconomics
+    && Number(technicianEarningMessage?.earning_message_contract_version ?? 0) < COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION
+    && ['sent', 'test_sent'].includes(String(technicianEarningMessage?.status)),
+  )
   const companyPaymentDecisionPayload = financeCurrentVisit?.company_payment_decisions
     ?? settlement?.company_payment_decisions
     ?? earningBreakdown?.current_visit?.company_payment_decisions
@@ -2579,6 +2605,10 @@ export function ServiceRequestDetails({
       `Usta yol hakedişi: ${formatMoneyValue(earningRouteAmount)}`,
       ...previewCompanyPaymentBreakdown.map((line) => `Şirket ödemesi — ${line.purpose_label || 'Ek tahsilat'}: ${line.amount_label ?? formatMoneyValue(line.amount)}`),
       `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
+      earningCustomerCollectionSourceLabel ? `Müşteri tahsilatı: ${earningCustomerCollectionSourceLabel}` : null,
+      `Ödeme modeli: ${earningPaymentModelLabel}`,
+      `Ustaya ödeme kaynağı: ${earningPaymentSourceLabel}`,
+      `Ustaya ödeme durumu: ${earningPaymentStatusLabel}`,
       `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
       earningOperationNote.trim() ? `Not: ${earningOperationNote.trim()}` : null,
       technicianJobCard?.canonical_url ? 'İş kartı:' : null,
@@ -3572,6 +3602,10 @@ export function ServiceRequestDetails({
     await onAssignSelectedTechnician?.()
   }
   const handleTechnicianEarningMessageCreate = async () => {
+    if (technicianEarningMessageSubmitLock.current || technicianEarningMessageLoading) {
+      return
+    }
+
     if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
       setRouteFeeEditorMessage('Önce usta seçin.')
 
@@ -3608,26 +3642,37 @@ export function ServiceRequestDetails({
       return
     }
 
-    const response = await onTechnicianEarningMessageCreate({
-      technician_id: selectedTechnician.id,
-      earning_revision: persistedEarningRevision,
-    })
+    technicianEarningMessageSubmitLock.current = true
 
-    if (response && typeof response === 'object') {
-      setEarningMessageText(response.message_preview ?? response.message_text ?? response.copy_text ?? '')
-      setEarningMessageUrl(response.whatsapp_url ?? '')
+    try {
+      const response = await onTechnicianEarningMessageCreate({
+        technician_id: selectedTechnician.id,
+        earning_revision: persistedEarningRevision,
+        corrective_resend_reason: correctiveEarningResendRequired
+          ? COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON
+          : null,
+      })
+
+      if (response && typeof response === 'object') {
+        setEarningMessageText(response.message_preview ?? response.message_text ?? response.copy_text ?? '')
+        setEarningMessageUrl(response.whatsapp_url ?? '')
+      }
+
+      const dispatchStatus = response?.dispatch?.status
+      setRouteFeeEditorMessage(response?.duplicate_noop === true || dispatchStatus === 'duplicate_blocked'
+        ? 'Aynı hakediş mesajı zaten kuyruğa alınmış veya gönderilmiş; ikinci provider çağrısı oluşturulmadı.'
+        : ['blocked', 'suppressed', 'suppressed_real_send_disabled'].includes(String(dispatchStatus))
+          ? 'Hakediş mesajı provider öncesinde bloklandı; Kuyruk / Log detayını kontrol edin.'
+          : dispatchStatus === 'queued'
+            ? response?.corrective_resend === true
+              ? 'Düzeltici hakediş mesajı kuyruğa alındı.'
+              : 'Hakediş bilgisi mesaj kuyruğuna alındı.'
+            : dispatchStatus === 'sent' || dispatchStatus === 'test_sent'
+              ? 'Hakediş bilgisi gönderildi.'
+              : 'Hakediş mesajı kaydedildi; güncel durumu Kuyruk / Log ekranından izleyin.')
+    } finally {
+      technicianEarningMessageSubmitLock.current = false
     }
-
-    const dispatchStatus = response?.dispatch?.status
-    setRouteFeeEditorMessage(response?.duplicate_noop === true || dispatchStatus === 'duplicate_blocked'
-      ? 'Aynı hakediş mesajı zaten kuyruğa alınmış veya gönderilmiş; ikinci provider çağrısı oluşturulmadı.'
-      : ['blocked', 'suppressed', 'suppressed_real_send_disabled'].includes(String(dispatchStatus))
-        ? 'Hakediş mesajı provider öncesinde bloklandı; Kuyruk / Log detayını kontrol edin.'
-        : dispatchStatus === 'queued'
-          ? 'Hakediş bilgisi mesaj kuyruğuna alındı.'
-          : dispatchStatus === 'sent' || dispatchStatus === 'test_sent'
-            ? 'Hakediş bilgisi gönderildi.'
-            : 'Hakediş mesajı kaydedildi; güncel durumu Kuyruk / Log ekranından izleyin.')
   }
   const operationControlChange = <K extends keyof NonNullable<ServiceRequest['operationControl']>>(
     key: K,
@@ -6997,7 +7042,13 @@ export function ServiceRequestDetails({
                     <summary className="cursor-pointer font-semibold">
                       {earningDraftDirty ? 'Taslak hakediş mesajını göster' : 'Hakediş mesajını göster'}
                     </summary>
-                    <pre data-testid="earning-message-preview" className="mt-3 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
+                    <pre
+                      data-testid="earning-message-preview"
+                      data-earning-snapshot-hash={persistedEarningSnapshotHash}
+                      className="mt-3 whitespace-pre-wrap break-words font-sans"
+                    >
+                      {displayedEarningMessageText}
+                    </pre>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button type="button" size="sm" variant="outline" onClick={() => void copyReferenceValue(displayedEarningMessageText, 'Hakediş mesajı kopyalandı.', 'hakediş mesajını')}>
                         Mesajı kopyala
@@ -7012,6 +7063,12 @@ export function ServiceRequestDetails({
                     </div>
                   </details>
                 ) : null}
+                {correctiveEarningResendRequired ? (
+                  <div data-testid="earning-corrective-resend-notice" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                    <p className="font-semibold">Düzeltici yeniden gönderim gerekli</p>
+                    <p className="mt-1">Neden: {COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON}</p>
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-500">
                     {earningDraftDirty
@@ -7022,12 +7079,17 @@ export function ServiceRequestDetails({
                   </p>
                   <Button
                     data-testid="earning-send-button"
+                    data-earning-snapshot-hash={persistedEarningSnapshotHash}
                     type="button"
                     variant="outline"
                     onClick={() => void handleTechnicianEarningMessageCreate()}
                     disabled={!canSendTechnicianEarning || technicianEarningMessageLoading}
                   >
-                    {technicianEarningMessageLoading ? 'Hazırlanıyor...' : 'Hakediş bilgisini gönder'}
+                    {technicianEarningMessageLoading
+                      ? 'Hazırlanıyor...'
+                      : correctiveEarningResendRequired
+                        ? 'Düzeltici hakediş mesajını gönder'
+                        : 'Hakediş bilgisini gönder'}
                   </Button>
                 </div>
               </div>
