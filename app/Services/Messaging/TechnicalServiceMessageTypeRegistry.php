@@ -140,7 +140,8 @@ class TechnicalServiceMessageTypeRegistry
                 'customer_payment_amount_formatted',
             ],
             'assignment_offer_technician' => [
-                'mrn',
+                'technician_name',
+                'request_code',
                 'customer_name',
                 'customer_phone',
                 'product_name',
@@ -150,6 +151,7 @@ class TechnicalServiceMessageTypeRegistry
                 'labor_amount_formatted',
                 'route_fee_formatted',
                 'technician_earning_total_formatted',
+                'technician_earning_summary_text',
                 'technician_job_card_url',
             ],
             'appointment_proposed_ops' => [
@@ -314,6 +316,8 @@ class TechnicalServiceMessageTypeRegistry
                     'appointment_assignment_timing_text',
                     'technician_earning_summary_text',
                     'technician_earning_summary_block',
+                    'technician_earning_sms_summary',
+                    'company_payment_amount_formatted',
                     'labor_amount_formatted',
                     'route_fee_formatted',
                     'technician_earning_total_formatted',
@@ -586,8 +590,8 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\n{customer_reference_phrase}\nUstaya ödenecek tutar: {customer_payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar:\n\n{customer_payment_amount_formatted}\n\nRandevu aralığında adreste olunmasını rica ederiz.",
             'assignment_offer_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Yeni is bildirimi\nMRN: {mrn}\nMusteri: {sms_customer_name}\nUrun: {product_sms_label}\nToplam hakedis: {technician_earning_total_formatted}\nIs karti:\n{technician_job_card_short_url}"
-                : "EMAKS Prime Teknik Servis\n\nYeni iş teklifi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\nHarita:\n{maps_url}\nÜrün: {product_name}\nSeri No: {serial_no}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}\n\nİş Kartı\n{technician_job_card_url}\n\nLütfen randevu saati öneriniz.",
+                ? "EMAKS Prime\n{request_code} işi size atandı.\nMüşteri: {sms_customer_name}\nÜrün: {product_sms_label}\n{technician_earning_sms_summary}\nİş kartı: {technician_job_card_short_url}"
+                : "Merhaba {technician_name},\n\n{request_code} numaralı servis işi size atanmıştır.\n\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\nHarita:\n{maps_url}\nÜrün: {product_name}\nSeri No: {serial_no}\n\n{technician_earning_summary_block}\n\nİş kartınız:\n{technician_job_card_url}\n\nLütfen randevu saati öneriniz.",
             'appointment_proposed_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
                 : "EMAKS Prime Teknik Servis\n\nUsta randevu önerdi.\n\nUsta: {technician_name}\nMüşteri: {customer_name}\nMRN: {mrn}\nÖnerilen zaman: {proposed_appointment_options}\nNot: {technician_note}\n\nOPS aksiyonu: {ops_next_action_text}",

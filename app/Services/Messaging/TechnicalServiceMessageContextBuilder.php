@@ -412,7 +412,7 @@ class TechnicalServiceMessageContextBuilder
         $context['sms_custom_id'] = $this->filledString($context['sms_custom_id'] ?? null)
             ?: ($this->filledString($context['mrn'] ?? null) ?: 'PR88-REL4C');
 
-        if ($messageType === 'earnings_message_technician') {
+        if (in_array($messageType, ['assignment_offer_technician', 'earnings_message_technician'], true)) {
             $context['technician_earning_unknown_component_codes'] = $this->unknownEarningComponentCodes($context);
             $context['technician_payment_sentence'] = $this->humanTechnicianPaymentSentence($context);
             $context['technician_earning_summary_text'] = $this->humanEarningSummary($context);
@@ -835,6 +835,10 @@ class TechnicalServiceMessageContextBuilder
      */
     private function humanEarningSummary(array $context): string
     {
+        if ($this->money($context['total_amount'] ?? null) <= 0.0) {
+            return 'Bu iş için hakediş 0 TL olarak belirlenmiştir.';
+        }
+
         $lines = [];
         if ($this->money($context['labor_amount'] ?? null) > 0.0) {
             $lines[] = 'İşçilik: '.$this->formatTry($this->money($context['labor_amount']));

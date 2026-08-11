@@ -1375,6 +1375,17 @@ class TechnicalServiceWorkflowTest extends TestCase
             'district' => 'Synthetic District B',
             'active' => true,
         ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $newTechnician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-COMPLETED-SNAPSHOT',
             'status' => 'Sahada',
@@ -4863,8 +4874,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_srv_assignment_requires_explicit_labor_before_any_assignment_mutation(): void
+    public function test_srv_assignment_accepts_zero_labor_and_zero_route(): void
     {
+        config(['services.partner_portal.public_url' => 'https://dashboard.test']);
         $user = $this->adminUser();
         $parent = $this->technicalServiceRequest(['mrn' => 'MRN-SRV-LABOR-GATE']);
         $technician = TechnicalServiceTechnician::query()->create([
@@ -4881,51 +4893,130 @@ class TechnicalServiceWorkflowTest extends TestCase
             'service_code' => 'SRV-SRV-LABOR-GATE-001',
             'service_visit_reason' => 'revisit',
             'service_type' => 'Servis',
+            'service_address' => 'Kale / Denizli',
+            'location_map_url' => 'https://www.google.com/maps/search/?api=1&query=37.782%2C29.096',
             'workflow_status' => 'Yeni Talep',
             'operation_control_payload' => [
                 'payment_checked' => 'yes',
                 'door_photos_checked' => 'compatible',
             ],
         ]);
-        $before = $serviceVisit->fresh()->getRawOriginal();
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'ZERO-EARNING-PARTNER',
+            'display_name' => 'Zero Earning Partner',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
 
         $this->actingAs($user)
             ->postJson("/api/technical-service/requests/{$serviceVisit->id}/assign", [
                 'technical_service_technician_id' => $technician->id,
+                'b2b_partner_id' => $partner->id,
                 'travel_round_trip_km' => 0,
+                'confirm_assignment' => true,
+                'assignment_offer' => [
+                    'labor_amount' => 0,
+                    'route_fee_amount' => 0,
+                    'customer_direct_to_technician_amount' => 0,
+                    'currency' => 'TRY',
+                ],
             ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('assignment_offer.labor_amount');
-
-        $this->assertSame($before, $serviceVisit->fresh()->getRawOriginal());
-        $this->assertSame(0, TechnicalServiceAssignmentOffer::query()->where('technical_service_request_id', $serviceVisit->id)->count());
-        $this->assertSame(0, $serviceVisit->events()->count());
-
-        $this->postJson("/api/technical-service/requests/{$serviceVisit->id}/assign", [
-            'technical_service_technician_id' => $technician->id,
-            'travel_round_trip_km' => 0,
-            'assignment_offer' => [
-                'labor_amount' => 3000,
-                'route_fee_amount' => 150,
-                'currency' => 'TRY',
-            ],
-        ])
             ->assertOk()
-            ->assertJsonPath('request.assignment_offer.labor_amount', 3000)
-            ->assertJsonPath('request.assignment_offer.route_fee_amount', 150)
-            ->assertJsonPath('request.assignment_offer.total_amount', 3150);
+            ->assertJsonPath('request.assignment_offer.labor_amount', 0)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 0)
+            ->assertJsonPath('request.assignment_offer.total_amount', 0)
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.total_amount', 0)
+            ->assertJsonPath('request.assignment_offer.message_payload.technician_earning_summary_text', 'Bu iş için hakediş 0 TL olarak belirlenmiştir.');
 
         $this->assertDatabaseHas('technical_service_assignment_offers', [
             'technical_service_request_id' => $serviceVisit->id,
             'technical_service_technician_id' => $technician->id,
-            'labor_amount' => '3000.00',
-            'route_fee_amount' => '150.00',
-            'total_amount' => '3150.00',
+            'labor_amount' => '0.00',
+            'route_fee_amount' => '0.00',
+            'total_amount' => '0.00',
         ]);
+    }
+
+    public function test_manual_route_value_is_not_overwritten_by_selected_old_route_quote(): void
+    {
+        Http::fake();
+        [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $request->forceFill([
+            'location_map_url' => 'https://www.google.com/maps/search/?api=1&query=41.1%2C29.1',
+        ])->save();
+        $quote = TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'origin_latitude' => 41,
+            'origin_longitude' => 29,
+            'destination_latitude' => 41.1,
+            'destination_longitude' => 29.1,
+            'distance_meters' => 45000,
+            'distance_km' => 45,
+            'duration_seconds' => 1800,
+            'threshold_km' => 30,
+            'extra_km' => 15,
+            'fee_per_km' => 93.766666,
+            'fee_amount' => 1406.50,
+            'travel_fee_required' => true,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => [
+                'one_way_distance_meters' => 22500,
+                'round_trip_distance_meters' => 45000,
+            ],
+            'calculated_at' => now(),
+        ]);
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'b2b_partner_id' => data_get($offer->metadata, 'assignment_partner_id'),
+                'route_quote_id' => $quote->id,
+                'travel_round_trip_km' => 45,
+                'expected_earning_revision' => $this->canonicalEarningRevision($offer),
+                'confirm_assignment' => true,
+                'assignment_offer' => [
+                    'labor_amount' => 100,
+                    'route_fee_amount' => 400,
+                    'customer_direct_to_technician_amount' => 500,
+                    'currency' => 'TRY',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.labor_amount', 100)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 400)
+            ->assertJsonPath('request.assignment_offer.total_amount', 500)
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.route_fee_amount', 400)
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.total_amount', 500);
+
+        $this->assertStringContainsString('Yol: 400,00 TL', (string) $response->json('request.assignment_offer.message_preview'));
+        $this->assertStringNotContainsString('1.406,50 TL', (string) $response->json('request.assignment_offer.message_preview'));
+        $this->assertDatabaseHas('technical_service_assignment_offers', [
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => '100.00',
+            'route_fee_amount' => '400.00',
+            'total_amount' => '500.00',
+        ]);
+        Http::assertNothingSent();
     }
 
     public function test_review_job_can_be_reassigned_from_closure_pending_without_invalid_transition(): void
     {
+        config(['services.partner_portal.public_url' => 'https://dashboard.test']);
+
         $user = $this->adminUser();
         $oldTechnician = TechnicalServiceTechnician::query()->create([
             'name' => 'Eski Son Kontrol Ustası',
@@ -4945,6 +5036,17 @@ class TechnicalServiceWorkflowTest extends TestCase
             'display_name' => 'Reassign Closure Locksmith',
             'active' => true,
         ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $newTechnician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-REASSIGN-CLOSURE',
             'status' => 'Devam Ediyor',
@@ -4962,6 +5064,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'photo_status' => 'tamamlandı',
             'customer_closure_approval_status' => 'onaylandı',
             'customer_closure_approved_at' => now()->subMinutes(30),
+            'location_map_url' => 'https://www.google.com/maps/search/?api=1&query=37.782%2C29.096',
             'operation_control_payload' => [
                 'payment_checked' => 'yes',
                 'door_photos_checked' => 'compatible',
@@ -4997,12 +5100,15 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->actingAs($user)
             ->postJson("/api/technical-service/requests/{$request->id}/assign", [
                 'technical_service_technician_id' => $newTechnician->id,
+                'b2b_partner_id' => $partner->id,
                 'travel_round_trip_km' => 20,
+                'expected_earning_revision' => $this->canonicalEarningRevision($oldOffer),
                 'note' => 'Son kontrolden yeniden atama.',
                 'assignment_offer' => [
                     'labor_amount' => 1200,
                     'route_fee_amount' => 80,
                     'total_amount' => 1280,
+                    'customer_direct_to_technician_amount' => 1280,
                 ],
             ])
             ->assertOk()
@@ -5110,6 +5216,8 @@ class TechnicalServiceWorkflowTest extends TestCase
             'serial_number' => 'SN-ASSIGN-MSG',
             'activation_code' => 'ACT-ASSIGN-MSG',
             'stock_code' => 'STK-INTERNAL-ONLY',
+            'service_address' => 'Pamukkale / Denizli',
+            'location_map_url' => 'https://www.google.com/maps/search/?api=1&query=37.916%2C29.117',
             'technical_service_technician_id' => $oldTechnician->id,
             'technician_name' => $oldTechnician->name,
             'technician_approval_status' => 'onayladı',
@@ -5138,6 +5246,7 @@ class TechnicalServiceWorkflowTest extends TestCase
                     'labor_amount' => 1500,
                     'route_fee_amount' => 100,
                     'total_amount' => 1600,
+                    'customer_direct_to_technician_amount' => 1600,
                 ],
             ])
             ->assertOk()
@@ -5164,13 +5273,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?', (string) data_get($dispatch->request_payload, 'context.job_link'));
         $this->assertStringContainsString('partner_id='.$partner->id, (string) data_get($dispatch->request_payload, 'context.job_link'));
         $this->assertStringContainsString('job_id='.$request->id, (string) data_get($dispatch->request_payload, 'context.job_link'));
-        $this->assertStringContainsString('Ürün: E10 SyntheticPerson038 / Plus', (string) data_get($dispatch->request_payload, 'message_text'));
-        $this->assertStringContainsString('Seri: SN-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));
-        $this->assertStringContainsString('Aktivasyon: ACT-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Ürün: E10 SyntheticPerson038', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Seri No: SN-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringNotContainsString('STK-INTERNAL-ONLY', (string) data_get($dispatch->request_payload, 'message_text'));
-        $this->assertStringContainsString('İşçilik: 1.500 TL', (string) data_get($dispatch->request_payload, 'message_text'));
-        $this->assertStringContainsString('Yol: 100 TL', (string) data_get($dispatch->request_payload, 'message_text'));
-        $this->assertStringContainsString('Toplam: 1.600 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('İşçilik: 1.500,00 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Yol: 100,00 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Toplam hakedişiniz: 1.600,00 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Hakedişiniz müşteri tarafından ödenecektir.', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringNotContainsString('TRY', (string) data_get($dispatch->request_payload, 'message_text'));
 
         Http::assertNothingSent();
@@ -5278,7 +5387,7 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertSame('paid', $request->mount_payment_status);
         $this->assertEquals(3150.0, $request->operation_control_payload['technician_earning_message']['total_amount'] ?? null);
-        $this->assertStringContainsString('Toplam hakediş: 3.150,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
+        $this->assertStringContainsString('Toplam hakedişiniz: 3.150,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
         $this->assertStringNotContainsString('3.200,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
         $this->assertSame(3000.0, (float) $offer->fresh()->labor_amount);
         $this->assertSame(150.0, (float) $offer->fresh()->route_fee_amount);
@@ -5326,12 +5435,14 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_earning_update_recalculates_total_from_labor_and_route(): void
     {
         [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+        $expectedRevision = $this->canonicalEarningRevision($offer);
 
         $this->actingAs($user)
             ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
                 'labor_amount' => 4000,
                 'route_fee_amount' => 125,
                 'total_amount' => 9999,
+                'expected_earning_revision' => $expectedRevision,
                 'note' => 'Canonical toplam testi',
             ])
             ->assertOk()
@@ -5348,17 +5459,19 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_save_returns_canonical_earning_snapshot(): void
     {
         [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+        $expectedRevision = $this->canonicalEarningRevision($offer);
 
         $response = $this->actingAs($user)
             ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
                 'labor_amount' => 4000,
                 'route_fee_amount' => 0,
+                'expected_earning_revision' => $expectedRevision,
                 'note' => 'Kaydedilen operasyon notu',
             ])
             ->assertOk()
             ->assertJsonPath('earning_snapshot.total_amount', 4000)
             ->assertJsonPath('request.assignment_offer.earning_snapshot.total_amount', 4000)
-            ->assertJsonPath('request.assignment_offer.message_preview', fn ($value) => is_string($value) && str_contains($value, 'Toplam hakediş: 4.000,00 TL'));
+            ->assertJsonPath('request.assignment_offer.message_preview', fn ($value) => is_string($value) && str_contains($value, 'Toplam hakedişiniz: 4.000,00 TL'));
 
         $revision = $response->json('earning_snapshot.revision');
         $this->assertIsString($revision);
@@ -5371,10 +5484,12 @@ class TechnicalServiceWorkflowTest extends TestCase
     {
         Http::fake();
         [$user, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $expectedRevision = $this->canonicalEarningRevision($offer);
         $save = $this->actingAs($user)
             ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
                 'labor_amount' => 4000,
                 'route_fee_amount' => 0,
+                'expected_earning_revision' => $expectedRevision,
                 'note' => 'Güncel snapshot',
             ])
             ->assertOk();
@@ -5385,9 +5500,8 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertOk();
 
         $this->assertSame($save->json('message_preview'), $send->json('message_preview'));
-        $this->assertStringContainsString('Montaj işçilik: 4.000,00 TL', $send->json('message_text'));
-        $this->assertStringContainsString('Usta yol hakedişi: 0,00 TL', $send->json('message_text'));
-        $this->assertStringContainsString('Toplam hakediş: 4.000,00 TL', $send->json('message_text'));
+        $this->assertStringContainsString('İşçilik: 4.000,00 TL', $send->json('message_text'));
+        $this->assertStringContainsString('Toplam hakedişiniz: 4.000,00 TL', $send->json('message_text'));
         $this->assertStringNotContainsString('3.000,00 TL', $send->json('message_text'));
         Http::assertNothingSent();
     }
@@ -5403,6 +5517,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
                 'labor_amount' => 4000,
                 'route_fee_amount' => 0,
+                'expected_earning_revision' => $staleRevision,
                 'note' => 'Revision değişti',
             ])
             ->assertOk();
@@ -5427,6 +5542,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'labor_amount' => 4000,
             'route_fee_amount' => 0,
             'note' => 'No-op snapshot',
+            'expected_earning_revision' => $this->canonicalEarningRevision($offer),
         ];
         $first = $this->actingAs($user)
             ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", $payload)
@@ -5437,6 +5553,8 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->where('technical_service_request_id', $request->id)
             ->sole()
             ->updated_at?->toISOString();
+
+        $payload['expected_earning_revision'] = $first->json('earning_snapshot.revision');
 
         $second = $this->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", $payload)
             ->assertOk()
@@ -5602,12 +5720,15 @@ class TechnicalServiceWorkflowTest extends TestCase
             'note' => 'Yarın uygunum.',
         ]);
 
+        $expectedRevision = $this->canonicalEarningRevision($offer);
+
         $response = $this->actingAs($user)
             ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
                 'labor_amount' => 3000,
                 'route_fee_amount' => 1967.40,
                 'total_amount' => 4967.40,
                 'note' => 'Revize yanıtlandı.',
+                'expected_earning_revision' => $expectedRevision,
             ])
             ->assertOk()
             ->assertJsonPath('status', 'revised')
@@ -5657,6 +5778,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'route_fee_amount' => 1967.40,
             'total_amount' => 4967.40,
             'note' => 'Revize yanıtlandı.',
+            'expected_earning_revision' => $response->json('earning_snapshot.revision'),
         ])
             ->assertOk()
             ->assertJsonPath('status', 'duplicate_noop')
@@ -6983,6 +7105,12 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->where('provider', 'manual')
             ->get()
             ->filter(fn (TechnicalServiceMountPayment $payment): bool => (int) data_get($payment->raw_payload, 'part_request_id') === (int) $partRequest->id);
+    }
+
+    private function canonicalEarningRevision(TechnicalServiceAssignmentOffer $offer): string
+    {
+        return (string) app(TechnicalServiceWorkflowService::class)
+            ->canonicalTechnicianEarningSnapshot($offer->refresh())['revision'];
     }
 
     private function enableManualPaymentReceiptNotification(): void

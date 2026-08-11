@@ -1090,6 +1090,84 @@ class TechnicalServiceWorkflowService
     }
 
     /**
+     * @param  array<string, mixed>  $contextOverrides
+     * @return array{earning_snapshot:array<string,mixed>,message_preview:string,sms_preview:string,message_context:array<string,mixed>,template:array<string,mixed>}
+     */
+    public function technicianAssignmentPresentation(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        TechnicalServiceAssignmentOffer $offer,
+        array $contextOverrides = [],
+    ): array {
+        if ((int) $offer->technical_service_request_id !== (int) $request->id
+            || (int) $offer->technical_service_technician_id !== (int) $technician->id
+        ) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Canonical hakediş kaydı aktif talep ve usta ile eşleşmiyor.',
+            ]);
+        }
+
+        $settlement = $request->relationLoaded('settlement')
+            ? $request->settlement
+            : $request->settlement()->first();
+        $earningSnapshot = $this->canonicalTechnicianEarningSnapshot(
+            $offer,
+            $settlement instanceof TechnicalServiceSettlement ? $settlement : null,
+        );
+        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $messageContext = [
+            ...$contextOverrides,
+            ...$this->technicianEarningMessageContext($request, $technician, $earningSnapshot, $jobCardContext),
+        ];
+
+        foreach (['job_link', 'technician_job_card_url', 'technician_job_card_short_url'] as $linkKey) {
+            $override = trim((string) ($contextOverrides[$linkKey] ?? ''));
+            if ($override !== '') {
+                $messageContext[$linkKey] = $override;
+            }
+        }
+
+        $previewInput = [
+            'message_type' => 'assignment_offer_technician',
+            'request_id' => $request->id,
+            'sample_context' => false,
+            'context' => $messageContext,
+        ];
+        $whatsapp = $this->messageTemplates->preview([
+            ...$previewInput,
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+        ]);
+        $sms = $this->messageTemplates->preview([
+            ...$previewInput,
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+        ]);
+        $blockers = array_values(array_unique([
+            ...((array) ($whatsapp['blockers'] ?? [])),
+            ...((array) ($sms['blockers'] ?? [])),
+        ]));
+        if ($blockers !== []
+            || ! (bool) ($whatsapp['preview_ready'] ?? false)
+            || ! (bool) ($sms['preview_ready'] ?? false)
+        ) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => in_array('EARNING_MESSAGE_SNAPSHOT_MISMATCH', $blockers, true)
+                    ? 'Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.'
+                    : (implode(' ', $blockers) ?: 'Usta atama mesajı canonical hakedişten hazırlanamadı.'),
+            ]);
+        }
+
+        return [
+            'earning_snapshot' => $earningSnapshot,
+            'message_preview' => (string) $whatsapp['rendered_body'],
+            'sms_preview' => (string) $sms['rendered_body'],
+            'message_context' => (array) ($whatsapp['context'] ?? $messageContext),
+            'template' => (array) ($whatsapp['template'] ?? []),
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function canonicalTechnicianEarningSnapshot(
@@ -5346,9 +5424,17 @@ class TechnicalServiceWorkflowService
             'technician_name' => $technician->name,
             'technician_phone' => $phone,
             'mrn' => $request->mrn,
+            'srv' => $request->service_code,
+            'mrn_or_srv' => $request->service_code ?: $request->mrn,
             'customer_name' => $request->customer_name,
             'customer_phone' => $request->customer_phone,
             'address' => $request->location_formatted_address ?: $request->service_address,
+            'service_address' => $request->location_formatted_address ?: $request->service_address,
+            'maps_url' => $request->location_map_url,
+            'product_name' => $request->product_name,
+            'model' => $request->product_model,
+            'product_model' => $request->product_model,
+            'serial_no' => $request->serial_number,
             'job_link' => $jobLink,
             'technician_job_card_url' => $jobLink,
             'technician_job_card_short_url' => $jobShortLink,
@@ -5378,6 +5464,7 @@ class TechnicalServiceWorkflowService
             'customer_collection_source_label' => $amounts['customer_collection_source_label'] ?? null,
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
+            'operation_note' => $amounts['note'] ?? null,
             'payment_message_trigger' => 'appointment_approval',
             'payment_instruction_included' => false,
         ];

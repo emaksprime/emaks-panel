@@ -190,7 +190,7 @@ type ServiceRequestDetailsProps = {
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onPartRequestManualPaymentConfirm?: (partRequestId: number | string, payload: { explanation: string }) => void | Promise<void>
-  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<AssignmentOfferUpdateResult | void>
+  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, expected_earning_revision: string, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<AssignmentOfferUpdateResult | void>
   onCompanyPaymentDecisionApprove?: (payload: ServiceRequestCompanyPaymentDecisionSubmit[]) => void | Promise<AssignmentOfferUpdateResult | void>
   onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
@@ -2416,14 +2416,6 @@ export function ServiceRequestDetails({
   const persistedEarningNote = persistedEarningSnapshot?.operation_note ?? activeAssignmentOffer?.note ?? ''
   const persistedEarningRevision = persistedEarningSnapshot?.revision ?? ''
   const persistedEarningSnapshotHash = persistedEarningSnapshot?.snapshot_hash ?? persistedEarningRevision
-  const earningPaymentModelLabel = persistedEarningSnapshot?.technician_payment_model_label
-    ?? (persistedCompanyPaymentAmount > 0 ? 'Şirket ödemesi' : 'Müşteri ödemesi')
-  const earningPaymentSourceLabel = persistedEarningSnapshot?.technician_payment_source_label
-    ?? (persistedCompanyPaymentAmount > 0 ? 'EMAKS Prime' : 'Müşteri')
-  const earningPaymentStatusLabel = persistedEarningSnapshot?.technician_payment_status_label
-    ?? (Number(persistedEarningSnapshot?.technician_remaining_amount ?? persistedEarningSnapshot?.total_amount ?? 0) <= 0 ? 'Ödendi' : 'Ödenecek')
-  const earningCustomerCollectionSourceLabel = persistedEarningSnapshot?.customer_collection_source_label
-    ?? (persistedCompanyPaymentAmount > 0 ? 'EMAKS Prime tarafından alındı' : null)
   const previousSentEarningSnapshot = technicianEarningMessage?.earning_snapshot ?? null
   const samePersistedEarningEconomics = Boolean(previousSentEarningSnapshot && persistedEarningSnapshot && (
     Math.abs(Number(previousSentEarningSnapshot.labor_amount ?? 0) - Number(persistedEarningSnapshot.labor_amount ?? 0)) <= 0.005
@@ -2585,34 +2577,62 @@ export function ServiceRequestDetails({
     && earningTotalAmount !== null
     && earningTotalAmount >= 0,
   )
-  const canonicalEarningSaveRequested = Boolean(activeAssignmentOffer && !hasAssignmentChange && earningBaseDraftDirty)
-  const primaryAssignmentActionDisabled = canonicalEarningSaveRequested
-    ? !onAssignmentOfferUpdate
-      || assignmentOfferUpdateInFlight
-      || earningLaborAmount === null
-      || earningRouteAmount === null
-    : assignmentSubmitDisabled
-  const primaryAssignmentActionLoading = canonicalEarningSaveRequested ? assignmentOfferUpdateInFlight : assignLoading
+  const earningRevisionRequested = request.technicianApprovalStatus === 'revize_talebi'
+    || request.workflowStatus === 'Usta Tarih Revize Talebi'
+    || request.technicianRevisionOffer?.status === 'pending'
+  const earningSaveLabel = earningRevisionRequested
+    ? 'Revize hakedişi kaydet ve ustaya yeniden gönderime hazırla'
+    : hasAssignmentChange
+      ? 'Hakedişi kaydet ve atamayı güncelle'
+      : 'Hakedişi kaydet'
+  const earningSaveDisabled = !activeAssignmentOffer
+    || !onAssignmentOfferUpdate
+    || assignmentOfferUpdateInFlight
+    || earningLaborAmount === null
+    || earningRouteAmount === null
+    || !persistedEarningRevision
+  const primaryAssignmentActionDisabled = assignmentSubmitDisabled || earningDraftDirty
+  const draftEarningPaymentSentence = persistedEarningSnapshot?.payer_state === 'customer_pays_technician'
+    ? 'Hakedişiniz müşteri tarafından ödenecektir.'
+    : persistedEarningSnapshot?.technician_payment_status_key === 'paid'
+      && Number(persistedEarningSnapshot?.technician_paid_amount ?? 0) >= Number(earningTotalAmount ?? 0)
+      && Number(persistedEarningSnapshot?.technician_remaining_amount ?? earningTotalAmount ?? 0) <= 0
+      ? 'Hakediş ödemeniz EMAKS Prime tarafından yapılmıştır.'
+      : 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.'
+  const draftEarningRequestCode = displayMrn || request.mrn
   const technicianEarningPreviewText = selectedTechnician && earningTotalAmount !== null
-    ? [
-      `Merhaba ${selectedTechnician.name},`,
-      'Hakediş bilgisi:',
-      `MRN: ${displayMrn || request.mrn}`,
-      `Bölge: ${[request.city, request.district].filter(Boolean).join(' / ') || '-'}`,
-      `Ürün / Seri: ${[request.product || '-', request.serialNumber || '-'].join(' / ')}`,
-      `Montaj işçilik: ${formatMoneyValue(earningLaborAmount)}`,
-      `Usta yol hakedişi: ${formatMoneyValue(earningRouteAmount)}`,
-      ...previewCompanyPaymentBreakdown.map((line) => `Şirket ödemesi — ${line.purpose_label || 'Ek tahsilat'}: ${line.amount_label ?? formatMoneyValue(line.amount)}`),
-      `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
-      earningCustomerCollectionSourceLabel ? `Müşteri tahsilatı: ${earningCustomerCollectionSourceLabel}` : null,
-      `Ödeme modeli: ${earningPaymentModelLabel}`,
-      `Ustaya ödeme kaynağı: ${earningPaymentSourceLabel}`,
-      `Ustaya ödeme durumu: ${earningPaymentStatusLabel}`,
-      `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
-      earningOperationNote.trim() ? `Not: ${earningOperationNote.trim()}` : null,
-      technicianJobCard?.canonical_url ? 'İş kartı:' : null,
-      technicianJobCard?.canonical_url ?? null,
-    ].filter((line): line is string => typeof line === 'string' && line.trim() !== '').join('\n')
+    ? (earningTotalAmount <= 0
+      ? [
+        `Merhaba ${selectedTechnician.name},`,
+        '',
+        `${draftEarningRequestCode} numaralı iş için hakedişiniz güncellendi.`,
+        '',
+        'Bu iş için hakediş 0 TL olarak belirlenmiştir.',
+        earningOperationNote.trim() ? `Not: ${earningOperationNote.trim()}` : null,
+        '',
+        technicianJobCard?.canonical_url ? 'İş kartınız:' : null,
+        technicianJobCard?.canonical_url ?? null,
+      ]
+      : [
+        `Merhaba ${selectedTechnician.name},`,
+        '',
+        `${draftEarningRequestCode} numaralı iş için hakedişiniz güncellendi.`,
+        '',
+        Number(earningLaborAmount ?? 0) > 0 ? `İşçilik: ${formatMoneyValue(earningLaborAmount)}` : null,
+        Number(earningRouteAmount ?? 0) > 0 ? `Yol: ${formatMoneyValue(earningRouteAmount)}` : null,
+        ...previewCompanyPaymentBreakdown
+          .filter((line) => Number(line.amount ?? 0) > 0)
+          .map((line) => `${line.purpose_label || 'Ek ödeme'}: ${line.amount_label ?? formatMoneyValue(line.amount)}`),
+        `Toplam hakedişiniz: ${formatMoneyValue(earningTotalAmount)}`,
+        '',
+        draftEarningPaymentSentence,
+        earningOperationNote.trim() ? `Not: ${earningOperationNote.trim()}` : null,
+        '',
+        technicianJobCard?.canonical_url ? 'İş kartınız:' : null,
+        technicianJobCard?.canonical_url ?? null,
+      ])
+      .filter((line): line is string => typeof line === 'string')
+      .join('\n')
     : ''
   const displayedEarningMessageText = earningDraftDirty
     ? technicianEarningPreviewText
@@ -3509,7 +3529,7 @@ export function ServiceRequestDetails({
     const response = await onAssignmentOfferUpdate(activeAssignmentOffer.id, {
       labor_amount: laborAmount,
       route_fee_amount: routeFeeAmount,
-      total_amount: roundTwo(laborAmount + routeFeeAmount),
+      expected_earning_revision: persistedEarningRevision,
       note: operationNote.trim() || null,
       company_payment_decisions: companyPaymentDecisions.length > 0 ? companyPaymentDecisions : undefined,
     })
@@ -3536,6 +3556,12 @@ export function ServiceRequestDetails({
   const handleCanonicalEarningSave = async () => {
     if (earningLaborAmount === null || earningRouteAmount === null) {
       setRouteFeeEditorMessage('İşçilik ve yol hakedişi geçerli bir tutar olmalıdır.')
+
+      return
+    }
+
+    if (!persistedEarningRevision) {
+      setRouteFeeEditorMessage('Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.')
 
       return
     }
@@ -3592,8 +3618,8 @@ export function ServiceRequestDetails({
     }
   }
   const handleAssignmentSave = async () => {
-    if (activeAssignmentOffer && !hasAssignmentChange && earningBaseDraftDirty) {
-      await handleCanonicalEarningSave()
+    if (earningDraftDirty) {
+      setRouteFeeEditorMessage('Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.')
 
       return
     }
@@ -7017,8 +7043,22 @@ export function ServiceRequestDetails({
                   <MiniMetric label="Toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
                 </div>
                 {renderCompanyPaymentDecisionSection('earning')}
-                {(technicianJobCard?.ops_support_url || technicianJobCard?.preview_url) ? (
-                  <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t border-slate-200 bg-white/95 py-2 backdrop-blur">
+                {(earningBaseDraftDirty || technicianJobCard?.ops_support_url || technicianJobCard?.preview_url) ? (
+                  <div data-testid="earning-sticky-action-bar" className="sticky bottom-0 z-20 flex flex-wrap items-center gap-2 border-t border-slate-200 bg-white/95 py-2 backdrop-blur">
+                    {earningBaseDraftDirty ? (
+                      <>
+                        <span className="mr-auto text-xs font-semibold text-amber-800">Taslak — henüz kaydedilmedi</span>
+                        <Button
+                          data-testid="earning-save-button"
+                          type="button"
+                          size="sm"
+                          onClick={() => void handleCanonicalEarningSave()}
+                          disabled={earningSaveDisabled}
+                        >
+                          {assignmentOfferUpdateInFlight ? 'Kaydediliyor...' : earningSaveLabel}
+                        </Button>
+                      </>
+                    ) : null}
                     {technicianJobCard?.ops_support_url ? (
                       <Button asChild type="button" size="sm" variant="outline">
                         <a href={technicianJobCard.ops_support_url} target="_blank" rel="noreferrer">
@@ -7075,7 +7115,7 @@ export function ServiceRequestDetails({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-500">
                     {earningDraftDirty
-                      ? 'Önce hakediş değişikliklerini kaydedin.'
+                      ? 'Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.'
                       : canonicalEarningAssignmentReady
                       ? 'Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu aksiyon canonical atama hakedişini ayrıca kuyruğa alır.'
                       : 'Hakediş mesajı ancak seçili usta için Servise Ata tamamlandıktan sonra gönderilebilir.'}
@@ -7121,13 +7161,15 @@ export function ServiceRequestDetails({
                 Gelişmiş atama ayarları
               </Button>
               <Button
-                data-testid="earning-save-button"
+                data-testid="assignment-action-button"
                 type="button"
                 onClick={() => void handleAssignmentSave()}
                 disabled={primaryAssignmentActionDisabled}
-                title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                title={earningDraftDirty
+                  ? 'Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.'
+                  : isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
               >
-                {primaryAssignmentActionLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
+                {assignLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
             ) : null}

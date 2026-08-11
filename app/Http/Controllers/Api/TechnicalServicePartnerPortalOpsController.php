@@ -648,6 +648,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'labor_amount' => ['required', 'numeric', 'min:0'],
             'route_fee_amount' => ['required', 'numeric', 'min:0'],
             'total_amount' => ['nullable', 'numeric', 'min:0'],
+            'expected_earning_revision' => ['required', 'string', 'size:64'],
             'note' => ['nullable', 'string', 'max:2000'],
             'company_payment_decisions' => ['nullable', 'array'],
             'company_payment_decisions.*.payment_id' => ['required', 'integer', 'distinct'],
@@ -673,6 +674,23 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             if (! $offer->technician instanceof TechnicalServiceTechnician) {
                 throw ValidationException::withMessages([
                     'assignment_offer' => 'Hakediş teklifi geçerli bir ustaya bağlı değil.',
+                ]);
+            }
+
+            $existingSettlement = TechnicalServiceSettlement::query()
+                ->where('technical_service_request_id', $job->id)
+                ->lockForUpdate()
+                ->first();
+            $currentEarningSnapshot = $this->workflow->canonicalTechnicianEarningSnapshot(
+                $offer,
+                $existingSettlement instanceof TechnicalServiceSettlement ? $existingSettlement : null,
+            );
+            if (! hash_equals(
+                (string) ($currentEarningSnapshot['revision'] ?? ''),
+                trim((string) $validated['expected_earning_revision']),
+            )) {
+                throw ValidationException::withMessages([
+                    'expected_earning_revision' => 'Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.',
                 ]);
             }
 
@@ -732,10 +750,6 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 }
             }
 
-            $existingSettlement = TechnicalServiceSettlement::query()
-                ->where('technical_service_request_id', $job->id)
-                ->lockForUpdate()
-                ->first();
             $oldTotalAmount = round((float) $offer->total_amount, 2);
             $customerDirectAmount = null;
             if ($existingSettlement instanceof TechnicalServiceSettlement) {
@@ -747,13 +761,6 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             }
 
             $metadata = is_array($offer->metadata) ? $offer->metadata : [];
-            $metadata['message_payload'] = $this->assignmentOfferMessagePayload($job, $offer->technician, [
-                'labor_amount' => $laborAmount,
-                'route_fee_amount' => $routeFeeAmount,
-                'total_amount' => $totalAmount,
-                'currency' => $offer->currency,
-                'note' => $note,
-            ]);
             $metadata['revised_at'] = now()->toISOString();
             $metadata['revised_by_user_id'] = $request->user()?->id;
 
@@ -793,7 +800,20 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             if ($resolvedPriceRevisionActionIds !== []) {
                 $metadata['resolved_price_revision_action_ids'] = $resolvedPriceRevisionActionIds;
                 $metadata['revision_response_status'] = 'resolved';
-                $offer->forceFill(['metadata' => $metadata])->save();
+            }
+
+            if ($this->workflow->currentWorkflowStatus($job) === 'Usta Tarih Revize Talebi') {
+                $job = $this->workflow->transition(
+                    $job,
+                    'Usta Onayı Bekleyen',
+                    [
+                        'note' => $note,
+                        'earning_revision_saved' => true,
+                        'assignment_offer_id' => $offer->id,
+                    ],
+                    $request->user(),
+                    'earning_revision_saved',
+                );
             }
 
             $presentation = $this->workflow->technicianEarningPresentation(
@@ -801,6 +821,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 $offer->technician,
                 $offer->refresh(),
             );
+            $metadata['message_payload'] = [
+                ...$presentation['message_context'],
+                'message_text' => $presentation['message_preview'],
+            ];
+            $metadata['earning_snapshot_revision'] = $presentation['earning_snapshot']['revision'];
+            $metadata['earning_snapshot_hash'] = $presentation['earning_snapshot']['snapshot_hash']
+                ?? $presentation['earning_snapshot']['revision'];
+            $offer->forceFill(['metadata' => $metadata])->save();
 
             $job->events()->create([
                 'event_type' => 'assignment_offer_revised',
@@ -819,6 +847,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     'message_payload' => $metadata['message_payload'],
                     'earning_snapshot' => $presentation['earning_snapshot'],
                     'earning_snapshot_revision' => $presentation['earning_snapshot']['revision'],
+                    'earning_snapshot_hash' => $presentation['earning_snapshot']['snapshot_hash']
+                        ?? $presentation['earning_snapshot']['revision'],
                     'resolved_price_revision_action_ids' => $resolvedPriceRevisionActionIds,
                     'actor_user_id' => $request->user()?->id,
                     'actor_role' => $request->user()?->role_code ?: 'authenticated_user',
@@ -1481,74 +1511,6 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'custom' => trim(($proposal['proposed_time_start'] ?? '').' - '.($proposal['proposed_time_end'] ?? '')) ?: 'özel saat',
             default => 'gün içinde',
         };
-    }
-
-    /**
-     * @param  array<string, mixed>  $amounts
-     * @return array<string, mixed>|null
-     */
-    private function assignmentOfferMessagePayload(TechnicalServiceRequest $request, ?TechnicalServiceTechnician $technician, array $amounts): ?array
-    {
-        if (! $technician instanceof TechnicalServiceTechnician) {
-            return null;
-        }
-
-        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
-        $jobLink = is_string($jobCardContext['canonical_url'] ?? null)
-            ? $jobCardContext['canonical_url']
-            : null;
-
-        return [
-            'channel' => 'system_payload',
-            'recipient' => 'technician',
-            'mrn' => $request->mrn,
-            'technician_id' => $technician->id,
-            'technician_name' => $technician->name,
-            'technician_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
-            'customer_name' => $request->customer_name,
-            'customer_phone' => $request->customer_phone,
-            'customer_tel_link' => $this->telLink($request->customer_phone),
-            'address' => $request->location_formatted_address ?: $request->service_address,
-            'maps_link' => $this->mapsLink($request, $request->location_formatted_address ?: $request->service_address),
-            'job_link' => $jobLink,
-            'technician_job_card_url' => $jobLink,
-            'technician_job_card_short_url' => $jobLink,
-            'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
-            'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
-            'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,
-            'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
-            'route_fee_amount' => round((float) ($amounts['route_fee_amount'] ?? 0), 2),
-            'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
-            'currency' => $amounts['currency'] ?? 'TRY',
-            'note' => $amounts['note'] ?? null,
-            'payment_message_trigger' => 'appointment_approval',
-            'payment_instruction_included' => false,
-        ];
-    }
-
-    /**
-     * @param  array<string, mixed>  $payload
-     */
-    private function assignmentOfferMessageText(?array $payload): string
-    {
-        if (! is_array($payload)) {
-            return 'Usta hakediş bilgisi güncellendi.';
-        }
-
-        return trim(implode("\n", array_filter([
-            'Emaks Prime teknik servis işi',
-            'MRN: '.($payload['mrn'] ?? '-'),
-            'Müşteri: '.($payload['customer_name'] ?? '-'),
-            'Telefon: '.($payload['customer_tel_link'] ?? ($payload['customer_phone'] ?? '-')),
-            'Adres: '.($payload['address'] ?? '-'),
-            'Harita: '.($payload['maps_link'] ?? '-'),
-            'İşçilik / montaj: '.($payload['labor_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
-            'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
-            'Toplam: '.($payload['total_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
-            'İş kartı:',
-            $payload['job_link'] ?? null,
-            $payload['note'] ?? null,
-        ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
 
     /**

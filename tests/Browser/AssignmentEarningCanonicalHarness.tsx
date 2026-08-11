@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
@@ -7,11 +7,20 @@ import '../../resources/css/app.css'
 type HarnessState = {
   saveCount: number
   sendCount: number
+  assignmentActionCount: number
+  assignmentPopupCount: number
+  assignmentConfirmCount: number
   completionApproveCount: number
   allocationSubmitCount: number
   boardRefetchCount: number
   modalMountCount: number
   failNextSave: boolean
+  lastSavePayload: {
+    labor_amount: number
+    route_fee_amount: number
+    expected_earning_revision: string
+    note?: string | null
+  } | null
   lastSavedSnapshot: ServiceRequestCanonicalEarningSnapshot | null
   lastSendPayload: ServiceRequestTechnicianEarningMessagePayload | null
   lastCompanyPaymentDecision: 'pay_technician' | 'retain_company' | null
@@ -112,6 +121,49 @@ const initialRequest: ServiceRequest = {
   doorPhotos: [],
   fieldCompletionDocuments: [],
   previousFieldCompletionDocuments: [],
+}
+
+const staleSrvRouteRequest = (): ServiceRequest => {
+  const requestCode = 'SRV-2607SP070002-001'
+  const snapshot: ServiceRequestCanonicalEarningSnapshot = {
+    schema_version: 3,
+    assignment_id: 104,
+    technician_id: 111,
+    labor_amount: 100,
+    route_fee_amount: 1406.5,
+    base_total_amount: 1506.5,
+    company_payment_amount: 0,
+    company_payment_breakdown: [],
+    total_amount: 1506.5,
+    technician_paid_amount: 0,
+    technician_remaining_amount: 1506.5,
+    payer_state: 'company_collected_company_pays_technician',
+    payer_state_key: 'company_collected_company_pays_technician',
+    technician_payment_source_label: 'EMAKS Prime',
+    technician_payment_status_key: 'payable',
+    technician_payment_status_label: 'Ödenecek',
+    currency: 'TRY',
+    operation_note: null,
+    revision: initialRevision,
+    snapshot_hash: initialRevision,
+    persisted_at: '2026-08-11T08:00:00+00:00',
+  }
+
+  return {
+    ...initialRequest,
+    mrn: requestCode,
+    technicianPaymentAmount: 100,
+    travelFeeAmount: 1406.5,
+    assignmentOffer: {
+      ...initialRequest.assignmentOffer!,
+      labor_amount: 100,
+      route_fee_amount: 1406.5,
+      total_amount: 1506.5,
+      earning_snapshot: snapshot,
+      message_preview: canonicalPreview(snapshot, requestCode),
+      message_text: canonicalPreview(snapshot, requestCode),
+    },
+  }
 }
 
 const companyPaymentRequest = (): ServiceRequest => ({
@@ -383,11 +435,15 @@ const companyPaymentMessageRequest = (): ServiceRequest => {
 const state: HarnessState = {
   saveCount: 0,
   sendCount: 0,
+  assignmentActionCount: 0,
+  assignmentPopupCount: 0,
+  assignmentConfirmCount: 0,
   completionApproveCount: 0,
   allocationSubmitCount: 0,
   boardRefetchCount: 0,
   modalMountCount: 0,
   failNextSave: false,
+  lastSavePayload: null,
   lastSavedSnapshot: null,
   lastSendPayload: null,
   lastCompanyPaymentDecision: null,
@@ -396,7 +452,7 @@ const state: HarnessState = {
 
 window.__assignmentEarningDomState = state
 
-function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot): string {
+function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot, requestCode = 'MRN-DOM-EARNING'): string {
   const money = (value: number) => `${new Intl.NumberFormat('tr-TR', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -423,10 +479,23 @@ function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot): str
       ? 'Hakediş ödemeniz EMAKS Prime tarafından yapılmıştır.'
       : 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.'
 
+  if (Number(snapshot.total_amount ?? 0) <= 0) {
+    return [
+      'Merhaba Test Usta,',
+      '',
+      `${requestCode} numaralı iş için hakedişiniz güncellendi.`,
+      '',
+      'Bu iş için hakediş 0 TL olarak belirlenmiştir.',
+      '',
+      'İş kartınız:',
+      'http://192.168.1.10:8000/partner/job/dom-token',
+    ].join('\n')
+  }
+
   return [
     'Merhaba Test Usta,',
     '',
-    'MRN-DOM-EARNING numaralı iş için hakedişiniz güncellendi.',
+    `${requestCode} numaralı iş için hakedişiniz güncellendi.`,
     '',
     ...(Number(snapshot.labor_amount ?? 0) > 0 ? [`İşçilik: ${money(snapshot.labor_amount)}`] : []),
     ...(Number(snapshot.route_fee_amount ?? 0) > 0 ? [`Yol: ${money(snapshot.route_fee_amount)}`] : []),
@@ -448,13 +517,21 @@ function Harness() {
   })
   const [request, setRequest] = useState(initialRequest)
   const [saveCount, setSaveCount] = useState(0)
+  const [lastSavePayload, setLastSavePayload] = useState<HarnessState['lastSavePayload']>(null)
   const [sendCount, setSendCount] = useState(0)
+  const [saveInFlight, setSaveInFlight] = useState(false)
+  const [assignmentActionCount, setAssignmentActionCount] = useState(0)
+  const [assignmentPopupOpen, setAssignmentPopupOpen] = useState(false)
+  const [assignmentPopupCount, setAssignmentPopupCount] = useState(0)
+  const [assignmentConfirmCount, setAssignmentConfirmCount] = useState(0)
   const [allocationSubmitCount, setAllocationSubmitCount] = useState(0)
   const [lastAllocationPayload, setLastAllocationPayload] = useState<ServiceRequestCompanyPaymentDecisionSubmit[] | null>(null)
   const [allocationError, setAllocationError] = useState<string | null>(null)
   const [lastSendRevision, setLastSendRevision] = useState('')
   const [lastSendPayload, setLastSendPayload] = useState<ServiceRequestTechnicianEarningMessagePayload | null>(null)
   const [failNextSave, setFailNextSave] = useState(false)
+  const saveLock = useRef(false)
+  const assignmentPopupOpenRef = useRef(false)
 
   return (
     <>
@@ -490,6 +567,27 @@ function Harness() {
       >Şirket ödemeli mesaj senaryosunu yükle</button>
       <button
         type="button"
+        data-testid="load-stale-srv-route-scenario"
+        onClick={() => {
+          state.saveCount = 0
+          state.assignmentActionCount = 0
+          state.assignmentPopupCount = 0
+          state.assignmentConfirmCount = 0
+          state.boardRefetchCount = 0
+          state.lastSavePayload = null
+          assignmentPopupOpenRef.current = false
+          setSaveCount(0)
+          setLastSavePayload(null)
+          setAssignmentActionCount(0)
+          setAssignmentPopupCount(0)
+          setAssignmentConfirmCount(0)
+          setAssignmentPopupOpen(false)
+          setAllocationError(null)
+          setRequest(staleSrvRouteRequest())
+        }}
+      >Stale SRV yol senaryosunu yükle</button>
+      <button
+        type="button"
         data-testid="earning-fail-next-save"
         onClick={() => {
           state.failNextSave = true
@@ -498,7 +596,11 @@ function Harness() {
       >Sonraki kaydı başarısız yap</button>
       <output data-testid="earning-fail-next-save-state" className="sr-only">{failNextSave ? 'true' : 'false'}</output>
       <output data-testid="earning-save-count" className="sr-only">{saveCount}</output>
+      <output data-testid="earning-last-save-payload" className="sr-only">{JSON.stringify(lastSavePayload)}</output>
       <output data-testid="earning-send-count" className="sr-only">{sendCount}</output>
+      <output data-testid="assignment-action-count" className="sr-only">{assignmentActionCount}</output>
+      <output data-testid="assignment-popup-count" className="sr-only">{assignmentPopupCount}</output>
+      <output data-testid="assignment-confirm-count" className="sr-only">{assignmentConfirmCount}</output>
       <output data-testid="earning-last-send-revision" className="sr-only">{lastSendRevision}</output>
       <output data-testid="earning-last-send-payload" className="sr-only">{JSON.stringify(lastSendPayload)}</output>
       <output data-testid="company-payment-decision-submit-count" className="sr-only">{allocationSubmitCount}</output>
@@ -527,16 +629,40 @@ function Harness() {
         }]}
         selectedTechnicianId="111"
         canSubmitAssign
-        onAssignSelectedTechnician={() => undefined}
+        onAssignSelectedTechnician={() => {
+          state.assignmentActionCount += 1
+          setAssignmentActionCount(state.assignmentActionCount)
+
+          if (!assignmentPopupOpenRef.current) {
+            assignmentPopupOpenRef.current = true
+            state.assignmentPopupCount += 1
+            setAssignmentPopupCount(state.assignmentPopupCount)
+            setAssignmentPopupOpen(true)
+          }
+        }}
         onAssignmentOfferUpdate={async (_offerId, payload) => {
+          if (saveLock.current) {
+            return
+          }
+
+          saveLock.current = true
+          setSaveInFlight(true)
+          setAllocationError(null)
           state.saveCount += 1
+          state.lastSavePayload = payload
           setSaveCount(state.saveCount)
+          setLastSavePayload(payload)
+
+          await new Promise((resolve) => window.setTimeout(resolve, 50))
 
           if (failNextSave) {
             state.failNextSave = false
             setFailNextSave(false)
+            setAllocationError('Hakediş kaydedilemedi. Girdiğiniz tutarlar korunuyor.')
+            saveLock.current = false
+            setSaveInFlight(false)
 
-            return
+            throw new Error('Hakediş kaydedilemedi. Girdiğiniz tutarlar korunuyor.')
           }
 
           const companyPaymentDecision = payload.company_payment_decisions?.[0]?.decision ?? null
@@ -564,12 +690,20 @@ function Harness() {
               status_label: 'Ödenecek',
             }] : [],
             total_amount: payoutTotal,
+            technician_paid_amount: 0,
+            technician_remaining_amount: payoutTotal,
+            payer_state: payoutTotal > 0 ? 'company_collected_company_pays_technician' : 'no_payment_required',
+            payer_state_key: payoutTotal > 0 ? 'company_collected_company_pays_technician' : 'no_payment_required',
+            technician_payment_source_label: payoutTotal > 0 ? 'EMAKS Prime' : null,
+            technician_payment_status_key: payoutTotal > 0 ? 'payable' : 'not_required',
+            technician_payment_status_label: payoutTotal > 0 ? 'Ödenecek' : 'Gerekli değil',
             currency: 'TRY',
             operation_note: payload.note ?? null,
             revision: companyPaymentDecision ? companyPaymentRevision : savedRevision,
+            snapshot_hash: companyPaymentDecision ? companyPaymentRevision : savedRevision,
             persisted_at: '2026-08-10T05:30:00+00:00',
           }
-          const messagePreview = canonicalPreview(snapshot)
+          const messagePreview = canonicalPreview(snapshot, request.mrn)
           const decidedCompanyPaymentPayload = request.settlement?.company_payment_decisions
             ? companyPaymentDecision ? {
               ...request.settlement.company_payment_decisions,
@@ -705,6 +839,8 @@ function Harness() {
           state.lastSavedSnapshot = snapshot
           state.lastCompanyPaymentDecision = companyPaymentDecision
           setRequest(nextRequest)
+          saveLock.current = false
+          setSaveInFlight(false)
 
           return {
             status: 'revised',
@@ -764,7 +900,7 @@ function Harness() {
             revision: companyPaymentRevision,
             persisted_at: '2026-08-10T06:30:00+00:00',
           }
-          const messagePreview = canonicalPreview(snapshot)
+          const messagePreview = canonicalPreview(snapshot, request.mrn)
           const decisionPayload = {
             ...(request.settlement?.company_payment_decisions ?? {}),
             eligible_items: [],
@@ -876,7 +1012,25 @@ function Harness() {
           state.completionApproveCount += 1
         }}
         assignmentOfferUpdateError={allocationError}
+        assignmentOfferUpdateInFlight={saveInFlight}
       />
+      {assignmentPopupOpen ? (
+        <section role="dialog" aria-modal="true" data-testid="assignment-final-popup" className="grid gap-3 border border-slate-300 bg-white p-4">
+          <h2>Atamayı onayla ve mesajı hazırla</h2>
+          <div data-testid="assignment-final-popup-values">
+            İşçilik: {request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0} TL · Yol: {request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0} TL · Toplam: {request.assignmentOffer?.earning_snapshot?.total_amount ?? 0} TL
+          </div>
+          <pre data-testid="assignment-final-popup-preview" className="whitespace-pre-wrap">{request.assignmentOffer?.message_preview ?? ''}</pre>
+          <button
+            type="button"
+            data-testid="assignment-final-popup-confirm"
+            onClick={() => {
+              state.assignmentConfirmCount += 1
+              setAssignmentConfirmCount(state.assignmentConfirmCount)
+            }}
+          >Atamayı onayla ve mesajı hazırla</button>
+        </section>
+      ) : null}
     </>
   )
 }

@@ -209,10 +209,15 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertStringContainsString('const openAssignmentDialog = () =>', $source);
         $this->assertStringContainsString('const closeAssignmentDialog = () =>', $source);
         $this->assertStringContainsString('const handleAssignDialogOpenChange = (open: boolean) =>', $source);
-        $this->assertStringContainsString('if (assignLoading || assignmentConfirmDialogOpen)', $source);
+        $this->assertStringContainsString('if (assignLoading)', $source);
         $this->assertStringContainsString('onOpenChange={handleAssignDialogOpenChange}', $source);
         $this->assertStringContainsString('onAssign={openAssignmentDialog}', $source);
+        $this->assertStringContainsString('onAssignSelectedTechnician={openAssignmentDialog}', $source);
+        $this->assertStringContainsString('data-testid="assignment-final-preview"', $source);
+        $this->assertStringContainsString('data-testid="assignment-confirm-button"', $source);
+        $this->assertStringContainsString('Atamayı onayla ve mesajı hazırla', $source);
         $this->assertStringContainsString('assignmentDraftRequestId.current = null', $source);
+        $this->assertStringNotContainsString('assignmentConfirmDialogOpen', $source);
         $this->assertStringNotContainsString('onAssign={() => setAssignDialogOpen(true)}', $source);
     }
 
@@ -962,6 +967,8 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
      */
     private function assignmentFixture(): array
     {
+        config(['services.partner_portal.public_url' => 'https://dashboard.test']);
+
         $technician = TechnicalServiceTechnician::query()->create([
             'name' => 'REL3B2 Usta',
             'first_name' => 'REL3B2',
@@ -974,6 +981,11 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             'partner_type' => B2BPartner::TYPE_LOCKSMITH,
             'partner_code' => 'REL3B2-'.uniqid(),
             'display_name' => 'REL3B2 Çilingir',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
             'active' => true,
         ]);
         B2BPartnerTechnician::query()->create([
@@ -993,6 +1005,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             'customer_city' => 'Adana',
             'customer_district' => 'Seyhan',
             'service_address' => 'REL3B2 adres',
+            'location_map_url' => 'https://www.google.com/maps/search/?api=1&query=37.000%2C35.321',
             'product_name' => 'Test Ürün',
             'product_model' => 'M1',
             'serial_number' => 'SN-REL3B2-'.uniqid(),
@@ -1057,8 +1070,16 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
     private function assign(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician, array $offerOverrides = [])
     {
         $user = User::factory()->create(['role_code' => 'admin']);
-
-        return $this->actingAs($user)->postJson("/api/technical-service/requests/{$request->id}/assign", [
+        $currentOffer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('status', [
+                TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            ])
+            ->latest('id')
+            ->first();
+        $payload = [
             'technical_service_technician_id' => $technician->id,
             'travel_round_trip_km' => 12,
             'labor_amount' => 1000,
@@ -1072,6 +1093,12 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
                 'currency' => 'TRY',
                 'note' => 'REL3B2 hakediş',
             ], $offerOverrides),
-        ]);
+        ];
+        if ($currentOffer instanceof TechnicalServiceAssignmentOffer) {
+            $payload['expected_earning_revision'] = app(TechnicalServiceWorkflowService::class)
+                ->canonicalTechnicianEarningSnapshot($currentOffer)['revision'];
+        }
+
+        return $this->actingAs($user)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload);
     }
 }

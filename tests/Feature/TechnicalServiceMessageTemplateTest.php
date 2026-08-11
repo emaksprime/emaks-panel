@@ -2030,7 +2030,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
     public function test_assignment_sms_contains_required_compact_fields(): void
     {
-        $context = [
+        $context = $this->canonicalAssignmentMessageContext([
+            'technician_name' => 'Test Usta',
             'mrn' => 'MRN-2607MM180001',
             'customer_name' => 'REL 4E Test Müşteri',
             'customer_phone' => '905372081633',
@@ -2041,9 +2042,12 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'labor_amount_formatted' => '3.000,00 TL',
             'route_fee_formatted' => '200,00 TL',
             'technician_earning_total_formatted' => '3.200,00 TL',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 200,
+            'total_amount' => 3200,
             'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=81&job_id=247',
             'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/247',
-        ];
+        ]);
 
         $sms = $this->actingAs($this->admin())
             ->postJson('/api/technical-service/message-templates/preview', [
@@ -2058,11 +2062,13 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
         $body = $sms['rendered_body'];
         foreach ([
-            'EMAKS Yeni is bildirimi',
+            'EMAKS Prime',
             'MRN-2607MM180001',
             'Musteri: REL 4E Test Musteri',
             'Urun: Celik Kapi Kilidi Test Urunu',
-            'Toplam hakedis: 3.200,00 TL',
+            'Iscilik: 3.000,00 TL',
+            'Yol: 200,00 TL',
+            'Toplam: 3.200,00 TL',
             'Is karti:',
             'http://10.0.28.64:8000/pj/247',
         ] as $required) {
@@ -2086,7 +2092,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertJsonPath('preview.preview_ready', true)
             ->json('preview.rendered_body');
 
-        $this->assertStringContainsString('EMAKS Prime Teknik Servis', $whatsapp);
+        $this->assertStringContainsString('Merhaba Test Usta,', $whatsapp);
         $this->assertStringContainsString($context['technician_job_card_url'], $whatsapp);
         $this->assertStringContainsString($context['maps_url'], $whatsapp);
         $this->assertStringContainsString('Seri No: SN-ASSIGNMENT-001', $whatsapp);
@@ -2095,7 +2101,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
     public function test_assignment_whatsapp_contains_full_earning_and_job_url(): void
     {
-        $context = [
+        $context = $this->canonicalAssignmentMessageContext([
+            'technician_name' => 'Test Usta',
             'mrn' => 'MRN-ASSIGNMENT-WA-001',
             'srv' => 'SRV-ASSIGNMENT-WA-001',
             'customer_name' => 'Atama Müşterisi',
@@ -2107,9 +2114,12 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'labor_amount_formatted' => '3.000,00 TL',
             'route_fee_formatted' => '1.420,00 TL',
             'technician_earning_total_formatted' => '4.420,00 TL',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1420,
+            'total_amount' => 4420,
             'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=257',
             'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/257',
-        ];
+        ]);
 
         $body = $this->actingAs($this->admin())
             ->postJson('/api/technical-service/message-templates/preview', [
@@ -2123,17 +2133,16 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->json('preview.rendered_body');
 
         foreach ([
-            'MRN: MRN-ASSIGNMENT-WA-001',
-            'SRV: SRV-ASSIGNMENT-WA-001',
+            'SRV-ASSIGNMENT-WA-001 numaralı servis işi size atanmıştır.',
             'Müşteri: Atama Müşterisi',
             'Telefon: 905300000001',
             'Adres: Atama Mahallesi No 1 İstanbul',
             $context['maps_url'],
             'Ürün: Akıllı Kilit',
             'Seri No: SN-WA-001',
-            'İşçilik/Montaj: 3.000,00 TL',
+            'İşçilik: 3.000,00 TL',
             'Yol: 1.420,00 TL',
-            'Toplam: 4.420,00 TL',
+            'Toplam hakedişiniz: 4.420,00 TL',
             $context['technician_job_card_url'],
             'Lütfen randevu saati öneriniz.',
         ] as $required) {
@@ -2143,7 +2152,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
     public function test_whatsapp_and_sms_use_same_earning_snapshot(): void
     {
-        $context = [
+        $context = $this->canonicalAssignmentMessageContext([
+            'technician_name' => 'Test Usta',
             'mrn' => 'MRN-SAME-SNAPSHOT-001',
             'customer_name' => 'Aynı Snapshot Müşteri',
             'customer_phone' => '905300000001',
@@ -2154,9 +2164,12 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'labor_amount_formatted' => '3.000,00 TL',
             'route_fee_formatted' => '1.420,00 TL',
             'technician_earning_total_formatted' => '4.420,00 TL',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1420,
+            'total_amount' => 4420,
             'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=258',
             'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/258',
-        ];
+        ]);
 
         $bodies = collect(['whatsapp', 'sms'])->mapWithKeys(function (string $channel) use ($context): array {
             $body = $this->actingAs($this->admin())
@@ -2629,6 +2642,64 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'snapshot_hash' => $revision,
             'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?job_id=198',
             'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/198',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function canonicalAssignmentMessageContext(array $context): array
+    {
+        $labor = round((float) ($context['labor_amount'] ?? 0), 2);
+        $route = round((float) ($context['route_fee_amount'] ?? 0), 2);
+        $total = round((float) ($context['total_amount'] ?? $labor + $route), 2);
+        $revision = hash('sha256', json_encode([
+            $context['mrn'] ?? null,
+            $context['srv'] ?? null,
+            $labor,
+            $route,
+            $total,
+        ], JSON_THROW_ON_ERROR));
+
+        return [
+            'request_code' => $context['srv'] ?? $context['mrn'] ?? null,
+            'technician_name' => 'Test Usta',
+            'labor_amount' => $labor,
+            'route_fee_amount' => $route,
+            'company_payment_amount' => 0,
+            'company_payment_breakdown' => [],
+            'total_amount' => $total,
+            'technician_paid_amount' => 0,
+            'technician_remaining_amount' => $total,
+            'customer_collection_amount' => 0,
+            'payer_state_key' => 'customer_pays_technician',
+            'technician_payment_model_label' => 'Müşteri ödemesi',
+            'technician_payment_source_label' => 'Müşteri',
+            'technician_payment_status_key' => 'payable',
+            'technician_payment_status_label' => 'Ödenecek',
+            'customer_collection_source_label' => 'Müşteri',
+            ...$context,
+            'earning_snapshot' => [
+                'assignment_id' => 101,
+                'technician_id' => 202,
+                'request_id' => 303,
+                'mrn' => $context['mrn'] ?? null,
+                'srv' => $context['srv'] ?? null,
+                'labor_amount' => $labor,
+                'route_fee_amount' => $route,
+                'company_payment_amount' => 0,
+                'company_payment_breakdown' => [],
+                'total_amount' => $total,
+                'technician_paid_amount' => 0,
+                'technician_remaining_amount' => $total,
+                'customer_collection_amount' => 0,
+                'payer_state' => 'customer_pays_technician',
+                'technician_payment_model_label' => 'Müşteri ödemesi',
+                'technician_payment_source_label' => 'Müşteri',
+                'technician_payment_status_key' => 'payable',
+                'technician_payment_status_label' => 'Ödenecek',
+                'customer_collection_source_label' => 'Müşteri',
+                'revision' => $revision,
+                'snapshot_hash' => $revision,
+            ],
         ];
     }
 

@@ -35,7 +35,7 @@ class TechnicalServiceMessageTemplateRenderer
         $rendered = $this->replacePlaceholders($body, $context);
         if ($channel === TechnicalServiceMessageTemplate::CHANNEL_SMS) {
             $rendered = $this->normalizeSmsText($rendered);
-            if ($messageType === 'earnings_message_technician') {
+            if (in_array($messageType, ['assignment_offer_technician', 'earnings_message_technician'], true)) {
                 $rendered = implode("\n", array_map(
                     static fn (string $line): string => Str::ascii($line),
                     explode("\n", $rendered),
@@ -267,8 +267,8 @@ class TechnicalServiceMessageTemplateRenderer
             }
         }
 
-        if ($messageType === 'earnings_message_technician') {
-            $this->appendEarningSnapshotBlockers($rendered, $context, $blockers);
+        if (in_array($messageType, ['assignment_offer_technician', 'earnings_message_technician'], true)) {
+            $this->appendEarningSnapshotBlockers($messageType, $rendered, $context, $blockers);
         }
 
         if ($this->guardsCustomerPaymentInstructions($messageType, $context)
@@ -306,7 +306,7 @@ class TechnicalServiceMessageTemplateRenderer
      * @param  array<string, mixed>  $context
      * @param  array<int, string>  $blockers
      */
-    private function appendEarningSnapshotBlockers(string $rendered, array $context, array &$blockers): void
+    private function appendEarningSnapshotBlockers(string $messageType, string $rendered, array $context, array &$blockers): void
     {
         $snapshot = $context['earning_snapshot'] ?? null;
         if (! is_array($snapshot) || $snapshot === []) {
@@ -345,7 +345,8 @@ class TechnicalServiceMessageTemplateRenderer
             $mismatch = true;
         }
 
-        if ($this->money($snapshot['total_amount'] ?? null) <= 0.0) {
+        $zeroEarning = $this->money($snapshot['total_amount'] ?? null) <= 0.0;
+        if ($zeroEarning && $messageType === 'earnings_message_technician') {
             $blockers[] = 'EARNING_MESSAGE_NO_EARNING';
         }
 
@@ -353,16 +354,18 @@ class TechnicalServiceMessageTemplateRenderer
             $blockers[] = 'EARNING_MESSAGE_COMPONENT_LABEL_UNKNOWN';
         }
 
-        foreach ([
-            'technician_payment_status_key',
-            'technician_payment_status_label',
-            'technician_payment_source_label',
-            'customer_collection_source_label',
-        ] as $key) {
-            if (trim((string) ($snapshot[$key] ?? '')) === ''
-                || ! hash_equals(trim((string) $snapshot[$key]), trim((string) ($context[$key] ?? '')))
-            ) {
-                $mismatch = true;
+        if (! $zeroEarning) {
+            foreach ([
+                'technician_payment_status_key',
+                'technician_payment_status_label',
+                'technician_payment_source_label',
+                'customer_collection_source_label',
+            ] as $key) {
+                if (trim((string) ($snapshot[$key] ?? '')) === ''
+                    || ! hash_equals(trim((string) $snapshot[$key]), trim((string) ($context[$key] ?? '')))
+                ) {
+                    $mismatch = true;
+                }
             }
         }
 
@@ -389,11 +392,18 @@ class TechnicalServiceMessageTemplateRenderer
             }
         }
 
-        $paymentSentence = trim((string) ($context['technician_payment_sentence'] ?? ''));
-        if ($paymentSentence === ''
-            || (! str_contains($rendered, $paymentSentence) && ! str_contains($rendered, Str::ascii($paymentSentence)))
-        ) {
-            $mismatch = true;
+        if ($zeroEarning) {
+            $zeroSentence = 'Bu iş için hakediş 0 TL olarak belirlenmiştir.';
+            if (! str_contains($rendered, $zeroSentence) && ! str_contains($rendered, Str::ascii($zeroSentence))) {
+                $mismatch = true;
+            }
+        } else {
+            $paymentSentence = trim((string) ($context['technician_payment_sentence'] ?? ''));
+            if ($paymentSentence === ''
+                || (! str_contains($rendered, $paymentSentence) && ! str_contains($rendered, Str::ascii($paymentSentence)))
+            ) {
+                $mismatch = true;
+            }
         }
 
         $lowerRendered = mb_strtolower($rendered, 'UTF-8');

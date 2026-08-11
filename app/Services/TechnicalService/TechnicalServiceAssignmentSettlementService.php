@@ -87,6 +87,11 @@ class TechnicalServiceAssignmentSettlementService
                 'assignment_offer.customer_direct_to_technician_amount' => $exception->getMessage(),
             ]);
         }
+        $canonicalPayerState = $mountPaymentCollected
+            ? ($ownership['payer_state_key'] ?? TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL)
+            : ($calculation['customer_direct_to_technician_amount'] > 0
+                ? TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN
+                : TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED);
 
         $settlement = TechnicalServiceSettlement::query()
             ->firstOrNew(['technical_service_request_id' => $request->id]);
@@ -139,7 +144,7 @@ class TechnicalServiceAssignmentSettlementService
             'metadata' => array_merge(is_array($settlement->metadata) ? $settlement->metadata : [], [
                 'source' => 'assignment_popup',
                 'mount_payment_collected' => $mountPaymentCollected,
-                'payer_state_key' => $ownership['payer_state_key'] ?? null,
+                'payer_state_key' => $canonicalPayerState,
                 'company_collected_source' => $ownership['company_collected_source'] ?? null,
                 'route_quote_id' => $routeQuote?->id,
                 'assignment_offer_id' => $offer->id,

@@ -790,14 +790,19 @@ class TechnicalServiceController extends Controller
                 ->get();
             $companyPaymentContractRequired = (float) ($earningSnapshot['company_payment_amount'] ?? 0) > 0.0;
             $expectedChannels = $this->earningMessageExpectedChannels();
-            $currentContractDispatches = $earningDispatches
+            $matchingContractDispatches = $earningDispatches
                 ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => hash_equals(
                     $earningSnapshotFingerprint,
                     (string) data_get($dispatch->metadata, 'earning_snapshot_fingerprint', ''),
                 )
                     && (int) data_get($dispatch->metadata, 'earning_message_contract_version', 0)
-                        >= self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION
-                    && in_array($dispatch->status, TechnicalServiceMessageDispatch::DUPLICATE_BLOCKING_STATUSES, true))
+                        >= self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION);
+            $currentContractDispatches = $matchingContractDispatches
+                ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => in_array(
+                    $dispatch->status,
+                    TechnicalServiceMessageDispatch::DUPLICATE_BLOCKING_STATUSES,
+                    true,
+                ))
                 ->unique('channel')
                 ->values();
             $existingDispatches = collect($expectedChannels)
@@ -807,7 +812,13 @@ class TechnicalServiceController extends Controller
                 ->values();
             $existingDispatch = $existingDispatches->firstWhere('channel', 'whatsapp')
                 ?? $existingDispatches->first();
-            $currentContractComplete = $existingDispatches->count() === count($expectedChannels);
+            $systemFallbackDispatch = $matchingContractDispatches->firstWhere('channel', 'system');
+            if ($existingDispatches->isEmpty() && $systemFallbackDispatch instanceof TechnicalServiceMessageDispatch) {
+                $existingDispatches = collect([$systemFallbackDispatch]);
+                $existingDispatch = $systemFallbackDispatch;
+            }
+            $currentContractComplete = $existingDispatches->count() === count($expectedChannels)
+                || $systemFallbackDispatch instanceof TechnicalServiceMessageDispatch;
             if ($currentContractComplete && $existingDispatch instanceof TechnicalServiceMessageDispatch) {
                 $operationControl = is_array($job->operation_control_payload) ? $job->operation_control_payload : [];
                 $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
@@ -2291,255 +2302,277 @@ class TechnicalServiceController extends Controller
     public function assign(AssignTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         $payload = $request->validated();
-        if ($this->isTerminalOperationRequest($technicalServiceRequest)) {
-            throw ValidationException::withMessages([
-                'request' => 'Tamamlanmış veya iptal edilmiş iş yeniden servise atanamaz.',
-            ]);
-        }
 
-        $technician = isset($payload['technical_service_technician_id'])
-            ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
-            : null;
-        $routeQuote = isset($payload['route_quote_id'])
-            ? TechnicalServiceRouteQuote::query()
-                ->where('technical_service_request_id', $technicalServiceRequest->id)
-                ->whereKey((int) $payload['route_quote_id'])
-                ->first()
-            : null;
-
-        if (isset($payload['route_quote_id']) && ! $routeQuote instanceof TechnicalServiceRouteQuote) {
-            throw ValidationException::withMessages([
-                'route_quote_id' => 'Seçili yol ücreti hesabı bu talebe ait değil.',
-            ]);
-        }
-
-        if ($routeQuote instanceof TechnicalServiceRouteQuote
-            && $technician instanceof TechnicalServiceTechnician
-            && (int) $routeQuote->technician_id !== (int) $technician->id
-        ) {
-            throw ValidationException::withMessages([
-                'route_quote_id' => 'Seçili yol ücreti hesabı seçilen ustaya ait değil.',
-            ]);
-        }
-
-        if ($routeQuote instanceof TechnicalServiceRouteQuote) {
-            $routeQuotePayload = app(TechnicalServiceRouteCostService::class)->payload($routeQuote);
-            if (($routeQuotePayload['ok'] ?? false) !== true || ! is_numeric($routeQuotePayload['fee_amount'] ?? null)) {
+        return DB::transaction(function () use ($request, $technicalServiceRequest, $payload): JsonResponse {
+            $technicalServiceRequest = TechnicalServiceRequest::query()
+                ->whereKey($technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            if ($this->isTerminalOperationRequest($technicalServiceRequest)) {
                 throw ValidationException::withMessages([
-                    'route_quote_id' => (string) ($routeQuotePayload['message'] ?? 'Seçili yol hakedişi hesabı tamamlanmadı. Manuel yol hakedişi kaydedin.'),
+                    'request' => 'Tamamlanmış veya iptal edilmiş iş yeniden servise atanamaz.',
                 ]);
             }
-        } elseif ($technician instanceof TechnicalServiceTechnician) {
-            $latestRouteAttempt = TechnicalServiceRouteQuote::query()
+
+            $technician = isset($payload['technical_service_technician_id'])
+                ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
+                : null;
+            $routeQuote = isset($payload['route_quote_id'])
+                ? TechnicalServiceRouteQuote::query()
+                    ->where('technical_service_request_id', $technicalServiceRequest->id)
+                    ->whereKey((int) $payload['route_quote_id'])
+                    ->first()
+                : null;
+
+            if (isset($payload['route_quote_id']) && ! $routeQuote instanceof TechnicalServiceRouteQuote) {
+                throw ValidationException::withMessages([
+                    'route_quote_id' => 'Seçili yol ücreti hesabı bu talebe ait değil.',
+                ]);
+            }
+
+            if ($routeQuote instanceof TechnicalServiceRouteQuote
+                && $technician instanceof TechnicalServiceTechnician
+                && (int) $routeQuote->technician_id !== (int) $technician->id
+            ) {
+                throw ValidationException::withMessages([
+                    'route_quote_id' => 'Seçili yol ücreti hesabı seçilen ustaya ait değil.',
+                ]);
+            }
+
+            if ($routeQuote instanceof TechnicalServiceRouteQuote) {
+                $routeQuotePayload = app(TechnicalServiceRouteCostService::class)->payload($routeQuote);
+                if (($routeQuotePayload['ok'] ?? false) !== true || ! is_numeric($routeQuotePayload['fee_amount'] ?? null)) {
+                    throw ValidationException::withMessages([
+                        'route_quote_id' => (string) ($routeQuotePayload['message'] ?? 'Seçili yol hakedişi hesabı tamamlanmadı. Manuel yol hakedişi kaydedin.'),
+                    ]);
+                }
+            } elseif ($technician instanceof TechnicalServiceTechnician) {
+                $latestRouteAttempt = TechnicalServiceRouteQuote::query()
+                    ->where('technical_service_request_id', $technicalServiceRequest->id)
+                    ->where('technician_id', $technician->id)
+                    ->latest('id')
+                    ->first();
+                if ($latestRouteAttempt instanceof TechnicalServiceRouteQuote
+                    && $latestRouteAttempt->status !== TechnicalServiceRouteQuote::STATUS_CALCULATED
+                    && (float) ($payload['travel_round_trip_km'] ?? 0) <= 0.0) {
+                    throw ValidationException::withMessages([
+                        'route_quote_id' => 'Otomatik rota hesaplanamadı. Atamadan önce nedenini kontrol edip manuel yol hakedişi kaydedin.',
+                    ]);
+                }
+            }
+
+            $assignmentOfferPayload = is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [];
+
+            $currentOffer = TechnicalServiceAssignmentOffer::query()
                 ->where('technical_service_request_id', $technicalServiceRequest->id)
-                ->where('technician_id', $technician->id)
+                ->whereIn('status', [
+                    TechnicalServiceAssignmentOffer::STATUS_SENT,
+                    TechnicalServiceAssignmentOffer::STATUS_REVISED,
+                ])
                 ->latest('id')
+                ->lockForUpdate()
                 ->first();
-            if ($latestRouteAttempt instanceof TechnicalServiceRouteQuote
-                && $latestRouteAttempt->status !== TechnicalServiceRouteQuote::STATUS_CALCULATED
-                && (float) ($payload['travel_round_trip_km'] ?? 0) <= 0.0) {
-                throw ValidationException::withMessages([
-                    'route_quote_id' => 'Otomatik rota hesaplanamadı. Atamadan önce nedenini kontrol edip manuel yol hakedişi kaydedin.',
+            if ($currentOffer instanceof TechnicalServiceAssignmentOffer) {
+                $currentSettlement = $technicalServiceRequest->settlement()->lockForUpdate()->first();
+                $currentEarningSnapshot = $this->workflowService->canonicalTechnicianEarningSnapshot(
+                    $currentOffer,
+                    $currentSettlement,
+                );
+                $expectedRevision = trim((string) ($payload['expected_earning_revision'] ?? ''));
+                if ($expectedRevision === ''
+                    || ! hash_equals((string) ($currentEarningSnapshot['revision'] ?? ''), $expectedRevision)
+                ) {
+                    throw ValidationException::withMessages([
+                        'expected_earning_revision' => 'Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.',
+                    ]);
+                }
+            }
+
+            if (array_key_exists('labor_amount', $payload)) {
+                $assignmentOfferPayload['labor_amount'] = $payload['labor_amount'];
+            }
+
+            if (array_key_exists('travel_amount', $payload)) {
+                $assignmentOfferPayload['route_fee_amount'] = $payload['travel_amount'];
+            }
+
+            if (array_key_exists('customer_direct_to_technician_amount', $payload)) {
+                $assignmentOfferPayload['customer_direct_to_technician_amount'] = $payload['customer_direct_to_technician_amount'];
+            }
+
+            if (array_key_exists('earning_note', $payload)) {
+                $assignmentOfferPayload['note'] = $payload['earning_note'];
+            }
+
+            if (array_key_exists('confirm_assignment', $payload)) {
+                $assignmentOfferPayload['confirmed_by_ops'] = (bool) $payload['confirm_assignment'];
+            }
+
+            if ($technician instanceof TechnicalServiceTechnician) {
+                $assignmentOfferPayload['route_fee_amount'] = $this->canonicalAssignmentRouteFeeAmount(
+                    $technicalServiceRequest,
+                    $routeQuote,
+                    $assignmentOfferPayload,
+                    $payload,
+                );
+            }
+
+            $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
+            $mountExclusionAcknowledged = (bool) ($payload['mount_exclusion_acknowledged'] ?? false);
+            if ($mountExclusionAcknowledged || $mountExclusionNote !== '') {
+                $errors = [];
+
+                if (! $mountExclusionAcknowledged) {
+                    $errors['mount_exclusion_acknowledged'] = 'Montaj hariç çoklu ürün onayı zorunludur.';
+                }
+
+                if (mb_strlen($mountExclusionNote) < 5) {
+                    $errors['mount_exclusion_note'] = 'Montaj hariç çoklu ürün onayı için açıklama girin.';
+                }
+
+                if ($errors !== []) {
+                    throw ValidationException::withMessages($errors);
+                }
+
+                $operationControl = is_array($technicalServiceRequest->operation_control_payload)
+                    ? $technicalServiceRequest->operation_control_payload
+                    : [];
+                $operationControl['mount_exclusion_acknowledgement'] = [
+                    'required' => true,
+                    'payment_received' => false,
+                    'acknowledged' => true,
+                    'note' => $mountExclusionNote,
+                    'acknowledged_at' => now()->toISOString(),
+                    'acknowledged_by_user_id' => $request->user()?->id,
+                ];
+
+                $technicalServiceRequest->forceFill([
+                    'operation_control_payload' => $operationControl,
+                    'operation_control_checked_by_user_id' => $request->user()?->id,
+                    'operation_control_checked_at' => now(),
+                ])->save();
+
+                $technicalServiceRequest->events()->create([
+                    'event_type' => 'mount_exclusion_acknowledged',
+                    'title' => 'Montaj hariç çoklu ürün operasyon onayı alındı.',
+                    'note' => $mountExclusionNote,
+                    'from_status' => $technicalServiceRequest->workflow_status,
+                    'to_status' => $technicalServiceRequest->workflow_status,
+                    'author_user_id' => $request->user()?->id,
+                    'metadata' => [
+                        'mount_exclusion_acknowledged' => true,
+                    ],
                 ]);
             }
-        }
 
-        $assignmentOfferPayload = is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [];
+            $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
+            $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
+            $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
+            $oldPartnerId = $this->partnerJobScope->activeAssignmentLink($technicalServiceRequest)?->partner_id;
+            $assignmentLink = $this->assignmentLinkForTechnician($technician, $payload['b2b_partner_id'] ?? null);
 
-        if (array_key_exists('labor_amount', $payload)) {
-            $assignmentOfferPayload['labor_amount'] = $payload['labor_amount'];
-        }
-
-        if (array_key_exists('travel_amount', $payload)) {
-            $assignmentOfferPayload['route_fee_amount'] = $payload['travel_amount'];
-        }
-
-        if (array_key_exists('customer_direct_to_technician_amount', $payload)) {
-            $assignmentOfferPayload['customer_direct_to_technician_amount'] = $payload['customer_direct_to_technician_amount'];
-        }
-
-        if (array_key_exists('earning_note', $payload)) {
-            $assignmentOfferPayload['note'] = $payload['earning_note'];
-        }
-
-        if (array_key_exists('confirm_assignment', $payload)) {
-            $assignmentOfferPayload['confirmed_by_ops'] = (bool) $payload['confirm_assignment'];
-        }
-
-        if ($technician instanceof TechnicalServiceTechnician) {
-            $assignmentOfferPayload['route_fee_amount'] = $this->canonicalAssignmentRouteFeeAmount(
-                $technicalServiceRequest,
-                $routeQuote,
-                $assignmentOfferPayload,
-                $payload,
-            );
-        }
-
-        $isServiceVisit = $technicalServiceRequest->parent_request_id !== null
-            || filled($technicalServiceRequest->service_code)
-            || mb_strtolower(trim((string) $technicalServiceRequest->service_type)) === 'servis';
-        $submittedLaborAmount = $this->nullableMoney($assignmentOfferPayload['labor_amount'] ?? null);
-        if ($isServiceVisit && ($submittedLaborAmount === null || $submittedLaborAmount <= 0)) {
-            throw ValidationException::withMessages([
-                'assignment_offer.labor_amount' => 'SRV ataması için işçilik hakedişi 0 TL üzerinde açıkça girilmelidir.',
-            ]);
-        }
-
-        $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
-        $mountExclusionAcknowledged = (bool) ($payload['mount_exclusion_acknowledged'] ?? false);
-        if ($mountExclusionAcknowledged || $mountExclusionNote !== '') {
-            $errors = [];
-
-            if (! $mountExclusionAcknowledged) {
-                $errors['mount_exclusion_acknowledged'] = 'Montaj hariç çoklu ürün onayı zorunludur.';
-            }
-
-            if (mb_strlen($mountExclusionNote) < 5) {
-                $errors['mount_exclusion_note'] = 'Montaj hariç çoklu ürün onayı için açıklama girin.';
-            }
-
-            if ($errors !== []) {
-                throw ValidationException::withMessages($errors);
-            }
-
-            $operationControl = is_array($technicalServiceRequest->operation_control_payload)
-                ? $technicalServiceRequest->operation_control_payload
-                : [];
-            $operationControl['mount_exclusion_acknowledgement'] = [
-                'required' => true,
-                'payment_received' => false,
-                'acknowledged' => true,
-                'note' => $mountExclusionNote,
-                'acknowledged_at' => now()->toISOString(),
-                'acknowledged_by_user_id' => $request->user()?->id,
+            $technicianPayload = [
+                'technical_service_technician_id' => $technician?->id,
+                'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
+                'technician_approval_status' => 'bekliyor',
+                'route_quote_id' => $payload['route_quote_id'] ?? null,
+                'note' => $payload['note'] ?? null,
+                'reassign_after_review' => $isReviewReassignment,
             ];
 
-            $technicalServiceRequest->forceFill([
-                'operation_control_payload' => $operationControl,
-                'operation_control_checked_by_user_id' => $request->user()?->id,
-                'operation_control_checked_at' => now(),
-            ])->save();
-
-            $technicalServiceRequest->events()->create([
-                'event_type' => 'mount_exclusion_acknowledged',
-                'title' => 'Montaj hariç çoklu ürün operasyon onayı alındı.',
-                'note' => $mountExclusionNote,
-                'from_status' => $technicalServiceRequest->workflow_status,
-                'to_status' => $technicalServiceRequest->workflow_status,
-                'author_user_id' => $request->user()?->id,
-                'metadata' => [
-                    'mount_exclusion_acknowledged' => true,
-                ],
-            ]);
-        }
-
-        $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
-        $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
-        $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
-        $oldPartnerId = $this->partnerJobScope->activeAssignmentLink($technicalServiceRequest)?->partner_id;
-        $assignmentLink = $this->assignmentLinkForTechnician($technician, $payload['b2b_partner_id'] ?? null);
-
-        $technicianPayload = [
-            'technical_service_technician_id' => $technician?->id,
-            'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
-            'technician_approval_status' => 'bekliyor',
-            'route_quote_id' => $payload['route_quote_id'] ?? null,
-            'note' => $payload['note'] ?? null,
-            'reassign_after_review' => $isReviewReassignment,
-        ];
-
-        $technicalServiceRequest = $this->workflowService->updateTechnician(
-            $technicalServiceRequest,
-            $technicianPayload,
-            $request->user()
-        );
-
-        $technicalServiceRequest->events()->create([
-            'event_type' => 'assignment_created',
-            'title' => 'Usta atandı',
-            'note' => $payload['note'] ?? null,
-            'from_status' => $sourceWorkflowStatus,
-            'to_status' => $technicalServiceRequest->workflow_status,
-            'author_user_id' => $request->user()?->id,
-            'metadata' => [
-                'technician_id' => $technician?->id,
-                'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
-                'assignment_partner_id' => $assignmentLink?->partner_id,
-                'assignment_partner_technician_link_id' => $assignmentLink?->id,
-                'source' => 'technical_service_assign',
-            ],
-        ]);
-
-        $newPartnerId = $assignmentLink?->partner_id;
-
-        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0)
-            || (int) ($oldPartnerId ?? 0) !== (int) ($newPartnerId ?? 0)
-            || $isReviewReassignment) {
-            TechnicalServiceAssignmentArchive::query()->create([
-                'technical_service_request_id' => $technicalServiceRequest->id,
-                'old_technician_id' => $oldTechnicianId,
-                'new_technician_id' => $technician?->id,
-                'old_partner_id' => $oldPartnerId,
-                'new_partner_id' => $newPartnerId,
-                'reason' => $payload['note'] ?? ($isReviewReassignment ? 'reassign_after_review' : 'reassignment'),
-                'archived_by' => $request->user()?->id,
-                'archived_at' => now(),
-                'metadata' => [
-                    'source' => 'technical_service_assign',
-                    'reassign_after_review' => $isReviewReassignment,
-                    'source_workflow_status' => $sourceWorkflowStatus,
-                    'target_workflow_status' => $technicalServiceRequest->workflow_status,
-                ],
-            ]);
-
-            $this->resolveReviewReassignmentState(
+            $technicalServiceRequest = $this->workflowService->updateTechnician(
                 $technicalServiceRequest,
-                $payload,
-                $request->user(),
-                $technician,
-                $sourceWorkflowStatus,
-                $isReviewReassignment,
+                $technicianPayload,
+                $request->user()
             );
 
             $technicalServiceRequest->events()->create([
-                'event_type' => 'assignment_archived',
-                'title' => 'Önceki usta ataması arşivlendi',
+                'event_type' => 'assignment_created',
+                'title' => 'Usta atandı',
                 'note' => $payload['note'] ?? null,
-                'from_status' => $technicalServiceRequest->workflow_status,
+                'from_status' => $sourceWorkflowStatus,
                 'to_status' => $technicalServiceRequest->workflow_status,
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
+                    'technician_id' => $technician?->id,
+                    'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
+                    'assignment_partner_id' => $assignmentLink?->partner_id,
+                    'assignment_partner_technician_link_id' => $assignmentLink?->id,
+                    'source' => 'technical_service_assign',
+                ],
+            ]);
+
+            $newPartnerId = $assignmentLink?->partner_id;
+
+            if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0)
+                || (int) ($oldPartnerId ?? 0) !== (int) ($newPartnerId ?? 0)
+                || $isReviewReassignment) {
+                TechnicalServiceAssignmentArchive::query()->create([
+                    'technical_service_request_id' => $technicalServiceRequest->id,
                     'old_technician_id' => $oldTechnicianId,
                     'new_technician_id' => $technician?->id,
                     'old_partner_id' => $oldPartnerId,
                     'new_partner_id' => $newPartnerId,
-                ],
-            ]);
-        }
+                    'reason' => $payload['note'] ?? ($isReviewReassignment ? 'reassign_after_review' : 'reassignment'),
+                    'archived_by' => $request->user()?->id,
+                    'archived_at' => now(),
+                    'metadata' => [
+                        'source' => 'technical_service_assign',
+                        'reassign_after_review' => $isReviewReassignment,
+                        'source_workflow_status' => $sourceWorkflowStatus,
+                        'target_workflow_status' => $technicalServiceRequest->workflow_status,
+                    ],
+                ]);
 
-        if (! $routeQuote instanceof TechnicalServiceRouteQuote && isset($payload['travel_round_trip_km'])) {
-            $technicalServiceRequest->fill($this->calculateTravelCosts((float) $payload['travel_round_trip_km']));
-            $technicalServiceRequest->save();
-        }
+                $this->resolveReviewReassignmentState(
+                    $technicalServiceRequest,
+                    $payload,
+                    $request->user(),
+                    $technician,
+                    $sourceWorkflowStatus,
+                    $isReviewReassignment,
+                );
 
-        if ($technician instanceof TechnicalServiceTechnician) {
-            $this->createAssignmentOfferFromAssignPayload(
-                $technicalServiceRequest->refresh(),
-                $technician,
-                $routeQuote,
-                $assignmentOfferPayload,
-                $request->user(),
-                $assignmentLink,
-            );
-        }
+                $technicalServiceRequest->events()->create([
+                    'event_type' => 'assignment_archived',
+                    'title' => 'Önceki usta ataması arşivlendi',
+                    'note' => $payload['note'] ?? null,
+                    'from_status' => $technicalServiceRequest->workflow_status,
+                    'to_status' => $technicalServiceRequest->workflow_status,
+                    'author_user_id' => $request->user()?->id,
+                    'metadata' => [
+                        'old_technician_id' => $oldTechnicianId,
+                        'new_technician_id' => $technician?->id,
+                        'old_partner_id' => $oldPartnerId,
+                        'new_partner_id' => $newPartnerId,
+                    ],
+                ]);
+            }
 
-        $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
+            if (! $routeQuote instanceof TechnicalServiceRouteQuote && isset($payload['travel_round_trip_km'])) {
+                $technicalServiceRequest->fill($this->calculateTravelCosts((float) $payload['travel_round_trip_km']));
+                $technicalServiceRequest->save();
+            }
 
-        if ($routeQuote instanceof TechnicalServiceRouteQuote) {
-            $requestPayload['route_quote'] = app(TechnicalServiceRouteCostService::class)->payload($routeQuote->refresh());
-        }
+            if ($technician instanceof TechnicalServiceTechnician) {
+                $this->createAssignmentOfferFromAssignPayload(
+                    $technicalServiceRequest->refresh(),
+                    $technician,
+                    $routeQuote,
+                    $assignmentOfferPayload,
+                    $request->user(),
+                    $assignmentLink,
+                );
+            }
 
-        return response()->json(['request' => $requestPayload]);
+            $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
+
+            if ($routeQuote instanceof TechnicalServiceRouteQuote) {
+                $requestPayload['route_quote'] = app(TechnicalServiceRouteCostService::class)->payload($routeQuote->refresh());
+            }
+
+            return response()->json(['request' => $requestPayload]);
+        });
     }
 
     public function summary(): JsonResponse
@@ -2891,12 +2924,12 @@ class TechnicalServiceController extends Controller
         array $offerPayload,
         array $requestPayload,
     ): float {
-        $routeFeeAmount = $routeQuote instanceof TechnicalServiceRouteQuote
-            ? $this->nullableMoney($routeQuote->fee_amount)
-            : null;
-
-        if ($routeFeeAmount === null && array_key_exists('route_fee_amount', $offerPayload)) {
+        $routeFeeAmount = null;
+        if (array_key_exists('route_fee_amount', $offerPayload)) {
             $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount']);
+        }
+        if ($routeFeeAmount === null && $routeQuote instanceof TechnicalServiceRouteQuote) {
+            $routeFeeAmount = $this->nullableMoney($routeQuote->fee_amount);
         }
         if ($routeFeeAmount === null && $request->travel_fee_amount !== null) {
             $routeFeeAmount = $this->nullableMoney($request->travel_fee_amount);
@@ -2928,14 +2961,6 @@ class TechnicalServiceController extends Controller
     ): TechnicalServiceAssignmentOffer {
         $submittedLaborAmount = $this->nullableMoney($offerPayload['labor_amount'] ?? null);
         $laborAmount = $submittedLaborAmount ?? $this->nullableMoney($request->technician_payment_amount);
-        $isServiceVisit = $request->parent_request_id !== null
-            || filled($request->service_code)
-            || mb_strtolower(trim((string) $request->service_type)) === 'servis';
-        if ($isServiceVisit && ($submittedLaborAmount === null || $submittedLaborAmount <= 0)) {
-            throw ValidationException::withMessages([
-                'assignment_offer.labor_amount' => 'SRV ataması için işçilik hakedişi 0 TL üzerinde açıkça girilmelidir.',
-            ]);
-        }
         $laborAmount ??= 0.0;
         $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount'] ?? null);
         if ($routeFeeAmount === null) {
@@ -2949,15 +2974,13 @@ class TechnicalServiceController extends Controller
         $customerDirectAmount = array_key_exists('customer_direct_to_technician_amount', $offerPayload)
             ? $this->nullableSubmittedMoney($offerPayload['customer_direct_to_technician_amount'])
             : null;
-        $messagePayload = $this->technicianAssignmentMessagePayload($request, $technician, [
+        $assignmentContext = $this->technicianAssignmentMessagePayload($request, $technician, [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
             'total_amount' => $totalAmount,
             'currency' => $currency,
             'note' => $note !== '' ? $note : null,
         ], $assignmentLink);
-        $messageText = $this->technicianAssignmentMessageText($messagePayload);
-        $messagePayload['message_text'] = $messageText;
 
         TechnicalServiceAssignmentOffer::query()
             ->where('technical_service_request_id', $request->id)
@@ -2985,7 +3008,6 @@ class TechnicalServiceController extends Controller
             'metadata' => [
                 'source' => 'technical_service_assignment',
                 'confirmed_by_ops' => (bool) ($offerPayload['confirmed_by_ops'] ?? false),
-                'message_payload' => $messagePayload,
                 'route_quote_id' => $routeQuote?->id,
                 'assignment_partner_id' => $assignmentLink?->partner_id,
                 'assignment_partner_technician_link_id' => $assignmentLink?->id,
@@ -2996,6 +3018,38 @@ class TechnicalServiceController extends Controller
             'technician_payment_amount' => round($laborAmount, 2),
             'travel_fee_amount' => round($routeFeeAmount, 2),
         ])->save();
+
+        $this->assignmentSettlementService->persistForAssignment(
+            $request->refresh(),
+            $technician,
+            $offer,
+            $routeQuote,
+            $laborAmount,
+            $routeFeeAmount,
+            $customerDirectAmount,
+            $user,
+        );
+
+        $presentation = $this->workflowService->technicianAssignmentPresentation(
+            $request->refresh(),
+            $technician,
+            $offer->refresh(),
+            $assignmentContext,
+        );
+        $earningSnapshot = $presentation['earning_snapshot'];
+        $messageText = $presentation['message_preview'];
+        $messagePayload = [
+            ...$presentation['message_context'],
+            'message_text' => $messageText,
+        ];
+        $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+        $metadata['message_payload'] = $messagePayload;
+        $metadata['earning_snapshot'] = $earningSnapshot;
+        $metadata['earning_snapshot_revision'] = $earningSnapshot['revision'];
+        $metadata['earning_snapshot_hash'] = $earningSnapshot['snapshot_hash'] ?? $earningSnapshot['revision'];
+        $metadata['message_template_key'] = $presentation['template']['template_key'] ?? null;
+        $metadata['message_template_version'] = $presentation['template']['version'] ?? null;
+        $offer->forceFill(['metadata' => $metadata])->save();
 
         $request->events()->create([
             'event_type' => 'assignment_offer_sent',
@@ -3009,11 +3063,14 @@ class TechnicalServiceController extends Controller
                 'technician_id' => $technician->id,
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
-                'total_amount' => $totalAmount,
+                'total_amount' => $earningSnapshot['total_amount'],
                 'currency' => $currency,
                 'assignment_partner_id' => $assignmentLink?->partner_id,
                 'assignment_partner_technician_link_id' => $assignmentLink?->id,
                 'message_payload' => $messagePayload,
+                'earning_snapshot' => $earningSnapshot,
+                'earning_snapshot_revision' => $earningSnapshot['revision'],
+                'earning_snapshot_hash' => $earningSnapshot['snapshot_hash'] ?? $earningSnapshot['revision'],
             ],
         ]);
 
@@ -3028,10 +3085,12 @@ class TechnicalServiceController extends Controller
                 'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
                 'triggered_by' => 'technical_service_assignment_offer',
                 'fallback_body' => $messageText,
-                'event_version' => 'assignment-offer:'.$offer->id,
+                'event_version' => 'assignment-offer:'.$offer->id.':'.$earningSnapshot['revision'],
                 'requires_public_url' => $messagePayload['technician_job_card_url'],
                 'metadata' => [
                     'assignment_offer_id' => $offer->id,
+                    'earning_snapshot_revision' => $earningSnapshot['revision'],
+                    'earning_snapshot_hash' => $earningSnapshot['snapshot_hash'] ?? $earningSnapshot['revision'],
                     'manual_ui_send' => false,
                 ],
             ],
@@ -3050,6 +3109,8 @@ class TechnicalServiceController extends Controller
                     'triggered_by' => 'technical_service_assignment_offer',
                     'metadata' => [
                         'assignment_offer_id' => $offer->id,
+                        'earning_snapshot_revision' => $earningSnapshot['revision'],
+                        'earning_snapshot_hash' => $earningSnapshot['snapshot_hash'] ?? $earningSnapshot['revision'],
                         'manual_ui_send' => false,
                     ],
                 ],
@@ -3075,17 +3136,6 @@ class TechnicalServiceController extends Controller
             'status' => $firstDispatch['status'] ?? null,
         ] : null;
         $offer->forceFill(['metadata' => $metadata])->save();
-
-        $this->assignmentSettlementService->persistForAssignment(
-            $request->refresh(),
-            $technician,
-            $offer,
-            $routeQuote,
-            $laborAmount,
-            $routeFeeAmount,
-            $customerDirectAmount,
-            $user,
-        );
 
         return $offer;
     }
@@ -3243,46 +3293,6 @@ class TechnicalServiceController extends Controller
             'payment_message_trigger' => 'appointment_approval',
             'payment_instruction_included' => false,
         ];
-    }
-
-    /**
-     * @param  array<string, mixed>  $payload
-     */
-    private function technicianAssignmentMessageText(array $payload): string
-    {
-        $appointment = trim((string) ($payload['appointment_date'] ?? '').' '.(string) ($payload['appointment_time'] ?? ''));
-        $product = trim(implode(' / ', array_filter([
-            trim((string) ($payload['product_name'] ?? '')),
-            trim((string) ($payload['model'] ?? $payload['product_model'] ?? '')),
-        ], fn (string $value): bool => $value !== '')));
-        $serialNo = trim((string) ($payload['serial_no'] ?? ''));
-        $activationCode = trim((string) ($payload['activation_code'] ?? ''));
-
-        return trim(implode("\n", array_filter([
-            'EMAKS Prime Teknik Servis',
-            '',
-            'Yeni iş teklifi.',
-            '',
-            'MRN: '.($payload['mrn'] ?? '-'),
-            'Müşteri: '.($payload['customer_name'] ?? '-'),
-            'Telefon: '.($payload['customer_phone'] ?? '-'),
-            'Adres: '.($payload['address'] ?? '-'),
-            'Harita: '.($payload['maps_link'] ?? '-'),
-            $product !== '' ? 'Ürün: '.$product : null,
-            $serialNo !== '' ? 'Seri: '.$serialNo : null,
-            $activationCode !== '' ? 'Aktivasyon: '.$activationCode : null,
-            $appointment !== '' ? 'Randevu: '.$appointment : null,
-            '',
-            'Hakediş:',
-            'İşçilik: '.$this->messageMoney($payload['labor_amount'] ?? 0),
-            'Yol: '.$this->messageMoney($payload['route_fee_amount'] ?? 0),
-            'Toplam: '.$this->messageMoney($payload['total_amount'] ?? 0),
-            '',
-            'İş kartı:',
-            $payload['job_link'] ?? '-',
-            'Lütfen randevu saati öneriniz.',
-            $payload['note'] ?? null,
-        ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
 
     private function assignmentLinkForTechnician(
