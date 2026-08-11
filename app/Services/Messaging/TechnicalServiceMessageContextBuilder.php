@@ -50,12 +50,14 @@ class TechnicalServiceMessageContextBuilder
         }
 
         $context = $this->withDerivedContext($context);
+        $recipientRole = $this->recipientRole($messageType);
+        $context['recipient_role'] = $recipientRole;
 
         return [
             'context' => $context,
             'request_id' => $request?->id,
             'payer_state_key' => (string) ($context['payer_state_key'] ?? 'sample'),
-            'recipient_role' => $this->recipientRole($messageType),
+            'recipient_role' => $recipientRole,
             'recipient_phone' => $this->recipientPhone($messageType, $context),
         ];
     }
@@ -225,6 +227,63 @@ class TechnicalServiceMessageContextBuilder
      */
     private function withCanonicalEarningContext(array $context, array $overrides): array
     {
+        $earningSnapshot = is_array($overrides['earning_snapshot'] ?? null)
+            ? $overrides['earning_snapshot']
+            : [];
+        if ($earningSnapshot !== []) {
+            foreach ([
+                'assignment_id',
+                'technician_id',
+                'request_id',
+                'mrn',
+                'srv',
+                'labor_amount',
+                'route_fee_amount',
+                'company_payment_amount',
+                'company_payment_breakdown',
+                'total_amount',
+                'technician_paid_amount',
+                'technician_remaining_amount',
+                'customer_collection_amount',
+                'technician_payment_model_label',
+                'technician_payment_source_label',
+                'technician_payment_status_key',
+                'technician_payment_status_label',
+                'customer_collection_source_label',
+                'operation_note',
+            ] as $key) {
+                if (array_key_exists($key, $earningSnapshot)) {
+                    $context[$key] = $earningSnapshot[$key];
+                    $overrides[$key] = $earningSnapshot[$key];
+                }
+            }
+
+            $payerState = $earningSnapshot['payer_state_key'] ?? $earningSnapshot['payer_state'] ?? null;
+            if ($this->filledString($payerState) !== null) {
+                $context['payer_state'] = $payerState;
+                $context['payer_state_key'] = $payerState;
+                $overrides['payer_state'] = $payerState;
+                $overrides['payer_state_key'] = $payerState;
+            }
+
+            $revision = $this->filledString($earningSnapshot['revision'] ?? null);
+            $snapshotHash = $this->filledString($earningSnapshot['snapshot_hash'] ?? null) ?: $revision;
+            if ($revision !== null) {
+                $context['earning_revision'] = $revision;
+                $context['earning_snapshot_revision'] = $revision;
+                $overrides['earning_revision'] = $revision;
+            }
+            if ($snapshotHash !== null) {
+                $context['snapshot_hash'] = $snapshotHash;
+                $context['earning_snapshot_hash'] = $snapshotHash;
+                $overrides['snapshot_hash'] = $snapshotHash;
+            }
+
+            $context['route_amount'] = $context['route_fee_amount'] ?? null;
+            $context['total_technician_payable'] = $context['total_amount'] ?? null;
+            $context['earning_snapshot'] = $earningSnapshot;
+        }
+
         foreach ([
             'labor_amount' => 'labor_amount_formatted',
             'route_fee_amount' => 'route_fee_formatted',
@@ -236,7 +295,7 @@ class TechnicalServiceMessageContextBuilder
         ] as $amountKey => $formattedKey) {
             if (array_key_exists($amountKey, $overrides)
                 && is_numeric($overrides[$amountKey])
-                && ! array_key_exists($formattedKey, $overrides)
+                && ($earningSnapshot !== [] || ! array_key_exists($formattedKey, $overrides))
             ) {
                 $context[$formattedKey] = $this->formatTry($this->money($overrides[$amountKey]));
             }
@@ -244,7 +303,7 @@ class TechnicalServiceMessageContextBuilder
 
         if (array_key_exists('total_amount', $overrides)
             && is_numeric($overrides['total_amount'])
-            && ! array_key_exists('total_amount_formatted', $overrides)
+            && ($earningSnapshot !== [] || ! array_key_exists('total_amount_formatted', $overrides))
         ) {
             $context['total_amount_formatted'] = $this->formatTry($this->money($overrides['total_amount']));
         }
@@ -260,10 +319,12 @@ class TechnicalServiceMessageContextBuilder
         $context['technician_payment_source_label'] = $this->filledString($context['technician_payment_source_label'] ?? null)
             ?: ($companyFunded ? 'EMAKS Prime' : ($customerPaysTechnician ? 'Müşteri' : 'Belirlenmedi'));
 
+        $remainingKnown = array_key_exists('technician_remaining_amount', $context)
+            && is_numeric($context['technician_remaining_amount']);
         $remainingAmount = $this->money($context['technician_remaining_amount'] ?? null);
         $totalAmount = $this->money($context['total_amount'] ?? null);
         $context['technician_payment_status_key'] = $this->filledString($context['technician_payment_status_key'] ?? null)
-            ?: ($totalAmount > 0.0 && $remainingAmount <= 0.0 ? 'paid' : 'payable');
+            ?: ($totalAmount > 0.0 && $remainingKnown && $remainingAmount <= 0.0 ? 'paid' : 'payable');
         $context['technician_payment_status_label'] = $this->filledString($context['technician_payment_status_label'] ?? null)
             ?: ($context['technician_payment_status_key'] === 'paid' ? 'Ödendi' : 'Ödenecek');
         $context['customer_collection_source_label'] = $this->filledString($context['customer_collection_source_label'] ?? null)
@@ -779,7 +840,7 @@ class TechnicalServiceMessageContextBuilder
                     ?: 'Ek tahsilat';
                 $amount = $this->filledString($companyPayment['amount_label'] ?? null)
                     ?: $this->formatTry($this->money($companyPayment['amount']));
-                $lines[] = "Şirket ödemesi - {$purpose}: {$amount}";
+                $lines[] = "Şirket ödemesi — {$purpose}: {$amount}";
             }
 
             if ($total !== null) {
@@ -830,7 +891,7 @@ class TechnicalServiceMessageContextBuilder
                 ?: 'Ek tahsilat';
             $amount = $this->filledString($companyPayment['amount_label'] ?? null)
                 ?: $this->formatTry($this->money($companyPayment['amount']));
-            $lines[] = "Şirket/{$purpose} {$amount}";
+            $lines[] = "Sirket odemesi/{$purpose} {$amount}";
         }
 
         if ($total !== null) {

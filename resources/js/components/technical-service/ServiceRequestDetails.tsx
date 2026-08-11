@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessageDispatch, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import type { ServiceRequestCanonicalEarningSnapshot } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
@@ -30,8 +30,8 @@ type AssignmentEarningDraft = {
   baseRevision: string
 }
 
-const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni düzeltmesi'
-const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 2
+const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi'
+const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 3
 
 type CompanyPaymentDecisionDraft = {
   decision?: 'pay_technician' | 'retain_company'
@@ -180,7 +180,7 @@ type ServiceRequestDetailsProps = {
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
   onMountPaymentSend?: (paymentId: number | string, payload: PaymentLinkSendPayload) => Promise<PaymentLinkSendResult | void>
-  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, corrective_resend?: boolean, dispatch?: { id?: number | string, status?: string, channel?: string, provider_key?: string } } | void>
+  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, corrective_resend?: boolean, dispatch?: ServiceRequestTechnicianEarningMessageDispatch, dispatches?: ServiceRequestTechnicianEarningMessageDispatch[] } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
@@ -2435,7 +2435,6 @@ export function ServiceRequestDetails({
     persistedCompanyPaymentAmount > 0
     && samePersistedEarningEconomics
     && Number(technicianEarningMessage?.earning_message_contract_version ?? 0) < COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION
-    && ['sent', 'test_sent'].includes(String(technicianEarningMessage?.status)),
   )
   const companyPaymentDecisionPayload = financeCurrentVisit?.company_payment_decisions
     ?? settlement?.company_payment_decisions
@@ -3658,16 +3657,19 @@ export function ServiceRequestDetails({
         setEarningMessageUrl(response.whatsapp_url ?? '')
       }
 
+      const dispatches = response?.dispatches?.length ? response.dispatches : response?.dispatch ? [response.dispatch] : []
+      const dispatchStatuses = dispatches.map((dispatch) => String(dispatch.status ?? ''))
+      const blockedStatuses = ['blocked', 'failed', 'provider_error', 'test_failed', 'suppressed', 'suppressed_real_send_disabled']
       const dispatchStatus = response?.dispatch?.status
-      setRouteFeeEditorMessage(response?.duplicate_noop === true || dispatchStatus === 'duplicate_blocked'
+      setRouteFeeEditorMessage(response?.duplicate_noop === true || dispatchStatuses.includes('duplicate_blocked') || dispatchStatus === 'duplicate_blocked'
         ? 'Aynı hakediş mesajı zaten kuyruğa alınmış veya gönderilmiş; ikinci provider çağrısı oluşturulmadı.'
-        : ['blocked', 'suppressed', 'suppressed_real_send_disabled'].includes(String(dispatchStatus))
+        : dispatchStatuses.some((status) => blockedStatuses.includes(status)) || blockedStatuses.includes(String(dispatchStatus))
           ? 'Hakediş mesajı provider öncesinde bloklandı; Kuyruk / Log detayını kontrol edin.'
-          : dispatchStatus === 'queued'
+          : dispatchStatuses.includes('queued') || dispatchStatus === 'queued'
             ? response?.corrective_resend === true
-              ? 'Düzeltici hakediş mesajı kuyruğa alındı.'
+              ? 'Düzeltici WhatsApp ve SMS hakediş mesajları kuyruğa alındı.'
               : 'Hakediş bilgisi mesaj kuyruğuna alındı.'
-            : dispatchStatus === 'sent' || dispatchStatus === 'test_sent'
+            : (dispatchStatuses.length > 0 && dispatchStatuses.every((status) => ['sent', 'test_sent'].includes(status))) || dispatchStatus === 'sent' || dispatchStatus === 'test_sent'
               ? 'Hakediş bilgisi gönderildi.'
               : 'Hakediş mesajı kaydedildi; güncel durumu Kuyruk / Log ekranından izleyin.')
     } finally {
@@ -7064,9 +7066,10 @@ export function ServiceRequestDetails({
                   </details>
                 ) : null}
                 {correctiveEarningResendRequired ? (
-                  <div data-testid="earning-corrective-resend-notice" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                  <div data-testid="earning-corrective-resend-notice" data-corrective-channels="whatsapp,sms" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
                     <p className="font-semibold">Düzeltici yeniden gönderim gerekli</p>
                     <p className="mt-1">Neden: {COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON}</p>
+                    <p className="mt-1">Kanallar: WhatsApp ve SMS</p>
                   </div>
                 ) : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">

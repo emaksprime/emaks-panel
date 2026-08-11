@@ -311,22 +311,25 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
     public function test_company_collected_message_cannot_say_pay_technician(): void
     {
-        $this->actingAs($this->admin())
-            ->postJson('/api/technical-service/message-templates/preview', [
-                'message_type' => 'appointment_approved_customer',
-                'channel' => 'whatsapp',
-                'body' => 'Merhaba {customer_name}, ustaya ödeme yapınız. Randevu {appointment_date} {appointment_time}.',
-                'sample_context' => false,
-                'context' => [
-                    'customer_name' => 'PR88 Tahsil Test',
-                    'appointment_date' => '03.07.2026',
-                    'appointment_time' => '14:00',
-                    'payer_state_key' => 'company_collected_online',
-                ],
-            ])
-            ->assertOk()
-            ->assertJsonPath('preview.preview_ready', false)
-            ->assertJsonFragment(['Şirket tahsil etmişken müşteri mesajı ustaya ödeme talimatı içeremez.']);
+        foreach (['appointment_approved_customer', 'customer_pays_technician_notice'] as $messageType) {
+            $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => $messageType,
+                    'channel' => 'whatsapp',
+                    'body' => 'Merhaba {customer_name}, ustaya ödeme yapınız. Randevu {appointment_date} {appointment_time}.',
+                    'sample_context' => false,
+                    'context' => [
+                        'customer_name' => 'PR88 Tahsil Test',
+                        'appointment_date' => '03.07.2026',
+                        'appointment_time' => '14:00',
+                        'customer_payment_amount_formatted' => '1.000,00 TL',
+                        'payer_state_key' => 'company_collected_online',
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', false)
+                ->assertJsonFragment(['Şirket tahsil etmişken müşteri mesajı ustaya ödeme talimatı içeremez.']);
+        }
     }
 
     public function test_sms_preview_counts_segments_warns_and_does_not_send(): void
@@ -1454,7 +1457,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
         $this->assertStringContainsString('İşçilik/Montaj: 3.000,00 TL', $body);
         $this->assertStringContainsString('Yol: 1.400,00 TL', $body);
-        $this->assertStringContainsString('Şirket ödemesi - Ek servis: 600,00 TL', $body);
+        $this->assertStringContainsString('Şirket ödemesi — Ek servis: 600,00 TL', $body);
         $this->assertStringContainsString('Toplam: 5.000,00 TL', $body);
         $this->assertStringNotContainsString('Toplam: 4.400,00 TL', $body);
     }
@@ -1464,9 +1467,9 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $preview = $this->earningMessagePreview('sms', $this->companyPaymentEarningContext());
         $body = (string) $preview['rendered_body'];
 
-        $this->assertStringContainsString('İşçilik 3.000,00 TL', $body);
+        $this->assertStringContainsString('Iscilik 3.000,00 TL', $body);
         $this->assertStringContainsString('Yol 1.400,00 TL', $body);
-        $this->assertStringContainsString('Şirket/Ek servis 600,00 TL', $body);
+        $this->assertStringContainsString('Sirket odemesi/Ek servis 600,00 TL', $body);
         $this->assertStringContainsString('Toplam 5.000,00 TL', $body);
         $this->assertStringContainsString('B028', $body);
         $this->assertStringNotContainsString('Toplam 4.400,00 TL', $body);
@@ -1478,8 +1481,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         foreach (['whatsapp', 'sms'] as $channel) {
             $body = (string) $this->earningMessagePreview($channel, $this->companyPaymentEarningContext())['rendered_body'];
 
-            $this->assertStringContainsString('Ödenecek', $body);
-            $this->assertStringNotContainsString('Ödendi', $body);
+            $this->assertStringContainsString($channel === 'sms' ? 'Odenecek' : 'Ödenecek', $body);
+            $this->assertStringNotContainsString($channel === 'sms' ? 'Odendi' : 'Ödendi', $body);
         }
     }
 
@@ -1495,6 +1498,69 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             $this->assertSame($context['earning_revision'], data_get($preview, 'context.earning_revision'));
             $this->assertSame($context['snapshot_hash'], data_get($preview, 'context.snapshot_hash'));
         }
+    }
+
+    public function test_technician_earning_message_allows_company_collected_payable_state_from_nested_snapshot(): void
+    {
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $this->earningMessagePreview($channel, $this->nestedCompanyPaymentEarningContext());
+            $body = (string) $preview['rendered_body'];
+
+            $this->assertTrue($preview['preview_ready']);
+            $this->assertSame([], $preview['blockers']);
+            $this->assertSame(600, data_get($preview, 'context.company_payment_amount'));
+            $this->assertSame('payable', data_get($preview, 'context.technician_payment_status_key'));
+            $this->assertSame('Ödenecek', data_get($preview, 'context.technician_payment_status_label'));
+            $this->assertStringContainsString('600,00 TL', $body);
+            $this->assertStringContainsString('5.000,00 TL', $body);
+            $this->assertStringContainsString($channel === 'sms' ? 'Odenecek' : 'Ödenecek', $body);
+            $this->assertStringNotContainsString($channel === 'sms' ? 'Odendi' : 'Ödendi', $body);
+        }
+    }
+
+    public function test_sms_and_whatsapp_use_same_nested_earning_revision_and_snapshot_hash(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $whatsapp = $this->earningMessagePreview('whatsapp', $context);
+        $sms = $this->earningMessagePreview('sms', $context);
+
+        $this->assertSame(data_get($whatsapp, 'context.earning_revision'), data_get($sms, 'context.earning_revision'));
+        $this->assertSame(data_get($whatsapp, 'context.earning_snapshot_hash'), data_get($sms, 'context.earning_snapshot_hash'));
+        $this->assertSame(data_get($context, 'earning_snapshot.revision'), data_get($sms, 'context.earning_revision'));
+        $this->assertSame(data_get($context, 'earning_snapshot.snapshot_hash'), data_get($sms, 'context.earning_snapshot_hash'));
+    }
+
+    public function test_route_fee_formatted_exists_for_positive_and_zero_nested_snapshot(): void
+    {
+        $positive = $this->earningMessagePreview('whatsapp', $this->nestedCompanyPaymentEarningContext());
+        $zeroContext = $this->nestedCompanyPaymentEarningContext();
+        $zeroContext['earning_snapshot']['route_fee_amount'] = 0;
+        $zeroContext['earning_snapshot']['total_amount'] = 3600;
+        $zeroContext['earning_snapshot']['technician_remaining_amount'] = 3600;
+        $zero = $this->earningMessagePreview('whatsapp', $zeroContext);
+
+        $this->assertSame('1.400,00 TL', data_get($positive, 'context.route_fee_formatted'));
+        $this->assertSame('0,00 TL', data_get($zero, 'context.route_fee_formatted'));
+        $this->assertStringContainsString('Yol: 0,00 TL', (string) $zero['rendered_body']);
+    }
+
+    public function test_rendered_snapshot_mismatch_fails_before_dispatch_creation_contract(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $context['earning_snapshot']['total_amount'] = 4999;
+
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->json('preview');
+
+        $this->assertContains('EARNING_MESSAGE_SNAPSHOT_MISMATCH', $preview['blockers']);
     }
 
     public function test_customer_pays_technician_state_does_not_render_company_payment(): void
@@ -1518,7 +1584,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
 
             $this->assertStringNotContainsString('Şirket ödemesi', $body);
             $this->assertStringNotContainsString('Şirket/', $body);
-            $this->assertStringContainsString('Müşteri', $body);
+            $this->assertStringContainsString($channel === 'sms' ? 'Musteri' : 'Müşteri', $body);
             $this->assertStringContainsString('4.400,00 TL', $body);
         }
     }
@@ -2353,6 +2419,40 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             'snapshot_hash' => $revision,
             'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?job_id=198',
             'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/198',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function nestedCompanyPaymentEarningContext(): array
+    {
+        $context = $this->companyPaymentEarningContext();
+
+        return [
+            'mrn' => $context['mrn'],
+            'srv' => $context['srv'],
+            'technician_job_card_url' => $context['technician_job_card_url'],
+            'technician_job_card_short_url' => $context['technician_job_card_short_url'],
+            'earning_snapshot' => [
+                'schema_version' => 3,
+                'assignment_id' => 106,
+                'technician_id' => 111,
+                'labor_amount' => $context['labor_amount'],
+                'route_fee_amount' => $context['route_fee_amount'],
+                'company_payment_amount' => $context['company_payment_amount'],
+                'company_payment_breakdown' => $context['company_payment_breakdown'],
+                'total_amount' => $context['total_amount'],
+                'technician_paid_amount' => $context['technician_paid_amount'],
+                'technician_remaining_amount' => $context['technician_remaining_amount'],
+                'customer_collection_amount' => $context['customer_collection_amount'],
+                'payer_state' => $context['payer_state_key'],
+                'technician_payment_model_label' => $context['technician_payment_model_label'],
+                'technician_payment_source_label' => $context['technician_payment_source_label'],
+                'technician_payment_status_key' => $context['technician_payment_status_key'],
+                'technician_payment_status_label' => $context['technician_payment_status_label'],
+                'customer_collection_source_label' => $context['customer_collection_source_label'],
+                'revision' => $context['earning_revision'],
+                'snapshot_hash' => $context['snapshot_hash'],
+            ],
         ];
     }
 

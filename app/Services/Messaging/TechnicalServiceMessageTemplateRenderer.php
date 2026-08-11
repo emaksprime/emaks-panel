@@ -4,6 +4,7 @@ namespace App\Services\Messaging;
 
 use App\Models\TechnicalServiceMessageTemplate;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
+use Illuminate\Support\Str;
 
 class TechnicalServiceMessageTemplateRenderer
 {
@@ -34,6 +35,9 @@ class TechnicalServiceMessageTemplateRenderer
         $rendered = $this->replacePlaceholders($body, $context);
         if ($channel === TechnicalServiceMessageTemplate::CHANNEL_SMS) {
             $rendered = $this->normalizeSmsText($rendered);
+            if ($messageType === 'earnings_message_technician') {
+                $rendered = Str::ascii($rendered);
+            }
         }
         $warnings = [];
         $blockers = [];
@@ -262,15 +266,109 @@ class TechnicalServiceMessageTemplateRenderer
             }
         }
 
-        if (in_array($payerState, [
-            TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
-            TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL,
-        ], true) && $this->containsPayTechnicianPhrase($rendered)) {
+        if ($messageType === 'earnings_message_technician') {
+            $this->appendEarningSnapshotBlockers($context, $blockers);
+        }
+
+        if ($this->guardsCustomerPaymentInstructions($messageType, $context)
+            && in_array($payerState, [
+                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
+                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL,
+            ], true) && $this->containsPayTechnicianPhrase($rendered)) {
             $blockers[] = 'Şirket tahsil etmişken müşteri mesajı ustaya ödeme talimatı içeremez.';
         }
 
         if (str_ends_with($messageType, '_ops') && (string) ($context['recipient_role'] ?? 'ops') === 'customer') {
             $blockers[] = 'OPS/internal şablonları müşteri alıcısına hazır sayılamaz.';
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function guardsCustomerPaymentInstructions(string $messageType, array $context): bool
+    {
+        if ((string) ($context['recipient_role'] ?? '') !== 'customer') {
+            return false;
+        }
+
+        return in_array($messageType, [
+            'appointment_approved_customer',
+            'appointment_updated_customer',
+            'payment_link_customer',
+            'part_fee_payment_link_customer',
+            'customer_pays_technician_notice',
+        ], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<int, string>  $blockers
+     */
+    private function appendEarningSnapshotBlockers(array $context, array &$blockers): void
+    {
+        $snapshot = $context['earning_snapshot'] ?? null;
+        if (! is_array($snapshot) || $snapshot === []) {
+            return;
+        }
+
+        $mismatch = false;
+        foreach ([
+            'labor_amount',
+            'route_fee_amount',
+            'company_payment_amount',
+            'total_amount',
+            'technician_paid_amount',
+            'technician_remaining_amount',
+        ] as $key) {
+            if (! array_key_exists($key, $snapshot)
+                || ! is_numeric($snapshot[$key])
+                || ! is_numeric($context[$key] ?? null)
+                || abs($this->money($snapshot[$key]) - $this->money($context[$key])) > 0.01
+            ) {
+                $mismatch = true;
+            }
+        }
+
+        $componentTotal = $this->money($snapshot['labor_amount'] ?? null)
+            + $this->money($snapshot['route_fee_amount'] ?? null)
+            + $this->money($snapshot['company_payment_amount'] ?? null);
+        if (abs($componentTotal - $this->money($snapshot['total_amount'] ?? null)) > 0.01) {
+            $mismatch = true;
+        }
+
+        $breakdownTotal = collect((array) ($snapshot['company_payment_breakdown'] ?? []))
+            ->filter(fn (mixed $line): bool => is_array($line))
+            ->sum(fn (array $line): float => $this->money($line['amount'] ?? null));
+        if (abs($breakdownTotal - $this->money($snapshot['company_payment_amount'] ?? null)) > 0.01) {
+            $mismatch = true;
+        }
+
+        foreach ([
+            'technician_payment_status_key',
+            'technician_payment_status_label',
+            'technician_payment_source_label',
+            'customer_collection_source_label',
+        ] as $key) {
+            if (trim((string) ($snapshot[$key] ?? '')) === ''
+                || ! hash_equals(trim((string) $snapshot[$key]), trim((string) ($context[$key] ?? '')))
+            ) {
+                $mismatch = true;
+            }
+        }
+
+        $revision = trim((string) ($snapshot['revision'] ?? ''));
+        $snapshotHash = trim((string) ($snapshot['snapshot_hash'] ?? $revision));
+        if ($revision === ''
+            || $snapshotHash === ''
+            || ! hash_equals($revision, trim((string) ($context['earning_revision'] ?? '')))
+            || ! hash_equals($snapshotHash, trim((string) ($context['earning_snapshot_hash'] ?? '')))
+        ) {
+            $mismatch = true;
+        }
+
+        if ($mismatch) {
+            $blockers[] = 'EARNING_MESSAGE_SNAPSHOT_MISMATCH';
         }
     }
 

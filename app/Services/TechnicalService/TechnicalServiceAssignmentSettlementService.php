@@ -208,7 +208,7 @@ class TechnicalServiceAssignmentSettlementService
             : ($customerPaysTechnician ? 'Müşteri' : 'Belirlenmedi');
         $paymentStatusKey = $technicianRemainingAmount <= 0.0 && $totalAmount > 0.0 ? 'paid' : 'payable';
         $paymentStatusLabel = $paymentStatusKey === 'paid' ? 'Ödendi' : 'Ödenecek';
-        $customerCollectionSourceLabel = $companyFunded && $customerCollectionAmount > 0.0
+        $customerCollectionSourceLabel = $companyFunded
             ? 'EMAKS Prime tarafından alındı'
             : ($customerPaysTechnician ? 'Ustaya doğrudan ödenecek' : null);
         $operationNote = trim((string) ($offer->note ?? ''));

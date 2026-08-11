@@ -61,9 +61,9 @@ use Throwable;
 
 class TechnicalServiceController extends Controller
 {
-    private const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni düzeltmesi';
+    private const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi';
 
-    private const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 2;
+    private const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 3;
 
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,
@@ -789,16 +789,26 @@ class TechnicalServiceController extends Controller
                 ->latest('id')
                 ->get();
             $companyPaymentContractRequired = (float) ($earningSnapshot['company_payment_amount'] ?? 0) > 0.0;
-            $existingDispatch = $earningDispatches
-                ->first(fn (TechnicalServiceMessageDispatch $dispatch): bool => hash_equals(
+            $expectedChannels = $this->earningMessageExpectedChannels();
+            $currentContractDispatches = $earningDispatches
+                ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => hash_equals(
                     $earningSnapshotFingerprint,
                     (string) data_get($dispatch->metadata, 'earning_snapshot_fingerprint', ''),
-                ) && (
-                    ! $companyPaymentContractRequired
-                    || (int) data_get($dispatch->metadata, 'earning_message_contract_version', 0)
+                )
+                    && (int) data_get($dispatch->metadata, 'earning_message_contract_version', 0)
                         >= self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION
-                ));
-            if ($existingDispatch instanceof TechnicalServiceMessageDispatch) {
+                    && in_array($dispatch->status, TechnicalServiceMessageDispatch::DUPLICATE_BLOCKING_STATUSES, true))
+                ->unique('channel')
+                ->values();
+            $existingDispatches = collect($expectedChannels)
+                ->map(fn (string $channel): ?TechnicalServiceMessageDispatch => $currentContractDispatches
+                    ->firstWhere('channel', $channel))
+                ->filter()
+                ->values();
+            $existingDispatch = $existingDispatches->firstWhere('channel', 'whatsapp')
+                ?? $existingDispatches->first();
+            $currentContractComplete = $existingDispatches->count() === count($expectedChannels);
+            if ($currentContractComplete && $existingDispatch instanceof TechnicalServiceMessageDispatch) {
                 $operationControl = is_array($job->operation_control_payload) ? $job->operation_control_payload : [];
                 $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
                     ? $operationControl['technician_earning_message']
@@ -819,13 +829,17 @@ class TechnicalServiceController extends Controller
                         ? 'https://wa.me/'.$whatsappPhone.'?text='.rawurlencode($messageText)
                         : '',
                     'dispatch' => $existingDispatch,
+                    'dispatches' => $existingDispatches,
                     'duplicate_noop' => true,
                     'corrective_resend' => false,
                 ];
             }
 
             $legacySameEconomicsDispatches = $earningDispatches
-                ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
+                ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => hash_equals(
+                    $earningSnapshotFingerprint,
+                    (string) data_get($dispatch->metadata, 'earning_snapshot_fingerprint', ''),
+                )
                     && $this->dispatchMatchesEarningEconomics($dispatch, $earningSnapshot, $offer)
                     && (int) data_get($dispatch->metadata, 'earning_message_contract_version', 0)
                         < self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION);
@@ -851,6 +865,20 @@ class TechnicalServiceController extends Controller
             $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
                 ? $operationControl['technician_earning_message']
                 : [];
+            $correctiveSourceDispatchIds = $correctiveResend
+                ? $legacySameEconomicsDispatches->pluck('id')->map(fn ($id): int => (int) $id)->sort()->values()->all()
+                : [];
+            $correctiveIdentity = $correctiveResend
+                ? hash('sha256', json_encode([
+                    'assignment_offer_id' => (int) $offer->id,
+                    'request_id' => (int) $job->id,
+                    'earning_revision' => $earningSnapshotRevision,
+                    'earning_snapshot_hash' => $earningSnapshot['snapshot_hash'] ?? $earningSnapshotRevision,
+                    'message_contract_version' => self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION,
+                    'reason' => $correctiveResendReason,
+                    'source_dispatch_ids' => $correctiveSourceDispatchIds,
+                ], JSON_THROW_ON_ERROR))
+                : null;
             $dispatch = $this->workflowMessages->queueSystemMessage(
                 $job,
                 'earnings_message_technician',
@@ -859,9 +887,9 @@ class TechnicalServiceController extends Controller
                 [
                     'copy_text' => $result['copy_text'],
                     'whatsapp_url' => $result['whatsapp_url'],
-                    'labor_amount' => $earningPayload['labor_amount'] ?? null,
-                    'route_fee_amount' => $earningPayload['route_fee_amount'] ?? null,
-                    'total_amount' => $earningPayload['total_amount'] ?? null,
+                    'labor_amount' => $earningSnapshot['labor_amount'] ?? null,
+                    'route_fee_amount' => $earningSnapshot['route_fee_amount'] ?? null,
+                    'total_amount' => $earningSnapshot['total_amount'] ?? null,
                     'earning_snapshot' => $earningSnapshot,
                     'earning_revision' => $earningSnapshotRevision,
                     'submitted_total_amount' => $earningPayload['submitted_total_amount'] ?? null,
@@ -872,10 +900,19 @@ class TechnicalServiceController extends Controller
                 [
                     'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
                     'triggered_by' => 'technical_service_earnings_message',
-                    'event_version' => 'assignment-offer:'.$offer->id.':earnings-summary:'.$earningSnapshotFingerprint,
+                    'event_version' => implode(':', array_filter([
+                        'assignment-offer',
+                        $offer->id,
+                        'earnings-summary',
+                        $earningSnapshotFingerprint,
+                        'contract',
+                        self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION,
+                        $correctiveIdentity,
+                    ], fn (mixed $value): bool => $value !== null && $value !== '')),
                     'requires_public_url' => $jobCardContext['canonical_url'],
                     'force_resend' => $correctiveResend,
                     'force_resend_reason' => $correctiveResend ? $correctiveResendReason : null,
+                    'force_resend_nonce' => $correctiveIdentity,
                     'metadata' => [
                         'assignment_offer_id' => $offer->id,
                         'earning_snapshot_fingerprint' => $earningSnapshotFingerprint,
@@ -885,17 +922,41 @@ class TechnicalServiceController extends Controller
                         'earning_snapshot' => $earningSnapshot,
                         'manual_ui_send' => true,
                         'corrective_resend' => $correctiveResend,
-                        'corrective_resend_source_dispatch_ids' => $correctiveResend
-                            ? $legacySameEconomicsDispatches->pluck('id')->map(fn ($id): int => (int) $id)->values()->all()
-                            : [],
+                        'corrective_resend_reason' => $correctiveResend ? $correctiveResendReason : null,
+                        'corrective_resend_identity' => $correctiveIdentity,
+                        'corrective_resend_source_dispatch_ids' => $correctiveSourceDispatchIds,
                     ],
                 ],
             );
 
+            $dispatches = TechnicalServiceMessageDispatch::query()
+                ->where('technical_service_request_id', $job->id)
+                ->where('message_type', 'earnings_message_technician')
+                ->where('recipient_role', 'technician')
+                ->latest('id')
+                ->get()
+                ->filter(fn (TechnicalServiceMessageDispatch $candidate): bool => hash_equals(
+                    $earningSnapshotFingerprint,
+                    (string) data_get($candidate->metadata, 'earning_snapshot_fingerprint', ''),
+                ) && (int) data_get($candidate->metadata, 'earning_message_contract_version', 0)
+                    >= self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION)
+                ->unique('channel')
+                ->values();
+            if ($dispatches->isEmpty()) {
+                $dispatches = collect([$dispatch]);
+            }
+            $dispatch = $dispatches->firstWhere('channel', 'whatsapp') ?? $dispatches->first();
+            $aggregateStatus = $this->earningDispatchAggregateStatus($dispatches->all());
+
             $operationControl['technician_earning_message'] = [
                 ...$earningPayload,
-                'status' => $dispatch->status,
+                'status' => $aggregateStatus,
                 'dispatch_id' => $dispatch->id,
+                'dispatch_ids' => $dispatches->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                'dispatches' => $dispatches
+                    ->map(fn (TechnicalServiceMessageDispatch $item): array => $this->earningDispatchPayload($item))
+                    ->values()
+                    ->all(),
                 'queued_at' => $dispatch->queued_at?->toISOString(),
                 'sent_at' => in_array($dispatch->status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true)
                     ? $dispatch->sent_at?->toISOString()
@@ -903,6 +964,7 @@ class TechnicalServiceController extends Controller
                 'last_error_code' => $dispatch->last_error_code,
                 'last_error_message_redacted' => $dispatch->last_error_message_redacted,
                 'earning_message_contract_version' => self::COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION,
+                'earning_snapshot_hash' => $earningSnapshot['snapshot_hash'] ?? $earningSnapshotRevision,
                 'corrective_resend' => $correctiveResend,
                 'corrective_resend_reason' => $correctiveResend ? $correctiveResendReason : null,
             ];
@@ -912,6 +974,7 @@ class TechnicalServiceController extends Controller
                 ...$result,
                 'request' => $job->refresh(),
                 'dispatch' => $dispatch,
+                'dispatches' => $dispatches,
                 'duplicate_noop' => false,
                 'corrective_resend' => $correctiveResend,
             ];
@@ -930,6 +993,10 @@ class TechnicalServiceController extends Controller
                 'channel' => $result['dispatch']->channel,
                 'provider_key' => $result['dispatch']->provider_key,
             ],
+            'dispatches' => collect($result['dispatches'] ?? [$result['dispatch']])
+                ->map(fn (TechnicalServiceMessageDispatch $dispatch): array => $this->earningDispatchPayload($dispatch))
+                ->values()
+                ->all(),
             'duplicate_noop' => (bool) ($result['duplicate_noop'] ?? false),
             'corrective_resend' => (bool) ($result['corrective_resend'] ?? false),
             'request' => $this->workflowService->serialize($result['request'], true),
@@ -956,6 +1023,66 @@ class TechnicalServiceController extends Controller
         }
 
         return true;
+    }
+
+    /** @return array<int, string> */
+    private function earningMessageExpectedChannels(): array
+    {
+        $settings = $this->messagingSettings->workflowDispatchSnapshot();
+        $type = collect((array) ($settings['message_types'] ?? []))
+            ->first(fn (mixed $candidate): bool => is_array($candidate)
+                && ($candidate['key'] ?? null) === 'earnings_message_technician');
+        $policy = is_array($type) ? (string) ($type['channel_policy'] ?? 'whatsapp_only') : 'whatsapp_only';
+
+        return match ($policy) {
+            'whatsapp_and_sms', 'all' => ['whatsapp', 'sms'],
+            'sms_only' => ['sms'],
+            default => ['whatsapp'],
+        };
+    }
+
+    /**
+     * @param  array<int, TechnicalServiceMessageDispatch>  $dispatches
+     */
+    private function earningDispatchAggregateStatus(array $dispatches): string
+    {
+        $statuses = collect($dispatches)->pluck('status');
+        if ($statuses->isNotEmpty() && $statuses->every(
+            fn (string $status): bool => in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true),
+        )) {
+            return TechnicalServiceMessageDispatch::STATUS_SENT;
+        }
+        if ($statuses->contains(fn (string $status): bool => in_array($status, [
+            TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            TechnicalServiceMessageDispatch::STATUS_FAILED,
+            TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+            TechnicalServiceMessageDispatch::STATUS_TEST_FAILED,
+        ], true))) {
+            return TechnicalServiceMessageDispatch::STATUS_BLOCKED;
+        }
+        if ($statuses->contains(TechnicalServiceMessageDispatch::STATUS_SENDING)) {
+            return TechnicalServiceMessageDispatch::STATUS_SENDING;
+        }
+        if ($statuses->contains(TechnicalServiceMessageDispatch::STATUS_QUEUED)) {
+            return TechnicalServiceMessageDispatch::STATUS_QUEUED;
+        }
+
+        return (string) ($statuses->first() ?? TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED);
+    }
+
+    /** @return array<string, mixed> */
+    private function earningDispatchPayload(TechnicalServiceMessageDispatch $dispatch): array
+    {
+        return [
+            'id' => $dispatch->id,
+            'status' => $dispatch->status,
+            'channel' => $dispatch->channel,
+            'provider_key' => $dispatch->provider_key,
+            'queued_at' => $dispatch->queued_at?->toISOString(),
+            'sent_at' => $dispatch->sent_at?->toISOString(),
+            'last_error_code' => $dispatch->last_error_code,
+            'last_error_message_redacted' => $dispatch->last_error_message_redacted,
+        ];
     }
 
     private function paymentCreateFailureMessage(Throwable $exception): string

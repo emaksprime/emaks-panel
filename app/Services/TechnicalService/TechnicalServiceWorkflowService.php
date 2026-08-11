@@ -2647,15 +2647,50 @@ class TechnicalServiceWorkflowService
             return null;
         }
 
-        $dispatch = is_numeric($payload['dispatch_id'] ?? null)
-            ? TechnicalServiceMessageDispatch::query()->find((int) $payload['dispatch_id'])
-            : null;
+        $dispatchIds = collect((array) ($payload['dispatch_ids'] ?? []))
+            ->filter(fn (mixed $id): bool => is_numeric($id))
+            ->map(fn (mixed $id): int => (int) $id)
+            ->values();
+        if ($dispatchIds->isEmpty() && is_numeric($payload['dispatch_id'] ?? null)) {
+            $dispatchIds->push((int) $payload['dispatch_id']);
+        }
+        $dispatches = $dispatchIds->isEmpty()
+            ? collect()
+            : TechnicalServiceMessageDispatch::query()
+                ->whereIn('id', $dispatchIds->all())
+                ->get()
+                ->sortBy(fn (TechnicalServiceMessageDispatch $dispatch): int => $dispatchIds->search($dispatch->id))
+                ->values();
+        $dispatch = $dispatches->firstWhere('channel', 'whatsapp') ?? $dispatches->first();
         if ($dispatch instanceof TechnicalServiceMessageDispatch) {
-            $payload['status'] = $dispatch->status;
+            $statuses = $dispatches->pluck('status');
+            $payload['status'] = $statuses->isNotEmpty() && $statuses->every(
+                fn (string $status): bool => in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true),
+            )
+                ? TechnicalServiceMessageDispatch::STATUS_SENT
+                : ($statuses->contains(fn (string $status): bool => in_array($status, [
+                    TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    TechnicalServiceMessageDispatch::STATUS_FAILED,
+                    TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                    TechnicalServiceMessageDispatch::STATUS_TEST_FAILED,
+                ], true))
+                    ? TechnicalServiceMessageDispatch::STATUS_BLOCKED
+                    : $dispatch->status);
             $payload['queued_at'] = $this->dateTimeString($dispatch->queued_at);
             $payload['sent_at'] = $this->dateTimeString($dispatch->sent_at);
             $payload['last_error_code'] = $dispatch->last_error_code;
             $payload['last_error_message_redacted'] = $dispatch->last_error_message_redacted;
+            $payload['dispatch_ids'] = $dispatches->pluck('id')->map(fn ($id): int => (int) $id)->all();
+            $payload['dispatches'] = $dispatches->map(fn (TechnicalServiceMessageDispatch $item): array => [
+                'id' => $item->id,
+                'status' => $item->status,
+                'channel' => $item->channel,
+                'provider_key' => $item->provider_key,
+                'queued_at' => $this->dateTimeString($item->queued_at),
+                'sent_at' => $this->dateTimeString($item->sent_at),
+                'last_error_code' => $item->last_error_code,
+                'last_error_message_redacted' => $item->last_error_message_redacted,
+            ])->values()->all();
             $payload['earning_message_contract_version'] = (int) ($payload['earning_message_contract_version']
                 ?? data_get($dispatch->metadata, 'earning_message_contract_version', 0));
         }

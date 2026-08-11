@@ -185,6 +185,13 @@ class TechnicalServiceWorkflowMessageDispatchService
                 'context' => $context,
             ]);
             $blockers = array_values((array) ($preview['blockers'] ?? []));
+            if (in_array('EARNING_MESSAGE_SNAPSHOT_MISMATCH', $blockers, true)) {
+                return $this->blockedSummary(
+                    $summary,
+                    'earning_message_snapshot_mismatch',
+                    'EARNING_MESSAGE_SNAPSHOT_MISMATCH',
+                );
+            }
             if ($blockers !== [] || ! (bool) ($preview['preview_ready'] ?? false)) {
                 $summary = $this->addBlockedDispatch(
                     $summary,
@@ -356,6 +363,7 @@ class TechnicalServiceWorkflowMessageDispatchService
             'parent_dispatch_id' => $options['parent_dispatch_id'] ?? null,
             'force_resend' => (bool) ($options['force_resend'] ?? false),
             'force_resend_reason' => $options['force_resend_reason'] ?? null,
+            'force_resend_nonce' => $options['force_resend_nonce'] ?? null,
             'payload' => [
                 'body' => $body,
                 'message_text' => $body,
@@ -494,6 +502,7 @@ class TechnicalServiceWorkflowMessageDispatchService
             'parent_dispatch_id' => $options['parent_dispatch_id'] ?? null,
             'force_resend' => (bool) ($options['force_resend'] ?? false),
             'force_resend_reason' => $options['force_resend_reason'] ?? null,
+            'force_resend_nonce' => $options['force_resend_nonce'] ?? null,
             'payload' => [
                 'message_type' => $messageType,
                 'recipient_role' => $recipientRole,

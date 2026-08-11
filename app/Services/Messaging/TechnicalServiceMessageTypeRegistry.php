@@ -591,7 +591,7 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
                 : "EMAKS Prime Teknik Servis\n\nUsta randevu önerdi.\n\nUsta: {technician_name}\nMüşteri: {customer_name}\nMRN: {mrn}\nÖnerilen zaman: {proposed_appointment_options}\nNot: {technician_note}\n\nOPS aksiyonu: {ops_next_action_text}",
             'earnings_message_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS\nMRN {mrn}\n{technician_earning_sms_summary}\nKaynak {technician_payment_source_label}\nDurum {technician_payment_status_label}\nKart {technician_job_card_short_url}\nB028"
+                ? "EMAKS Prime\nHakedis guncellendi.\nMRN: {mrn}\n{technician_earning_sms_summary}\nUsta odemesi: {technician_payment_source_label} / {technician_payment_status_label}\nIs Karti: {technician_job_card_short_url} B028"
                 : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\n{technician_earning_summary_block}\n\nMüşteri tahsilatı: {customer_collection_source_label}\nÖdeme modeli: {technician_payment_model_label}\nUstaya ödeme kaynağı: {technician_payment_source_label}\nUstaya ödeme durumu: {technician_payment_status_label}",
             'price_revision_response_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\nHakediş revize edildi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nKart: {technician_job_card_short_url}"

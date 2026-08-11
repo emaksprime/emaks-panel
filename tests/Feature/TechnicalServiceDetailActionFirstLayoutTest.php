@@ -432,6 +432,30 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('onClick={() => void handleAssignmentSave()}', $detailsSource);
     }
 
+    public function test_corrective_earning_send_renders_two_channels_and_uses_one_targeted_request(): void
+    {
+        $detailsSource = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $pageSource = $this->source('resources/js/pages/panel/technical-service.tsx');
+        $handlerStart = strpos($pageSource, 'const handleTechnicianEarningMessageCreate = async');
+        $handlerEnd = strpos($pageSource, 'const handlePartnerAppointmentProposalApprove = async', $handlerStart ?: 0);
+
+        $this->assertStringContainsString('data-testid="earning-corrective-resend-notice"', $detailsSource);
+        $this->assertStringContainsString('data-corrective-channels="whatsapp,sms"', $detailsSource);
+        $this->assertStringContainsString('Kanallar: WhatsApp ve SMS', $detailsSource);
+        $this->assertStringContainsString('Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi', $detailsSource);
+        $this->assertStringContainsString('technicianEarningMessageSubmitLock.current', $detailsSource);
+        $this->assertStringContainsString('response?.dispatches?.length', $detailsSource);
+        $this->assertStringContainsString('Düzeltici WhatsApp ve SMS hakediş mesajları kuyruğa alındı.', $detailsSource);
+        $this->assertIsInt($handlerStart);
+        $this->assertIsInt($handlerEnd);
+
+        $handler = substr($pageSource, $handlerStart, $handlerEnd - $handlerStart);
+        $this->assertSame(1, substr_count($handler, "method: 'POST'"));
+        $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $handler);
+        $this->assertStringNotContainsString('loadRequests(', $handler);
+        $this->assertStringNotContainsString('setIsDetailDialogOpen(false)', $handler);
+    }
+
     public function test_terminal_payment_retry_ui_requires_reason_and_never_renders_raw_contract_code(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');

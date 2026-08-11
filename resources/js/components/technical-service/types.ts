@@ -1084,6 +1084,20 @@ export type ServiceRequestTechnicianEarningMessage = {
   earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null
   corrective_resend?: boolean
   corrective_resend_reason?: string | null
+  dispatch_id?: number | string | null
+  dispatch_ids?: Array<number | string>
+  dispatches?: ServiceRequestTechnicianEarningMessageDispatch[]
+}
+
+export type ServiceRequestTechnicianEarningMessageDispatch = {
+  id?: number | string | null
+  status?: string | null
+  channel?: string | null
+  provider_key?: string | null
+  queued_at?: string | null
+  sent_at?: string | null
+  last_error_code?: string | null
+  last_error_message_redacted?: string | null
 }
 
 export type ServiceRequestDocumentInfo = {

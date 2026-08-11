@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarningPayment;
 use App\Models\TechnicalServiceMessageDispatch;
@@ -16,10 +17,13 @@ use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -661,7 +665,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ->assertJsonValidationErrors('corrective_resend_reason')
             ->assertJsonPath(
                 'errors.corrective_resend_reason.0',
-                'Düzeltici yeniden gönderim nedeni zorunludur: Şirket ödemesi bileşeni düzeltmesi',
+                'Düzeltici yeniden gönderim nedeni zorunludur: Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi',
             );
 
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()
@@ -676,14 +680,33 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
     {
         [$request, $technician, $partner, $offer, , $actor] = $this->assignedSettlementFixture();
         $this->enableLocksmithJobCard($partner);
+        $this->enableTwoChannelCorrectionDispatches($actor);
         $payment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
         $this->decideCompanyPayments($request, $actor, [$payment->id => 'pay_technician']);
         $snapshot = app(TechnicalServiceWorkflowService::class)
             ->canonicalTechnicianEarningSnapshot($offer->refresh());
-        $historical = $this->historicalWrongCompanyPaymentDispatch($request, $offer, $snapshot, $actor);
+        $historicalWhatsApp = $this->historicalWrongCompanyPaymentDispatch(
+            $request,
+            $offer,
+            $snapshot,
+            $actor,
+            'whatsapp',
+        );
+        $historicalSms = $this->historicalWrongCompanyPaymentDispatch(
+            $request,
+            $offer,
+            $snapshot,
+            $actor,
+            'sms',
+        );
+        $messagingSnapshot = app(TechnicalServiceMessagingSettingsService::class)->workflowDispatchSnapshot();
+        $earningPolicy = collect($messagingSnapshot['message_types'])
+            ->firstWhere('key', 'earnings_message_technician');
+        $this->assertTrue((bool) data_get($messagingSnapshot, 'global.messaging_enabled'));
+        $this->assertSame('whatsapp_and_sms', $earningPolicy['channel_policy'] ?? null);
         $payload = [
             'earning_revision' => $snapshot['revision'],
-            'corrective_resend_reason' => 'Şirket ödemesi bileşeni düzeltmesi',
+            'corrective_resend_reason' => 'Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi',
         ];
 
         $first = $this->actingAs($actor)
@@ -699,18 +722,108 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ->assertJsonPath('duplicate_noop', true);
 
         $this->assertSame($first->json('dispatch.id'), $second->json('dispatch.id'));
-        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
+        $this->assertSame(4, TechnicalServiceMessageDispatch::query()
             ->where('message_type', 'earnings_message_technician')
             ->count());
-        $corrective = TechnicalServiceMessageDispatch::query()->whereKey($first->json('dispatch.id'))->firstOrFail();
+        $correctiveDispatches = TechnicalServiceMessageDispatch::query()
+            ->where('message_type', 'earnings_message_technician')
+            ->where('force_resend', true)
+            ->orderBy('channel')
+            ->get();
+        $this->assertSame(['sms', 'whatsapp'], $correctiveDispatches->pluck('channel')->all());
+        $corrective = $correctiveDispatches->firstWhere('channel', 'whatsapp');
+        $this->assertNotNull($corrective);
         $this->assertTrue($corrective->force_resend);
-        $this->assertSame('Şirket ödemesi bileşeni düzeltmesi', $corrective->force_resend_reason);
+        $this->assertSame('Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi', $corrective->force_resend_reason);
         $this->assertSame($snapshot['revision'], data_get($corrective->metadata, 'earning_snapshot_revision'));
         $this->assertSame($snapshot['snapshot_hash'], data_get($corrective->metadata, 'earning_snapshot_hash'));
-        $this->assertSame(2, data_get($corrective->metadata, 'earning_message_contract_version'));
-        $this->assertSame([$historical->id], data_get($corrective->metadata, 'corrective_resend_source_dispatch_ids'));
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $historical->fresh()->status);
-        $this->assertSame(1, $historical->fresh()->attempt_count);
+        $this->assertSame(3, data_get($corrective->metadata, 'earning_message_contract_version'));
+        $this->assertNotEmpty(data_get($corrective->metadata, 'corrective_resend_identity'));
+        $this->assertSame(
+            collect([$historicalWhatsApp->id, $historicalSms->id])->sort()->values()->all(),
+            data_get($corrective->metadata, 'corrective_resend_source_dispatch_ids'),
+        );
+        foreach ([$historicalWhatsApp, $historicalSms] as $historical) {
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $historical->fresh()->status);
+            $this->assertSame(1, $historical->fresh()->attempt_count);
+        }
+    }
+
+    private function enableTwoChannelCorrectionDispatches(User $actor): void
+    {
+        config([
+            'app.release_sha' => '7cd5bdce9924c397086f7bfa1e4adb497988bc5e',
+            'services.partner_portal.public_url' => 'http://10.0.28.64:8000',
+        ]);
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
+        $settings->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'customer_test_phone' => '905000000001',
+            'technician_ops_test_phone' => '905000000002',
+            'manual_e2e_allowlisted_phones' => ['905000000001', '905000000002'],
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+            'active_provider' => 'evo_whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'evo_whatsapp' => [
+                'direct_api_enabled' => true,
+                'direct_api_base_url' => 'https://evo-api.example.test',
+                'direct_api_instance_name' => 'earning-correction-test',
+                'delay' => 0,
+                'link_preview' => false,
+            ],
+            'nac_sms' => [
+                'enabled' => true,
+                'profile' => 'custom',
+                'scheme' => 'https',
+                'host' => 'nac.example.test',
+                'port' => 443,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
+                'sender' => 'EMAKS TEST',
+                'real_send_allowed' => true,
+            ],
+            'message_types' => [
+                'earnings_message_technician' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'test',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+
+        foreach ([
+            [TechnicalServiceMessagingSettingsService::PAGE_CODE, TechnicalServiceMessagingSettingsService::ROOT_KEY],
+            [TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY],
+        ] as [$pageCode, $root]) {
+            $page = PageConfig::query()->where('page_code', $pageCode)->firstOrFail();
+            $layout = (array) $page->layout_json;
+            foreach (['evo_whatsapp', 'nac_sms'] as $provider) {
+                Arr::set($layout, $root.'.providers.'.$provider, [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'test_send_allowed' => true,
+                    'notes' => 'Fake earning correction provider.',
+                ]);
+            }
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
+
+        $settings->saveEvoWhatsappCredentials(['api_key' => 'earning-correction-test-key']);
+        $settings->saveNacSmsCredentials(['username' => 'earning-correction-user', 'password' => 'earning-correction-pass']);
+        $owner = 'earning-correction-worker-'.Str::lower(Str::random(12));
+        $settings->registerOutboundWorkerLease($owner, now()->toImmutable(), now()->addHour()->toImmutable());
+        $this->actingAs($actor)
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'real_send_enabled' => true,
+                'test_mode_enabled' => true,
+            ])
+            ->assertOk();
     }
 
     /**
@@ -786,6 +899,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         TechnicalServiceAssignmentOffer $offer,
         array $snapshot,
         User $actor,
+        string $channel = 'whatsapp',
     ): TechnicalServiceMessageDispatch {
         $oldRevision = (string) $snapshot['revision'];
         $historicalSnapshot = [
@@ -804,15 +918,15 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             'mrn' => $request->mrn,
             'srv' => $request->service_code,
             'message_type' => 'earnings_message_technician',
-            'channel' => 'whatsapp',
-            'provider_key' => 'evo_whatsapp',
+            'channel' => $channel,
+            'provider_key' => $channel === 'sms' ? 'nac_sms' : 'evo_whatsapp',
             'recipient_role' => 'technician',
             'status' => TechnicalServiceMessageDispatch::STATUS_SENT,
             'attempt_count' => 1,
             'max_attempts' => 1,
             'rendered_body_hash' => hash('sha256', $oldBody),
-            'payload_hash' => hash('sha256', 'old-company-payment-body'),
-            'idempotency_key' => hash('sha256', 'old-company-payment-dispatch|'.$request->id),
+            'payload_hash' => hash('sha256', 'old-company-payment-body|'.$channel),
+            'idempotency_key' => hash('sha256', 'old-company-payment-dispatch|'.$request->id.'|'.$channel),
             'metadata' => [
                 'assignment_offer_id' => $offer->id,
                 'earning_snapshot_fingerprint' => $oldRevision,
