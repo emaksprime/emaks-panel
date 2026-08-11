@@ -61,9 +61,9 @@ use Throwable;
 
 class TechnicalServiceController extends Controller
 {
-    private const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi';
+    private const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Hakediş mesajı metin ve satır düzeni düzeltmesi';
 
-    private const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 3;
+    private const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 4;
 
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,

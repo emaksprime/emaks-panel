@@ -30,8 +30,8 @@ type AssignmentEarningDraft = {
   baseRevision: string
 }
 
-const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi'
-const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 3
+const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Hakediş mesajı metin ve satır düzeni düzeltmesi'
+const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 4
 
 type CompanyPaymentDecisionDraft = {
   decision?: 'pay_technician' | 'retain_company'

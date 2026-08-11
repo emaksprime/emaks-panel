@@ -160,6 +160,7 @@ class TechnicalServiceMessageTypeRegistry
                 'ops_next_action_text',
             ],
             'earnings_message_technician' => [
+                'technician_name',
                 'mrn',
                 'technician_job_card_url',
                 'labor_amount_formatted',
@@ -591,8 +592,8 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
                 : "EMAKS Prime Teknik Servis\n\nUsta randevu önerdi.\n\nUsta: {technician_name}\nMüşteri: {customer_name}\nMRN: {mrn}\nÖnerilen zaman: {proposed_appointment_options}\nNot: {technician_note}\n\nOPS aksiyonu: {ops_next_action_text}",
             'earnings_message_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\nHakedis guncellendi.\nMRN: {mrn}\n{technician_earning_sms_summary}\nUsta odemesi: {technician_payment_source_label} / {technician_payment_status_label}\nIs Karti: {technician_job_card_short_url} B028"
-                : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\n{technician_earning_summary_block}\n\nMüşteri tahsilatı: {customer_collection_source_label}\nÖdeme modeli: {technician_payment_model_label}\nUstaya ödeme kaynağı: {technician_payment_source_label}\nUstaya ödeme durumu: {technician_payment_status_label}",
+                ? "EMAKS Prime\n\n{mrn} numaralı iş için hakedişiniz güncellendi.\n{technician_earning_sms_summary}\nİş kartı: {technician_job_card_short_url} B028"
+                : "Merhaba {technician_name},\n\n{mrn} numaralı iş için hakedişiniz güncellendi.\n\n{technician_earning_summary_block}\n\nİş kartınız:\n{technician_job_card_url}",
             'price_revision_response_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\nHakediş revize edildi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nKart: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nHakediş revizyon cevabı hazır.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",

@@ -442,7 +442,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('data-testid="earning-corrective-resend-notice"', $detailsSource);
         $this->assertStringContainsString('data-corrective-channels="whatsapp,sms"', $detailsSource);
         $this->assertStringContainsString('Kanallar: WhatsApp ve SMS', $detailsSource);
-        $this->assertStringContainsString('Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi', $detailsSource);
+        $this->assertStringContainsString('Hakediş mesajı metin ve satır düzeni düzeltmesi', $detailsSource);
         $this->assertStringContainsString('technicianEarningMessageSubmitLock.current', $detailsSource);
         $this->assertStringContainsString('response?.dispatches?.length', $detailsSource);
         $this->assertStringContainsString('Düzeltici WhatsApp ve SMS hakediş mesajları kuyruğa alındı.', $detailsSource);

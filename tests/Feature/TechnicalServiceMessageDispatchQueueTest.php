@@ -4078,16 +4078,39 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->get();
         $this->assertSame(2, $summary['queued']);
         $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->sort()->values()->all());
+        $previewBodies = [];
         foreach ($dispatches as $dispatch) {
+            $preview = app(TechnicalServiceMessageTemplateService::class)->preview([
+                'message_type' => 'earnings_message_technician',
+                'channel' => $dispatch->channel,
+                'provider_key' => $dispatch->provider_key,
+                'request' => $request,
+                'request_id' => $request->id,
+                'sample_context' => false,
+                'context' => (array) data_get($dispatch->request_payload, 'context', []),
+            ]);
+            $previewBodies[$dispatch->channel] = (string) $preview['rendered_body'];
+            $this->assertSame($previewBodies[$dispatch->channel], $dispatch->bodyForProvider());
             $this->assertStringContainsString('600,00 TL', $dispatch->bodyForProvider());
             $this->assertStringContainsString('5.000,00 TL', $dispatch->bodyForProvider());
             $this->assertStringContainsString('EMAKS Prime', $dispatch->bodyForProvider());
-            $this->assertStringContainsString($dispatch->channel === 'sms' ? 'Odenecek' : 'Ödenecek', $dispatch->bodyForProvider());
+            $this->assertStringContainsString(
+                $dispatch->channel === 'sms'
+                    ? 'Hakedisiniz EMAKS Prime tarafindan yapilacaktir.'
+                    : 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.',
+                $dispatch->bodyForProvider(),
+            );
             $this->assertStringNotContainsString($dispatch->channel === 'sms' ? 'Odendi' : 'Ödendi', $dispatch->bodyForProvider());
             $this->assertStringNotContainsString('4.400,00 TL', $dispatch->bodyForProvider());
             $this->assertSame(str_repeat('c', 64), data_get($dispatch->request_payload, 'context.earning_snapshot.revision'));
             $this->assertSame(str_repeat('c', 64), data_get($dispatch->request_payload, 'context.earning_snapshot.snapshot_hash'));
         }
+        $smsBody = (string) $dispatches->firstWhere('channel', 'sms')?->bodyForProvider();
+        $this->assertStringContainsString("EMAKS Prime\n\nMRN-", $smsBody);
+        $this->assertStringContainsString("\n\nHakedisiniz EMAKS Prime tarafindan yapilacaktir.\n", $smsBody);
+        $this->assertStringContainsString('/pj/'.$request->id, $smsBody);
+        $this->assertStringNotContainsString('/partner/service-jobs?', $smsBody);
+        $this->assertStringNotContainsString('\\n', $smsBody);
         $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
             'limit' => 2,
             'outbound_worker_owner' => $owner,
@@ -4095,6 +4118,18 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(2, $result['count']);
         $this->assertSame(2, $dispatches->fresh()->whereIn('status', TechnicalServiceMessageDispatch::SUCCESS_STATUSES)->count());
         Http::assertSentCount(2);
+        $providerBodies = [];
+        foreach (Http::recorded() as [$providerRequest]) {
+            $channel = str_contains($providerRequest->url(), 'nac.example.test') ? 'sms' : 'whatsapp';
+            $providerBodies[$channel] = (string) ($providerRequest->data()[$channel === 'sms' ? 'content' : 'text'] ?? '');
+        }
+        foreach ($dispatches->fresh() as $dispatch) {
+            $body = $dispatch->bodyForProvider();
+            $this->assertSame($previewBodies[$dispatch->channel], $body);
+            $this->assertSame($body, $providerBodies[$dispatch->channel]);
+            $this->assertSame(hash('sha256', $body), hash('sha256', $providerBodies[$dispatch->channel]));
+            $this->assertSame(hash('sha256', $body), data_get($dispatch->provider_response_redacted, 'provider_payload_body_hash'));
+        }
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 

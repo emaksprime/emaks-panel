@@ -587,7 +587,9 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
 
         $this->assertSame(1000.0, $presentation['earning_snapshot']['company_payment_amount']);
         $this->assertSame(2500.0, $presentation['earning_snapshot']['total_amount']);
-        $this->assertStringContainsString('Şirket ödemesi — Ek servis: 1.000,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Ek servis: 1.000,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Toplam hakedişiniz: 2.500,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Hakedişiniz EMAKS Prime tarafından yapılacaktır.', $presentation['message_preview']);
         $this->assertSame(1000.0, data_get($readModel, 'settlement.company_payment_amount'));
         $this->assertSame(2500.0, data_get($readModel, 'settlement.technician_earning_total'));
         $this->assertSame(1000.0, data_get($partnerReadModel, 'earning_summary.company_payment_amount'));
@@ -617,10 +619,10 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame('payable', $snapshot['technician_payment_status_key']);
         $this->assertSame('Ödenecek', $snapshot['technician_payment_status_label']);
         $this->assertSame($snapshot['revision'], $snapshot['snapshot_hash']);
-        $this->assertStringContainsString('Şirket ödemesi — Ek servis: 600,00 TL', $presentation['message_preview']);
-        $this->assertStringContainsString('Toplam hakediş: 2.100,00 TL', $presentation['message_preview']);
-        $this->assertStringContainsString('Ustaya ödeme kaynağı: EMAKS Prime', $presentation['message_preview']);
-        $this->assertStringContainsString('Ustaya ödeme durumu: Ödenecek', $presentation['message_preview']);
+        $this->assertStringContainsString('Ek servis: 600,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Toplam hakedişiniz: 2.100,00 TL', $presentation['message_preview']);
+        $this->assertStringContainsString('Hakedişiniz EMAKS Prime tarafından yapılacaktır.', $presentation['message_preview']);
+        $this->assertStringNotContainsString('Ödeme modeli', $presentation['message_preview']);
     }
 
     public function test_customer_pays_technician_state_does_not_render_company_payment(): void
@@ -641,8 +643,8 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame('Müşteri', $snapshot['technician_payment_source_label']);
         $this->assertSame(0.0, $snapshot['company_payment_amount']);
         $this->assertSame([], $snapshot['company_payment_breakdown']);
-        $this->assertStringNotContainsString('Şirket ödemesi —', $presentation['message_preview']);
-        $this->assertStringContainsString('Ustaya ödeme kaynağı: Müşteri', $presentation['message_preview']);
+        $this->assertStringNotContainsString('Şirket ödemesi', $presentation['message_preview']);
+        $this->assertStringContainsString('Hakedişiniz müşteri tarafından ödenecektir.', $presentation['message_preview']);
     }
 
     public function test_corrective_resend_requires_reason(): void
@@ -665,7 +667,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ->assertJsonValidationErrors('corrective_resend_reason')
             ->assertJsonPath(
                 'errors.corrective_resend_reason.0',
-                'Düzeltici yeniden gönderim nedeni zorunludur: Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi',
+                'Düzeltici yeniden gönderim nedeni zorunludur: Hakediş mesajı metin ve satır düzeni düzeltmesi',
             );
 
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()
@@ -706,7 +708,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame('whatsapp_and_sms', $earningPolicy['channel_policy'] ?? null);
         $payload = [
             'earning_revision' => $snapshot['revision'],
-            'corrective_resend_reason' => 'Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi',
+            'corrective_resend_reason' => 'Hakediş mesajı metin ve satır düzeni düzeltmesi',
         ];
 
         $first = $this->actingAs($actor)
@@ -734,10 +736,10 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $corrective = $correctiveDispatches->firstWhere('channel', 'whatsapp');
         $this->assertNotNull($corrective);
         $this->assertTrue($corrective->force_resend);
-        $this->assertSame('Şirket ödemesi bileşeni ve ödeme durumu düzeltmesi', $corrective->force_resend_reason);
+        $this->assertSame('Hakediş mesajı metin ve satır düzeni düzeltmesi', $corrective->force_resend_reason);
         $this->assertSame($snapshot['revision'], data_get($corrective->metadata, 'earning_snapshot_revision'));
         $this->assertSame($snapshot['snapshot_hash'], data_get($corrective->metadata, 'earning_snapshot_hash'));
-        $this->assertSame(3, data_get($corrective->metadata, 'earning_message_contract_version'));
+        $this->assertSame(4, data_get($corrective->metadata, 'earning_message_contract_version'));
         $this->assertNotEmpty(data_get($corrective->metadata, 'corrective_resend_identity'));
         $this->assertSame(
             collect([$historicalWhatsApp->id, $historicalSms->id])->sort()->values()->all(),

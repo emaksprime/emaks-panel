@@ -32,15 +32,15 @@ const companyPaymentMessageRevision = 'd'.repeat(64)
 const historicalWrongMessageRevision = companyPaymentMessageRevision
 const initialPreview = [
   'Merhaba Test Usta,',
-  'Hakediş bilgisi:',
-  'MRN: MRN-DOM-EARNING',
-  'Bölge: İstanbul / Kadıköy',
-  'Ürün / Seri: Test Ürün / SERI-DOM',
-  'Montaj işçilik: 3.000,00 TL',
-  'Usta yol hakedişi: 0,00 TL',
-  'Toplam hakediş: 3.000,00 TL',
-  'Randevu: -',
-  'İş kartı:',
+  '',
+  'MRN-DOM-EARNING numaralı iş için hakedişiniz güncellendi.',
+  '',
+  'İşçilik: 3.000,00 TL',
+  'Toplam hakedişiniz: 3.000,00 TL',
+  '',
+  'Hakedişiniz EMAKS Prime tarafından yapılacaktır.',
+  '',
+  'İş kartınız:',
   'http://192.168.1.10:8000/partner/job/dom-token',
 ].join('\n')
 
@@ -397,33 +397,47 @@ const state: HarnessState = {
 window.__assignmentEarningDomState = state
 
 function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot): string {
-  const money = (value: number) => new Intl.NumberFormat('tr-TR', {
-    style: 'currency',
-    currency: 'TRY',
+  const money = (value: number) => `${new Intl.NumberFormat('tr-TR', {
     minimumFractionDigits: 2,
-  }).format(value)
+    maximumFractionDigits: 2,
+  }).format(value)} TL`
+
+  const companyPaymentLines = (snapshot.company_payment_breakdown ?? [])
+    .filter((line) => Number(line.amount ?? 0) > 0)
+    .map((line) => {
+      const label = line.purpose === 'service_payment' || line.purpose === 'extra_service'
+        ? 'Ek servis'
+        : line.purpose === 'route_fee' || line.purpose === 'route_difference'
+          ? 'Yol farkı'
+          : line.purpose === 'additional_labor'
+            ? 'Ek işçilik'
+            : 'Bilinmeyen kalem'
+
+      return `${label}: ${money(line.amount)}`
+    })
+  const paymentSentence = snapshot.payer_state === 'customer_pays_technician'
+    ? 'Hakedişiniz müşteri tarafından ödenecektir.'
+    : snapshot.technician_payment_status_key === 'paid'
+        && Number(snapshot.technician_paid_amount ?? 0) >= Number(snapshot.total_amount ?? 0)
+        && Number(snapshot.technician_remaining_amount ?? 0) <= 0
+      ? 'Hakediş ödemeniz EMAKS Prime tarafından yapılmıştır.'
+      : 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.'
 
   return [
     'Merhaba Test Usta,',
-    'Hakediş bilgisi:',
-    'MRN: MRN-DOM-EARNING',
-    'Bölge: İstanbul / Kadıköy',
-    'Ürün / Seri: Test Ürün / SERI-DOM',
-    `Montaj işçilik: ${money(snapshot.labor_amount)}`,
-    `Usta yol hakedişi: ${money(snapshot.route_fee_amount)}`,
-    ...(snapshot.company_payment_breakdown ?? []).map((line) => (
-      `Şirket ödemesi — ${line.purpose_label ?? line.purpose ?? 'Ek tahsilat'}: ${money(line.amount)}`
-    )),
-    `Toplam hakediş: ${money(snapshot.total_amount)}`,
-    snapshot.customer_collection_source_label ? `Müşteri tahsilatı: ${snapshot.customer_collection_source_label}` : null,
-    snapshot.technician_payment_model_label ? `Ödeme modeli: ${snapshot.technician_payment_model_label}` : null,
-    snapshot.technician_payment_source_label ? `Ustaya ödeme kaynağı: ${snapshot.technician_payment_source_label}` : null,
-    snapshot.technician_payment_status_label ? `Ustaya ödeme durumu: ${snapshot.technician_payment_status_label}` : null,
-    'Randevu: -',
-    snapshot.operation_note ? `Not: ${snapshot.operation_note}` : null,
-    'İş kartı:',
+    '',
+    'MRN-DOM-EARNING numaralı iş için hakedişiniz güncellendi.',
+    '',
+    ...(Number(snapshot.labor_amount ?? 0) > 0 ? [`İşçilik: ${money(snapshot.labor_amount)}`] : []),
+    ...(Number(snapshot.route_fee_amount ?? 0) > 0 ? [`Yol: ${money(snapshot.route_fee_amount)}`] : []),
+    ...companyPaymentLines,
+    `Toplam hakedişiniz: ${money(snapshot.total_amount)}`,
+    '',
+    paymentSentence,
+    '',
+    'İş kartınız:',
     'http://192.168.1.10:8000/partner/job/dom-token',
-  ].filter((line): line is string => typeof line === 'string').join('\n')
+  ].join('\n')
 }
 
 function Harness() {

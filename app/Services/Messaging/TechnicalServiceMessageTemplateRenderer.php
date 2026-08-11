@@ -36,7 +36,10 @@ class TechnicalServiceMessageTemplateRenderer
         if ($channel === TechnicalServiceMessageTemplate::CHANNEL_SMS) {
             $rendered = $this->normalizeSmsText($rendered);
             if ($messageType === 'earnings_message_technician') {
-                $rendered = Str::ascii($rendered);
+                $rendered = implode("\n", array_map(
+                    static fn (string $line): string => Str::ascii($line),
+                    explode("\n", $rendered),
+                ));
             }
         }
         $warnings = [];
@@ -155,8 +158,6 @@ class TechnicalServiceMessageTemplateRenderer
         $lines = preg_split('/\r?\n/', trim($rendered)) ?: [];
         $lines = collect($lines)
             ->map(fn (string $line): string => preg_replace('/[ \t]{2,}/', ' ', trim($line)) ?? trim($line))
-            ->filter(fn (string $line): bool => $line !== '')
-            ->values()
             ->all();
 
         return implode("\n", $lines);
@@ -267,7 +268,7 @@ class TechnicalServiceMessageTemplateRenderer
         }
 
         if ($messageType === 'earnings_message_technician') {
-            $this->appendEarningSnapshotBlockers($context, $blockers);
+            $this->appendEarningSnapshotBlockers($rendered, $context, $blockers);
         }
 
         if ($this->guardsCustomerPaymentInstructions($messageType, $context)
@@ -305,7 +306,7 @@ class TechnicalServiceMessageTemplateRenderer
      * @param  array<string, mixed>  $context
      * @param  array<int, string>  $blockers
      */
-    private function appendEarningSnapshotBlockers(array $context, array &$blockers): void
+    private function appendEarningSnapshotBlockers(string $rendered, array $context, array &$blockers): void
     {
         $snapshot = $context['earning_snapshot'] ?? null;
         if (! is_array($snapshot) || $snapshot === []) {
@@ -344,6 +345,14 @@ class TechnicalServiceMessageTemplateRenderer
             $mismatch = true;
         }
 
+        if ($this->money($snapshot['total_amount'] ?? null) <= 0.0) {
+            $blockers[] = 'EARNING_MESSAGE_NO_EARNING';
+        }
+
+        if ((array) ($context['technician_earning_unknown_component_codes'] ?? []) !== []) {
+            $blockers[] = 'EARNING_MESSAGE_COMPONENT_LABEL_UNKNOWN';
+        }
+
         foreach ([
             'technician_payment_status_key',
             'technician_payment_status_label',
@@ -365,6 +374,40 @@ class TechnicalServiceMessageTemplateRenderer
             || ! hash_equals($snapshotHash, trim((string) ($context['earning_snapshot_hash'] ?? '')))
         ) {
             $mismatch = true;
+        }
+
+        foreach ([
+            'labor_amount' => 'labor_amount_formatted',
+            'route_fee_amount' => 'route_fee_formatted',
+            'company_payment_amount' => 'company_payment_amount_formatted',
+            'total_amount' => 'technician_earning_total_formatted',
+        ] as $amountKey => $formattedKey) {
+            $formattedAmount = trim((string) ($context[$formattedKey] ?? ''));
+            if ($this->money($snapshot[$amountKey] ?? null) > 0.0
+                && ($formattedAmount === '' || ! str_contains($rendered, $formattedAmount))) {
+                $mismatch = true;
+            }
+        }
+
+        $paymentSentence = trim((string) ($context['technician_payment_sentence'] ?? ''));
+        if ($paymentSentence === ''
+            || (! str_contains($rendered, $paymentSentence) && ! str_contains($rendered, Str::ascii($paymentSentence)))
+        ) {
+            $mismatch = true;
+        }
+
+        $lowerRendered = mb_strtolower($rendered, 'UTF-8');
+        foreach (['payer_state', 'payable', 'settlement', 'customer collection', 'müşteri tahsilatı', 'ödeme modeli', 'company payment', 'şirket ödemesi'] as $internalTerm) {
+            if (str_contains($lowerRendered, $internalTerm)) {
+                $blockers[] = 'EARNING_MESSAGE_INTERNAL_TERM_EXPOSED';
+            }
+        }
+
+        if (str_contains($rendered, '\\n')
+            || str_contains($lowerRendered, '<br')
+            || preg_match('/\[[^\]]+\]\(https?:\/\//u', $rendered) === 1
+        ) {
+            $blockers[] = 'EARNING_MESSAGE_UNSAFE_LINE_OR_LINK_FORMAT';
         }
 
         if ($mismatch) {

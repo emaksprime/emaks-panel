@@ -16,6 +16,8 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\Messaging\TechnicalServiceMessageTemplateService;
+use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -28,6 +30,9 @@ use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceWorkflowService
 {
+    /** @var array<string, array<string, mixed>> */
+    private array $technicianEarningPresentationCache = [];
+
     public const CANCELLATION_REVIEW_PENDING_REASON = 'İptal talebi incelemede';
 
     public const CANCELLATION_REVIEW_KEY = 'cancel_review';
@@ -73,6 +78,7 @@ class TechnicalServiceWorkflowService
     public function __construct(
         private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
+        private readonly TechnicalServiceMessageTemplateService $messageTemplates,
     ) {}
 
     public const WORKFLOW_STATUSES = [
@@ -936,27 +942,7 @@ class TechnicalServiceWorkflowService
         $totalAmountCorrected = $submittedTotalAmount !== null && abs($submittedTotalAmount - $totalAmount) > 0.01;
         $note = (string) ($earningSnapshot['operation_note'] ?? '');
         $messageText = $presentation['message_preview'];
-        $messagePayload = $this->technicianEarningMessageDispatchPayload($request, $technician, [
-            'labor_amount' => $laborAmount,
-            'route_fee_amount' => $routeFeeAmount,
-            'base_total_amount' => $earningSnapshot['base_total_amount'] ?? round($laborAmount + $routeFeeAmount, 2),
-            'company_payment_amount' => $earningSnapshot['company_payment_amount'] ?? 0,
-            'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
-            'total_amount' => $totalAmount,
-            'technician_paid_amount' => $earningSnapshot['technician_paid_amount'] ?? 0,
-            'technician_remaining_amount' => $earningSnapshot['technician_remaining_amount'] ?? $totalAmount,
-            'customer_collection_amount' => $earningSnapshot['customer_collection_amount'] ?? 0,
-            'payer_state' => $earningSnapshot['payer_state'] ?? null,
-            'technician_payment_model_label' => $earningSnapshot['technician_payment_model_label'] ?? null,
-            'technician_payment_source_label' => $earningSnapshot['technician_payment_source_label'] ?? null,
-            'technician_payment_status_key' => $earningSnapshot['technician_payment_status_key'] ?? null,
-            'technician_payment_status_label' => $earningSnapshot['technician_payment_status_label'] ?? null,
-            'customer_collection_source_label' => $earningSnapshot['customer_collection_source_label'] ?? null,
-            'currency' => 'TRY',
-            'note' => $note !== '' ? $note : null,
-        ]);
-        $messagePayload['earning_snapshot'] = $earningSnapshot;
-        $messagePayload['earning_revision'] = $earningSnapshot['revision'];
+        $messagePayload = $presentation['message_context'];
 
         $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $operationControl['technician_earning_message'] = [
@@ -1050,7 +1036,7 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @return array{earning_snapshot:array<string,mixed>,message_preview:string}
+     * @return array{earning_snapshot:array<string,mixed>,message_preview:string,message_context:array<string,mixed>}
      */
     public function technicianEarningPresentation(
         TechnicalServiceRequest $request,
@@ -1076,25 +1062,30 @@ class TechnicalServiceWorkflowService
         $jobCardUrl = is_string($jobCardContext['canonical_url'] ?? null)
             ? $jobCardContext['canonical_url']
             : null;
+        $cacheKey = implode(':', [
+            (int) $request->id,
+            (int) $technician->id,
+            (int) $offer->id,
+            (string) ($earningSnapshot['revision'] ?? ''),
+            (string) $jobCardUrl,
+        ]);
+        if (isset($this->technicianEarningPresentationCache[$cacheKey])) {
+            return $this->technicianEarningPresentationCache[$cacheKey];
+        }
 
-        return [
+        $messageContext = $this->technicianEarningMessageContext($request, $technician, $earningSnapshot, $jobCardContext);
+        $preview = $this->messageTemplates->preview([
+            'message_type' => 'earnings_message_technician',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'sample_context' => false,
+            'context' => $messageContext,
+        ]);
+
+        return $this->technicianEarningPresentationCache[$cacheKey] = [
             'earning_snapshot' => $earningSnapshot,
-            'message_preview' => $this->technicianEarningsMessageText(
-                $request,
-                $technician,
-                (float) $earningSnapshot['labor_amount'],
-                (float) $earningSnapshot['route_fee_amount'],
-                (float) $earningSnapshot['total_amount'],
-                (string) ($earningSnapshot['operation_note'] ?? ''),
-                $jobCardUrl,
-                is_array($earningSnapshot['company_payment_breakdown'] ?? null)
-                    ? $earningSnapshot['company_payment_breakdown']
-                    : [],
-                (string) ($earningSnapshot['technician_payment_model_label'] ?? ''),
-                (string) ($earningSnapshot['technician_payment_source_label'] ?? ''),
-                (string) ($earningSnapshot['technician_payment_status_label'] ?? ''),
-                (string) ($earningSnapshot['customer_collection_source_label'] ?? ''),
-            ),
+            'message_preview' => (string) $preview['rendered_body'],
+            'message_context' => $messageContext,
         ];
     }
 
@@ -2736,21 +2727,13 @@ class TechnicalServiceWorkflowService
         $payload['submitted_total_amount'] = $payload['submitted_total_amount'] ?? ($submittedTotalAmount !== null ? round($submittedTotalAmount, 2) : null);
         $payload['total_amount_corrected'] = (bool) ($payload['total_amount_corrected'] ?? ($submittedTotalAmount !== null && abs($submittedTotalAmount - $totalAmount) > 0.01));
 
-        if ($technician instanceof TechnicalServiceTechnician) {
-            $payload['message_text'] = $this->technicianEarningsMessageText(
-                $request,
-                $technician,
-                $laborAmount,
-                $routeFeeAmount,
-                $totalAmount,
-                (string) ($payload['note'] ?? ''),
-                null,
-                $companyPaymentBreakdown,
-                (string) ($payload['technician_payment_model_label'] ?? ''),
-                (string) ($payload['technician_payment_source_label'] ?? ''),
-                (string) ($payload['technician_payment_status_label'] ?? ''),
-                (string) ($payload['customer_collection_source_label'] ?? ''),
-            );
+        $offer = $request->latestAssignmentOffer;
+        if ($technician instanceof TechnicalServiceTechnician
+            && $offer instanceof TechnicalServiceAssignmentOffer
+            && (int) $offer->technical_service_technician_id === (int) $technician->id
+        ) {
+            $presentation = $this->technicianEarningPresentation($request, $technician, $offer);
+            $payload['message_text'] = $presentation['message_preview'];
         }
 
         return $payload;
@@ -5300,19 +5283,61 @@ class TechnicalServiceWorkflowService
     }
 
     /**
+     * @param  array<string, mixed>  $earningSnapshot
+     * @param  array<string, mixed>  $jobCardContext
+     * @return array<string, mixed>
+     */
+    private function technicianEarningMessageContext(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        array $earningSnapshot,
+        array $jobCardContext,
+    ): array {
+        return [
+            ...$this->technicianEarningMessageDispatchPayload($request, $technician, [
+                'labor_amount' => $earningSnapshot['labor_amount'] ?? 0,
+                'route_fee_amount' => $earningSnapshot['route_fee_amount'] ?? 0,
+                'base_total_amount' => $earningSnapshot['base_total_amount'] ?? 0,
+                'company_payment_amount' => $earningSnapshot['company_payment_amount'] ?? 0,
+                'company_payment_breakdown' => $earningSnapshot['company_payment_breakdown'] ?? [],
+                'total_amount' => $earningSnapshot['total_amount'] ?? 0,
+                'technician_paid_amount' => $earningSnapshot['technician_paid_amount'] ?? 0,
+                'technician_remaining_amount' => $earningSnapshot['technician_remaining_amount'] ?? 0,
+                'customer_collection_amount' => $earningSnapshot['customer_collection_amount'] ?? 0,
+                'payer_state' => $earningSnapshot['payer_state'] ?? null,
+                'technician_payment_model_label' => $earningSnapshot['technician_payment_model_label'] ?? null,
+                'technician_payment_source_label' => $earningSnapshot['technician_payment_source_label'] ?? null,
+                'technician_payment_status_key' => $earningSnapshot['technician_payment_status_key'] ?? null,
+                'technician_payment_status_label' => $earningSnapshot['technician_payment_status_label'] ?? null,
+                'customer_collection_source_label' => $earningSnapshot['customer_collection_source_label'] ?? null,
+                'currency' => 'TRY',
+                'note' => $earningSnapshot['operation_note'] ?? null,
+            ], $jobCardContext),
+            'earning_snapshot' => $earningSnapshot,
+            'earning_revision' => $earningSnapshot['revision'] ?? null,
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $amounts
+     * @param  array<string, mixed>|null  $jobCardContext
      * @return array<string, mixed>
      */
     private function technicianEarningMessageDispatchPayload(
         TechnicalServiceRequest $request,
         TechnicalServiceTechnician $technician,
         array $amounts,
+        ?array $jobCardContext = null,
     ): array {
         $phone = $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone);
-        $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $jobCardContext ??= $this->partnerJobScope->technicianJobCardContext($request);
         $jobLink = is_string($jobCardContext['canonical_url'] ?? null)
             ? $jobCardContext['canonical_url']
             : null;
+        $jobShortLink = is_string($jobCardContext['short_path'] ?? null)
+            && (bool) ($jobCardContext['ready'] ?? false)
+                ? PartnerPortalPublicUrl::url($jobCardContext['short_path'])
+                : null;
 
         return [
             'channel' => 'system_payload',
@@ -5326,7 +5351,7 @@ class TechnicalServiceWorkflowService
             'address' => $request->location_formatted_address ?: $request->service_address,
             'job_link' => $jobLink,
             'technician_job_card_url' => $jobLink,
-            'technician_job_card_short_url' => $jobLink,
+            'technician_job_card_short_url' => $jobShortLink,
             'technician_job_card_ready' => (bool) ($jobCardContext['ready'] ?? false),
             'technician_job_card_blocker_code' => $jobCardContext['blocker_code'] ?? null,
             'technician_job_card_blocker_message' => $jobCardContext['blocker_message'] ?? null,
@@ -6204,71 +6229,6 @@ class TechnicalServiceWorkflowService
         }
 
         return $digits;
-    }
-
-    private function moneyText(float $amount): string
-    {
-        return number_format($amount, 2, ',', '.').' TL';
-    }
-
-    private function technicianEarningsMessageText(
-        TechnicalServiceRequest $request,
-        TechnicalServiceTechnician $technician,
-        float $laborAmount,
-        float $routeFeeAmount,
-        float $totalAmount,
-        string $note,
-        ?string $jobCardUrl = null,
-        array $companyPaymentBreakdown = [],
-        string $paymentModelLabel = '',
-        string $paymentSourceLabel = '',
-        string $paymentStatusLabel = '',
-        string $customerCollectionSourceLabel = '',
-    ): string {
-        $region = trim(implode(' / ', array_filter([$request->customer_city, $request->customer_district])));
-        $lines = [
-            'Merhaba '.$technician->name.',',
-            'Hakediş bilgisi:',
-            'MRN: '.$request->mrn,
-            'Bölge: '.($region !== '' ? $region : '-'),
-            'Ürün / Seri: '.trim(($request->product_name ?: '-').' / '.($request->serial_number ?: '-')),
-            'Montaj işçilik: '.$this->moneyText($laborAmount),
-            'Usta yol hakedişi: '.$this->moneyText($routeFeeAmount),
-        ];
-
-        foreach ($companyPaymentBreakdown as $line) {
-            if (! is_array($line) || (float) ($line['amount'] ?? 0) <= 0) {
-                continue;
-            }
-
-            $purpose = trim((string) ($line['purpose_label'] ?? 'Ek tahsilat')) ?: 'Ek tahsilat';
-            $lines[] = 'Şirket ödemesi — '.$purpose.': '.$this->moneyText((float) $line['amount']);
-        }
-
-        $lines[] = 'Toplam hakediş: '.$this->moneyText($totalAmount);
-        if ($customerCollectionSourceLabel !== '') {
-            $lines[] = 'Müşteri tahsilatı: '.$customerCollectionSourceLabel;
-        }
-        if ($paymentModelLabel !== '') {
-            $lines[] = 'Ödeme modeli: '.$paymentModelLabel;
-        }
-        if ($paymentSourceLabel !== '') {
-            $lines[] = 'Ustaya ödeme kaynağı: '.$paymentSourceLabel;
-        }
-        if ($paymentStatusLabel !== '') {
-            $lines[] = 'Ustaya ödeme durumu: '.$paymentStatusLabel;
-        }
-        $lines[] = 'Randevu: '.($request->scheduled_at?->format('d.m.Y H:i') ?: ($request->scheduled_date?->format('d.m.Y') ?: '-'));
-
-        if ($note !== '') {
-            $lines[] = 'Not: '.$note;
-        }
-        if (filled($jobCardUrl)) {
-            $lines[] = 'İş kartı:';
-            $lines[] = $jobCardUrl;
-        }
-
-        return implode("\n", $lines);
     }
 
     private function auditLogTableAvailable(): bool
