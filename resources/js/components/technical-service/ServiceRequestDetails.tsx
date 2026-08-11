@@ -188,6 +188,7 @@ type ServiceRequestDetailsProps = {
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onPartRequestManualPaymentConfirm?: (partRequestId: number | string, payload: { explanation: string }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<AssignmentOfferUpdateResult | void>
+  onCompanyPaymentDecisionApprove?: (payload: ServiceRequestCompanyPaymentDecisionSubmit[]) => void | Promise<AssignmentOfferUpdateResult | void>
   onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
   onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null, document_type?: string | null }) => void | Promise<void>
@@ -1540,6 +1541,7 @@ export function ServiceRequestDetails({
   onPartRequestServiceVisitCreate,
   onPartRequestManualPaymentConfirm,
   onAssignmentOfferUpdate,
+  onCompanyPaymentDecisionApprove,
   onPartnerActionReview,
   onFieldDocumentReview,
   onOpsExtraDocumentUpload,
@@ -1814,6 +1816,8 @@ export function ServiceRequestDetails({
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
   const [assignmentEarningDraftByRequest, setAssignmentEarningDraftByRequest] = useState<Record<string, AssignmentEarningDraft>>({})
   const [companyPaymentDecisionDraftByRequest, setCompanyPaymentDecisionDraftByRequest] = useState<Record<string, Record<string, CompanyPaymentDecisionDraft>>>({})
+  const [companyPaymentDecisionSubmitInFlight, setCompanyPaymentDecisionSubmitInFlight] = useState(false)
+  const companyPaymentDecisionSubmitLock = useRef(false)
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
   const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
   const [completionReviewNote, setCompletionReviewNote] = useState('')
@@ -2412,6 +2416,7 @@ export function ServiceRequestDetails({
     ?? earningBreakdown?.current_visit?.company_payment_decisions
     ?? null
   const companyPaymentEligibleItems = companyPaymentDecisionPayload?.eligible_items ?? []
+  const companyPaymentCompletedDecisions = companyPaymentDecisionPayload?.decisions ?? []
   const companyPaymentDecisionDrafts = companyPaymentDecisionDraftByRequest[requestStateKey] ?? {}
   const companyPaymentDecisionSubmissions = companyPaymentEligibleItems
     .map((item): ServiceRequestCompanyPaymentDecisionSubmit | null => {
@@ -2433,7 +2438,7 @@ export function ServiceRequestDetails({
     || companyPaymentDecisionSubmissions.length === companyPaymentEligibleItems.length
   const companyPaymentDecisionContextReady = companyPaymentEligibleItems.length === 0
     || Boolean(companyPaymentDecisionPayload?.context_ready)
-  const companyPaymentDecisionReady = allCompanyPaymentDecisionsSelected && companyPaymentDecisionContextReady
+  const companyPaymentDecisionsPersisted = companyPaymentEligibleItems.length === 0
   const draftCompanyPaymentAmount = companyPaymentEligibleItems.reduce((total, item) => (
     companyPaymentDecisionDrafts[String(item.payment_id)]?.decision === 'pay_technician'
       ? total + Number(item.eligible_amount ?? 0)
@@ -2461,8 +2466,19 @@ export function ServiceRequestDetails({
     || Math.abs(earningRouteAmount - Number(persistedEarningRouteAmount ?? 0)) > 0.005
     || earningOperationNote.trim() !== String(persistedEarningNote ?? '').trim()
   ))
-  const companyPaymentDecisionDirty = companyPaymentDecisionSubmissions.length > 0
+  const companyPaymentDecisionDirty = companyPaymentEligibleItems.some((item) => (
+    Boolean(companyPaymentDecisionDrafts[String(item.payment_id)]?.decision)
+  ))
   const earningDraftDirty = earningBaseDraftDirty || companyPaymentDecisionDirty
+  const companyPaymentDecisionSubmitDisabledReason = earningBaseDraftDirty
+    ? 'Önce hakediş değişikliklerini kaydedin.'
+    : !companyPaymentDecisionContextReady
+      ? companyPaymentDecisionPayload?.context_blocker ?? 'Tahsilatın servis ve usta bağlamı doğrulanamadı.'
+      : !allCompanyPaymentDecisionsSelected
+        ? 'Tüm uygun tahsilatlar için Evet veya Hayır seçin.'
+        : companyPaymentDecisionSubmissions.length === 0
+          ? 'Kaydedilecek dağıtım kararı seçilmedi.'
+          : null
   const earningTotalAmount = earningBaseTotalAmount === null
     ? null
     : roundTwo(earningBaseTotalAmount + persistedCompanyPaymentAmount + draftCompanyPaymentAmount)
@@ -2544,13 +2560,12 @@ export function ServiceRequestDetails({
     && earningTotalAmount !== null
     && earningTotalAmount >= 0,
   )
-  const canonicalEarningSaveRequested = Boolean(activeAssignmentOffer && !hasAssignmentChange && earningDraftDirty)
+  const canonicalEarningSaveRequested = Boolean(activeAssignmentOffer && !hasAssignmentChange && earningBaseDraftDirty)
   const primaryAssignmentActionDisabled = canonicalEarningSaveRequested
     ? !onAssignmentOfferUpdate
       || assignmentOfferUpdateInFlight
       || earningLaborAmount === null
       || earningRouteAmount === null
-      || (!earningBaseDraftDirty && !companyPaymentDecisionReady)
     : assignmentSubmitDisabled
   const primaryAssignmentActionLoading = canonicalEarningSaveRequested ? assignmentOfferUpdateInFlight : assignLoading
   const technicianEarningPreviewText = selectedTechnician && earningTotalAmount !== null
@@ -3496,24 +3511,59 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (!earningBaseDraftDirty && !companyPaymentDecisionReady) {
-      setRouteFeeEditorMessage(
-        companyPaymentDecisionPayload?.context_blocker
-        || 'Tüm uygun tahsilatlar için usta ödeme kararını seçin.',
-      )
-
-      return
-    }
-
     await persistAssignmentEarning(
       earningLaborAmount,
       earningRouteAmount,
       earningOperationNote,
-      earningBaseDraftDirty ? [] : companyPaymentDecisionSubmissions,
+      [],
     )
   }
+  const handleCompanyPaymentDecisionApprove = async () => {
+    if (companyPaymentDecisionSubmitLock.current || companyPaymentDecisionSubmitInFlight) {
+      return
+    }
+
+    if (!onCompanyPaymentDecisionApprove) {
+      setRouteFeeEditorMessage('Dağıtım kararını kaydedecek işlem bulunamadı.')
+
+      return
+    }
+
+    if (companyPaymentDecisionSubmitDisabledReason) {
+      setRouteFeeEditorMessage(companyPaymentDecisionSubmitDisabledReason)
+
+      return
+    }
+
+    companyPaymentDecisionSubmitLock.current = true
+    setCompanyPaymentDecisionSubmitInFlight(true)
+    setRouteFeeEditorMessage(null)
+
+    try {
+      const response = await onCompanyPaymentDecisionApprove(companyPaymentDecisionSubmissions)
+
+      if (!response || typeof response !== 'object') {
+        throw new Error('Dağıtım kararı kaydedilemedi.')
+      }
+
+      setCompanyPaymentDecisionDraftByRequest((current) => {
+        const next = { ...current }
+        delete next[requestStateKey]
+
+        return next
+      })
+      setEarningMessageText(response.message_preview ?? '')
+      setEarningMessageUrl('')
+      setRouteFeeEditorMessage('Dağıtım kararı kaydedildi.')
+    } catch (caught) {
+      setRouteFeeEditorMessage(caught instanceof Error ? caught.message : 'Dağıtım kararı kaydedilemedi.')
+    } finally {
+      companyPaymentDecisionSubmitLock.current = false
+      setCompanyPaymentDecisionSubmitInFlight(false)
+    }
+  }
   const handleAssignmentSave = async () => {
-    if (activeAssignmentOffer && !hasAssignmentChange && earningDraftDirty) {
+    if (activeAssignmentOffer && !hasAssignmentChange && earningBaseDraftDirty) {
       await handleCanonicalEarningSave()
 
       return
@@ -4400,7 +4450,7 @@ export function ServiceRequestDetails({
     ...(request.customerClosureApprovalStatus === 'onaylandı' ? [] : ['Müşteri onayı bekliyor']),
     ...(backendControlComplete ? [] : ['Backend kontrol eksik']),
     ...(earningBaseDraftDirty ? ['Önce işçilik/yol hakedişi değişikliklerini kaydedin'] : []),
-    ...(companyPaymentDecisionReady ? [] : ['Müşteriden alınan ek ödemeler için usta ödeme kararı eksik']),
+    ...(companyPaymentDecisionsPersisted ? [] : ['Müşteriden alınan ek ödemeler için dağıtım kararı onaylanıp kaydedilmedi']),
   ]
   const finalPayoutRows = earningBreakdown?.rows ?? []
   const finalPayoutApprovalRequired = Boolean(earningBreakdown?.root_total?.payout_approval_required)
@@ -4969,11 +5019,38 @@ export function ServiceRequestDetails({
   }
 
   const renderCompanyPaymentDecisionSection = (surface: 'earning' | 'completion') => {
-    if (companyPaymentEligibleItems.length === 0) {
+    if (companyPaymentEligibleItems.length === 0 && companyPaymentCompletedDecisions.length === 0) {
       return null
     }
 
-    const selectionDisabled = earningBaseDraftDirty || assignmentOfferUpdateInFlight
+    if (companyPaymentEligibleItems.length === 0) {
+      return (
+        <section
+          data-testid={`company-payment-decisions-${surface}`}
+          className="grid gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-emerald-950"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold">Dağıtım kararı</p>
+              <p className="mt-1 text-xs text-emerald-800">Canonical dağıtım kararı kaydedildi; düzeltme gerekiyorsa correction/reversal akışı kullanılmalıdır.</p>
+            </div>
+            <Badge data-testid="company-payment-decision-state" variant="positive">Karar tamamlandı</Badge>
+          </div>
+          <div data-testid="company-payment-decision-completed" className="grid gap-2">
+            {companyPaymentCompletedDecisions.map((decision) => (
+              <div key={String(decision.allocation_id)} className="grid gap-2 rounded-lg border border-emerald-200 bg-white p-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                <MiniMetric label="Payment ID" value={String(decision.payment_id)} />
+                <MiniMetric label="Tahsilat amacı" value={decision.payment_purpose_label} />
+                <MiniMetric label="Karar" value={decision.decision_label ?? (decision.decision === 'pay_technician' ? 'Ustaya ödenecek' : 'Şirkette bırak')} />
+                <MiniMetric label="Tutar" value={decision.eligible_amount_label ?? formatMoneyValue(decision.eligible_amount)} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )
+    }
+
+    const selectionDisabled = earningBaseDraftDirty || assignmentOfferUpdateInFlight || companyPaymentDecisionSubmitInFlight
 
     return (
       <section
@@ -4985,8 +5062,13 @@ export function ServiceRequestDetails({
             <p className="text-sm font-semibold">Müşteriden alınan ek ödemeler</p>
             <p className="mt-1 text-xs text-blue-800">Her tahsilat için ustaya aktarım kararını ayrı verin. Ziyaret sayısı bu hesaba dahil değildir.</p>
           </div>
-          <Badge variant={companyPaymentDecisionReady ? 'secondary' : 'outline'}>
-            {companyPaymentDecisionSubmissions.length}/{companyPaymentEligibleItems.length} karar
+          <Badge
+            data-testid="company-payment-decision-state"
+            variant={companyPaymentDecisionDirty ? 'warning' : 'outline'}
+          >
+            {companyPaymentDecisionDirty
+              ? 'Taslak — henüz kaydedilmedi'
+              : `${companyPaymentDecisionSubmissions.length}/${companyPaymentEligibleItems.length} karar`}
           </Badge>
         </div>
         {earningBaseDraftDirty ? (
@@ -6762,7 +6844,7 @@ export function ServiceRequestDetails({
                         size="sm"
                         onClick={() => document.querySelector('[data-testid="company-payment-decisions-earning"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
                       >
-                        Dağıtım kararı ver
+                        Karar alanına git
                       </Button>
                     </div>
                   ) : null}
@@ -7816,12 +7898,14 @@ export function ServiceRequestDetails({
 
       {(() => {
         const visibleFooterWorkflowActions = isActionDisabled ? [] : footerWorkflowActions
+        const showCompanyPaymentDecisionApproval = companyPaymentEligibleItems.length > 0
         const showFooterBar = visibleFooterWorkflowActions.length > 0
           || shouldShowFooterPaymentLinkAction
           || (!isActionDisabled && Boolean(finalCheckCompletionAction))
           || (!isActionDisabled && canReassignAfterReview)
           || (!isActionDisabled && Boolean(whatsappHref))
           || isReopenVisible
+          || showCompanyPaymentDecisionApproval
 
         return showFooterBar ? (
       <div
@@ -7829,6 +7913,20 @@ export function ServiceRequestDetails({
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
         <div className="grid w-full max-w-full grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:w-auto lg:flex lg:flex-wrap lg:items-center lg:justify-end">
+          {showCompanyPaymentDecisionApproval ? (
+            <Button
+              data-testid="company-payment-decision-approve-button"
+              className="col-span-2 h-9 w-full text-xs sm:text-sm lg:w-auto"
+              type="button"
+              onClick={() => void handleCompanyPaymentDecisionApprove()}
+              disabled={Boolean(companyPaymentDecisionSubmitDisabledReason) || !onCompanyPaymentDecisionApprove || assignmentOfferUpdateInFlight || companyPaymentDecisionSubmitInFlight}
+              title={companyPaymentDecisionSubmitDisabledReason ?? (!onCompanyPaymentDecisionApprove ? 'Dağıtım kararını kaydedecek işlem bulunamadı.' : undefined)}
+            >
+              {assignmentOfferUpdateInFlight || companyPaymentDecisionSubmitInFlight
+                ? 'Karar kaydediliyor...'
+                : 'Dağıtım kararını onayla ve kaydet'}
+            </Button>
+          ) : null}
           {visibleFooterWorkflowActions.map(([actionKey, action]) => (
             <Button
               key={actionKey}
@@ -7858,12 +7956,11 @@ export function ServiceRequestDetails({
               data-testid="final-completion-approve-button"
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
-              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || !companyPaymentDecisionReady || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
-              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : !companyPaymentDecisionReady ? 'Tüm uygun tahsilatlar için usta ödeme kararı verilmelidir.' : finalPayoutApprovalRequired && !currentVisitPayoutSelected ? 'Mevcut SRV hakedişi açıkça seçilmelidir.' : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
+              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || !companyPaymentDecisionsPersisted || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
+              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : !companyPaymentDecisionsPersisted ? 'Önce dağıtım kararını onaylayıp kaydedin.' : finalPayoutApprovalRequired && !currentVisitPayoutSelected ? 'Mevcut SRV hakedişi açıkça seçilmelidir.' : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
               onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, {
                 note: completionReviewNote || null,
                 approved_visit_ids: finalPayoutApprovalRequired ? finalPayoutSelectedIds : undefined,
-                company_payment_decisions: companyPaymentDecisionSubmissions.length > 0 ? companyPaymentDecisionSubmissions : undefined,
               })}
             >
               {finalPayoutApprovalRequired ? 'İşaretlileri onayla' : 'Son kontrolü tamamla'}

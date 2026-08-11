@@ -26,6 +26,7 @@ import type {
   ServiceFilters as FilterState,
   ServicePriority,
   ServiceRequest,
+  ServiceRequestCompanyPaymentDecisionSubmit,
   ServiceRequestExtraMountPaymentPayload,
   ServiceRequestRouteQuote,
   ServiceRequestRouteQuoteManualPayload,
@@ -4321,7 +4322,7 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleAssignmentOfferUpdate = async (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => {
+  const handleAssignmentOfferUpdate = async (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => {
     if (!selectedId || assignmentOfferUpdateInFlightRef.current) {
       return
     }
@@ -4362,6 +4363,63 @@ export function TechnicalServiceOperationCenter() {
       if (selectedIdRef.current === requestId) {
         setAssignmentOfferUpdateError(caught instanceof Error ? caught.message : 'Hakediş güncellenemedi.')
       }
+    } finally {
+      assignmentOfferUpdateInFlightRef.current = false
+      setAssignmentOfferUpdateInFlight(false)
+    }
+  }
+
+  const handleCompanyPaymentDecisionApprove = async (companyPaymentDecisions: ServiceRequestCompanyPaymentDecisionSubmit[]) => {
+    if (!selectedId || assignmentOfferUpdateInFlightRef.current) {
+      return
+    }
+
+    const requestId = selectedId
+    assignmentOfferUpdateInFlightRef.current = true
+    setAssignmentOfferUpdateInFlight(true)
+    setAssignmentOfferUpdateError(null)
+    setAssignmentOfferUpdateSuccess(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/company-payment-decisions`, {
+        method: 'POST',
+        body: JSON.stringify({ company_payment_decisions: companyPaymentDecisions }),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest && selectedIdRef.current === requestId) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+          setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+        })
+      }
+
+      if (selectedIdRef.current === requestId) {
+        setAssignmentOfferUpdateSuccess(response.status === 'duplicate_noop'
+          ? 'Dağıtım kararı zaten kayıtlı; ikinci kayıt oluşturulmadı.'
+          : 'Dağıtım kararı kaydedildi.')
+      }
+
+      return updatedRequest ? {
+        ...response,
+        request: updatedRequest,
+        earning_snapshot: updatedRequest.assignmentOffer?.earning_snapshot ?? null,
+        message_preview: updatedRequest.assignmentOffer?.message_preview ?? null,
+      } : response
+    } catch (caught) {
+      const error = caught instanceof Error ? caught : new Error('Dağıtım kararı kaydedilemedi.')
+
+      if (selectedIdRef.current === requestId) {
+        setAssignmentOfferUpdateError(error.message)
+      }
+
+      throw error
     } finally {
       assignmentOfferUpdateInFlightRef.current = false
       setAssignmentOfferUpdateInFlight(false)
@@ -6519,6 +6577,7 @@ export function TechnicalServiceOperationCenter() {
                     onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
                     onPartRequestManualPaymentConfirm={handlePartRequestManualPaymentConfirm}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
+                    onCompanyPaymentDecisionApprove={handleCompanyPaymentDecisionApprove}
                     assignmentOfferUpdateInFlight={assignmentOfferUpdateInFlight}
                     assignmentOfferUpdateError={assignmentOfferUpdateError}
                     assignmentOfferUpdateSuccess={assignmentOfferUpdateSuccess}

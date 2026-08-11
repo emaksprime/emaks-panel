@@ -840,6 +840,34 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         return response()->json($result);
     }
 
+    public function storeCompanyPaymentDecisions(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'company_payment_decisions' => ['required', 'array', 'min:1'],
+            'company_payment_decisions.*.payment_id' => ['required', 'integer', 'distinct'],
+            'company_payment_decisions.*.decision' => ['required', 'string', Rule::in([
+                TechnicalServiceAssignmentSettlementService::DECISION_PAY_TECHNICIAN,
+                TechnicalServiceAssignmentSettlementService::DECISION_RETAIN_COMPANY,
+            ])],
+            'company_payment_decisions.*.note' => ['nullable', 'string', 'max:2000'],
+            'company_payment_decisions.*.expected_earning_revision' => ['required', 'string', 'size:64'],
+        ]);
+
+        $allocation = $this->assignmentSettlements->applyCompanyPaymentDecisions(
+            $technicalServiceRequest,
+            $validated['company_payment_decisions'],
+            $request->user(),
+        );
+
+        return response()->json([
+            'status' => $allocation['status'],
+            'company_payment_allocation' => $allocation,
+            'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
     public function reviewPartnerAction(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,

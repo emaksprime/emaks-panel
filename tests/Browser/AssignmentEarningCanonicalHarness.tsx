@@ -1,17 +1,21 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
-import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
+import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
 import '../../resources/css/app.css'
 
 type HarnessState = {
   saveCount: number
   sendCount: number
   completionApproveCount: number
+  allocationSubmitCount: number
+  boardRefetchCount: number
+  modalMountCount: number
   failNextSave: boolean
   lastSavedSnapshot: ServiceRequestCanonicalEarningSnapshot | null
   lastSendPayload: ServiceRequestTechnicianEarningMessagePayload | null
   lastCompanyPaymentDecision: 'pay_technician' | 'retain_company' | null
+  lastCompanyPaymentDecisionPayload: ServiceRequestCompanyPaymentDecisionSubmit[] | null
 }
 
 declare global {
@@ -303,10 +307,14 @@ const state: HarnessState = {
   saveCount: 0,
   sendCount: 0,
   completionApproveCount: 0,
+  allocationSubmitCount: 0,
+  boardRefetchCount: 0,
+  modalMountCount: 0,
   failNextSave: false,
   lastSavedSnapshot: null,
   lastSendPayload: null,
   lastCompanyPaymentDecision: null,
+  lastCompanyPaymentDecisionPayload: null,
 }
 
 window.__assignmentEarningDomState = state
@@ -338,9 +346,17 @@ function canonicalPreview(snapshot: ServiceRequestCanonicalEarningSnapshot): str
 }
 
 function Harness() {
+  const [modalMountId] = useState(() => {
+    state.modalMountCount += 1
+
+    return state.modalMountCount
+  })
   const [request, setRequest] = useState(initialRequest)
   const [saveCount, setSaveCount] = useState(0)
   const [sendCount, setSendCount] = useState(0)
+  const [allocationSubmitCount, setAllocationSubmitCount] = useState(0)
+  const [lastAllocationPayload, setLastAllocationPayload] = useState<ServiceRequestCompanyPaymentDecisionSubmit[] | null>(null)
+  const [allocationError, setAllocationError] = useState<string | null>(null)
   const [lastSendRevision, setLastSendRevision] = useState('')
   const [failNextSave, setFailNextSave] = useState(false)
 
@@ -352,8 +368,14 @@ function Harness() {
         onClick={() => {
           state.saveCount = 0
           state.completionApproveCount = 0
+          state.allocationSubmitCount = 0
+          state.boardRefetchCount = 0
           state.lastCompanyPaymentDecision = null
+          state.lastCompanyPaymentDecisionPayload = null
           setSaveCount(0)
+          setAllocationSubmitCount(0)
+          setLastAllocationPayload(null)
+          setAllocationError(null)
           setRequest(companyPaymentRequest())
         }}
       >Uygun şirket ödemesi senaryosunu yükle</button>
@@ -369,6 +391,10 @@ function Harness() {
       <output data-testid="earning-save-count" className="sr-only">{saveCount}</output>
       <output data-testid="earning-send-count" className="sr-only">{sendCount}</output>
       <output data-testid="earning-last-send-revision" className="sr-only">{lastSendRevision}</output>
+      <output data-testid="company-payment-decision-submit-count" className="sr-only">{allocationSubmitCount}</output>
+      <output data-testid="company-payment-decision-last-payload" className="sr-only">{JSON.stringify(lastAllocationPayload)}</output>
+      <output data-testid="financial-board-refetch-count" className="sr-only">{state.boardRefetchCount}</output>
+      <output data-testid="financial-modal-mount-count" className="sr-only">{modalMountId}</output>
       <ServiceRequestDetails
         request={request}
         events={[]}
@@ -577,6 +603,148 @@ function Harness() {
             request: nextRequest,
           }
         }}
+        onCompanyPaymentDecisionApprove={async (decisions) => {
+          state.allocationSubmitCount += 1
+          state.lastCompanyPaymentDecisionPayload = decisions
+          setAllocationSubmitCount(state.allocationSubmitCount)
+          setLastAllocationPayload(decisions)
+          setAllocationError(null)
+
+          await new Promise((resolve) => window.setTimeout(resolve, 50))
+
+          if (failNextSave) {
+            state.failNextSave = false
+            setFailNextSave(false)
+            setAllocationError('Dağıtım kararı kaydedilemedi. Seçiminizi kontrol edip tekrar deneyin.')
+
+            throw new Error('Dağıtım kararı kaydedilemedi. Seçiminizi kontrol edip tekrar deneyin.')
+          }
+
+          const decision = decisions[0]?.decision ?? null
+          const companyPaymentAmount = decision === 'pay_technician' ? 1000 : 0
+          const companyRetainedAmount = decision === 'retain_company' ? 1000 : 0
+          const currentSnapshot = request.assignmentOffer?.earning_snapshot
+          const laborAmount = Number(currentSnapshot?.labor_amount ?? 3000)
+          const routeFeeAmount = Number(currentSnapshot?.route_fee_amount ?? 0)
+          const payoutTotal = laborAmount + routeFeeAmount + companyPaymentAmount
+          const netMargin = 4000 - payoutTotal
+          const snapshot: ServiceRequestCanonicalEarningSnapshot = {
+            ...currentSnapshot,
+            schema_version: 2,
+            assignment_id: 104,
+            technician_id: 111,
+            labor_amount: laborAmount,
+            route_fee_amount: routeFeeAmount,
+            base_total_amount: laborAmount + routeFeeAmount,
+            company_payment_amount: companyPaymentAmount,
+            company_payment_breakdown: decision === 'pay_technician' ? [{
+              line_id: 9901,
+              payment_id: 196,
+              purpose: 'service_payment',
+              purpose_label: 'Ek servis',
+              source: 'extra_service',
+              amount: 1000,
+              amount_label: '1.000,00 TL',
+              status: 'payable',
+              status_label: 'Ödenecek',
+            }] : [],
+            total_amount: payoutTotal,
+            currency: 'TRY',
+            operation_note: currentSnapshot?.operation_note ?? null,
+            revision: companyPaymentRevision,
+            persisted_at: '2026-08-10T06:30:00+00:00',
+          }
+          const messagePreview = canonicalPreview(snapshot)
+          const decisionPayload = {
+            ...(request.settlement?.company_payment_decisions ?? {}),
+            eligible_items: [],
+            decisions: [{
+              allocation_id: 9902,
+              payment_id: 196,
+              payment_purpose: 'service_payment',
+              payment_purpose_label: 'Ek servis',
+              decision,
+              decision_label: decision === 'pay_technician' ? 'Ustaya ödenecek' : 'Şirkette bırak',
+              eligible_amount: 1000,
+              eligible_amount_label: '1.000,00 TL',
+              settlement_line_id: decision === 'pay_technician' ? 9901 : null,
+              status: decision === 'pay_technician' ? 'payable' : 'retained',
+            }],
+            eligible_count: 0,
+            pending_decision_count: 0,
+            pending_decision_amount: 0,
+            pending_decision_amount_label: '0,00 TL',
+            earning_revision: companyPaymentRevision,
+          }
+          const updateFinanceArea = <T extends NonNullable<ServiceRequest['financeSummary']>['current_visit']>(area: T): T => ({
+            ...area,
+            locksmith_payout: {
+              ...area.locksmith_payout,
+              labor_amount: laborAmount,
+              route_fee_amount: routeFeeAmount,
+              company_payment_amount: companyPaymentAmount,
+              company_payment_breakdown: snapshot.company_payment_breakdown,
+              company_retained_amount: companyRetainedAmount,
+              total_amount: payoutTotal,
+              technician_remaining_amount: payoutTotal,
+              labor_amount_label: `${laborAmount.toLocaleString('tr-TR')},00 TL`,
+              route_fee_amount_label: `${routeFeeAmount.toLocaleString('tr-TR')},00 TL`,
+              company_payment_amount_label: `${companyPaymentAmount.toLocaleString('tr-TR')},00 TL`,
+              company_retained_amount_label: `${companyRetainedAmount.toLocaleString('tr-TR')},00 TL`,
+              total_amount_label: `${payoutTotal.toLocaleString('tr-TR')},00 TL`,
+              technician_remaining_amount_label: `${payoutTotal.toLocaleString('tr-TR')},00 TL`,
+            },
+            company_payment_amount: companyPaymentAmount,
+            company_payment_amount_label: `${companyPaymentAmount.toLocaleString('tr-TR')},00 TL`,
+            company_retained_amount: companyRetainedAmount,
+            company_retained_amount_label: `${companyRetainedAmount.toLocaleString('tr-TR')},00 TL`,
+            company_payment_decisions: decisionPayload,
+            net_margin: {
+              amount: netMargin,
+              amount_label: `${netMargin.toLocaleString('tr-TR')},00 TL`,
+              provisional_amount_label: `${netMargin.toLocaleString('tr-TR')},00 TL`,
+              is_definitive: true,
+            },
+            result_state: 'definitive',
+            result_state_label: 'Kesinleşmiş',
+            is_definitive: true,
+          })
+          const nextRequest: ServiceRequest = {
+            ...request,
+            assignmentOffer: request.assignmentOffer ? {
+              ...request.assignmentOffer,
+              total_amount: snapshot.total_amount,
+              earning_snapshot: snapshot,
+              message_preview: messagePreview,
+              message_text: messagePreview,
+            } : null,
+            settlement: request.settlement ? {
+              ...request.settlement,
+              technician_earning_total: snapshot.total_amount,
+              company_payment_amount: companyPaymentAmount,
+              company_payment_breakdown: snapshot.company_payment_breakdown,
+              company_retained_amount: companyRetainedAmount,
+              company_retained_breakdown: decision === 'retain_company' ? decisionPayload.decisions : [],
+              company_payment_decisions: decisionPayload,
+            } : null,
+            financeSummary: request.financeSummary ? {
+              ...request.financeSummary,
+              generated_at: '2026-08-10T06:30:00+00:00',
+              current_visit: updateFinanceArea(request.financeSummary.current_visit),
+              root_total: updateFinanceArea(request.financeSummary.root_total),
+            } : null,
+          }
+
+          state.lastCompanyPaymentDecision = decision
+          setRequest(nextRequest)
+
+          return {
+            status: 'decided',
+            earning_snapshot: snapshot,
+            message_preview: messagePreview,
+            request: nextRequest,
+          }
+        }}
         onTechnicianEarningMessageCreate={async (payload) => {
           state.sendCount += 1
           state.lastSendPayload = payload
@@ -595,6 +763,7 @@ function Harness() {
         onPartnerCompletionApprove={async () => {
           state.completionApproveCount += 1
         }}
+        assignmentOfferUpdateError={allocationError}
       />
     </>
   )

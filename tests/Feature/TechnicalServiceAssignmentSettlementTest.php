@@ -396,6 +396,45 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         ]);
     }
 
+    public function test_one_click_submits_exact_payment_decision_once(): void
+    {
+        [$request, , , , , $actor] = $this->assignedSettlementFixture();
+        $payment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $decisionPayload = app(TechnicalServiceAssignmentSettlementService::class)
+            ->companyPaymentDecisionPayload($request->refresh());
+        $command = [
+            'company_payment_decisions' => [[
+                'payment_id' => $payment->id,
+                'decision' => 'pay_technician',
+                'note' => 'Payment 198 CTA kararı',
+                'expected_earning_revision' => $decisionPayload['earning_revision'],
+            ]],
+        ];
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/company-payment-decisions", $command)
+            ->assertOk()
+            ->assertJsonPath('status', 'decided')
+            ->assertJsonPath('request.settlement.company_payment_decisions.pending_decision_count', 0)
+            ->assertJsonPath('request.settlement.company_payment_decisions.decisions.0.payment_id', $payment->id)
+            ->assertJsonPath('request.settlement.company_payment_decisions.decisions.0.decision', 'pay_technician');
+
+        $this->assertDatabaseCount('technical_service_payment_settlement_allocations', 1);
+        $this->assertSame(1, TechnicalServiceEarningPayment::query()
+            ->where('payment_type', TechnicalServiceAssignmentSettlementService::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT)
+            ->count());
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/company-payment-decisions", $command)
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop');
+
+        $this->assertDatabaseCount('technical_service_payment_settlement_allocations', 1);
+        $this->assertSame(1, TechnicalServiceEarningPayment::query()
+            ->where('payment_type', TechnicalServiceAssignmentSettlementService::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT)
+            ->count());
+    }
+
     public function test_duplicate_decision_creates_no_duplicate_settlement(): void
     {
         [$request, , , , , $actor] = $this->assignedSettlementFixture();

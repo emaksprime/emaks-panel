@@ -350,6 +350,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::patch('requests/{technicalServiceRequest}/assignment-offers/{assignmentOffer}', [TechnicalServicePartnerPortalOpsController::class, 'updateAssignmentOffer'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assignment-offers.update');
+            Route::post('requests/{technicalServiceRequest}/company-payment-decisions', [TechnicalServicePartnerPortalOpsController::class, 'storeCompanyPaymentDecisions'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.company-payment-decisions.store');
             Route::post('requests/{technicalServiceRequest}/partner-actions/{partnerJobAction}/review', [TechnicalServicePartnerPortalOpsController::class, 'reviewPartnerAction'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.partner-actions.review');
