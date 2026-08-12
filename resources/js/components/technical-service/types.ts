@@ -668,6 +668,41 @@ export type ServiceRequestFinanceNetMargin = {
 
 export type ServiceRequestFinancialResultState = 'definitive' | 'draft_pending' | 'allocation_pending' | 'classification_pending'
 
+export type ServiceRequestFinancePaymentRecord = {
+  id: number | string
+  request_id?: number | string | null
+  root_request_id?: number | string | null
+  root_mrn?: string | null
+  mrn?: string | null
+  service_code?: string | null
+  status?: string | null
+  status_label?: string | null
+  amount: number
+  amount_label?: string | null
+  service_amount?: number
+  service_amount_label?: string | null
+  part_amount?: number
+  part_amount_label?: string | null
+  purpose?: string | null
+  purpose_label?: string | null
+  paid_at?: string | null
+  part_request_id?: number | string | null
+  part_request_status_label?: string | null
+  srv_request_id?: number | string | null
+  srv_request_code?: string | null
+  scope_relation?: 'current_request' | 'related_part_request' | 'root_mrn' | string | null
+  scope_label?: string | null
+  scope_notice?: string | null
+  belongs_to_current_request?: boolean
+  related_to_current_srv?: boolean
+  component_split_persisted?: boolean
+  provider?: string | null
+  provider_mode?: string | null
+  provider_payment_reference?: string | null
+  provider_transaction_reference?: string | null
+  provider_receipt_reference?: string | null
+}
+
 export type ServiceRequestFinanceSummary = {
   generated_at?: string | null
   currency?: string | null
@@ -688,6 +723,11 @@ export type ServiceRequestFinanceSummary = {
     loaded: boolean
     current_count?: number | null
     root_count?: number | null
+  }
+  payment_records?: {
+    current_scope_rows: ServiceRequestFinancePaymentRecord[]
+    related_scope_rows: ServiceRequestFinancePaymentRecord[]
+    root_scope_rows: ServiceRequestFinancePaymentRecord[]
   }
   current_visit_customer_collection?: ServiceRequestFinanceCollection
   current_visit_locksmith_payout?: ServiceRequestFinancePayout

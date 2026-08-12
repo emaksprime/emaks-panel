@@ -6,6 +6,7 @@ use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\PageConfig;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMessageTemplate;
 use App\Models\TechnicalServiceMountPayment;
@@ -20,6 +21,7 @@ use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
+use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
@@ -43,6 +45,18 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $request = $this->technicalServiceRequest([
             'scheduled_date' => '2026-07-08',
             'scheduled_time' => '14:00',
+            'technician_payment_amount' => 100,
+            'travel_fee_amount' => 1406.50,
+        ]);
+        $offer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $request->technical_service_technician_id,
+            'labor_amount' => 100,
+            'route_fee_amount' => 400,
+            'total_amount' => 500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
         ]);
         $action = $this->appointmentAction($request, '2026-07-08', '14:00', '16:00');
 
@@ -94,10 +108,75 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringNotContainsString('14:00 - 16:00', (string) ($customer->request_payload['body'] ?? ''));
         $this->assertStringContainsString('14:00 - 16:00', (string) ($technician->request_payload['body'] ?? ''));
         $this->assertStringContainsString('İş Kartı', (string) ($technician->request_payload['body'] ?? ''));
+        $this->assertStringNotContainsString('İşçilik', (string) ($customer->request_payload['body'] ?? ''));
+        $this->assertStringNotContainsString('Yol', (string) ($customer->request_payload['body'] ?? ''));
+        $this->assertStringNotContainsString('Hakediş', (string) ($customer->request_payload['body'] ?? ''));
+        $this->assertStringContainsString('İşçilik/Montaj: 100,00 TL', (string) ($technician->request_payload['body'] ?? ''));
+        $this->assertStringContainsString('Yol: 400,00 TL', (string) ($technician->request_payload['body'] ?? ''));
+        $this->assertStringContainsString('Toplam: 500,00 TL', (string) ($technician->request_payload['body'] ?? ''));
+        $this->assertStringNotContainsString('1.406,50 TL', (string) ($technician->request_payload['body'] ?? ''));
+        $this->assertSame(
+            app(TechnicalServiceAssignmentSettlementService::class)->canonicalEarningSnapshot($offer)['revision'],
+            data_get($technician->metadata, 'earning_revision'),
+        );
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $request->id,
             'event_type' => 'message_queued',
         ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_customer_appointment_message_contains_no_earning_values(): void
+    {
+        $templates = app(TechnicalServiceMessageTemplateService::class);
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $templates->preview([
+                'message_type' => 'appointment_approved_customer',
+                'channel' => $channel,
+                'provider_key' => $channel === 'sms' ? 'nac_sms' : 'evo_whatsapp',
+            ]);
+            $body = (string) ($preview['rendered_body'] ?? '');
+
+            $this->assertTrue((bool) ($preview['preview_ready'] ?? false), json_encode($preview['blockers'] ?? []));
+            $this->assertStringNotContainsString('İşçilik', $body);
+            $this->assertStringNotContainsString('Yol hakedişi', $body);
+            $this->assertStringNotContainsString('Toplam hakediş', $body);
+            $this->assertStringNotContainsString('Şirket ödemesi', $body);
+            $this->assertStringNotContainsString('Ödeme modeli', $body);
+        }
+    }
+
+    public function test_technician_appointment_message_uses_only_persisted_earning(): void
+    {
+        Http::fake();
+        $this->configureGuardedLiveMessaging([
+            'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            'appointment_approved_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'scheduled_date' => '2026-07-08',
+            'scheduled_time' => '14:00',
+            'technician_payment_amount' => 7777,
+            'travel_fee_amount' => 8888,
+        ]);
+
+        app(TechnicalServiceAppointmentMessageDispatchService::class)->dispatchApproval(
+            $request->refresh(),
+            $this->appointmentAction($request, '2026-07-08', '14:00', '16:00'),
+            $this->admin(),
+            ['slot' => ['date' => '2026-07-08', 'start_time' => '14:00', 'end_time' => '16:00']],
+        );
+
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'appointment_approved_technician')
+            ->firstOrFail();
+        $body = (string) ($dispatch->request_payload['body'] ?? '');
+
+        $this->assertStringNotContainsString('7.777', $body);
+        $this->assertStringNotContainsString('8.888', $body);
+        $this->assertStringContainsString('Hakediş bilgisi paneldeki iş kartında görülebilir.', $body);
         Http::assertNothingSent();
     }
 

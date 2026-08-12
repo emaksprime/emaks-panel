@@ -289,13 +289,6 @@ class TechnicalServiceMessageTypeRegistry
                     'customer_reference_phrase',
                     'customer_appointment_action_phrase',
                     'customer_update_action_phrase',
-                    'technician_name',
-                    'technician_phone',
-                    'address',
-                    'customer_payment_amount_formatted',
-                    'sms_payment_line',
-                    'payment_instruction_block',
-                    'payment_link',
                     'customer_visible_note',
                     'customer_visible_note_block',
                     'customer_visible_note_line',
@@ -468,8 +461,6 @@ class TechnicalServiceMessageTypeRegistry
             ],
             'appointment_approved_customer',
             'appointment_updated_customer' => [
-                'guard_company_collected_pay_technician_text' => true,
-                'amount_required_when_customer_pays_technician' => true,
                 'requires_appointment_window' => true,
             ],
             'appointment_approved_technician',
@@ -529,7 +520,7 @@ class TechnicalServiceMessageTypeRegistry
         if ($channel === TechnicalServiceMessageTemplate::CHANNEL_VOICE_SCRIPT) {
             return match ($messageType) {
                 'mount_request_created_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} montaj talebiniz alınmıştır. Ürün {product_name}. Operasyon ekibimiz süreci takip edecektir. Bu sadece sesli arama script önizlemesidir.',
-                'appointment_approved_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_appointment_action_phrase} Randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. {payment_instruction_text} Bu sadece sesli arama script önizlemesidir.',
+                'appointment_approved_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_appointment_action_phrase} Randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. Bu sadece sesli arama script önizlemesidir.',
                 'appointment_updated_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_update_action_phrase} Yeni randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. Bu sadece sesli arama script önizlemesidir.',
                 'appointment_approved_technician' => 'Merhaba {technician_name}. Yeni iş kartı hazır. İş {internal_job_reference}. Müşteri {customer_name}. Randevu {appointment_date_formatted} {appointment_exact_time_range}. İş kartı bağlantısı {technician_job_card_url}. Bu sadece sesli arama script önizlemesidir.',
                 'appointment_updated_technician' => 'Merhaba {technician_name}. İş kartı randevusu güncellendi. İş {internal_job_reference}. Müşteri {customer_name}. Yeni randevu {appointment_date_formatted} {appointment_exact_time_range}. İş kartı bağlantısı {technician_job_card_url}. Bu sadece sesli arama script önizlemesidir.',
@@ -557,8 +548,8 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS OPS\nYeni teknik servis talebi.\nİş: {internal_job_reference}\nMüşteri: {customer_name}\nÜrün: {product_name}\nAksiyon: {next_action_text}"
                 : "EMAKS Prime Teknik Servis\n\nYeni teknik servis talebi oluşturuldu.\n\nİş: {internal_job_reference}\nTalebi Açan: {actor_name}\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nÜrün: {product_name}\nAdres / Bölge: {address}\n\nSonraki Aksiyon: {next_action_text}",
             'appointment_approved_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\n{customer_appointment_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}\n{sms_payment_line}"
-                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_appointment_action_phrase}\n\nRandevu Bilgileri\nTarih: {appointment_date_formatted}\nSaat Aralığı: {appointment_customer_window}\n\n{payment_instruction_block}\n\nRandevu aralığında adreste olunmasını rica ederiz.\n{customer_visible_note_block}",
+                ? "EMAKS Prime\n{customer_appointment_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_appointment_action_phrase}\n\nRandevu Bilgileri\nTarih: {appointment_date_formatted}\nSaat Aralığı: {appointment_customer_window}\n\nRandevu aralığında adreste olunmasını rica ederiz.\n{customer_visible_note_block}",
             'appointment_approved_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS\nİş {mrn}\nMüşteri {customer_name}\nTel {customer_phone}\nRandevu {appointment_date_formatted} {appointment_exact_time_range}\nKart {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nYeni iş kartı hazır.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_date_formatted} {appointment_exact_time_range}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_earning_summary_block}\n{technician_visible_note_block}",

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use Illuminate\Support\Str;
 use PHPUnit\Framework\TestCase;
 
 class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
@@ -111,12 +112,45 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
 
         $this->assertSame(1, substr_count($source, 'FİNANS VE HAKEDİŞ'));
         $this->assertStringContainsString('data-testid="technical-service-financial-workspace"', $source);
-        $this->assertStringContainsString('selectedFinancialCollection?.service_total_amount_label', $source);
+        $this->assertStringContainsString('selectedFinancialCollection?.total_amount_label', $source);
         $this->assertStringContainsString('selectedFinancialCollection?.part_amount_label', $source);
         $this->assertStringContainsString('const showServicePartPaymentSummary', $source);
         $this->assertStringContainsString('const showPaymentTechnicalDetails', $source);
         $this->assertStringContainsString('{showServicePartPaymentSummary ? (', $source);
         $this->assertStringContainsString('{showPaymentTechnicalDetails ? (', $source);
+    }
+
+    public function test_srv_financial_workspace_renders_scope_route_suggestion_and_compact_payment_details(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+        $scheduleHandler = Str::between($page, 'const handleScheduleSubmit = async () => {', 'const handleContactActionSubmit = async () => {');
+        $primaryCards = Str::betweenFirst($detail, 'data-testid="financial-primary-cards"', '</div>');
+
+        $this->assertStringContainsString('data-testid="technical-service-financial-workspace"', $detail);
+        $this->assertStringContainsString('Bu SRV', $detail);
+        $this->assertStringContainsString('Kök MRN toplamı', $detail);
+        $this->assertStringNotContainsString('>\n                    Bu iş\n', $detail);
+        $this->assertStringContainsString('data-testid="route-earning-suggestion"', $detail);
+        $this->assertStringContainsString('Yeni yol hakedişi önerisi:', $detail);
+        $this->assertStringContainsString('Mevcut onaylı yol hakedişi:', $detail);
+        $this->assertStringContainsString('Hakedişte kullan', $detail);
+        $this->assertStringContainsString('updateAssignmentEarningDraft({ routeFeeAmount:', $detail);
+        $this->assertStringContainsString('data-testid="financial-primary-cards"', $detail);
+        $this->assertSame(1, substr_count($primaryCards, 'label="Müşteriden alınan"'));
+        $this->assertSame(1, substr_count($primaryCards, 'label="Usta hakedişi"'));
+        $this->assertSame(1, substr_count($primaryCards, 'label="Şirket ödemesi"'));
+        $this->assertSame(1, substr_count($primaryCards, 'label="Operasyon farkı"'));
+        $this->assertStringContainsString('<summary className="cursor-pointer font-semibold text-slate-950">Tahsilat kırılımı</summary>', $detail);
+        $this->assertStringContainsString('<summary className="cursor-pointer font-semibold text-slate-950">Hakediş kırılımı</summary>', $detail);
+        $this->assertStringContainsString('data-testid="financial-payment-records"', $detail);
+        $this->assertStringContainsString('data-testid="related-payment-scope-notice"', $detail);
+        $this->assertStringContainsString('component_split_persisted', $detail);
+        $this->assertStringContainsString('scheduleMutationInFlightRef.current', $scheduleHandler);
+        $this->assertStringContainsString('applyUpdatedRequest(updatedRequest)', $scheduleHandler);
+        $this->assertStringNotContainsString('loadRequests()', $scheduleHandler);
+        $this->assertStringNotContainsString('loadSummary()', $scheduleHandler);
+        $this->assertStringNotContainsString('loadRequestDetail(', $scheduleHandler);
     }
 
     public function test_part_payment_copy_feedback_is_rendered_next_to_visible_actions(): void

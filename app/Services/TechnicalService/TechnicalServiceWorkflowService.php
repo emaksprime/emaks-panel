@@ -3505,6 +3505,7 @@ class TechnicalServiceWorkflowService
     {
         $currentCollection = $this->financeCustomerCollectionForRequest($request);
         $rootCollection = $this->financeRootCustomerCollection($request);
+        $paymentRecords = $this->financePaymentScopePayload($request);
         $currentPayout = $this->financePayoutFromRow($earningBreakdown['current_visit'] ?? null, $request);
         $rootPayout = $this->financePayoutFromRootTotal($earningBreakdown['root_total'] ?? null);
         $currentResultState = $this->financialResultState($currentCollection, $currentPayout);
@@ -3547,6 +3548,7 @@ class TechnicalServiceWorkflowService
                 'current_count' => null,
                 'root_count' => null,
             ],
+            'payment_records' => $paymentRecords,
             'current_visit_customer_collection' => $currentCollection,
             'current_visit_locksmith_payout' => $currentPayout,
             'current_visit_operation_cost' => $currentOperationCost,
@@ -3598,6 +3600,124 @@ class TechnicalServiceWorkflowService
                 'is_definitive' => $rootResultState === 'definitive',
             ],
         ];
+    }
+
+    /**
+     * Projects canonical payment rows into the current SRV and root-MRN scopes.
+     *
+     * @return array<string, mixed>
+     */
+    private function financePaymentScopePayload(TechnicalServiceRequest $request): array
+    {
+        $root = $this->rootFinancialRequest($request) ?? $request;
+        $requests = $this->rootFinancialRequests($request);
+        $payments = $this->customerChargePaymentsForRequests($requests);
+        $this->preloadPaymentLinkMessageStates($payments);
+
+        $partRequestIds = $payments
+            ->map(function (TechnicalServiceMountPayment $payment): int {
+                $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+                return (int) ($payload['part_request_id'] ?? 0);
+            })
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+        $partRequests = $partRequestIds->isEmpty()
+            ? collect()
+            : TechnicalServicePartRequest::query()
+                ->with(['request', 'rootRequest', 'serviceVisitRequest'])
+                ->whereIn('id', $partRequestIds->all())
+                ->get()
+                ->keyBy(fn (TechnicalServicePartRequest $partRequest): int => (int) $partRequest->id);
+        $currentRequestId = (int) $request->id;
+        $rootRequestId = (int) $root->id;
+
+        $rows = $payments
+            ->map(function (TechnicalServiceMountPayment $payment) use ($partRequests, $currentRequestId, $rootRequestId, $root): array {
+                $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+                $partRequestId = (int) ($rawPayload['part_request_id'] ?? 0);
+                $partRequest = $partRequestId > 0 ? $partRequests->get($partRequestId) : null;
+                $serviceVisit = $partRequest instanceof TechnicalServicePartRequest
+                    ? $partRequest->serviceVisitRequest
+                    : null;
+                $paymentRequestId = (int) $payment->technical_service_request_id;
+                $belongsToCurrentRequest = $paymentRequestId === $currentRequestId;
+                $relatedToCurrentSrv = $serviceVisit instanceof TechnicalServiceRequest
+                    && (int) $serviceVisit->id === $currentRequestId;
+                $scopeRelation = $belongsToCurrentRequest
+                    ? 'current_request'
+                    : ($relatedToCurrentSrv ? 'related_part_request' : 'root_mrn');
+                $scopeLabel = match ($scopeRelation) {
+                    'current_request' => filled($payment->technicalServiceRequest?->service_code) ? 'Bu SRV' : 'Kök MRN',
+                    'related_part_request' => 'Kök MRN / Parça talebi',
+                    default => 'Kök MRN',
+                };
+                $scopeNotice = $relatedToCurrentSrv && ! $belongsToCurrentRequest
+                    ? 'Bu ödeme current SRV’ye değil, kök MRN / parça talebine bağlıdır.'
+                    : null;
+
+                return [
+                    ...$this->customerChargePaymentPayload($payment),
+                    'root_request_id' => $rootRequestId,
+                    'root_mrn' => $root->mrn,
+                    'part_request_id' => $partRequest?->id,
+                    'part_request_status_label' => $partRequest?->statusLabel(),
+                    'srv_request_id' => $serviceVisit?->id,
+                    'srv_request_code' => $serviceVisit?->service_code ?: $serviceVisit?->mrn,
+                    'scope_relation' => $scopeRelation,
+                    'scope_label' => $scopeLabel,
+                    'scope_notice' => $scopeNotice,
+                    'belongs_to_current_request' => $belongsToCurrentRequest,
+                    'related_to_current_srv' => $relatedToCurrentSrv,
+                    'component_split_persisted' => $this->hasPersistedPaymentComponentSplit($payment, $partRequest),
+                ];
+            })
+            ->values();
+
+        return [
+            'current_scope_rows' => $rows
+                ->filter(fn (array $row): bool => (bool) ($row['belongs_to_current_request'] ?? false))
+                ->values()
+                ->all(),
+            'related_scope_rows' => $rows
+                ->filter(fn (array $row): bool => (bool) ($row['related_to_current_srv'] ?? false)
+                    && ! (bool) ($row['belongs_to_current_request'] ?? false))
+                ->values()
+                ->all(),
+            'root_scope_rows' => $rows->all(),
+        ];
+    }
+
+    private function hasPersistedPaymentComponentSplit(
+        TechnicalServiceMountPayment $payment,
+        ?TechnicalServicePartRequest $partRequest,
+    ): bool {
+        if (! $partRequest instanceof TechnicalServicePartRequest) {
+            return false;
+        }
+
+        $paymentPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $partMetadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
+        $serviceMinor = $this->minorUnits($paymentPayload['service_amount'] ?? null);
+        $partMinor = $this->minorUnits($paymentPayload['part_amount'] ?? null);
+        $paymentMinor = $this->minorUnits($payment->amount);
+        $persistedPaymentId = (int) ($partMetadata['payment_id']
+            ?? $partMetadata['customer_charge_payment_id']
+            ?? $partMetadata['technical_service_mount_payment_id']
+            ?? 0);
+
+        if ($serviceMinor < 0 || $partMinor < 0 || $serviceMinor + $partMinor !== $paymentMinor) {
+            return false;
+        }
+
+        if ($persistedPaymentId <= 0 || $persistedPaymentId !== (int) $payment->id) {
+            return false;
+        }
+
+        return $this->minorUnits($partMetadata['service_amount'] ?? null) === $serviceMinor
+            && $this->minorUnits($partMetadata['part_amount'] ?? null) === $partMinor
+            && $this->minorUnits($partMetadata['total_amount'] ?? $partMetadata['amount'] ?? null) === $paymentMinor;
     }
 
     /**

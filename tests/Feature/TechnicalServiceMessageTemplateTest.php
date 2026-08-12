@@ -279,8 +279,9 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertJsonPath('preview.preview_ready', true)
             ->json('preview.rendered_body');
 
-        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', $body);
-        $this->assertStringContainsString('Not: Ödemeler nakit ve havale kabul edilmektedir.', $body);
+        $this->assertStringNotContainsString('1.250,00 TL', $body);
+        $this->assertStringNotContainsString('ustaya ödenecek tutar', mb_strtolower($body, 'UTF-8'));
+        $this->assertStringNotContainsString('Ödemeler nakit ve havale kabul edilmektedir.', $body);
     }
 
     public function test_customer_payment_note_company_collected_and_no_payment_omit_payment_note(): void
@@ -1182,6 +1183,26 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertJsonPath('preview.preview_ready', true);
     }
 
+    public function test_customer_appointment_template_rejects_earning_and_payment_placeholders(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'body' => 'Randevu {appointment_date_formatted} {appointment_customer_window}. İşçilik {labor_amount_formatted}.',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'Ekonomik Alan Testi',
+                    'appointment_date' => '2026-08-12',
+                    'appointment_time' => '14:00',
+                    'labor_amount_formatted' => '1.000,00 TL',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Müşteri randevu mesajı hakediş veya ödeme değişkeni içeremez: labor_amount_formatted.']);
+    }
+
     public function test_customer_payer_state_guards_apply_to_appointment_templates(): void
     {
         $companyCollected = $this->actingAs($this->admin())
@@ -1223,7 +1244,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertJsonPath('preview.preview_ready', true)
             ->json('preview.rendered_body');
 
-        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', $customerPays);
+        $this->assertStringNotContainsString('1.250,00 TL', $customerPays);
+        $this->assertStringNotContainsString('ustaya ödenecek tutar', mb_strtolower($customerPays, 'UTF-8'));
         $this->assertStringNotContainsString('Ödeme:', $customerPays);
 
         $this->actingAs($this->admin())
@@ -1240,8 +1262,7 @@ class TechnicalServiceMessageTemplateTest extends TestCase
                 ],
             ])
             ->assertOk()
-            ->assertJsonPath('preview.preview_ready', false)
-            ->assertJsonFragment(['Müşteri ustaya ödeme yapacaksa pozitif müşteri ödeme tutarı zorunlu.']);
+            ->assertJsonPath('preview.preview_ready', true);
     }
 
     public function test_customer_reference_mount_uses_mrn_sentence_and_service_uses_srv_without_mrn(): void

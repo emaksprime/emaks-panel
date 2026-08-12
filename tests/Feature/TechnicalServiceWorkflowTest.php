@@ -133,6 +133,106 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_appointment_update_changes_only_date_time_and_note(): void
+    {
+        [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+        $request->forceFill([
+            'scheduled_date' => '2026-08-12',
+            'scheduled_time' => '10:00',
+            'technician_payment_amount' => 9999,
+            'travel_fee_amount' => 8888,
+        ])->save();
+        $before = $request->only([
+            'technician_payment_amount',
+            'travel_fee_amount',
+            'mount_payment_status',
+            'mount_payment_reference',
+        ]);
+
+        app(TechnicalServiceWorkflowService::class)->updateSchedule($request->refresh(), [
+            'scheduled_date' => '2026-08-13',
+            'scheduled_time' => '14:00',
+            'note' => 'Yalnız randevu notu değişti.',
+        ], $user);
+
+        $fresh = $request->fresh();
+        $this->assertSame('2026-08-13', $fresh->scheduled_date?->toDateString());
+        $this->assertSame('14:00', $fresh->scheduled_time);
+        $this->assertSame($before, $fresh->only(array_keys($before)));
+        $this->assertSame(3000.0, (float) $offer->fresh()->labor_amount);
+        $this->assertSame(150.0, (float) $offer->fresh()->route_fee_amount);
+        $this->assertSame(3150.0, (float) $offer->fresh()->total_amount);
+    }
+
+    public function test_appointment_update_does_not_mutate_approved_earning(): void
+    {
+        [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+        $before = $offer->only(['labor_amount', 'route_fee_amount', 'total_amount', 'currency', 'status', 'metadata']);
+
+        app(TechnicalServiceWorkflowService::class)->updateSchedule($request, [
+            'scheduled_date' => '2026-08-14',
+            'scheduled_time' => '16:00',
+            'note' => 'Approved hakediş korunmalı.',
+        ], $user);
+
+        $this->assertSame($before, $offer->fresh()->only(array_keys($before)));
+    }
+
+    public function test_appointment_update_does_not_increment_earning_revision(): void
+    {
+        [$user, , $request, $offer] = $this->activeEarningMessageFixture();
+        $service = app(TechnicalServiceWorkflowService::class);
+        $beforeRevision = $service->canonicalTechnicianEarningSnapshot($offer)['revision'];
+
+        $service->updateSchedule($request, [
+            'scheduled_date' => '2026-08-15',
+            'scheduled_time' => '12:00',
+            'note' => 'Revision sabit kalmalı.',
+        ], $user);
+
+        $this->assertSame(
+            $beforeRevision,
+            $service->canonicalTechnicianEarningSnapshot($offer->fresh())['revision'],
+        );
+    }
+
+    public function test_route_recalculation_returns_suggestion_not_approved_value(): void
+    {
+        [, $technician, $request, $offer] = $this->activeEarningMessageFixture();
+        $request->forceFill(['travel_fee_amount' => 450])->save();
+        TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'origin_latitude' => 41,
+            'origin_longitude' => 29,
+            'destination_latitude' => 41.1,
+            'destination_longitude' => 29.1,
+            'distance_meters' => 50000,
+            'distance_km' => 50,
+            'duration_seconds' => 1800,
+            'threshold_km' => 30,
+            'extra_km' => 20,
+            'fee_per_km' => 22.5,
+            'fee_amount' => 450,
+            'travel_fee_required' => true,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => ['recalculation_reason' => 'appointment_changed'],
+            'calculated_at' => now()->addMinute(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize(
+            $request->refresh(),
+            includeHistory: false,
+            includeFinancialWorkspace: false,
+            includePaymentHistory: false,
+        );
+
+        $this->assertSame(450.0, (float) data_get($payload, 'route_quote.fee_amount'));
+        $this->assertSame(150.0, (float) data_get($payload, 'assignment_offer.earning_snapshot.route_fee_amount'));
+        $this->assertSame(150.0, (float) $offer->fresh()->route_fee_amount);
+    }
+
     public function test_appointment_time_attention_labels_are_computed_without_movement_statuses(): void
     {
         $service = app(TechnicalServiceWorkflowService::class);

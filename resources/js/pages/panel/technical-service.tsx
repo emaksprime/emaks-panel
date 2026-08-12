@@ -1182,6 +1182,7 @@ export function TechnicalServiceOperationCenter() {
   const [scheduleNote, setScheduleNote] = useState('')
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState<string | null>(null)
+  const scheduleMutationInFlightRef = useRef(false)
   const [travelRoundTripKm, setTravelRoundTripKm] = useState('')
   const [assignOverrideWithoutPayment, setAssignOverrideWithoutPayment] = useState(false)
   const [assignOverrideReason, setAssignOverrideReason] = useState('')
@@ -3144,7 +3145,7 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const handleScheduleSubmit = async () => {
-    if (!selectedId) {
+    if (!selectedId || scheduleMutationInFlightRef.current) {
       return
     }
 
@@ -3154,13 +3155,14 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    scheduleMutationInFlightRef.current = true
     setScheduleLoading(true)
     setScheduleError(null)
 
     try {
       const selectedTimeSlot = APPOINTMENT_TIME_SLOTS.find((slot) => slot.value === scheduleTimeSlot)
 
-      await apiRequest(`/api/technical-service/requests/${selectedId}/schedule`, {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/schedule`, {
         method: 'PATCH',
         body: JSON.stringify({
           scheduled_date: scheduleDate,
@@ -3170,14 +3172,20 @@ export function TechnicalServiceOperationCenter() {
         }),
       })
 
+      if (!response.request) {
+        throw new Error('Randevu güncellendi ancak güncel kayıt payloadı alınamadı.')
+      }
+
+      const updatedRequest = mapApiRequest(response.request)
+      applyUpdatedRequest(updatedRequest)
+      setSelectedEvents(Array.isArray(response.request.events) ? response.request.events : [])
+
       setScheduleDialogOpen(false)
       handleScheduleReset()
-      await loadRequests()
-      await loadSummary()
-      await loadRequestDetail(selectedId)
     } catch (caught) {
       setScheduleError(caught instanceof Error ? caught.message : 'Randevu planlama işlemi başarısız oldu.')
     } finally {
+      scheduleMutationInFlightRef.current = false
       setScheduleLoading(false)
     }
   }

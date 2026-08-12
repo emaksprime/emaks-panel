@@ -2063,6 +2063,9 @@ export function ServiceRequestDetails({
   const financeSummary = request.financeSummary ?? null
   const financeCurrentVisit = financeSummary?.current_visit ?? null
   const financeRootTotal = financeSummary?.root_total ?? null
+  const financeCurrentPaymentRecords = financeSummary?.payment_records?.current_scope_rows ?? []
+  const financeRelatedPaymentRecords = financeSummary?.payment_records?.related_scope_rows ?? []
+  const financeRootPaymentRecords = financeSummary?.payment_records?.root_scope_rows ?? []
   const financeCustomerCollection = financeCurrentVisit?.customer_collection ?? null
   const financeLocksmithPayout = financeCurrentVisit?.locksmith_payout ?? null
   const financeNetMargin = financeCurrentVisit?.net_margin ?? null
@@ -2411,6 +2414,20 @@ export function ServiceRequestDetails({
   const persistedEarningSnapshot = activeAssignmentOffer?.earning_snapshot ?? null
   const persistedEarningLaborAmount = persistedEarningSnapshot?.labor_amount ?? assignmentOfferLaborAmount ?? technicianLaborCostAmount
   const persistedEarningRouteAmount = persistedEarningSnapshot?.route_fee_amount ?? assignmentOfferRouteAmount ?? (hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0)
+  const routeQuoteCalculatedAt = activeRouteQuote?.calculated_at ? Date.parse(activeRouteQuote.calculated_at) : Number.NaN
+  const earningPersistedAt = persistedEarningSnapshot?.persisted_at ? Date.parse(persistedEarningSnapshot.persisted_at) : Number.NaN
+  const routeSuggestionAmount = typeof activeRouteQuote?.fee_amount === 'number' && Number.isFinite(activeRouteQuote.fee_amount)
+    ? activeRouteQuote.fee_amount
+    : null
+  const routeSuggestionIsNewer = Number.isFinite(routeQuoteCalculatedAt)
+    && Number.isFinite(earningPersistedAt)
+    && routeQuoteCalculatedAt > earningPersistedAt
+  const hasRouteEarningSuggestion = Boolean(
+    routeSuggestionIsNewer
+    && routeSuggestionAmount !== null
+    && persistedEarningRouteAmount !== null
+    && Math.abs(routeSuggestionAmount - Number(persistedEarningRouteAmount)) > 0.005,
+  )
   const persistedCompanyPaymentAmount = Number(persistedEarningSnapshot?.company_payment_amount ?? settlement?.company_payment_amount ?? 0)
   const persistedCompanyPaymentBreakdown = persistedEarningSnapshot?.company_payment_breakdown ?? settlement?.company_payment_breakdown ?? []
   const persistedEarningNote = persistedEarningSnapshot?.operation_note ?? activeAssignmentOffer?.note ?? ''
@@ -2540,6 +2557,9 @@ export function ServiceRequestDetails({
   const selectedFinancialPayload = financialScope === 'root' ? financeRootTotal : financeCurrentVisit
   const selectedFinancialCollection = selectedFinancialPayload?.customer_collection ?? null
   const selectedFinancialPayout = selectedFinancialPayload?.locksmith_payout ?? null
+  const selectedFinancialPaymentRecords = financialScope === 'root'
+    ? financeRootPaymentRecords
+    : [...financeCurrentPaymentRecords, ...financeRelatedPaymentRecords]
   const selectedFinancialResultState = financialScope === 'current'
     ? financialResultState
     : selectedFinancialPayload?.result_state ?? 'definitive'
@@ -6854,7 +6874,7 @@ export function ServiceRequestDetails({
                     aria-pressed={financialScope === 'current'}
                     onClick={() => setFinancialScopeByRequest((current) => ({ ...current, [requestStateKey]: 'current' }))}
                   >
-                    Bu iş
+                    Bu SRV
                   </Button>
                   <Button
                     type="button"
@@ -6897,9 +6917,30 @@ export function ServiceRequestDetails({
                     </div>
                   ) : null}
 
+                  {!financialBlockedReason && !earningBaseDraftDirty && financialScope === 'current' && hasRouteEarningSuggestion ? (
+                    <div data-testid="route-earning-suggestion" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
+                      <div className="grid gap-1">
+                        <strong>Yeni yol hakedişi önerisi: {formatMoneyValue(routeSuggestionAmount)}</strong>
+                        <span>Mevcut onaylı yol hakedişi: {formatMoneyValue(persistedEarningRouteAmount)}</span>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          if (routeSuggestionAmount !== null) {
+                            updateAssignmentEarningDraft({ routeFeeAmount: String(routeSuggestionAmount) })
+                          }
+                        }}
+                      >
+                        Hakedişte kullan
+                      </Button>
+                    </div>
+                  ) : null}
+
                   {earningBaseDraftDirty && financialScope === 'current' ? (
                     <div data-testid="earning-draft-compact-diff" className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 sm:grid-cols-3">
-                      <p className="font-semibold sm:col-span-3">Taslak değişiklik var</p>
+                      <p className="font-semibold sm:col-span-3">Kaydedilmemiş değişiklik</p>
                       <span>İşçilik: <strong>{formatMoneyValue(persistedEarningLaborAmount)} → {formatMoneyValue(earningLaborAmount)}</strong></span>
                       <span>Yol: <strong>{formatMoneyValue(persistedEarningRouteAmount)} → {formatMoneyValue(earningRouteAmount)}</strong></span>
                       <span>Toplam: <strong>{activeFinanceLocksmithPayout?.total_amount_label ?? totalTechnicianCostLabel} → {formatMoneyValue(earningTotalAmount)}</strong></span>
@@ -6923,16 +6964,16 @@ export function ServiceRequestDetails({
                   ) : null}
 
                   <div data-testid="financial-primary-cards" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <MiniMetric label="Müşteri hizmet tahsilatı" value={selectedFinancialCollection?.service_total_amount_label ?? 'Ödeme kaydı yok'} />
-                    <MiniMetric label="Usta toplam hakedişi" value={selectedFinancialPayout?.total_amount_label ?? 'Hakediş yok'} />
+                    <MiniMetric label="Müşteriden alınan" value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
+                    <MiniMetric label="Usta hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
                     <MiniMetric label="Şirket ödemesi" value={selectedFinancialPayload.company_payment_amount_label ?? '0 TL'} />
                     <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
                   </div>
 
                   <div className="grid gap-3 lg:grid-cols-2">
-                    <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-                      <p className="font-semibold text-slate-950">Tahsilat kırılımı</p>
-                      <div className="grid gap-1 sm:grid-cols-2">
+                    <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                      <summary className="cursor-pointer font-semibold text-slate-950">Tahsilat kırılımı</summary>
+                      <div className="mt-3 grid gap-1 sm:grid-cols-2">
                         <span>Montaj: <strong>{selectedFinancialCollection?.mount_amount_label ?? '0 TL'}</strong></span>
                         <span>Servis: <strong>{selectedFinancialCollection?.service_amount_label ?? '0 TL'}</strong></span>
                         <span>Ek servis: <strong>{selectedFinancialCollection?.extra_amount_label ?? '0 TL'}</strong></span>
@@ -6942,19 +6983,65 @@ export function ServiceRequestDetails({
                           <span className="text-amber-800">Sınıflandırılmamış: <strong>{selectedFinancialCollection?.unclassified_amount_label}</strong></span>
                         ) : null}
                       </div>
-                    </div>
-                    <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-                      <p className="font-semibold text-slate-950">Usta hakediş kırılımı</p>
-                      <div className="grid gap-1 sm:grid-cols-2">
+                    </details>
+                    <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                      <summary className="cursor-pointer font-semibold text-slate-950">Hakediş kırılımı</summary>
+                      <div className="mt-3 grid gap-1 sm:grid-cols-2">
                         <span>İşçilik: <strong>{selectedFinancialPayout?.labor_amount_label ?? '0 TL'}</strong></span>
                         <span>Yol: <strong>{selectedFinancialPayout?.route_fee_amount_label ?? '0 TL'}</strong></span>
                         <span>Şirket ödemesi: <strong>{selectedFinancialPayout?.company_payment_amount_label ?? '0 TL'}</strong></span>
-                        <span>Toplam payable: <strong>{selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
+                        <span>Toplam hakediş: <strong>{selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
                         <span>Ustaya ödenen: <strong>{selectedFinancialPayout?.technician_paid_amount_label ?? '0 TL'}</strong></span>
                         <span>Kalan: <strong>{selectedFinancialPayout?.technician_remaining_amount_label ?? selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
                       </div>
-                    </div>
+                    </details>
                   </div>
+
+                  {selectedFinancialPaymentRecords.length > 0 ? (
+                    <details data-testid="financial-payment-records" className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                      <summary className="cursor-pointer font-semibold text-slate-950">Payment kayıtları ({selectedFinancialPaymentRecords.length})</summary>
+                      <div className="mt-3 grid gap-2">
+                        {selectedFinancialPaymentRecords.map((payment) => (
+                          <div key={String(payment.id)} className="grid gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                            {payment.scope_notice ? (
+                              <p data-testid="related-payment-scope-notice" className="font-semibold text-blue-900">
+                                {payment.scope_notice} {payment.amount_label ?? formatMoneyValue(payment.amount)} tahsil edildi.
+                              </p>
+                            ) : null}
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <strong>Payment ID: {payment.id}</strong>
+                              <Badge variant={payment.status === 'paid' ? 'positive' : 'outline'}>{payment.status_label ?? 'Durum bilgisi yok'}</Badge>
+                            </div>
+                            <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-4">
+                              <span>Amaç: <strong>{payment.purpose_label ?? 'Amaç bilgisi yok'}</strong></span>
+                              <span>Toplam tahsilat: <strong>{payment.amount_label ?? formatMoneyValue(payment.amount)}</strong></span>
+                              <span>Kapsam: <strong>{payment.scope_label ?? 'Kapsam bilgisi yok'}</strong></span>
+                              <span>Ödeme tarihi: <strong>{dateTimeOrEmpty(payment.paid_at, '-')}</strong></span>
+                              {payment.part_request_id ? <span>Parça talebi: <strong>#{payment.part_request_id}</strong></span> : null}
+                              {payment.srv_request_code ? <span>Bağlı SRV: <strong>{payment.srv_request_code}</strong></span> : null}
+                              {payment.root_mrn ? <span>Kök MRN: <strong>{payment.root_mrn}</strong></span> : null}
+                            </div>
+                            {payment.component_split_persisted ? (
+                              <div className="flex flex-wrap gap-3 font-medium text-slate-800">
+                                <span>Servis tahsilatı: {payment.service_amount_label ?? '0 TL'}</span>
+                                <span>Parça tahsilatı: {payment.part_amount_label ?? '0 TL'}</span>
+                              </div>
+                            ) : null}
+                            <details className="rounded-md border border-slate-200 bg-white px-2 py-1">
+                              <summary className="cursor-pointer font-medium">Teknik ödeme detayları</summary>
+                              <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                                <span>Provider: <strong>{displayOrEmpty(payment.provider, '-')}</strong></span>
+                                <span>Mod: <strong>{displayOrEmpty(payment.provider_mode, '-')}</strong></span>
+                                <span>Ödeme referansı: <strong>{displayOrEmpty(payment.provider_payment_reference, '-')}</strong></span>
+                                <span>İşlem referansı: <strong>{displayOrEmpty(payment.provider_transaction_reference, '-')}</strong></span>
+                                <span>Dekont referansı: <strong>{displayOrEmpty(payment.provider_receipt_reference, '-')}</strong></span>
+                              </div>
+                            </details>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
 
                   {financialScope === 'root' && earningBreakdown?.rows ? (
                     <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">

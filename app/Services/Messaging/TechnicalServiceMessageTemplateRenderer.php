@@ -58,7 +58,7 @@ class TechnicalServiceMessageTemplateRenderer
         }
 
         $this->appendRenderedTextBlockers($rendered, $blockers);
-        $this->appendMessageTypeBlockers($messageType, $rendered, $context, $blockers, $warnings);
+        $this->appendMessageTypeBlockers($messageType, $rendered, $placeholders, $context, $blockers, $warnings);
         $this->appendChannelBlockers($messageType, $channel, $placeholders, $context, $blockers);
 
         $sms = $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
@@ -183,10 +183,11 @@ class TechnicalServiceMessageTemplateRenderer
 
     /**
      * @param  array<string, mixed>  $context
+     * @param  array<int, string>  $placeholders
      * @param  array<int, string>  $blockers
      * @param  array<int, string>  $warnings
      */
-    private function appendMessageTypeBlockers(string $messageType, string $rendered, array $context, array &$blockers, array &$warnings): void
+    private function appendMessageTypeBlockers(string $messageType, string $rendered, array $placeholders, array $context, array &$blockers, array &$warnings): void
     {
         $payerState = (string) ($context['payer_state_key'] ?? '');
 
@@ -207,10 +208,26 @@ class TechnicalServiceMessageTemplateRenderer
                 $blockers[] = 'Müşteri randevu aralığı belirlenmeli.';
             }
 
-            if ($payerState === TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN
-                && ($this->money($context['customer_payment_amount'] ?? null) <= 0.0
-                    || $this->blank($context['customer_payment_amount_formatted'] ?? null))) {
-                $blockers[] = 'Müşteri ustaya ödeme yapacaksa pozitif müşteri ödeme tutarı zorunlu.';
+            $economicPlaceholders = array_values(array_intersect($placeholders, [
+                'labor_amount_formatted',
+                'route_fee_formatted',
+                'company_payment_amount_formatted',
+                'technician_earning_total_formatted',
+                'technician_earning_summary_text',
+                'technician_earning_summary_block',
+                'technician_earning_sms_summary',
+                'technician_payment_model_label',
+                'technician_payment_source_label',
+                'technician_payment_status_label',
+                'customer_payment_amount_formatted',
+                'payment_instruction_text',
+                'payment_instruction_block',
+                'sms_payment_line',
+                'payment_link',
+                'payment_link_sms',
+            ]));
+            if ($economicPlaceholders !== []) {
+                $blockers[] = 'Müşteri randevu mesajı hakediş veya ödeme değişkeni içeremez: '.implode(', ', $economicPlaceholders).'.';
             }
         }
 

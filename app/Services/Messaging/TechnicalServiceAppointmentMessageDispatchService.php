@@ -2,10 +2,12 @@
 
 namespace App\Services\Messaging;
 
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 
 class TechnicalServiceAppointmentMessageDispatchService
 {
@@ -16,6 +18,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         private readonly TechnicalServiceMessageDispatchQueue $dispatchQueue,
         private readonly TechnicalServiceMessageIdempotencyService $idempotency,
         private readonly TechnicalServiceTechnicianPortalLinkResolver $technicianPortalLinks,
+        private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
     ) {}
 
     /**
@@ -195,7 +198,7 @@ class TechnicalServiceAppointmentMessageDispatchService
                 $manualE2eMetadata,
             )
             : null;
-        $context = $this->contextOverrides($request, $sourceAction, $options, $jobCardContext);
+        $context = $this->contextOverrides($request, $sourceAction, $options, $recipientRole, $jobCardContext);
         if ($recipientRole === 'technician' && ! (bool) ($context['technician_job_card_ready'] ?? false)) {
             return $this->addBlocked(
                 $request,
@@ -279,6 +282,8 @@ class TechnicalServiceAppointmentMessageDispatchService
                 'business_event_id' => $businessEventId,
                 'source_partner_job_action_id' => $sourceAction?->id,
                 'source_action' => $sourceAction?->action,
+                'earning_revision' => $context['earning_revision'] ?? null,
+                'earning_snapshot_hash' => $context['earning_snapshot_hash'] ?? null,
                 'warnings' => array_values((array) ($preview['warnings'] ?? [])),
                 'test_redirect_applied' => $testRedirectApplied,
                 'controlled_role_target_applied' => $controlledRoleTargetApplied,
@@ -429,6 +434,7 @@ class TechnicalServiceAppointmentMessageDispatchService
         TechnicalServiceRequest $request,
         ?TechnicalServicePartnerJobAction $sourceAction,
         array $options,
+        string $recipientRole,
         ?array $jobCardContext = null,
     ): array {
         $explicitContext = is_array($options['context'] ?? null) ? $options['context'] : [];
@@ -442,8 +448,32 @@ class TechnicalServiceAppointmentMessageDispatchService
             ? $jobCardContext['canonical_url']
             : null;
 
+        $earningContext = [
+            'labor_amount' => null,
+            'labor_amount_formatted' => null,
+            'route_fee_amount' => null,
+            'route_fee_formatted' => null,
+            'company_payment_amount' => null,
+            'company_payment_breakdown' => [],
+            'total_amount' => null,
+            'technician_earning_total_formatted' => null,
+        ];
+        if ($recipientRole === 'technician') {
+            $request->loadMissing(['latestAssignmentOffer', 'settlement']);
+            $offer = $request->latestAssignmentOffer;
+            if ($offer instanceof TechnicalServiceAssignmentOffer) {
+                $snapshot = $this->assignmentSettlements->canonicalEarningSnapshot($offer, $request->settlement);
+                $earningContext = [
+                    'earning_snapshot' => $snapshot,
+                    'earning_revision' => $snapshot['revision'] ?? null,
+                    'earning_snapshot_hash' => $snapshot['snapshot_hash'] ?? null,
+                ];
+            }
+        }
+
         return [
             ...$explicitContext,
+            ...$earningContext,
             'appointment_date' => $request->scheduled_date?->toDateString() ?: $request->scheduled_at?->toDateString(),
             'appointment_time' => $range,
             'appointment_time_range' => $range,
