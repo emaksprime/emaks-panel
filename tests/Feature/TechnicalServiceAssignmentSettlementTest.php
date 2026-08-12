@@ -528,6 +528,251 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(2100.0, (float) $settlement->fresh()->technician_earning_total);
     }
 
+    public function test_paid_payment_is_rendered_as_collected_amount(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_PAID, 2000);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['paid_rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertSame('paid', $row['status_bucket']);
+        $this->assertSame('Ödendi', $row['status_label']);
+        $this->assertSame('Tahsil edilen tutar', $row['amount_label']);
+        $this->assertSame('2.000 TL', $row['amount_formatted']);
+        $this->assertTrue($row['is_collected']);
+        $this->assertTrue($row['included_in_selected_scope_total']);
+    }
+
+    public function test_pending_payment_is_not_rendered_as_collected_amount(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_PENDING, 3000);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['pending_rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertSame('pending', $row['status_bucket']);
+        $this->assertSame('Bekliyor', $row['status_label']);
+        $this->assertSame('Ödeme linki tutarı', $row['amount_label']);
+        $this->assertFalse($row['is_collected']);
+        $this->assertFalse($row['included_in_selected_scope_total']);
+    }
+
+    public function test_failed_payment_uses_requested_amount_label(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_FAILED, 3000);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['historical_groups'])
+            ->flatMap(fn (array $group): array => $group['rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertSame('historical', $row['status_bucket']);
+        $this->assertSame('Başarısız', $row['status_label']);
+        $this->assertSame('Talep edilen tutar', $row['amount_label']);
+        $this->assertFalse($row['is_collected']);
+    }
+
+    public function test_cancelled_payment_uses_requested_amount_label(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_CANCELLED, 3000);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['historical_groups'])
+            ->flatMap(fn (array $group): array => $group['rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertSame('İptal edildi', $row['status_label']);
+        $this->assertSame('Talep edilen tutar', $row['amount_label']);
+        $this->assertFalse($row['is_collected']);
+    }
+
+    public function test_failed_and_cancelled_payments_are_excluded_from_collection_total(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $paid = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_PAID, 2000);
+        $failed = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_FAILED, 3000);
+        $cancelled = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_CANCELLED, 4000);
+
+        $summary = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary'];
+        $collection = $summary['current_visit']['customer_collection'];
+
+        $this->assertSame(2000.0, $collection['total_amount']);
+        $this->assertSame([$paid->id], collect($collection['included_collection_sources'])->pluck('payment_id')->all());
+        $this->assertNotContains($failed->id, collect($collection['included_collection_sources'])->pluck('payment_id')->all());
+        $this->assertNotContains($cancelled->id, collect($collection['included_collection_sources'])->pluck('payment_id')->all());
+    }
+
+    public function test_historical_attempts_keep_immutable_payment_identity(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $failed = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_FAILED, 3000);
+        $cancelled = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_CANCELLED, 3000);
+        $before = TechnicalServiceMountPayment::query()
+            ->whereKey([$failed->id, $cancelled->id])
+            ->orderBy('id')
+            ->get(['id', 'status', 'amount', 'provider_reference', 'raw_payload'])
+            ->map->toArray()
+            ->all();
+
+        app(TechnicalServiceWorkflowService::class)->financialWorkspacePayload($root->refresh());
+
+        $after = TechnicalServiceMountPayment::query()
+            ->whereKey([$failed->id, $cancelled->id])
+            ->orderBy('id')
+            ->get(['id', 'status', 'amount', 'provider_reference', 'raw_payload'])
+            ->map->toArray()
+            ->all();
+        $this->assertSame($before, $after);
+    }
+
+    public function test_historical_part_attempt_uses_relation_label_not_active_scope_label(): void
+    {
+        [$root, , $partRequest] = $this->paymentPartContextFixture();
+        $failed = $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_FAILED, 3000, $partRequest);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['historical_groups'])
+            ->flatMap(fn (array $group): array => $group['rows'])
+            ->firstWhere('id', $failed->id);
+
+        $this->assertSame('part_request', $row['relation_type']);
+        $this->assertStringStartsWith(sprintf('Parça Talebi #%d', $partRequest->id), $row['relation_label']);
+        $this->assertStringNotContainsString('Kök MRN', $row['relation_label']);
+    }
+
+    public function test_root_context_does_not_repeat_root_code_per_history_row(): void
+    {
+        [$root, , $partRequest] = $this->paymentPartContextFixture();
+        $this->customerChargeAttempt($root, TechnicalServiceMountPayment::STATUS_CANCELLED, 3000, $partRequest);
+
+        $groups = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['historical_groups'];
+
+        $this->assertNotEmpty($groups);
+        $this->assertTrue(collect($groups)->every(
+            fn (array $group): bool => ! str_contains((string) $group['relation_label'], (string) $root->mrn),
+        ));
+    }
+
+    public function test_repeated_attempts_are_grouped_by_part_request(): void
+    {
+        [$root, , $partRequest] = $this->paymentPartContextFixture();
+        $attempts = collect(range(1, 4))->map(
+            fn (): TechnicalServiceMountPayment => $this->customerChargeAttempt(
+                $root,
+                TechnicalServiceMountPayment::STATUS_CANCELLED,
+                3000,
+                $partRequest,
+            ),
+        );
+
+        $groups = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history']['historical_groups']);
+        $group = $groups->firstWhere('key', 'part_request:'.$partRequest->id);
+
+        $this->assertIsArray($group);
+        $this->assertSame(4, $group['attempt_count']);
+        $this->assertSame('4 eski ödeme denemesi', $group['attempt_count_label']);
+        $this->assertSame($attempts->pluck('id')->sort()->values()->all(), collect($group['rows'])->pluck('id')->sort()->values()->all());
+    }
+
+    public function test_selected_scope_collection_reconciles_to_exact_sources(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->paidMountPayment($root, 'SUMMARY-SOURCE-'.uniqid());
+        $payment->forceFill([
+            'amount' => 2000,
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+            ],
+        ])->save();
+
+        $collection = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['current_visit']['customer_collection'];
+
+        $this->assertSame(2000.0, $collection['selected_scope_customer_collection_total']);
+        $this->assertSame(2000.0, $collection['included_source_total']);
+        $this->assertTrue($collection['reconciliation_ok']);
+        $this->assertSame('Ödeme #'.$payment->id, $collection['included_collection_sources'][0]['source_reference']);
+    }
+
+    public function test_manual_or_legacy_collection_has_truthful_source_label(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->paidMountPayment($root, 'MANUAL-SOURCE-'.uniqid());
+        $payment->forceFill([
+            'provider' => 'manual',
+            'amount' => 2000,
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+                'actor_name' => 'Burhan',
+            ],
+        ])->save();
+
+        $source = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['current_visit']['customer_collection']['included_collection_sources'][0];
+
+        $this->assertSame('payment', $source['source_type']);
+        $this->assertSame($payment->id, $source['payment_id']);
+        $this->assertSame('Ödeme #'.$payment->id, $source['source_label']);
+        $this->assertSame('Ek montaj tahsilatı', $source['purpose_label']);
+    }
+
+    public function test_payment_history_projection_adds_no_n_plus_one(): void
+    {
+        [$root, , $partRequest] = $this->paymentPartContextFixture();
+        $this->customerChargeAttempt(
+            $root,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            3000,
+            $partRequest,
+        );
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh());
+        $singleAttemptQueryCount = collect(DB::getQueryLog())->filter(function (array $query): bool {
+            $sql = Str::lower((string) ($query['query'] ?? ''));
+
+            return str_contains($sql, 'technical_service_mount_payments')
+                || str_contains($sql, 'technical_service_part_requests');
+        })->count();
+        DB::disableQueryLog();
+
+        collect(range(1, 7))->each(fn (): TechnicalServiceMountPayment => $this->customerChargeAttempt(
+            $root,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            3000,
+            $partRequest,
+        ));
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $history = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['current_scope_history'];
+        $queries = collect(DB::getQueryLog());
+        DB::disableQueryLog();
+        $paymentOrPartQueries = $queries->filter(function (array $query): bool {
+            $sql = Str::lower((string) ($query['query'] ?? ''));
+
+            return str_contains($sql, 'technical_service_mount_payments')
+                || str_contains($sql, 'technical_service_part_requests');
+        });
+
+        $this->assertSame(8, $history['historical_count']);
+        $this->assertLessThanOrEqual($singleAttemptQueryCount + 1, $paymentOrPartQueries->count());
+    }
+
     public function test_root_mrn_resolves_current_mrn_scope(): void
     {
         [$root] = $this->assignmentFixture();
@@ -1380,6 +1625,32 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
                 'charge_type' => $purpose,
                 'payer_state_key' => 'company_collected_online',
             ], $payloadOverrides),
+        ])->save();
+
+        return $payment->refresh();
+    }
+
+    private function customerChargeAttempt(
+        TechnicalServiceRequest $request,
+        string $status,
+        float $amount,
+        ?TechnicalServicePartRequest $partRequest = null,
+    ): TechnicalServiceMountPayment {
+        $payment = $this->paidMountPayment($request, 'PAYMENT-ATTEMPT-'.uniqid());
+        $payload = [
+            'source' => 'operation_customer_charge',
+            'purpose' => $partRequest instanceof TechnicalServicePartRequest ? 'service_and_part_payment' : 'service_payment',
+            'charge_type' => $partRequest instanceof TechnicalServicePartRequest ? 'service_and_part_payment' : 'service_payment',
+            'part_request_id' => $partRequest?->id,
+        ];
+
+        $payment->forceFill([
+            'status' => $status,
+            'amount' => $amount,
+            'paid_at' => $status === TechnicalServiceMountPayment::STATUS_PAID ? now() : null,
+            'provider_paid_at' => $status === TechnicalServiceMountPayment::STATUS_PAID ? now() : null,
+            'payment_url' => $status === TechnicalServiceMountPayment::STATUS_PENDING ? 'https://sandbox.iyzi.link/test-history' : null,
+            'raw_payload' => array_filter($payload, fn (mixed $value): bool => $value !== null),
         ])->save();
 
         return $payment->refresh();

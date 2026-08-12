@@ -1973,6 +1973,14 @@ class TechnicalServiceWorkflowService
             'partRequests',
         ]);
 
+        $financialRequests = $this->rootFinancialRequests($request);
+        $paymentLookupsReady = $financialRequests->every(
+            fn (TechnicalServiceRequest $related): bool => array_key_exists((int) $related->id, $this->mountPaymentsByRequestIdCache),
+        );
+        if (! $paymentLookupsReady) {
+            $this->preloadPaymentLookups($financialRequests);
+        }
+
         $earningBreakdown = $this->earningBreakdownPayload($request);
 
         return [
@@ -3623,30 +3631,243 @@ class TechnicalServiceWorkflowService
     private function financePaymentScopePayload(TechnicalServiceRequest $request): array
     {
         $requests = $this->rootFinancialRequests($request);
-        $payments = $this->customerChargePaymentsForRequests($requests);
+        $customerChargePayments = $this->customerChargePaymentsForRequests($requests);
+        $mountPayments = $requests
+            ->flatMap(fn (TechnicalServiceRequest $related): Collection => $this->mountCustomerPaymentsForRequest($related));
+        $payments = $this->sortedUniquePayments($mountPayments->concat($customerChargePayments));
         $this->preloadPaymentLinkMessageStates($payments);
-        $this->preloadPaymentPartRequests($payments);
+        $this->preloadPaymentPartRequests($customerChargePayments);
 
         $rows = $payments
-            ->map(fn (TechnicalServiceMountPayment $payment): array => $this->customerChargePaymentPayload($payment, $request))
+            ->map(fn (TechnicalServiceMountPayment $payment): array => $this->isCustomerChargePayment($payment)
+                ? $this->financeCustomerChargePaymentPayload($payment, $request)
+                : $this->financeMountPaymentPayload($payment, $request))
             ->values();
         $currentRecordType = $this->financialRecordType($request);
         $isSubordinatePartContext = fn (array $row): bool => $currentRecordType === 'mrn'
             && filled($row['part_request_id'] ?? null);
+        $currentRows = $rows
+            ->filter(fn (array $row): bool => (bool) ($row['belongs_to_current_request'] ?? false)
+                && ! $isSubordinatePartContext($row))
+            ->map(fn (array $row): array => [
+                ...$row,
+                'included_in_selected_scope_total' => (bool) ($row['is_collected'] ?? false),
+            ])
+            ->values();
+        $relatedRows = $rows
+            ->filter(fn (array $row): bool => ((bool) ($row['related_to_current_srv'] ?? false)
+                && ! (bool) ($row['belongs_to_current_request'] ?? false))
+                || $isSubordinatePartContext($row))
+            ->map(fn (array $row): array => [
+                ...$row,
+                'included_in_selected_scope_total' => false,
+            ])
+            ->values();
+        $rootRows = $rows
+            ->map(fn (array $row): array => [
+                ...$row,
+                'included_in_selected_scope_total' => (bool) ($row['is_collected'] ?? false),
+            ])
+            ->values();
+        $currentHistoryRows = $currentRows
+            ->concat($relatedRows)
+            ->unique(fn (array $row): int => (int) $row['id'])
+            ->sortByDesc(fn (array $row): int => (int) $row['id'])
+            ->values();
+        $contextNotice = null;
+        if ($relatedRows->count() === 1 && filled($relatedRows->first()['scope_notice'] ?? null)) {
+            $contextNotice = (string) $relatedRows->first()['scope_notice'];
+        } elseif ($relatedRows->isNotEmpty()) {
+            $contextNotice = 'Bu MRN altında bağlı parça taleplerine ait ödeme geçmişi bulunuyor. Yalnız ödenmiş kayıtlar finans toplamlarına dahildir.';
+        }
 
         return [
-            'current_scope_rows' => $rows
-                ->filter(fn (array $row): bool => (bool) ($row['belongs_to_current_request'] ?? false)
-                    && ! $isSubordinatePartContext($row))
-                ->values()
-                ->all(),
-            'related_scope_rows' => $rows
-                ->filter(fn (array $row): bool => ((bool) ($row['related_to_current_srv'] ?? false)
-                    && ! (bool) ($row['belongs_to_current_request'] ?? false))
-                    || $isSubordinatePartContext($row))
-                ->values()
-                ->all(),
-            'root_scope_rows' => $rows->all(),
+            'current_scope_rows' => $currentRows->all(),
+            'related_scope_rows' => $relatedRows->all(),
+            'root_scope_rows' => $rootRows->all(),
+            'current_scope_history' => [
+                ...$this->financePaymentHistoryPayload($currentHistoryRows),
+                'context_notice' => $contextNotice,
+            ],
+            'root_scope_history' => $this->financePaymentHistoryPayload($rootRows),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function financeMountPaymentPayload(
+        TechnicalServiceMountPayment $payment,
+        TechnicalServiceRequest $scopeRequest,
+    ): array {
+        $row = $this->mountCustomerPaymentPayload($payment);
+        $paymentRequest = $payment->technicalServiceRequest;
+        $belongsToCurrentRequest = $paymentRequest instanceof TechnicalServiceRequest
+            && (int) $paymentRequest->id === (int) $scopeRequest->id;
+        $paymentRecordType = $paymentRequest instanceof TechnicalServiceRequest
+            ? $this->financialRecordType($paymentRequest)
+            : 'mrn';
+        $scopeLabel = $belongsToCurrentRequest
+            ? ($this->financialRecordType($scopeRequest) === 'srv' ? 'Bu SRV' : 'Bu MRN')
+            : ($paymentRecordType === 'srv' ? 'Bağlı SRV' : 'Kök MRN');
+        $requestCode = $paymentRequest?->service_code ?: $paymentRequest?->mrn;
+        $purpose = strtolower(trim((string) ($row['purpose'] ?? '')));
+        $amount = round((float) ($row['amount'] ?? 0), 2);
+
+        return [
+            ...$row,
+            ...$this->paymentHistorySemantics($payment),
+            'amount_formatted' => $row['amount_label'] ?? $this->moneyLabel($amount),
+            'payment_id' => (int) $payment->id,
+            'request_code' => $requestCode,
+            'service_code' => $paymentRequest?->service_code,
+            'root_request_id' => $this->rootFinancialRequest($paymentRequest ?? $scopeRequest)?->id,
+            'root_request_code' => $this->rootFinancialRequest($paymentRequest ?? $scopeRequest)?->mrn,
+            'srv_request_id' => $paymentRecordType === 'srv' ? $paymentRequest?->id : null,
+            'srv_request_code' => $paymentRecordType === 'srv' ? $requestCode : null,
+            'purpose_label' => $this->financeMountPaymentPurposeLabel($purpose),
+            'scope_relation' => $belongsToCurrentRequest ? 'current_request' : ($paymentRecordType === 'srv' ? 'related_srv' : 'root_mrn'),
+            'scope_label' => $scopeLabel,
+            'scope_notice' => null,
+            'relation_type' => $paymentRecordType,
+            'relation_id' => $paymentRequest?->id,
+            'relation_label' => $paymentRecordType === 'srv'
+                ? sprintf('SRV %s', $requestCode ?: '-')
+                : sprintf('MRN %s', $paymentRequest?->mrn ?: '-'),
+            'belongs_to_current_request' => $belongsToCurrentRequest,
+            'related_to_current_srv' => false,
+            'component_split_persisted' => false,
+            'service_component_amount' => $amount,
+            'service_component_amount_label' => $this->moneyLabel($amount),
+            'operational_difference_included_amount' => $amount,
+            'operational_difference_included_amount_label' => $this->moneyLabel($amount),
+            'operational_difference_excluded_part_amount' => 0.0,
+            'operational_difference_excluded_part_amount_label' => $this->moneyLabel(0),
+            'source_type' => 'payment',
+            'source_reference' => sprintf('Ödeme #%d', (int) $payment->id),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function financeCustomerChargePaymentPayload(
+        TechnicalServiceMountPayment $payment,
+        TechnicalServiceRequest $scopeRequest,
+    ): array {
+        $row = $this->customerChargePaymentPayload($payment, $scopeRequest);
+        $partRequestId = (int) ($row['part_request_id'] ?? 0);
+        $partName = trim((string) ($row['part_name'] ?? ''));
+        $relationLabel = $partRequestId > 0
+            ? sprintf('Parça Talebi #%d%s', $partRequestId, $partName !== '' ? ' · '.$partName : '')
+            : (($row['scope_relation'] ?? null) === 'current_request'
+                ? (($this->financialRecordType($scopeRequest) === 'srv' ? 'SRV ' : 'MRN ').($row['request_code'] ?? '-'))
+                : sprintf('Kök MRN %s', $row['root_mrn'] ?? '-'));
+
+        return [
+            ...$row,
+            ...$this->paymentHistorySemantics($payment),
+            'amount_formatted' => $row['amount_label'] ?? $this->moneyLabel($payment->amount),
+            'relation_type' => $partRequestId > 0 ? 'part_request' : ($row['scope_relation'] ?? 'request'),
+            'relation_id' => $partRequestId > 0 ? $partRequestId : ($row['request_id'] ?? null),
+            'relation_label' => $relationLabel,
+            'source_type' => 'payment',
+            'source_reference' => sprintf('Ödeme #%d', (int) $payment->id),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function paymentHistorySemantics(TechnicalServiceMountPayment $payment): array
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $status = strtolower(trim((string) $payment->status));
+        [$statusLabel, $statusBucket, $amountLabel, $isCollected] = match ($status) {
+            TechnicalServiceMountPayment::STATUS_PAID => ['Ödendi', 'paid', 'Tahsil edilen tutar', true],
+            TechnicalServiceMountPayment::STATUS_PENDING => ['Bekliyor', 'pending', 'Ödeme linki tutarı', false],
+            TechnicalServiceMountPayment::STATUS_FAILED => ['Başarısız', 'historical', 'Talep edilen tutar', false],
+            TechnicalServiceMountPayment::STATUS_CANCELLED => ['İptal edildi', 'historical', 'Talep edilen tutar', false],
+            TechnicalServiceMountPayment::STATUS_EXPIRED => ['Süresi doldu', 'historical', 'Talep edilen tutar', false],
+            'refunded', 'reversed' => ['İade edildi', 'historical', 'İade edilen tutar', false],
+            default => ['Ödeme durumu bilinmiyor', 'historical', 'Kayıt tutarı', false],
+        };
+        $terminalAt = match ($statusBucket) {
+            'paid' => $payment->paid_at,
+            'pending' => null,
+            default => $payload['cancelled_at']
+                ?? $payload['failed_at']
+                ?? $payload['expired_at']
+                ?? $payload['refunded_at']
+                ?? $payment->updated_at,
+        };
+        $terminalReason = TechnicalServiceUiLabelService::cleanDisplayText(
+            $payload['cancellation_reason']
+                ?? $payload['failure_reason']
+                ?? $payload['provider_error']
+                ?? $payload['error_message']
+                ?? null,
+        );
+
+        return [
+            'status_label' => $statusLabel,
+            'status_bucket' => $statusBucket,
+            'amount_label' => $amountLabel,
+            'is_collected' => $isCollected,
+            'terminal_at' => $this->dateTimeString($terminalAt),
+            'terminal_reason' => $terminalReason,
+            'terminal_actor' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancelled_by_name'] ?? null),
+        ];
+    }
+
+    private function financeMountPaymentPurposeLabel(string $purpose): string
+    {
+        return match ($purpose) {
+            'mount_payment', 'public_mount_payment' => 'Montaj tahsilatı',
+            'manual_mount_payment', 'mount_extra', 'manual_extra' => 'Ek montaj tahsilatı',
+            'service_payment' => 'Ek servis tahsilatı',
+            'route_fee' => 'Yol ücreti tahsilatı',
+            default => 'Müşteri ödemesi',
+        };
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $rows
+     * @return array<string, mixed>
+     */
+    private function financePaymentHistoryPayload(Collection $rows): array
+    {
+        $rows = $rows
+            ->sortByDesc(fn (array $row): int => (int) ($row['id'] ?? 0))
+            ->values();
+        $paidRows = $rows->where('status_bucket', 'paid')->values();
+        $pendingRows = $rows->where('status_bucket', 'pending')->values();
+        $historicalRows = $rows->where('status_bucket', 'historical')->values();
+        $historicalGroups = $historicalRows
+            ->groupBy(fn (array $row): string => filled($row['part_request_id'] ?? null)
+                ? 'part_request:'.(int) $row['part_request_id']
+                : 'payment:'.(int) $row['id'])
+            ->map(function (Collection $attempts, string $key): array {
+                $latest = $attempts->first();
+
+                return [
+                    'key' => $key,
+                    'relation_type' => $latest['relation_type'] ?? null,
+                    'relation_id' => $latest['relation_id'] ?? null,
+                    'relation_label' => $latest['relation_label'] ?? 'Bağlı kayıt bilgisi yok',
+                    'part_name' => $latest['part_name'] ?? null,
+                    'latest_status' => $latest['status'] ?? null,
+                    'latest_status_label' => $latest['status_label'] ?? null,
+                    'attempt_count' => $attempts->count(),
+                    'attempt_count_label' => sprintf('%d eski ödeme denemesi', $attempts->count()),
+                    'rows' => $attempts->values()->all(),
+                ];
+            })
+            ->values();
+
+        return [
+            'paid_rows' => $paidRows->all(),
+            'pending_rows' => $pendingRows->all(),
+            'historical_groups' => $historicalGroups->all(),
+            'paid_count' => $paidRows->count(),
+            'pending_count' => $pendingRows->count(),
+            'historical_count' => $historicalRows->count(),
+            'total_count' => $rows->count(),
+            'context_notice' => null,
         ];
     }
 
@@ -3742,6 +3963,17 @@ class TechnicalServiceWorkflowService
         $unclassifiedAmount = $this->fromMinorUnits($unclassifiedMinor);
         $serviceTotalAmount = $this->fromMinorUnits($serviceTotalMinor);
         $totalAmount = $this->fromMinorUnits($totalMinor);
+        $includedCollectionSources = collect($mountPayments['paid_rows'] ?? [])
+            ->concat(collect($customerCharges['rows'] ?? [])->filter(
+                fn (array $row): bool => ($row['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID,
+            ))
+            ->filter(fn (mixed $row): bool => is_array($row) && filled($row['id'] ?? null))
+            ->unique(fn (array $row): string => 'payment:'.(int) $row['id'])
+            ->map(fn (array $row): array => $this->financeCollectionSourcePayload($row))
+            ->values();
+        $includedSourceTotal = $this->fromMinorUnits((int) $includedCollectionSources->sum(
+            fn (array $source): int => $this->minorUnits($source['amount'] ?? 0),
+        ));
 
         return [
             'mount_amount' => $mountAmount,
@@ -3760,6 +3992,12 @@ class TechnicalServiceWorkflowService
             'unclassified_amount_label' => $this->moneyLabel($unclassifiedAmount),
             'service_total_amount_label' => $this->moneyLabel($serviceTotalAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
+            'selected_scope_customer_collection_total' => $totalAmount,
+            'selected_scope_customer_collection_total_label' => $this->moneyLabel($totalAmount),
+            'included_collection_sources' => $includedCollectionSources->all(),
+            'included_source_total' => $includedSourceTotal,
+            'included_source_total_label' => $this->moneyLabel($includedSourceTotal),
+            'reconciliation_ok' => $this->minorUnits($includedSourceTotal) === $this->minorUnits($totalAmount),
             'has_collection' => $totalAmount > 0,
             'has_mount_collection' => $mountAmount > 0,
             'has_service_charge' => $serviceAmount > 0,
@@ -3775,26 +4013,30 @@ class TechnicalServiceWorkflowService
      */
     private function financeRootCustomerCollection(TechnicalServiceRequest $request): array
     {
-        $totals = $this->rootFinancialRequests($request)
+        $collections = $this->rootFinancialRequests($request)
             ->reject(fn (TechnicalServiceRequest $related): bool => $this->isCancelledRequest($related))
-            ->map(fn (TechnicalServiceRequest $related): array => $this->financeCustomerCollectionForRequest($related, true))
-            ->reduce(function (array $carry, array $row): array {
-                $carry['mount_amount'] += (float) ($row['mount_amount'] ?? 0);
-                $carry['service_amount'] += (float) ($row['service_amount'] ?? 0);
-                $carry['part_amount'] += (float) ($row['part_amount'] ?? 0);
-                $carry['extra_amount'] += (float) ($row['extra_amount'] ?? 0);
-                $carry['route_amount'] += (float) ($row['route_amount'] ?? 0);
-                $carry['unclassified_amount'] += (float) ($row['unclassified_amount'] ?? 0);
+            ->map(fn (TechnicalServiceRequest $related): array => $this->financeCustomerCollectionForRequest($related, true));
+        $totals = $collections->reduce(function (array $carry, array $row): array {
+            $carry['mount_amount'] += (float) ($row['mount_amount'] ?? 0);
+            $carry['service_amount'] += (float) ($row['service_amount'] ?? 0);
+            $carry['part_amount'] += (float) ($row['part_amount'] ?? 0);
+            $carry['extra_amount'] += (float) ($row['extra_amount'] ?? 0);
+            $carry['route_amount'] += (float) ($row['route_amount'] ?? 0);
+            $carry['unclassified_amount'] += (float) ($row['unclassified_amount'] ?? 0);
 
-                return $carry;
-            }, [
-                'mount_amount' => 0.0,
-                'service_amount' => 0.0,
-                'part_amount' => 0.0,
-                'extra_amount' => 0.0,
-                'route_amount' => 0.0,
-                'unclassified_amount' => 0.0,
-            ]);
+            return $carry;
+        }, [
+            'mount_amount' => 0.0,
+            'service_amount' => 0.0,
+            'part_amount' => 0.0,
+            'extra_amount' => 0.0,
+            'route_amount' => 0.0,
+            'unclassified_amount' => 0.0,
+        ]);
+        $includedCollectionSources = $collections
+            ->flatMap(fn (array $collection): array => (array) ($collection['included_collection_sources'] ?? []))
+            ->unique(fn (array $source): string => (string) ($source['source_type'] ?? 'unknown').':'.(string) ($source['source_reference'] ?? ''))
+            ->values();
         $mountAmount = round((float) $totals['mount_amount'], 2);
         $serviceAmount = round((float) $totals['service_amount'], 2);
         $partAmount = round((float) $totals['part_amount'], 2);
@@ -3803,6 +4045,9 @@ class TechnicalServiceWorkflowService
         $unclassifiedAmount = round((float) $totals['unclassified_amount'], 2);
         $serviceTotalAmount = round($mountAmount + $serviceAmount + $extraAmount + $routeAmount, 2);
         $totalAmount = round($serviceTotalAmount + $partAmount + $unclassifiedAmount, 2);
+        $includedSourceTotal = $this->fromMinorUnits((int) $includedCollectionSources->sum(
+            fn (array $source): int => $this->minorUnits($source['amount'] ?? 0),
+        ));
 
         return [
             'mount_amount' => $mountAmount,
@@ -3821,6 +4066,12 @@ class TechnicalServiceWorkflowService
             'unclassified_amount_label' => $this->moneyLabel($unclassifiedAmount),
             'service_total_amount_label' => $this->moneyLabel($serviceTotalAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
+            'selected_scope_customer_collection_total' => $totalAmount,
+            'selected_scope_customer_collection_total_label' => $this->moneyLabel($totalAmount),
+            'included_collection_sources' => $includedCollectionSources->all(),
+            'included_source_total' => $includedSourceTotal,
+            'included_source_total_label' => $this->moneyLabel($includedSourceTotal),
+            'reconciliation_ok' => $this->minorUnits($includedSourceTotal) === $this->minorUnits($totalAmount),
             'has_collection' => $totalAmount > 0,
             'has_mount_collection' => $mountAmount > 0,
             'has_service_charge' => $serviceAmount > 0,
@@ -3828,6 +4079,31 @@ class TechnicalServiceWorkflowService
             'has_extra_charge' => $extraAmount > 0,
             'has_route_charge' => $routeAmount > 0,
             'classification_pending' => $unclassifiedAmount > 0,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    private function financeCollectionSourcePayload(array $row): array
+    {
+        $paymentId = (int) ($row['id'] ?? 0);
+        $amount = round((float) ($row['amount'] ?? 0), 2);
+
+        return [
+            'source_type' => 'payment',
+            'source_reference' => sprintf('Ödeme #%d', $paymentId),
+            'source_label' => sprintf('Ödeme #%d', $paymentId),
+            'payment_id' => $paymentId,
+            'amount' => $amount,
+            'amount_label' => $this->moneyLabel($amount),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'status_label' => 'Ödendi',
+            'paid_at' => $row['paid_at'] ?? null,
+            'purpose_label' => $row['purpose_label']
+                ?? $this->financeMountPaymentPurposeLabel(strtolower(trim((string) ($row['purpose'] ?? '')))),
+            'relation_label' => $row['relation_label'] ?? $row['scope_label'] ?? null,
         ];
     }
 

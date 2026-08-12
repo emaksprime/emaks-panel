@@ -144,7 +144,9 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('<summary className="cursor-pointer font-semibold text-slate-950">Tahsilat kırılımı</summary>', $detail);
         $this->assertStringContainsString('<summary className="cursor-pointer font-semibold text-slate-950">Hakediş kırılımı</summary>', $detail);
         $this->assertStringContainsString('data-testid="financial-payment-records"', $detail);
-        $this->assertStringContainsString('data-testid="related-payment-scope-notice"', $detail);
+        $this->assertStringContainsString('data-testid="related-payment-context-notice"', $detail);
+        $this->assertStringContainsString('selectedFinancialPaymentHistory?.context_notice', $detail);
+        $this->assertStringNotContainsString('payment.scope_notice', $detail);
         $this->assertStringContainsString('component_split_persisted', $detail);
         $this->assertStringContainsString('scheduleMutationInFlightRef.current', $scheduleHandler);
         $this->assertStringContainsString('applyUpdatedRequest(updatedRequest)', $scheduleHandler);
@@ -187,8 +189,9 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
 
         $this->assertStringContainsString('data-testid="related-payment-context-notice"', $source);
-        $this->assertStringContainsString('payment.scope_notice', $source);
-        $this->assertStringContainsString('financeRelatedPaymentRecords.length > 0', $source);
+        $this->assertStringContainsString('selectedFinancialPaymentHistory?.context_notice', $source);
+        $this->assertStringNotContainsString('payment.scope_notice', $source);
+        $this->assertSame(1, substr_count($source, 'data-testid="related-payment-context-notice"'));
     }
 
     public function test_parent_part_card_shows_amount_payment_and_srv(): void
@@ -340,6 +343,127 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('detailRequestTokenRef.current === requestToken', $loader);
         $this->assertStringContainsString('selectedIdRef.current === requestId', $loader);
         $this->assertStringContainsString('if (!isCurrentRequest())', $loader);
+    }
+
+    public function test_financial_ui_contains_no_generic_mrn_srv_label(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $paymentActions = $this->source('resources/js/components/technical-service/PendingPaymentLinkActions.tsx');
+
+        $this->assertStringNotContainsString('MRN / SRV', $detail);
+        $this->assertStringNotContainsString('MRN/SRV', $detail);
+        $this->assertStringNotContainsString('MRN / SRV', $paymentActions);
+        $this->assertStringNotContainsString('MRN/SRV', $paymentActions);
+        $this->assertStringContainsString('requestLabel', $paymentActions);
+        $this->assertStringContainsString("financialScopeContext?.current_record_type === 'srv'", $detail);
+    }
+
+    public function test_failed_row_does_not_say_toplam_tahsilat(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $paymentRenderer = Str::between($detail, 'const renderFinancialPaymentRecord = (', 'const paymentLinkSendDialog = (');
+
+        $this->assertStringContainsString("payment.amount_label ?? 'Kayıt tutarı'", $paymentRenderer);
+        $this->assertStringContainsString('payment.amount_formatted', $paymentRenderer);
+        $this->assertStringNotContainsString('Toplam tahsilat', $paymentRenderer);
+    }
+
+    public function test_cancelled_row_does_not_say_toplam_tahsilat(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $history = Str::between($detail, 'data-testid="financial-payment-records"', '{isRootFinancialScope && earningBreakdown?.rows ? (');
+
+        $this->assertStringContainsString('İptal/başarısız denemeler', $history);
+        $this->assertStringNotContainsString('Toplam tahsilat', $history);
+    }
+
+    public function test_historical_attempts_are_collapsed_by_default(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('<details data-testid="payment-history-historical" className=', $detail);
+        $this->assertStringNotContainsString('<details data-testid="payment-history-historical" open', $detail);
+    }
+
+    public function test_payment_history_has_separate_paid_pending_and_historical_sections(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('Tahsil edilen ödemeler', $detail);
+        $this->assertStringContainsString('Bekleyen ödeme linkleri', $detail);
+        $this->assertStringContainsString('İptal/başarısız denemeler', $detail);
+        $this->assertStringContainsString('Ödeme geçmişi', $detail);
+        $this->assertStringNotContainsString('Payment kayıtları', $detail);
+    }
+
+    public function test_scope_context_notice_is_rendered_at_most_once(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertSame(1, substr_count($detail, 'data-testid="related-payment-context-notice"'));
+        $this->assertStringContainsString('selectedFinancialPaymentHistory.context_notice', $detail);
+        $this->assertStringNotContainsString('financeRelatedPaymentRecords.map', $detail);
+    }
+
+    public function test_cancelled_root_part_attempt_shows_bagli_kayit(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $paymentRenderer = Str::between($detail, 'const renderFinancialPaymentRecord = (', 'const paymentLinkSendDialog = (');
+
+        $this->assertStringContainsString('Bağlı kayıt:', $paymentRenderer);
+        $this->assertStringContainsString('payment.relation_label', $paymentRenderer);
+    }
+
+    public function test_collection_summary_shows_exact_included_source(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('data-testid="collection-summary-sources"', $detail);
+        $this->assertStringContainsString('selectedIncludedCollectionSources.map', $detail);
+        $this->assertStringContainsString('source.source_label', $detail);
+        $this->assertStringContainsString('source.amount_label', $detail);
+    }
+
+    public function test_secondary_toolbar_does_not_overlap_primary_footer(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $secondary = Str::between($detail, 'data-testid="earning-secondary-toolbar"', '{displayedEarningMessageText ? (');
+
+        $this->assertStringNotContainsString('sticky', $secondary);
+        $this->assertStringNotContainsString('bottom-0', $secondary);
+        $this->assertStringContainsString('data-testid="primary-modal-action-footer"', $detail);
+    }
+
+    public function test_primary_footer_buttons_remain_clickable(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertSame(1, substr_count($detail, 'className="sticky bottom-0 z-10'));
+        $this->assertStringContainsString('data-testid="primary-modal-action-footer"', $detail);
+        $this->assertStringNotContainsString('z-20 flex flex-wrap items-center gap-2 border-t', $detail);
+    }
+
+    public function test_modal_body_has_footer_safe_bottom_padding(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('<CardContent className="flex flex-col gap-4 p-0 pb-24 sm:pb-20">', $detail);
+    }
+
+    public function test_modal_is_not_remounted_after_scope_or_history_toggle(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        $this->assertStringNotContainsString('key={selectedDetailRequest', $page);
+        $this->assertStringContainsString('preserveDetailScroll(() => {', $page);
+    }
+
+    public function test_scroll_position_is_preserved(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        $this->assertStringContainsString('const preserveDetailScroll = useCallback', $page);
+        $this->assertStringContainsString('detailScrollRef.current?.scrollTop', $page);
     }
 
     public function test_part_payment_copy_feedback_is_rendered_next_to_visible_actions(): void

@@ -609,6 +609,12 @@ export type ServiceRequestFinanceCollection = {
   unclassified_amount_label?: string | null
   service_total_amount_label?: string | null
   total_amount_label?: string | null
+  selected_scope_customer_collection_total?: number
+  selected_scope_customer_collection_total_label?: string | null
+  included_collection_sources?: ServiceRequestFinanceCollectionSource[]
+  included_source_total?: number
+  included_source_total_label?: string | null
+  reconciliation_ok?: boolean
   has_collection?: boolean
   has_mount_collection?: boolean
   has_service_charge?: boolean
@@ -616,6 +622,20 @@ export type ServiceRequestFinanceCollection = {
   has_extra_charge?: boolean
   has_route_charge?: boolean
   classification_pending?: boolean
+}
+
+export type ServiceRequestFinanceCollectionSource = {
+  source_type: 'payment' | 'manual_collection' | 'legacy_collection' | string
+  source_reference: string
+  source_label: string
+  payment_id?: number | string | null
+  amount: number
+  amount_label: string
+  status: string
+  status_label: string
+  paid_at?: string | null
+  purpose_label?: string | null
+  relation_label?: string | null
 }
 
 export type ServiceRequestFinancePayout = {
@@ -730,8 +750,20 @@ export type ServiceRequestFinancePaymentRecord = ServiceRequestPaymentPartContex
   service_code?: string | null
   status?: string | null
   status_label?: string | null
+  status_bucket?: 'paid' | 'pending' | 'historical' | string | null
   amount: number
   amount_label?: string | null
+  amount_formatted?: string | null
+  is_collected?: boolean
+  included_in_selected_scope_total?: boolean
+  terminal_at?: string | null
+  terminal_reason?: string | null
+  terminal_actor?: string | null
+  relation_type?: string | null
+  relation_id?: number | string | null
+  relation_label?: string | null
+  source_type?: string | null
+  source_reference?: string | null
   service_amount?: number
   service_amount_label?: string | null
   part_amount?: number
@@ -754,6 +786,46 @@ export type ServiceRequestFinancePaymentRecord = ServiceRequestPaymentPartContex
   provider_payment_reference?: string | null
   provider_transaction_reference?: string | null
   provider_receipt_reference?: string | null
+  canonical_url?: string | null
+  payment_url?: string | null
+  copy_url?: string | null
+  can_open?: boolean
+  can_copy?: boolean
+  can_send?: boolean
+  can_check?: boolean
+  can_cancel?: boolean
+  can_open_payment_url?: boolean
+  can_copy_payment_url?: boolean
+  can_cancel_payment?: boolean
+  is_external_provider?: boolean
+  disabled_reason?: string | null
+  payment_action_disabled_reason?: string | null
+  message_send_count?: number | null
+  last_message_sent_at?: string | null
+}
+
+export type ServiceRequestFinancePaymentHistoryGroup = {
+  key: string
+  relation_type?: string | null
+  relation_id?: number | string | null
+  relation_label: string
+  part_name?: string | null
+  latest_status?: string | null
+  latest_status_label?: string | null
+  attempt_count: number
+  attempt_count_label: string
+  rows: ServiceRequestFinancePaymentRecord[]
+}
+
+export type ServiceRequestFinancePaymentHistory = {
+  paid_rows: ServiceRequestFinancePaymentRecord[]
+  pending_rows: ServiceRequestFinancePaymentRecord[]
+  historical_groups: ServiceRequestFinancePaymentHistoryGroup[]
+  paid_count: number
+  pending_count: number
+  historical_count: number
+  total_count: number
+  context_notice?: string | null
 }
 
 export type ServiceRequestFinanceSummary = {
@@ -782,6 +854,8 @@ export type ServiceRequestFinanceSummary = {
     current_scope_rows: ServiceRequestFinancePaymentRecord[]
     related_scope_rows: ServiceRequestFinancePaymentRecord[]
     root_scope_rows: ServiceRequestFinancePaymentRecord[]
+    current_scope_history: ServiceRequestFinancePaymentHistory
+    root_scope_history: ServiceRequestFinancePaymentHistory
   }
   current_visit_customer_collection?: ServiceRequestFinanceCollection
   current_visit_locksmith_payout?: ServiceRequestFinancePayout

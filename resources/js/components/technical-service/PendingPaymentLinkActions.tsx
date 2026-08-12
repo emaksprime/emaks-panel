@@ -84,6 +84,7 @@ type PendingPaymentLinkActionsProps = {
 type PaymentLinkSendDialogProps = {
   open: boolean
   payment: PaymentLinkSendContext | null
+  requestLabel: 'MRN' | 'SRV' | 'Kayıt'
   requestReference: string
   resendReason: string
   busy?: boolean
@@ -125,6 +126,7 @@ export const paymentLinkSendDisabledReason = (payment: PaymentLinkSendContext): 
 export function PaymentLinkSendDialog({
   open,
   payment,
+  requestLabel,
   requestReference,
   resendReason,
   busy = false,
@@ -146,7 +148,7 @@ export function PaymentLinkSendDialog({
     ?? (resendReasonMissing ? 'Yeniden gönderim nedeni en az 3 karakter olmalıdır.' : null)
   const fields = [
     ['Payment ID', String(payment.id)],
-    ['MRN / SRV', payment.request_code || payment.root_mrn || requestReference],
+    [requestLabel, payment.request_code || payment.root_mrn || requestReference],
     ['Tahsilat amacı', payment.purpose_label || payment.purpose || '-'],
     ['Tutar', payment.amount_label || `${payment.amount.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${payment.currency || 'TRY'}`],
     ['Durum', payment.status_label || payment.status],
