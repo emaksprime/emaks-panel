@@ -2045,6 +2045,7 @@ export function ServiceRequestDetails({
   const paymentHistoryRecords = [...mountPaymentRecords, ...(customerChargeSummary?.rows ?? [])]
     .filter((payment, index, rows) => rows.findIndex((candidate) => String(candidate.id) === String(payment.id)) === index)
     .sort((left, right) => Number(right.id ?? 0) - Number(left.id ?? 0))
+  const hasCanonicalAllocatedPayment = paymentHistoryRecords.some((payment) => payment.component_split_persisted === true)
   const paidMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'paid')
   const pendingMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'pending')
   const cancelledMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'cancelled')
@@ -3982,9 +3983,10 @@ export function ServiceRequestDetails({
               {paidMountPaymentRecords.map((payment) => (
                 <div key={String(payment.id ?? payment.payment_url ?? payment.amount)} className="grid gap-1 rounded-lg border border-emerald-100 bg-white/80 p-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
-                    <Badge variant="secondary">Ödendi</Badge>
+                    <span className="font-semibold">Ödeme {payment.id ?? '-'} · {payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
+                    <Badge variant="secondary">{payment.status_label ?? 'Ödendi'}</Badge>
                   </div>
+                  {renderPaymentBusinessContext(payment)}
                   <p>{payment.paid_at ? `Ödeme zamanı: ${dateTimeOrEmpty(payment.paid_at, '-')}` : 'Ödeme zamanı kaydı yok'}</p>
                   {renderPaymentProviderReferences(payment)}
                   {paymentLinkCopyUrl(payment) ? (
@@ -4052,7 +4054,7 @@ export function ServiceRequestDetails({
                 className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
                 required
               >
-                <option value="manual_mount_payment">Genel ek tahsilat</option>
+                <option value="manual_mount_payment">{hasCanonicalAllocatedPayment ? 'Diğer ek tahsilat' : 'Genel ek tahsilat'}</option>
                 <option value="service_payment">Ek servis</option>
                 {selectedTechnician ? <option value="route_fee">Yol farkı</option> : null}
               </select>
@@ -4863,22 +4865,56 @@ export function ServiceRequestDetails({
     ]
   }
 
-  function renderPaymentProviderReferences(payment: ServiceRequestExtraMountPayment | null | undefined) {
+  function renderPaymentBusinessContext(payment: ServiceRequestExtraMountPayment | null | undefined) {
+    const hasBusinessContext = Boolean(
+      payment?.purpose_label
+      || payment?.scope_label
+      || payment?.root_mrn
+      || payment?.srv_request_code
+      || payment?.part_request_id,
+    )
+
+    if (!hasBusinessContext) {
+      return null
+    }
+
     return (
-      <div className="grid gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] leading-relaxed text-slate-700">
-        <p className="font-semibold text-slate-900">Provider bilgisi</p>
-        {paymentProviderReferenceRows(payment).map((row) => (
-          <div key={row.label} className="grid gap-0.5 sm:grid-cols-[150px_minmax(0,1fr)]">
-            <span className="font-medium text-slate-500">{row.label}</span>
-            <span className="break-all text-slate-800">{row.value}</span>
+      <div data-testid="payment-business-context" className="grid gap-1 rounded-md border border-emerald-100 bg-emerald-50/60 px-2 py-2 text-emerald-950 sm:grid-cols-2">
+        <span>Tahsilat amacı: <strong>{payment?.purpose_label ?? '-'}</strong></span>
+        <span>Tahsilat kapsamı: <strong>{payment?.scope_label ?? '-'}</strong></span>
+        {payment?.root_mrn ? <span>Kök MRN: <strong>{payment.root_mrn}</strong></span> : null}
+        {payment?.srv_request_code ? <span>Servis: <strong>{payment.srv_request_code}</strong></span> : null}
+        {payment?.part_request_id ? <span>Parça Talebi: <strong>#{payment.part_request_id}</strong></span> : null}
+        {payment?.part_name ? <span>Parça: <strong>{payment.part_name}</strong></span> : null}
+        {payment?.component_split_persisted ? (
+          <div data-testid="payment-component-breakdown" className="grid gap-1 border-t border-emerald-100 pt-2 sm:col-span-2 sm:grid-cols-3">
+            <span>Servis: <strong>{payment.service_component_amount_label ?? payment.service_amount_label ?? '0 TL'}</strong></span>
+            <span>Parça: <strong>{payment.part_component_amount_label ?? payment.part_amount_label ?? '0 TL'}</strong></span>
+            <span>Toplam: <strong>{payment.total_amount_label ?? payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</strong></span>
           </div>
-        ))}
-        {payment?.provider_sync_message ? (
-          <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 font-medium text-amber-900">
-            {payment.provider_sync_message}
-          </p>
         ) : null}
       </div>
+    )
+  }
+
+  function renderPaymentProviderReferences(payment: ServiceRequestExtraMountPayment | null | undefined) {
+    return (
+      <details data-testid="payment-technical-details" className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] leading-relaxed text-slate-700">
+        <summary className="cursor-pointer font-semibold text-slate-900">Teknik ödeme detayları</summary>
+        <div className="mt-2 grid gap-1">
+          {paymentProviderReferenceRows(payment).map((row) => (
+            <div key={row.label} className="grid gap-0.5 sm:grid-cols-[150px_minmax(0,1fr)]">
+              <span className="font-medium text-slate-500">{row.label}</span>
+              <span className="break-all text-slate-800">{row.value}</span>
+            </div>
+          ))}
+          {payment?.provider_sync_message ? (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 font-medium text-amber-900">
+              {payment.provider_sync_message}
+            </p>
+          ) : null}
+        </div>
+      </details>
     )
   }
 
@@ -5458,12 +5494,29 @@ export function ServiceRequestDetails({
             {(serviceVisitHistory.parent_part_requests?.length ?? 0) > 0 ? (
               <div className="grid gap-2 rounded-2xl border border-violet-100 bg-white p-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Parent parça geçmişi</p>
-                {serviceVisitHistory.parent_part_requests?.slice(0, 4).map((partRequest) => (
-                  <div key={String(partRequest.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-                    <span className="font-semibold text-slate-800">{partRequest.part_name} {partRequest.quantity > 1 ? `x${partRequest.quantity}` : ''}</span>
-                    <span className="text-xs font-semibold text-violet-800">{partRequest.status_label}</span>
-                  </div>
-                ))}
+                {serviceVisitHistory.parent_part_requests?.slice(0, 4).map((partRequest) => {
+                  const paymentContext = partRequest.payment_context
+
+                  return (
+                    <div key={String(partRequest.id)} data-testid="parent-part-payment-context" className="grid gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-900">{partRequest.part_name} {partRequest.quantity > 1 ? `x${partRequest.quantity}` : ''}</span>
+                        <span className="font-semibold text-violet-800">PartRequest #{partRequest.id}</span>
+                      </div>
+                      <span>Durum: <strong>{paymentContext?.status === 'paid' ? `Ödeme alındı / ${partRequest.status_label}` : partRequest.status_label}</strong></span>
+                      {paymentContext ? (
+                        <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
+                          <span>Servis bedeli: <strong>{paymentContext.service_component_amount_label ?? '0 TL'}</strong></span>
+                          <span>Parça bedeli: <strong>{paymentContext.part_component_amount_label ?? '0 TL'}</strong></span>
+                          <span>Toplam: <strong>{paymentContext.total_amount_label ?? paymentContext.amount_label ?? '0 TL'}</strong></span>
+                          <span>Payment: <strong>#{paymentContext.payment_id} — {paymentContext.status_label ?? '-'}</strong></span>
+                          <span>Ödeme zamanı: <strong>{dateTimeOrEmpty(paymentContext.paid_at, '-')}</strong></span>
+                          <span>Bağlı servis: <strong>{paymentContext.srv_request_code ?? '-'}</strong></span>
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             ) : null}
             {serviceVisitHistoryRecords.length > 0 ? (
@@ -6964,11 +7017,27 @@ export function ServiceRequestDetails({
                   ) : null}
 
                   <div data-testid="financial-primary-cards" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <MiniMetric label="Müşteriden alınan" value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
+                    <MiniMetric label={financialScope === 'root' ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'} value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
                     <MiniMetric label="Usta hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
                     <MiniMetric label="Şirket ödemesi" value={selectedFinancialPayload.company_payment_amount_label ?? '0 TL'} />
                     <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
                   </div>
+
+                  {financialScope === 'root' && selectedFinancialCollection ? (
+                    <div data-testid="root-customer-collection-breakdown" className="flex flex-wrap gap-x-4 gap-y-1 rounded-xl border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-950">
+                      <span>Hizmet tahsilatı: <strong>{selectedFinancialCollection.service_total_amount_label ?? '0 TL'}</strong></span>
+                      <span>Parça tahsilatı: <strong>{selectedFinancialCollection.part_amount_label ?? '0 TL'}</strong></span>
+                      {(selectedFinancialCollection.part_amount ?? 0) > 0 ? <span>Parça tahsilatı operasyon farkına dahil değildir.</span> : null}
+                    </div>
+                  ) : null}
+
+                  {financialScope === 'current' && financeRelatedPaymentRecords.length > 0 ? (
+                    <div data-testid="related-payment-context-notice" className="grid gap-1 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-950">
+                      {financeRelatedPaymentRecords.map((payment) => (
+                        <p key={String(payment.id)}>{payment.scope_notice ?? `${payment.amount_label ?? formatMoneyValue(payment.amount)} ödeme kök MRN kapsamındadır.`}</p>
+                      ))}
+                    </div>
+                  ) : null}
 
                   <div className="grid gap-3 lg:grid-cols-2">
                     <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
@@ -7005,7 +7074,7 @@ export function ServiceRequestDetails({
                           <div key={String(payment.id)} className="grid gap-2 rounded-lg bg-slate-50 px-3 py-2">
                             {payment.scope_notice ? (
                               <p data-testid="related-payment-scope-notice" className="font-semibold text-blue-900">
-                                {payment.scope_notice} {payment.amount_label ?? formatMoneyValue(payment.amount)} tahsil edildi.
+                                {payment.scope_notice}
                               </p>
                             ) : null}
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -7018,6 +7087,7 @@ export function ServiceRequestDetails({
                               <span>Kapsam: <strong>{payment.scope_label ?? 'Kapsam bilgisi yok'}</strong></span>
                               <span>Ödeme tarihi: <strong>{dateTimeOrEmpty(payment.paid_at, '-')}</strong></span>
                               {payment.part_request_id ? <span>Parça talebi: <strong>#{payment.part_request_id}</strong></span> : null}
+                              {payment.part_name ? <span>Parça: <strong>{payment.part_name}</strong></span> : null}
                               {payment.srv_request_code ? <span>Bağlı SRV: <strong>{payment.srv_request_code}</strong></span> : null}
                               {payment.root_mrn ? <span>Kök MRN: <strong>{payment.root_mrn}</strong></span> : null}
                             </div>
@@ -7025,6 +7095,7 @@ export function ServiceRequestDetails({
                               <div className="flex flex-wrap gap-3 font-medium text-slate-800">
                                 <span>Servis tahsilatı: {payment.service_amount_label ?? '0 TL'}</span>
                                 <span>Parça tahsilatı: {payment.part_amount_label ?? '0 TL'}</span>
+                                <span>Operasyon farkına dahil: {payment.operational_difference_included_amount_label ?? '0 TL'}</span>
                               </div>
                             ) : null}
                             <details className="rounded-md border border-slate-200 bg-white px-2 py-1">

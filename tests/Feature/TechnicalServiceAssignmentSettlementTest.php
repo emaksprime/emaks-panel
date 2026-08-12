@@ -23,6 +23,7 @@ use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -355,7 +356,10 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame($srv->id, $record['srv_request_id']);
         $this->assertSame('related_part_request', $record['scope_relation']);
         $this->assertTrue($record['component_split_persisted']);
-        $this->assertSame('Bu ödeme current SRV’ye değil, kök MRN / parça talebine bağlıdır.', $record['scope_notice']);
+        $this->assertSame(
+            sprintf('20 TL ödeme bu SRV’nin doğrudan tahsilatı değildir. Kök MRN üzerindeki Parça Talebi #%d kapsamında alınmıştır.', $partRequest->id),
+            $record['scope_notice'],
+        );
         $this->assertSame('37164237', $record['provider_payment_reference']);
         $this->assertSame('39067702', $record['provider_transaction_reference']);
     }
@@ -382,6 +386,146 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame($payment->id, $records[0]['id']);
         $this->assertFalse($records[0]['component_split_persisted']);
         $this->assertNull($records[0]['part_request_id']);
+        $this->assertSame(0.0, $records[0]['service_amount']);
+        $this->assertSame(0.0, $records[0]['part_amount']);
+        $this->assertSame(20.0, $records[0]['unclassified_amount']);
+    }
+
+    public function test_payment_component_split_comes_from_persisted_allocation(): void
+    {
+        [, $srv, $partRequest, $payment] = $this->paymentPartContextFixture();
+
+        $record = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['payment_records']['root_scope_rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertTrue($record['component_split_persisted']);
+        $this->assertSame($payment->id, (int) data_get($partRequest->metadata, 'payment_id'));
+        $this->assertSame(5.0, $record['service_component_amount']);
+        $this->assertSame(15.0, $record['part_component_amount']);
+        $this->assertSame(20.0, $record['total_amount']);
+    }
+
+    public function test_payment_167_projects_exact_part_request_context(): void
+    {
+        [$root, $srv, $partRequest, $payment] = $this->paymentPartContextFixture();
+
+        $record = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['payment_records']['related_scope_rows'][0];
+
+        $this->assertSame($payment->id, $record['payment_id']);
+        $this->assertSame($root->id, $record['root_request_id']);
+        $this->assertSame($root->mrn, $record['root_mrn']);
+        $this->assertSame($srv->id, $record['srv_request_id']);
+        $this->assertSame($srv->service_code, $record['srv_request_code']);
+        $this->assertSame($partRequest->id, $record['part_request_id']);
+        $this->assertSame('REL-4E.15I Test Parça', $record['part_name']);
+        $this->assertSame('Servis ve parça ücreti', $record['purpose_label']);
+        $this->assertTrue($record['component_split_persisted']);
+    }
+
+    public function test_payment_modal_shows_part_and_service_components(): void
+    {
+        [, $srv, $partRequest, $payment] = $this->paymentPartContextFixture();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($srv, false, false, true);
+        $record = collect(data_get($payload, 'sale_and_payment.customer_charges.rows'))
+            ->firstWhere('id', $payment->id);
+
+        $this->assertIsArray($record);
+        $this->assertSame($partRequest->id, $record['part_request_id']);
+        $this->assertSame(5.0, $record['service_component_amount']);
+        $this->assertSame(15.0, $record['part_component_amount']);
+        $this->assertSame(20.0, $record['total_amount']);
+        $this->assertSame('Kök MRN / Parça Talebi', $record['scope_label']);
+    }
+
+    public function test_root_finance_shows_total_customer_collection_20(): void
+    {
+        [, $srv] = $this->paymentPartContextFixture();
+
+        $collection = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['root_total']['customer_collection'];
+
+        $this->assertSame(20.0, $collection['total_amount']);
+        $this->assertSame(5.0, $collection['service_total_amount']);
+        $this->assertSame(15.0, $collection['part_amount']);
+    }
+
+    public function test_part_component_is_excluded_from_service_operational_difference(): void
+    {
+        [, $srv, , $payment] = $this->paymentPartContextFixture();
+
+        $summary = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary'];
+        $record = collect($summary['payment_records']['root_scope_rows'])->firstWhere('id', $payment->id);
+
+        $this->assertSame(5.0, $record['operational_difference_included_amount']);
+        $this->assertSame(15.0, $record['operational_difference_excluded_part_amount']);
+        $this->assertSame(5.0, $summary['root_total']['net_margin']['amount']);
+    }
+
+    public function test_current_srv_does_not_hide_root_part_payment(): void
+    {
+        [, $srv, $partRequest, $payment] = $this->paymentPartContextFixture();
+
+        $records = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['payment_records'];
+
+        $this->assertSame([], $records['current_scope_rows']);
+        $this->assertCount(1, $records['related_scope_rows']);
+        $this->assertSame($payment->id, $records['related_scope_rows'][0]['id']);
+        $this->assertSame(
+            sprintf('20 TL ödeme bu SRV’nin doğrudan tahsilatı değildir. Kök MRN üzerindeki Parça Talebi #%d kapsamında alınmıştır.', $partRequest->id),
+            $records['related_scope_rows'][0]['scope_notice'],
+        );
+    }
+
+    public function test_parent_part_summary_shows_payment_167(): void
+    {
+        [, $srv, $partRequest, $payment] = $this->paymentPartContextFixture();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($srv, true, false, true);
+        $part = collect(data_get($payload, 'service_visit_history.parent_part_requests'))
+            ->firstWhere('id', $partRequest->id);
+
+        $this->assertIsArray($part);
+        $this->assertSame($payment->id, data_get($part, 'payment_context.payment_id'));
+        $this->assertSame(5.0, data_get($part, 'payment_context.service_component_amount'));
+        $this->assertSame(15.0, data_get($part, 'payment_context.part_component_amount'));
+        $this->assertSame($srv->service_code, data_get($part, 'payment_context.srv_request_code'));
+    }
+
+    public function test_payment_167_state_and_references_are_unchanged(): void
+    {
+        [, $srv, , $payment] = $this->paymentPartContextFixture();
+        $before = $payment->only(['status', 'amount', 'provider_payment_reference', 'provider_transaction_reference']);
+        $paidAtBefore = $payment->paid_at?->toISOString();
+
+        app(TechnicalServiceWorkflowService::class)->serialize($srv, true, true, true);
+
+        $this->assertSame($before, $payment->fresh()->only(array_keys($before)));
+        $this->assertSame($paidAtBefore, $payment->fresh()->paid_at?->toISOString());
+    }
+
+    public function test_payment_198_allocation_remains_unchanged(): void
+    {
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('p', 32))]);
+        [$request, , , , $settlement, $actor] = $this->assignedSettlementFixture();
+        $payment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $this->decideCompanyPayments($request, $actor, [$payment->id => 'pay_technician']);
+        $allocation = DB::table('technical_service_payment_settlement_allocations')
+            ->where('technical_service_mount_payment_id', $payment->id)
+            ->first();
+        $line = TechnicalServiceEarningPayment::query()->findOrFail($allocation->settlement_line_id);
+
+        app(TechnicalServiceWorkflowService::class)->financialWorkspacePayload($request->refresh());
+
+        $this->assertSame('pay_technician', $allocation->decision);
+        $this->assertSame(600.0, (float) $line->fresh()->amount);
+        $this->assertSame(TechnicalServiceEarningPayment::STATUS_PENDING, $line->fresh()->status);
+        $this->assertNull($line->fresh()->paid_at);
+        $this->assertSame(2100.0, (float) $settlement->fresh()->technician_earning_total);
     }
 
     public function test_paid_route_payment_prompts_only_uncovered_route_excess(): void
@@ -1072,6 +1216,78 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         ], [
             'active' => true,
         ]);
+    }
+
+    /**
+     * @return array{0: TechnicalServiceRequest, 1: TechnicalServiceRequest, 2: TechnicalServicePartRequest, 3: TechnicalServiceMountPayment}
+     */
+    private function paymentPartContextFixture(): array
+    {
+        [$root, $technician] = $this->assignmentFixture();
+        $root->forceFill([
+            'root_mrn' => $root->mrn,
+            'service_code' => null,
+        ])->save();
+        $srv = TechnicalServiceRequest::query()->create([
+            'mrn' => 'SRV-PAYMENT-167-CONTEXT',
+            'root_mrn' => $root->mrn,
+            'parent_request_id' => $root->id,
+            'service_code' => 'SRV-PAYMENT-167-CONTEXT',
+            'service_sequence' => 1,
+            'customer_name' => $root->customer_name,
+            'customer_phone' => $root->customer_phone,
+            'customer_city' => $root->customer_city,
+            'customer_district' => $root->customer_district,
+            'service_address' => $root->service_address,
+            'product_name' => $root->product_name,
+            'serial_number' => $root->serial_number,
+            'service_type' => 'Servis',
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'priority' => 'Orta',
+            'risk_level' => 'Orta',
+            'source_channel' => 'panel',
+        ]);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $root->id,
+            'root_request_id' => $root->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED,
+            'part_name' => 'REL-4E.15I Test Parça',
+            'quantity' => 1,
+            'requires_service_visit' => true,
+            'service_visit_request_id' => $srv->id,
+        ]);
+        $payment = $this->paidMountPayment($root, 'PAYMENT-167-'.uniqid());
+        $payment->forceFill([
+            'amount' => 20,
+            'paid_at' => '2026-08-07 07:04:50',
+            'provider_payment_reference' => '37164237',
+            'provider_transaction_reference' => '39067702',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'service_and_part_payment',
+                'charge_type' => 'service_and_part_payment',
+                'root_request_id' => $root->id,
+                'part_request_id' => $partRequest->id,
+                'service_amount' => 5,
+                'part_amount' => 15,
+                'total_amount' => 20,
+            ],
+        ])->save();
+        $partRequest->forceFill(['metadata' => [
+            'charge_decision' => 'chargeable',
+            'service_amount' => 5,
+            'part_amount' => 15,
+            'total_amount' => 20,
+            'customer_charge_payment_id' => $payment->id,
+            'payment_id' => $payment->id,
+            'payment_status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'provider_payment_reference' => '37164237',
+            'provider_transaction_reference' => '39067702',
+        ]])->save();
+
+        return [$root->refresh(), $srv->refresh(), $partRequest->refresh(), $payment->refresh()];
     }
 
     /**

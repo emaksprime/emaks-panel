@@ -668,7 +668,42 @@ export type ServiceRequestFinanceNetMargin = {
 
 export type ServiceRequestFinancialResultState = 'definitive' | 'draft_pending' | 'allocation_pending' | 'classification_pending'
 
-export type ServiceRequestFinancePaymentRecord = {
+export type ServiceRequestPaymentPartContext = {
+  payment_id?: number | string | null
+  purpose?: string | null
+  purpose_label?: string | null
+  root_request_id?: number | string | null
+  root_request_code?: string | null
+  root_mrn?: string | null
+  srv_request_id?: number | string | null
+  srv_request_code?: string | null
+  part_request_id?: number | string | null
+  part_request_status_label?: string | null
+  part_name?: string | null
+  part_quantity?: number | null
+  service_component_amount?: number | null
+  service_component_amount_label?: string | null
+  service_amount?: number | null
+  service_amount_label?: string | null
+  part_component_amount?: number | null
+  part_component_amount_label?: string | null
+  part_amount?: number | null
+  part_amount_label?: string | null
+  total_amount?: number | null
+  total_amount_label?: string | null
+  operational_difference_included_amount?: number | null
+  operational_difference_included_amount_label?: string | null
+  operational_difference_excluded_part_amount?: number | null
+  operational_difference_excluded_part_amount_label?: string | null
+  scope_relation?: 'current_request' | 'related_part_request' | 'root_mrn' | string | null
+  scope_label?: string | null
+  scope_notice?: string | null
+  belongs_to_current_request?: boolean
+  related_to_current_srv?: boolean
+  component_split_persisted?: boolean
+}
+
+export type ServiceRequestFinancePaymentRecord = ServiceRequestPaymentPartContext & {
   id: number | string
   request_id?: number | string | null
   root_request_id?: number | string | null
@@ -865,6 +900,7 @@ export type ServiceRequestPartRequest = {
     message_send_count?: number | null
     last_message_sent_at?: string | null
   } | null
+  payment_context?: ServiceRequestFinancePaymentRecord | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -986,7 +1022,7 @@ export type ServiceRequestPaymentStatus = {
   message?: string | null
 }
 
-export type ServiceRequestExtraMountPayment = {
+export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext & {
   id?: number | string | null
   request_id?: number | string | null
   mrn?: string | null

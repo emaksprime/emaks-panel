@@ -137,7 +137,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('Hakedişte kullan', $detail);
         $this->assertStringContainsString('updateAssignmentEarningDraft({ routeFeeAmount:', $detail);
         $this->assertStringContainsString('data-testid="financial-primary-cards"', $detail);
-        $this->assertSame(1, substr_count($primaryCards, 'label="Müşteriden alınan"'));
+        $this->assertSame(1, substr_count($primaryCards, "label={financialScope === 'root' ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'}"));
         $this->assertSame(1, substr_count($primaryCards, 'label="Usta hakedişi"'));
         $this->assertSame(1, substr_count($primaryCards, 'label="Şirket ödemesi"'));
         $this->assertSame(1, substr_count($primaryCards, 'label="Operasyon farkı"'));
@@ -151,6 +151,92 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringNotContainsString('loadRequests()', $scheduleHandler);
         $this->assertStringNotContainsString('loadSummary()', $scheduleHandler);
         $this->assertStringNotContainsString('loadRequestDetail(', $scheduleHandler);
+    }
+
+    public function test_payment_modal_does_not_show_generic_collection_when_allocated(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const hasCanonicalAllocatedPayment = paymentHistoryRecords.some', $source);
+        $this->assertStringContainsString("hasCanonicalAllocatedPayment ? 'Diğer ek tahsilat' : 'Genel ek tahsilat'", $source);
+        $this->assertStringContainsString('{payment?.purpose_label ?? \'-\'}', $source);
+    }
+
+    public function test_payment_modal_shows_part_request_26(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('data-testid="payment-business-context"', $source);
+        $this->assertStringContainsString('Parça Talebi: <strong>#{payment.part_request_id}</strong>', $source);
+        $this->assertStringContainsString('Parça: <strong>{payment.part_name}</strong>', $source);
+        $this->assertStringContainsString('data-testid="payment-component-breakdown"', $source);
+    }
+
+    public function test_root_scope_shows_20_total_and_5_15_breakdown(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('data-testid="root-customer-collection-breakdown"', $source);
+        $this->assertStringContainsString('Hizmet tahsilatı:', $source);
+        $this->assertStringContainsString('Parça tahsilatı:', $source);
+        $this->assertStringContainsString('Parça tahsilatı operasyon farkına dahil değildir.', $source);
+    }
+
+    public function test_current_srv_scope_shows_root_part_context_notice(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('data-testid="related-payment-context-notice"', $source);
+        $this->assertStringContainsString('payment.scope_notice', $source);
+        $this->assertStringContainsString('financeRelatedPaymentRecords.length > 0', $source);
+    }
+
+    public function test_parent_part_card_shows_amount_payment_and_srv(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('data-testid="parent-part-payment-context"', $source);
+        $this->assertStringContainsString('PartRequest #{partRequest.id}', $source);
+        $this->assertStringContainsString('Payment: <strong>#{paymentContext.payment_id}', $source);
+        $this->assertStringContainsString('Bağlı servis:', $source);
+    }
+
+    public function test_no_duplicate_payment_cards(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('rows.findIndex((candidate) => String(candidate.id) === String(payment.id)) === index', $source);
+        $this->assertSame(1, substr_count($source, 'data-testid="financial-payment-records"'));
+        $this->assertSame(1, substr_count($source, 'data-testid="payment-business-context"'));
+    }
+
+    public function test_modal_does_not_remount(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        $this->assertStringContainsString('preserveDetailScroll(() => {', $page);
+        $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $page);
+        $this->assertStringNotContainsString('key={selectedDetailRequest', $page);
+    }
+
+    public function test_full_board_is_not_refetched(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+        $scheduleHandler = Str::between($page, 'const handleScheduleSubmit = async () => {', 'const handleContactActionSubmit = async () => {');
+
+        $this->assertStringContainsString('applyUpdatedRequest(updatedRequest)', $scheduleHandler);
+        $this->assertStringNotContainsString('loadRequests()', $scheduleHandler);
+        $this->assertStringNotContainsString('loadSummary()', $scheduleHandler);
+    }
+
+    public function test_provider_references_remain_collapsed_technical_details(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $renderer = Str::between($source, 'function renderPaymentProviderReferences', 'const copyCustomerApprovalValue');
+
+        $this->assertStringContainsString('<details data-testid="payment-technical-details"', $renderer);
+        $this->assertStringContainsString('Teknik ödeme detayları', $renderer);
+        $this->assertStringNotContainsString('<p className="font-semibold text-slate-900">Provider bilgisi</p>', $renderer);
     }
 
     public function test_part_payment_copy_feedback_is_rendered_next_to_visible_actions(): void
