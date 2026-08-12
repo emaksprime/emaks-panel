@@ -437,7 +437,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(5.0, $record['service_component_amount']);
         $this->assertSame(15.0, $record['part_component_amount']);
         $this->assertSame(20.0, $record['total_amount']);
-        $this->assertSame('Kök MRN / Parça Talebi', $record['scope_label']);
+        $this->assertSame(sprintf('Kök MRN / Parça Talebi #%d', $partRequest->id), $record['scope_label']);
     }
 
     public function test_root_finance_shows_total_customer_collection_20(): void
@@ -526,6 +526,255 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(TechnicalServiceEarningPayment::STATUS_PENDING, $line->fresh()->status);
         $this->assertNull($line->fresh()->paid_at);
         $this->assertSame(2100.0, (float) $settlement->fresh()->technician_earning_total);
+    }
+
+    public function test_root_mrn_resolves_current_mrn_scope(): void
+    {
+        [$root] = $this->assignmentFixture();
+
+        $context = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root)['finance_summary']['scope_context'];
+
+        $this->assertSame('mrn', $context['current_record_type']);
+        $this->assertSame('current_mrn', $context['current_scope_key']);
+        $this->assertSame('Bu MRN', $context['current_scope_label']);
+        $this->assertSame($root->mrn, $context['current_record_code']);
+    }
+
+    public function test_child_srv_resolves_current_srv_scope(): void
+    {
+        [$root, $srv] = $this->paymentPartContextFixture();
+
+        $context = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['scope_context'];
+
+        $this->assertSame('srv', $context['current_record_type']);
+        $this->assertSame('current_srv', $context['current_scope_key']);
+        $this->assertSame('Bu SRV', $context['current_scope_label']);
+        $this->assertSame($root->mrn, $context['root_mrn_code']);
+    }
+
+    public function test_record_type_uses_relationship_not_only_code_prefix(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $srv = $this->serviceVisitForRoot($root, 'REL-AUTH');
+        $srv->forceFill([
+            'mrn' => 'MRN-LEGACY-CHILD-'.uniqid(),
+            'service_code' => null,
+        ])->save();
+        $service = app(TechnicalServiceWorkflowService::class);
+
+        $rootContext = $service->financialWorkspacePayload($root)['finance_summary']['scope_context'];
+        $srvContext = $service->financialWorkspacePayload($srv->refresh())['finance_summary']['scope_context'];
+
+        $this->assertSame('mrn', $rootContext['current_record_type']);
+        $this->assertStringStartsWith('SRV-', (string) $root->service_code);
+        $this->assertSame('srv', $srvContext['current_record_type']);
+        $this->assertStringStartsWith('MRN-', $srv->fresh()->mrn);
+    }
+
+    public function test_standalone_root_exposes_only_current_mrn_option(): void
+    {
+        [$root] = $this->assignmentFixture();
+
+        $context = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root)['finance_summary']['scope_context'];
+
+        $this->assertFalse($context['root_total_available']);
+        $this->assertFalse($context['has_descendants']);
+        $this->assertSame([
+            ['key' => 'current_mrn', 'label' => 'Bu MRN', 'available' => true],
+        ], $context['scope_options']);
+    }
+
+    public function test_root_with_child_srv_exposes_root_total_option(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $this->serviceVisitForRoot($root, 'ROOT-CHILD');
+
+        $context = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['scope_context'];
+
+        $this->assertTrue($context['root_total_available']);
+        $this->assertTrue($context['has_descendants']);
+        $this->assertSame(['current_mrn', 'root_mrn_total'], collect($context['scope_options'])->pluck('key')->all());
+    }
+
+    public function test_root_with_part_request_exposes_root_total_option(): void
+    {
+        [$root, $technician] = $this->assignmentFixture();
+        TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $root->id,
+            'root_request_id' => $root->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_REQUESTED,
+            'part_name' => 'Scope context parçası',
+            'quantity' => 1,
+            'requires_service_visit' => false,
+        ]);
+
+        $context = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['scope_context'];
+
+        $this->assertTrue($context['root_total_available']);
+        $this->assertTrue($context['has_descendants']);
+        $this->assertSame(['current_mrn', 'root_mrn_total'], collect($context['scope_options'])->pluck('key')->all());
+    }
+
+    public function test_child_srv_exposes_current_srv_and_root_total(): void
+    {
+        [, $srv] = $this->paymentPartContextFixture();
+
+        $context = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['scope_context'];
+
+        $this->assertTrue($context['root_total_available']);
+        $this->assertSame(['current_srv', 'root_mrn_total'], collect($context['scope_options'])->pluck('key')->all());
+        $this->assertSame(['Bu SRV', 'Kök MRN toplamı'], collect($context['scope_options'])->pluck('label')->all());
+    }
+
+    public function test_current_mrn_scope_excludes_child_srv_economics(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $srv = $this->serviceVisitForRoot($root, 'CUR-MRN');
+        $this->paidChargePayment($root, 'service_payment', 100, '2026-08-12 09:00:00');
+        $this->paidChargePayment($srv, 'service_payment', 200, '2026-08-12 09:01:00');
+
+        $summary = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary'];
+
+        $this->assertSame(100.0, $summary['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(300.0, $summary['root_total']['customer_collection']['total_amount']);
+    }
+
+    public function test_current_srv_scope_excludes_root_and_sibling_economics(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $srv = $this->serviceVisitForRoot($root, 'CUR-SRV');
+        $sibling = $this->serviceVisitForRoot($root, 'SIB-SRV');
+        $this->paidChargePayment($root, 'service_payment', 100, '2026-08-12 09:00:00');
+        $this->paidChargePayment($srv, 'service_payment', 200, '2026-08-12 09:01:00');
+        $this->paidChargePayment($sibling, 'service_payment', 300, '2026-08-12 09:02:00');
+
+        $summary = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv->refresh())['finance_summary'];
+
+        $this->assertSame(200.0, $summary['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(600.0, $summary['root_total']['customer_collection']['total_amount']);
+    }
+
+    public function test_root_total_aggregates_root_srv_and_part_once(): void
+    {
+        [$root, $srv, , $partPayment] = $this->paymentPartContextFixture();
+        $rootPayment = $this->paidChargePayment($root, 'service_payment', 100, '2026-08-12 09:00:00', [
+            'source' => 'operation_customer_charge',
+        ]);
+        $srvPayment = $this->paidChargePayment($srv, 'service_payment', 200, '2026-08-12 09:01:00', [
+            'source' => 'operation_customer_charge',
+        ]);
+
+        $summary = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary'];
+        $rootRows = collect($summary['payment_records']['root_scope_rows']);
+
+        $this->assertSame(100.0, $summary['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(320.0, $summary['root_total']['customer_collection']['total_amount']);
+        $this->assertSame(
+            collect([$partPayment->id, $rootPayment->id, $srvPayment->id])->sort()->values()->all(),
+            $rootRows->pluck('id')->sort()->values()->all(),
+        );
+        $this->assertSame($rootRows->count(), $rootRows->pluck('id')->unique()->count());
+    }
+
+    public function test_payment_scope_label_uses_canonical_scope_context(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $srv = $this->serviceVisitForRoot($root, 'PAYMENT-LABEL');
+        $rootPayment = $this->paidChargePayment($root, 'service_payment', 100, '2026-08-12 09:00:00', [
+            'source' => 'operation_customer_charge',
+        ]);
+        $srvPayment = $this->paidChargePayment($srv, 'service_payment', 200, '2026-08-12 09:01:00', [
+            'source' => 'operation_customer_charge',
+        ]);
+        $service = app(TechnicalServiceWorkflowService::class);
+
+        $rootRows = collect($service->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['root_scope_rows']);
+        $srvRows = collect($service->financialWorkspacePayload($srv->refresh())['finance_summary']['payment_records']['root_scope_rows']);
+        [, $partSrv, $partRequest, $partPayment] = $this->paymentPartContextFixture();
+        $partRow = collect($service->financialWorkspacePayload($partSrv)['finance_summary']['payment_records']['root_scope_rows'])
+            ->firstWhere('id', $partPayment->id);
+
+        $this->assertSame('Bu MRN', $rootRows->firstWhere('id', $rootPayment->id)['scope_label']);
+        $this->assertSame('Bu SRV', $srvRows->firstWhere('id', $srvPayment->id)['scope_label']);
+        $this->assertSame('Kök MRN', $srvRows->firstWhere('id', $rootPayment->id)['scope_label']);
+        $this->assertSame(sprintf('Kök MRN / Parça Talebi #%d', $partRequest->id), $partRow['scope_label']);
+    }
+
+    public function test_payment_167_projection_remains_unchanged(): void
+    {
+        [, $srv, $partRequest, $payment] = $this->paymentPartContextFixture();
+        $before = $payment->only(['status', 'amount', 'provider_payment_reference', 'provider_transaction_reference']);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($srv)['finance_summary']['payment_records']['root_scope_rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertSame($before, $payment->fresh()->only(array_keys($before)));
+        $this->assertSame($partRequest->id, $row['part_request_id']);
+        $this->assertSame(5.0, $row['service_component_amount']);
+        $this->assertSame(15.0, $row['part_component_amount']);
+        $this->assertSame(20.0, $row['total_amount']);
+    }
+
+    public function test_payment_195_projection_remains_unchanged(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $payment = $this->paidChargePayment($root, 'service_payment', 1000, '2026-08-12 09:00:00', [
+            'source' => 'operation_customer_charge',
+        ]);
+        $payment->forceFill([
+            'provider_payment_reference' => 'PAYMENT-195',
+            'provider_transaction_reference' => 'TRANSACTION-195',
+        ])->save();
+        $before = $payment->only(['status', 'amount', 'provider_payment_reference', 'provider_transaction_reference']);
+
+        $row = collect(app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($root->refresh())['finance_summary']['payment_records']['root_scope_rows'])
+            ->firstWhere('id', $payment->id);
+
+        $this->assertSame($before, $payment->fresh()->only(array_keys($before)));
+        $this->assertSame(1000.0, $row['amount']);
+        $this->assertSame('Bu MRN', $row['scope_label']);
+    }
+
+    public function test_financial_scope_resolution_adds_no_n_plus_one(): void
+    {
+        [$root] = $this->assignmentFixture();
+        $children = collect(range(1, 6))
+            ->map(fn (int $index): TechnicalServiceRequest => $this->serviceVisitForRoot($root, 'NPLUS-'.$index));
+        $service = app(TechnicalServiceWorkflowService::class);
+        $service->preloadSerializationContext($children);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $contexts = $children->map(
+            fn (TechnicalServiceRequest $request): array => $service
+                ->financialWorkspacePayload($request)['finance_summary']['scope_context'],
+        );
+
+        $queries = collect(DB::getQueryLog());
+        DB::disableQueryLog();
+        $scopeRelationshipQueries = $queries->filter(function (array $query): bool {
+            $sql = Str::lower((string) ($query['query'] ?? ''));
+
+            return str_contains($sql, 'technical_service_part_requests')
+                || (str_contains($sql, 'technical_service_requests') && str_contains($sql, 'parent_request_id'));
+        });
+
+        $this->assertCount(6, $contexts);
+        $this->assertTrue($contexts->every(fn (array $context): bool => $context['current_scope_key'] === 'current_srv'));
+        $this->assertLessThanOrEqual(2, $scopeRelationshipQueries->count());
     }
 
     public function test_paid_route_payment_prompts_only_uncovered_route_excess(): void
@@ -1288,6 +1537,36 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         ]])->save();
 
         return [$root->refresh(), $srv->refresh(), $partRequest->refresh(), $payment->refresh()];
+    }
+
+    private function serviceVisitForRoot(TechnicalServiceRequest $root, string $suffix): TechnicalServiceRequest
+    {
+        $sequence = (int) TechnicalServiceRequest::query()
+            ->where('parent_request_id', $root->id)
+            ->max('service_sequence') + 1;
+        $code = 'SRV-'.$suffix.'-'.uniqid();
+
+        return TechnicalServiceRequest::query()->create([
+            'mrn' => $code,
+            'root_mrn' => $root->mrn,
+            'parent_request_id' => $root->id,
+            'service_code' => $code,
+            'service_sequence' => $sequence,
+            'customer_name' => $root->customer_name,
+            'customer_phone' => $root->customer_phone,
+            'customer_city' => $root->customer_city,
+            'customer_district' => $root->customer_district,
+            'service_address' => $root->service_address,
+            'product_name' => $root->product_name,
+            'product_model' => $root->product_model,
+            'serial_number' => $root->serial_number,
+            'service_type' => 'Servis',
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'priority' => 'Orta',
+            'risk_level' => 'Orta',
+            'source_channel' => 'panel',
+        ]);
     }
 
     /**

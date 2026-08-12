@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessageDispatch, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinancialScopeKey, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessageDispatch, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import type { ServiceRequestCanonicalEarningSnapshot } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
@@ -1774,7 +1774,7 @@ export function ServiceRequestDetails({
   const [customerApprovalManualCopyValue, setCustomerApprovalManualCopyValue] = useState<string | null>(null)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
-  const [financialScopeByRequest, setFinancialScopeByRequest] = useState<Record<string, 'current' | 'root'>>({})
+  const [financialScopeByRequest, setFinancialScopeByRequest] = useState<Record<string, ServiceRequestFinancialScopeKey>>({})
   const [paymentHistoryLoading, setPaymentHistoryLoading] = useState(false)
   const [paymentHistoryError, setPaymentHistoryError] = useState<string | null>(null)
   const [routeFeeEditorMode, setRouteFeeEditorMode] = useState<'route_fee' | 'payment_link'>('route_fee')
@@ -2064,6 +2064,9 @@ export function ServiceRequestDetails({
   const financeSummary = request.financeSummary ?? null
   const financeCurrentVisit = financeSummary?.current_visit ?? null
   const financeRootTotal = financeSummary?.root_total ?? null
+  const financialScopeContext = financeSummary?.scope_context ?? null
+  const financialScopeOptions = (financialScopeContext?.scope_options ?? []).filter((option) => option.available)
+  const canonicalCurrentFinancialScope = financialScopeContext?.current_scope_key
   const financeCurrentPaymentRecords = financeSummary?.payment_records?.current_scope_rows ?? []
   const financeRelatedPaymentRecords = financeSummary?.payment_records?.related_scope_rows ?? []
   const financeRootPaymentRecords = financeSummary?.payment_records?.root_scope_rows ?? []
@@ -2411,7 +2414,12 @@ export function ServiceRequestDetails({
       ? roundTwo(technicianLaborCostAmount + (hasRouteCostEvidence && routeFeeAmount !== null ? routeFeeAmount : 0))
       : null
   const requestStateKey = String(request.id)
-  const financialScope = financialScopeByRequest[requestStateKey] ?? 'current'
+  const storedFinancialScope = financialScopeByRequest[requestStateKey]
+  const financialScope = storedFinancialScope && financialScopeOptions.some((option) => option.key === storedFinancialScope)
+    ? storedFinancialScope
+    : canonicalCurrentFinancialScope ?? financialScopeOptions[0]?.key
+  const isRootFinancialScope = financialScope === 'root_mrn_total'
+  const isCurrentFinancialScope = !isRootFinancialScope
   const persistedEarningSnapshot = activeAssignmentOffer?.earning_snapshot ?? null
   const persistedEarningLaborAmount = persistedEarningSnapshot?.labor_amount ?? assignmentOfferLaborAmount ?? technicianLaborCostAmount
   const persistedEarningRouteAmount = persistedEarningSnapshot?.route_fee_amount ?? assignmentOfferRouteAmount ?? (hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0)
@@ -2555,16 +2563,16 @@ export function ServiceRequestDetails({
     ? 'Taslak değerler kaydedilmeyi bekliyor'
     : financeCurrentVisit?.result_state_label ?? 'Kesinleşmiş'
   const provisionalNetProfitLabel = financeNetMargin?.provisional_amount_label ?? null
-  const selectedFinancialPayload = financialScope === 'root' ? financeRootTotal : financeCurrentVisit
+  const selectedFinancialPayload = isRootFinancialScope ? financeRootTotal : financeCurrentVisit
   const selectedFinancialCollection = selectedFinancialPayload?.customer_collection ?? null
   const selectedFinancialPayout = selectedFinancialPayload?.locksmith_payout ?? null
-  const selectedFinancialPaymentRecords = financialScope === 'root'
+  const selectedFinancialPaymentRecords = isRootFinancialScope
     ? financeRootPaymentRecords
     : [...financeCurrentPaymentRecords, ...financeRelatedPaymentRecords]
-  const selectedFinancialResultState = financialScope === 'current'
+  const selectedFinancialResultState = isCurrentFinancialScope
     ? financialResultState
     : selectedFinancialPayload?.result_state ?? 'definitive'
-  const selectedFinancialResultLabel = financialScope === 'current'
+  const selectedFinancialResultLabel = isCurrentFinancialScope
     ? financialResultStateLabel
     : selectedFinancialPayload?.result_state_label ?? 'Kesinleşmiş'
   const selectedFinancialDifferenceLabel = selectedFinancialResultState === 'definitive'
@@ -6919,26 +6927,24 @@ export function ServiceRequestDetails({
                     {earningSummaryTechnicianName} · {displayOrEmpty(financeSummary?.scope?.request_code ?? request.mrn, '-')}
                   </p>
                 </div>
-                <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1" aria-label="Finans kapsamı">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={financialScope === 'current' ? 'default' : 'ghost'}
-                    aria-pressed={financialScope === 'current'}
-                    onClick={() => setFinancialScopeByRequest((current) => ({ ...current, [requestStateKey]: 'current' }))}
-                  >
-                    Bu SRV
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={financialScope === 'root' ? 'default' : 'ghost'}
-                    aria-pressed={financialScope === 'root'}
-                    onClick={() => setFinancialScopeByRequest((current) => ({ ...current, [requestStateKey]: 'root' }))}
-                  >
-                    Kök MRN toplamı
-                  </Button>
-                </div>
+                {financialScopeOptions.length > 1 ? (
+                  <div data-testid="financial-scope-selector" className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1" aria-label="Finans kapsamı">
+                    {financialScopeOptions.map((option) => (
+                      <Button
+                        key={option.key}
+                        type="button"
+                        size="sm"
+                        variant={financialScope === option.key ? 'default' : 'ghost'}
+                        aria-pressed={financialScope === option.key}
+                        onClick={() => setFinancialScopeByRequest((current) => ({ ...current, [requestStateKey]: option.key }))}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                ) : financialScopeOptions[0] ? (
+                  <Badge data-testid="financial-scope-static" variant="outline">{financialScopeOptions[0].label}</Badge>
+                ) : null}
               </div>
 
               {financialWorkspaceLoading && !selectedFinancialPayload ? (
@@ -6956,8 +6962,8 @@ export function ServiceRequestDetails({
                 <>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <Badge variant={selectedFinancialResultState === 'definitive' ? 'positive' : 'warning'}>{selectedFinancialResultLabel}</Badge>
-                    <Badge variant="outline">Hakediş: {financialScope === 'current' ? locksmithPayoutStatusLabel : selectedFinancialPayout?.payout_status_label ?? 'Kök toplam'}</Badge>
-                    {financialScope === 'current' && companyPaymentDecisionPayload?.pending_decision_count ? (
+                    <Badge variant="outline">Hakediş: {isCurrentFinancialScope ? locksmithPayoutStatusLabel : selectedFinancialPayout?.payout_status_label ?? 'Kök toplam'}</Badge>
+                    {isCurrentFinancialScope && companyPaymentDecisionPayload?.pending_decision_count ? (
                       <Badge variant="warning">{companyPaymentDecisionPayload.pending_decision_count} karar bekliyor</Badge>
                     ) : null}
                     {financeSummary?.generated_at ? <span className="text-slate-500">Güncellendi: {dateTimeOrEmpty(financeSummary.generated_at, '-')}</span> : null}
@@ -6966,11 +6972,11 @@ export function ServiceRequestDetails({
                   {financialBlockedReason ? (
                     <div data-testid="financial-result-blocked" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
                       <span>{financialBlockedReason}</span>
-                      {financialScope === 'current' && provisionalNetProfitLabel ? <span>Taslak karşılaştırma: {provisionalNetProfitLabel}</span> : null}
+                      {isCurrentFinancialScope && provisionalNetProfitLabel ? <span>Taslak karşılaştırma: {provisionalNetProfitLabel}</span> : null}
                     </div>
                   ) : null}
 
-                  {!financialBlockedReason && !earningBaseDraftDirty && financialScope === 'current' && hasRouteEarningSuggestion ? (
+                  {!financialBlockedReason && !earningBaseDraftDirty && isCurrentFinancialScope && hasRouteEarningSuggestion ? (
                     <div data-testid="route-earning-suggestion" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
                       <div className="grid gap-1">
                         <strong>Yeni yol hakedişi önerisi: {formatMoneyValue(routeSuggestionAmount)}</strong>
@@ -6991,7 +6997,7 @@ export function ServiceRequestDetails({
                     </div>
                   ) : null}
 
-                  {earningBaseDraftDirty && financialScope === 'current' ? (
+                  {earningBaseDraftDirty && isCurrentFinancialScope ? (
                     <div data-testid="earning-draft-compact-diff" className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 sm:grid-cols-3">
                       <p className="font-semibold sm:col-span-3">Kaydedilmemiş değişiklik</p>
                       <span>İşçilik: <strong>{formatMoneyValue(persistedEarningLaborAmount)} → {formatMoneyValue(earningLaborAmount)}</strong></span>
@@ -7000,7 +7006,7 @@ export function ServiceRequestDetails({
                     </div>
                   ) : null}
 
-                  {financialScope === 'current' && companyPaymentEligibleItems.length > 0 ? (
+                  {isCurrentFinancialScope && companyPaymentEligibleItems.length > 0 ? (
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
                       <div>
                         <p className="font-semibold">Ek ödeme dağıtım kararı bekliyor</p>
@@ -7017,13 +7023,13 @@ export function ServiceRequestDetails({
                   ) : null}
 
                   <div data-testid="financial-primary-cards" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <MiniMetric label={financialScope === 'root' ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'} value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
+                    <MiniMetric label={isRootFinancialScope ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'} value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
                     <MiniMetric label="Usta hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
                     <MiniMetric label="Şirket ödemesi" value={selectedFinancialPayload.company_payment_amount_label ?? '0 TL'} />
                     <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
                   </div>
 
-                  {financialScope === 'root' && selectedFinancialCollection ? (
+                  {isRootFinancialScope && selectedFinancialCollection ? (
                     <div data-testid="root-customer-collection-breakdown" className="flex flex-wrap gap-x-4 gap-y-1 rounded-xl border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-950">
                       <span>Hizmet tahsilatı: <strong>{selectedFinancialCollection.service_total_amount_label ?? '0 TL'}</strong></span>
                       <span>Parça tahsilatı: <strong>{selectedFinancialCollection.part_amount_label ?? '0 TL'}</strong></span>
@@ -7031,7 +7037,7 @@ export function ServiceRequestDetails({
                     </div>
                   ) : null}
 
-                  {financialScope === 'current' && financeRelatedPaymentRecords.length > 0 ? (
+                  {isCurrentFinancialScope && financeRelatedPaymentRecords.length > 0 ? (
                     <div data-testid="related-payment-context-notice" className="grid gap-1 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-950">
                       {financeRelatedPaymentRecords.map((payment) => (
                         <p key={String(payment.id)}>{payment.scope_notice ?? `${payment.amount_label ?? formatMoneyValue(payment.amount)} ödeme kök MRN kapsamındadır.`}</p>
@@ -7114,7 +7120,7 @@ export function ServiceRequestDetails({
                     </details>
                   ) : null}
 
-                  {financialScope === 'root' && earningBreakdown?.rows ? (
+                  {isRootFinancialScope && earningBreakdown?.rows ? (
                     <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
                       <summary className="cursor-pointer font-semibold text-slate-950">Teknik detay / Geçmiş</summary>
                       <div className="mt-3 grid gap-2">
@@ -7147,7 +7153,7 @@ export function ServiceRequestDetails({
                   {assignmentOfferUpdateSuccess}
                 </div>
               ) : null}
-              {!isCancelledOrReviewContext && financialScope === 'current' ? (
+              {!isCancelledOrReviewContext && isCurrentFinancialScope ? (
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <div className="grid gap-3 sm:grid-cols-[180px_180px_minmax(0,1fr)]">
                   <label className="grid gap-1 text-xs font-semibold text-slate-600">

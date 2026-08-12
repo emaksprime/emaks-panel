@@ -1966,8 +1966,11 @@ class TechnicalServiceWorkflowService
             'technicianRecord',
             'parentRequest.latestAssignmentOffer.technician',
             'parentRequest.settlement',
+            'parentRequest.partRequests',
             'childRequests.latestAssignmentOffer.technician',
             'childRequests.settlement',
+            'childRequests.partRequests',
+            'partRequests',
         ]);
 
         $earningBreakdown = $this->earningBreakdownPayload($request);
@@ -3508,7 +3511,11 @@ class TechnicalServiceWorkflowService
      */
     private function financeSummaryPayload(TechnicalServiceRequest $request, array $earningBreakdown): array
     {
-        $currentCollection = $this->financeCustomerCollectionForRequest($request);
+        $scopeContext = $this->financialScopeContextPayload($request);
+        $currentCollection = $this->financeCustomerCollectionForRequest(
+            $request,
+            ($scopeContext['current_record_type'] ?? null) === 'srv',
+        );
         $rootCollection = $this->financeRootCustomerCollection($request);
         $paymentRecords = $this->financePaymentScopePayload($request);
         $currentPayout = $this->financePayoutFromRow($earningBreakdown['current_visit'] ?? null, $request);
@@ -3538,11 +3545,12 @@ class TechnicalServiceWorkflowService
             'scope' => [
                 'request_id' => (int) $request->id,
                 'root_request_id' => (int) ($earningBreakdown['root_request_id'] ?? $request->parent_request_id ?? $request->id),
-                'current_srv_id' => $request->parent_request_id !== null || filled($request->service_code) ? (int) $request->id : null,
+                'current_srv_id' => ($scopeContext['current_record_type'] ?? null) === 'srv' ? (int) $request->id : null,
                 'request_code' => $request->service_code ?: $request->mrn,
                 'root_mrn' => $earningBreakdown['root_mrn'] ?? $request->root_mrn ?? $request->mrn,
-                'scope_type' => 'current_job',
+                'scope_type' => $scopeContext['current_scope_key'],
             ],
+            'scope_context' => $scopeContext,
             'technician' => [
                 'technician_id' => $currentPayout['technician_id'] ?? $request->technical_service_technician_id,
                 'technician_name' => $currentPayout['technician_name'] ?? $request->technician_name,
@@ -3622,15 +3630,20 @@ class TechnicalServiceWorkflowService
         $rows = $payments
             ->map(fn (TechnicalServiceMountPayment $payment): array => $this->customerChargePaymentPayload($payment, $request))
             ->values();
+        $currentRecordType = $this->financialRecordType($request);
+        $isSubordinatePartContext = fn (array $row): bool => $currentRecordType === 'mrn'
+            && filled($row['part_request_id'] ?? null);
 
         return [
             'current_scope_rows' => $rows
-                ->filter(fn (array $row): bool => (bool) ($row['belongs_to_current_request'] ?? false))
+                ->filter(fn (array $row): bool => (bool) ($row['belongs_to_current_request'] ?? false)
+                    && ! $isSubordinatePartContext($row))
                 ->values()
                 ->all(),
             'related_scope_rows' => $rows
-                ->filter(fn (array $row): bool => (bool) ($row['related_to_current_srv'] ?? false)
+                ->filter(fn (array $row): bool => ((bool) ($row['related_to_current_srv'] ?? false)
                     && ! (bool) ($row['belongs_to_current_request'] ?? false))
+                    || $isSubordinatePartContext($row))
                 ->values()
                 ->all(),
             'root_scope_rows' => $rows->all(),
@@ -3671,11 +3684,17 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
-    private function financeCustomerCollectionForRequest(TechnicalServiceRequest $request): array
-    {
+    private function financeCustomerCollectionForRequest(
+        TechnicalServiceRequest $request,
+        bool $includeLinkedPartRequestCollections = true,
+    ): array {
         $isServiceVisit = $this->isServiceVisitRequest($request);
         $mountPayments = $this->mountCustomerPaymentSummaryPayload($request);
-        $customerCharges = $this->customerChargeSummaryForRequests(collect([$request]), $request);
+        $customerCharges = $this->customerChargeSummaryForRequests(
+            collect([$request]),
+            $request,
+            $includeLinkedPartRequestCollections,
+        );
         $classifiedMountPayments = collect($mountPayments['paid_rows'] ?? [])
             ->filter(fn (mixed $row): bool => is_array($row))
             ->reduce(function (array $totals, array $row) use ($isServiceVisit): array {
@@ -3758,7 +3777,7 @@ class TechnicalServiceWorkflowService
     {
         $totals = $this->rootFinancialRequests($request)
             ->reject(fn (TechnicalServiceRequest $related): bool => $this->isCancelledRequest($related))
-            ->map(fn (TechnicalServiceRequest $related): array => $this->financeCustomerCollectionForRequest($related))
+            ->map(fn (TechnicalServiceRequest $related): array => $this->financeCustomerCollectionForRequest($related, true))
             ->reduce(function (array $carry, array $row): array {
                 $carry['mount_amount'] += (float) ($row['mount_amount'] ?? 0);
                 $carry['service_amount'] += (float) ($row['service_amount'] ?? 0);
@@ -4021,14 +4040,22 @@ class TechnicalServiceWorkflowService
      * @param  Collection<int, TechnicalServiceRequest>  $requests
      * @return array<string, mixed>
      */
-    private function customerChargeSummaryForRequests(Collection $requests, ?TechnicalServiceRequest $scopeRequest = null): array
-    {
+    private function customerChargeSummaryForRequests(
+        Collection $requests,
+        ?TechnicalServiceRequest $scopeRequest = null,
+        bool $includeLinkedPartRequestCollections = true,
+    ): array {
         $payments = $this->customerChargePaymentsForRequests($requests);
         $this->preloadPaymentLinkMessageStates($payments);
         $this->preloadPaymentPartRequests($payments);
         $rows = $payments
             ->map(fn (TechnicalServiceMountPayment $payment): array => $this->customerChargePaymentPayload($payment, $scopeRequest))
             ->values();
+        if (! $includeLinkedPartRequestCollections) {
+            $rows = $rows
+                ->reject(fn (array $row): bool => filled($row['part_request_id'] ?? null))
+                ->values();
+        }
         $paidRows = $rows->filter(fn (array $row): bool => ($row['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID);
 
         return [
@@ -4222,12 +4249,15 @@ class TechnicalServiceWorkflowService
             && $serviceVisit instanceof TechnicalServiceRequest
             && (int) $serviceVisit->id === (int) $scopeRequest->id;
         $scopeRelation = $scopeRequest instanceof TechnicalServiceRequest
-            ? ($belongsToCurrentRequest ? 'current_request' : ($relatedToCurrentSrv ? 'related_part_request' : 'root_mrn'))
+            ? ($partRequest instanceof TechnicalServicePartRequest
+                ? 'related_part_request'
+                : ($belongsToCurrentRequest ? 'current_request' : ($relatedToCurrentSrv ? 'related_part_request' : 'root_mrn')))
             : null;
         $scopeLabel = $partRequest instanceof TechnicalServicePartRequest
-            ? 'Kök MRN / Parça Talebi'
+            ? sprintf('Kök MRN / Parça Talebi #%d', (int) $partRequest->id)
             : match ($scopeRelation) {
-                'current_request' => filled($paymentRequest?->service_code) ? 'Bu SRV' : 'Kök MRN',
+                'current_request' => $scopeRequest instanceof TechnicalServiceRequest
+                    && $this->financialRecordType($scopeRequest) === 'srv' ? 'Bu SRV' : 'Bu MRN',
                 default => 'Kök MRN',
             };
         $scopeNotice = $relatedToCurrentSrv && ! $belongsToCurrentRequest
@@ -4339,9 +4369,11 @@ class TechnicalServiceWorkflowService
             'latestAssignmentOffer.technician',
             'technicianRecord',
             'settlement.earningPayments',
+            'partRequests',
             'childRequests.latestAssignmentOffer.technician',
             'childRequests.technicianRecord',
             'childRequests.settlement.earningPayments',
+            'childRequests.partRequests',
         ]);
 
         $requests = collect([$root])
@@ -4355,6 +4387,59 @@ class TechnicalServiceWorkflowService
         });
 
         return $this->rootFinancialRequestsCache[$requestId] ?? $requests;
+    }
+
+    /** @return array<string, mixed> */
+    private function financialScopeContextPayload(TechnicalServiceRequest $request): array
+    {
+        $recordType = $this->financialRecordType($request);
+        $root = $this->rootFinancialRequest($request) ?? $request;
+        $rootRequests = $this->rootFinancialRequests($request);
+        $hasChildRequests = $rootRequests->contains(
+            fn (TechnicalServiceRequest $related): bool => (int) $related->id !== (int) $root->id,
+        );
+        $hasLinkedPartRequests = $rootRequests->contains(
+            fn (TechnicalServiceRequest $related): bool => $related->relationLoaded('partRequests')
+                && $related->partRequests->isNotEmpty(),
+        );
+        $hasDescendants = $recordType === 'mrn' && ($hasChildRequests || $hasLinkedPartRequests);
+        $rootTotalAvailable = $recordType === 'srv' || $hasDescendants;
+        $currentScopeKey = $recordType === 'srv' ? 'current_srv' : 'current_mrn';
+        $currentScopeLabel = $recordType === 'srv' ? 'Bu SRV' : 'Bu MRN';
+        $scopeOptions = [[
+            'key' => $currentScopeKey,
+            'label' => $currentScopeLabel,
+            'available' => true,
+        ]];
+
+        if ($rootTotalAvailable) {
+            $scopeOptions[] = [
+                'key' => 'root_mrn_total',
+                'label' => 'Kök MRN toplamı',
+                'available' => true,
+            ];
+        }
+
+        return [
+            'current_record_type' => $recordType,
+            'current_record_code' => $recordType === 'srv'
+                ? ($request->service_code ?: $request->mrn)
+                : $request->mrn,
+            'root_request_id' => (int) $root->id,
+            'root_mrn_code' => $root->mrn,
+            'current_scope_key' => $currentScopeKey,
+            'current_scope_label' => $currentScopeLabel,
+            'root_total_available' => $rootTotalAvailable,
+            'has_descendants' => $hasDescendants,
+            'scope_options' => $scopeOptions,
+        ];
+    }
+
+    private function financialRecordType(TechnicalServiceRequest $request): string
+    {
+        return $request->parent_request_id !== null || $request->source_part_request_id !== null
+            ? 'srv'
+            : 'mrn';
     }
 
     private function rootFinancialRequest(TechnicalServiceRequest $request): ?TechnicalServiceRequest

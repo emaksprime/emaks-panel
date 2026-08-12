@@ -668,6 +668,24 @@ export type ServiceRequestFinanceNetMargin = {
 
 export type ServiceRequestFinancialResultState = 'definitive' | 'draft_pending' | 'allocation_pending' | 'classification_pending'
 
+export type ServiceRequestFinancialScopeKey = 'current_mrn' | 'current_srv' | 'root_mrn_total'
+
+export type ServiceRequestFinancialScopeContext = {
+  current_record_type: 'mrn' | 'srv'
+  current_record_code: string
+  root_request_id: number | string
+  root_mrn_code: string
+  current_scope_key: Exclude<ServiceRequestFinancialScopeKey, 'root_mrn_total'>
+  current_scope_label: string
+  root_total_available: boolean
+  has_descendants: boolean
+  scope_options: Array<{
+    key: ServiceRequestFinancialScopeKey
+    label: string
+    available: boolean
+  }>
+}
+
 export type ServiceRequestPaymentPartContext = {
   payment_id?: number | string | null
   purpose?: string | null
@@ -747,8 +765,9 @@ export type ServiceRequestFinanceSummary = {
     current_srv_id?: number | string | null
     request_code?: string | null
     root_mrn?: string | null
-    scope_type?: string | null
+    scope_type?: ServiceRequestFinancialScopeKey | string | null
   }
+  scope_context: ServiceRequestFinancialScopeContext
   technician?: {
     technician_id?: number | string | null
     technician_name?: string | null

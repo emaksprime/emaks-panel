@@ -128,8 +128,8 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $primaryCards = Str::betweenFirst($detail, 'data-testid="financial-primary-cards"', '</div>');
 
         $this->assertStringContainsString('data-testid="technical-service-financial-workspace"', $detail);
-        $this->assertStringContainsString('Bu SRV', $detail);
-        $this->assertStringContainsString('Kök MRN toplamı', $detail);
+        $this->assertStringContainsString('financialScopeContext?.scope_options', $detail);
+        $this->assertStringContainsString('{option.label}', $detail);
         $this->assertStringNotContainsString('>\n                    Bu iş\n', $detail);
         $this->assertStringContainsString('data-testid="route-earning-suggestion"', $detail);
         $this->assertStringContainsString('Yeni yol hakedişi önerisi:', $detail);
@@ -137,7 +137,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('Hakedişte kullan', $detail);
         $this->assertStringContainsString('updateAssignmentEarningDraft({ routeFeeAmount:', $detail);
         $this->assertStringContainsString('data-testid="financial-primary-cards"', $detail);
-        $this->assertSame(1, substr_count($primaryCards, "label={financialScope === 'root' ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'}"));
+        $this->assertSame(1, substr_count($primaryCards, "label={isRootFinancialScope ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'}"));
         $this->assertSame(1, substr_count($primaryCards, 'label="Usta hakedişi"'));
         $this->assertSame(1, substr_count($primaryCards, 'label="Şirket ödemesi"'));
         $this->assertSame(1, substr_count($primaryCards, 'label="Operasyon farkı"'));
@@ -237,6 +237,109 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('<details data-testid="payment-technical-details"', $renderer);
         $this->assertStringContainsString('Teknik ödeme detayları', $renderer);
         $this->assertStringNotContainsString('<p className="font-semibold text-slate-900">Provider bilgisi</p>', $renderer);
+    }
+
+    public function test_root_mrn_displays_bu_mrn(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $types = $this->source('resources/js/components/technical-service/types.ts');
+
+        $this->assertStringContainsString('current_scope_label: string', $types);
+        $this->assertStringContainsString('{financialScopeOptions[0].label}', $detail);
+        $this->assertStringContainsString('{option.label}', $detail);
+    }
+
+    public function test_root_mrn_never_displays_bu_srv(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringNotContainsString('Bu SRV', $detail);
+        $this->assertStringNotContainsString("startsWith('MRN-')", $detail);
+        $this->assertStringNotContainsString("startsWith('SRV-')", $detail);
+    }
+
+    public function test_child_srv_displays_bu_srv(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $types = $this->source('resources/js/components/technical-service/types.ts');
+
+        $this->assertStringContainsString("current_record_type: 'mrn' | 'srv'", $types);
+        $this->assertStringContainsString('financialScopeContext?.scope_options', $detail);
+        $this->assertStringContainsString('{option.label}', $detail);
+    }
+
+    public function test_standalone_root_hides_redundant_root_total_toggle(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('financialScopeOptions.length > 1 ? (', $detail);
+        $this->assertStringContainsString('data-testid="financial-scope-static"', $detail);
+        $this->assertStringContainsString('data-testid="financial-scope-selector"', $detail);
+    }
+
+    public function test_root_with_descendants_displays_two_correct_options(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('financialScopeOptions.map((option) => (', $detail);
+        $this->assertStringContainsString('key={option.key}', $detail);
+        $this->assertStringContainsString('{option.label}', $detail);
+    }
+
+    public function test_selected_scope_survives_financial_refresh(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const [financialScopeByRequest, setFinancialScopeByRequest]', $detail);
+        $this->assertStringContainsString('financialScopeOptions.some((option) => option.key === storedFinancialScope)', $detail);
+        $this->assertStringContainsString('[requestStateKey]: option.key', $detail);
+    }
+
+    public function test_opening_another_request_resets_to_its_canonical_current_scope(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const requestStateKey = String(request.id)', $detail);
+        $this->assertStringContainsString('const storedFinancialScope = financialScopeByRequest[requestStateKey]', $detail);
+        $this->assertStringContainsString(': canonicalCurrentFinancialScope', $detail);
+    }
+
+    public function test_raw_financial_scope_keys_are_not_user_facing(): void
+    {
+        $detail = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('{option.label}', $detail);
+        $this->assertStringNotContainsString('>{option.key}<', $detail);
+        $this->assertStringNotContainsString('>current_mrn<', $detail);
+        $this->assertStringNotContainsString('>current_srv<', $detail);
+    }
+
+    public function test_financial_scope_modal_is_not_remounted(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+
+        $this->assertStringContainsString('preserveDetailScroll(() => {', $page);
+        $this->assertStringNotContainsString('key={selectedDetailRequest', $page);
+    }
+
+    public function test_financial_scope_refresh_does_not_refetch_full_board(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+        $workspaceLoader = Str::between($page, 'const loadFinancialWorkspace = useCallback', 'const loadRequestDetail = useCallback');
+
+        $this->assertStringContainsString('setSelectedDetailRequest((current)', $workspaceLoader);
+        $this->assertStringNotContainsString('loadRequests(', $workspaceLoader);
+        $this->assertStringNotContainsString('loadSummary(', $workspaceLoader);
+    }
+
+    public function test_stale_scope_response_cannot_overwrite_newly_selected_request(): void
+    {
+        $page = $this->source('resources/js/pages/panel/technical-service.tsx');
+        $loader = Str::between($page, 'const loadRequestDetail = useCallback', 'const handleRequestSelect');
+
+        $this->assertStringContainsString('detailRequestTokenRef.current === requestToken', $loader);
+        $this->assertStringContainsString('selectedIdRef.current === requestId', $loader);
+        $this->assertStringContainsString('if (!isCurrentRequest())', $loader);
     }
 
     public function test_part_payment_copy_feedback_is_rendered_next_to_visible_actions(): void
@@ -409,7 +512,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('selectedFinancialCollection?.service_total_amount_label', $source);
         $this->assertStringContainsString('selectedFinancialPayout?.total_amount_label', $source);
         $this->assertStringContainsString('selectedFinancialDifferenceLabel', $source);
-        $this->assertStringContainsString("financialScope === 'root' ? financeRootTotal : financeCurrentVisit", $source);
+        $this->assertStringContainsString('isRootFinancialScope ? financeRootTotal : financeCurrentVisit', $source);
         $this->assertStringNotContainsString('totalCustomerCollectionDisplayLabel', $source);
     }
 
