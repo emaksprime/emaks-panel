@@ -45,6 +45,42 @@ type AssignmentOfferUpdateResult = {
   request?: ServiceRequest
 }
 
+export type PostApprovalState = {
+  request_id: number | string
+  generated_at?: string | null
+  approval: {
+    business_status: 'approved' | 'rejected' | 'expired' | 'cancelled' | 'pending' | 'not_requested'
+    business_label: string
+    approved_at?: string | null
+    terminal: boolean
+    normal_resend_allowed: boolean
+    transport?: {
+      summary?: string | null
+      channels?: Record<string, {
+        dispatch_id?: number | string | null
+        status?: string | null
+        status_label?: string | null
+        sent_at?: string | null
+        attempt_count?: number
+      }>
+    } | null
+  }
+  completion: {
+    completed: boolean
+    completed_at?: string | null
+    final_check_state: 'completed' | 'pending'
+    payment_badge?: {
+      state: string
+      label: string
+      detail?: string | null
+      tone: 'positive' | 'warning' | 'neutral'
+      blocks_completion: boolean
+    } | null
+  }
+  request?: Record<string, unknown> | null
+  field_completion_documents?: Array<Record<string, unknown>>
+}
+
 const OPS_DOOR_PHOTO_FIELD_CODES = new Set<string>([
   'ops_door_front_photo',
   'ops_door_side_photo',
@@ -94,6 +130,7 @@ type ServiceRequestDetailsProps = {
   warranty?: WarrantySerialResponse | null
   warrantyLoading?: boolean
   warrantyError?: string | null
+  postApprovalState?: PostApprovalState | null
   onAssign?: () => void
   onSchedule?: () => void
   onComplete?: () => void
@@ -193,13 +230,15 @@ type ServiceRequestDetailsProps = {
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, expected_earning_revision: string, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<AssignmentOfferUpdateResult | void>
   onCompanyPaymentDecisionApprove?: (payload: ServiceRequestCompanyPaymentDecisionSubmit[]) => void | Promise<AssignmentOfferUpdateResult | void>
   onPartnerActionReview?: (actionId: number | string, payload: { decision: 'reviewed' | 'resolved' | 'more_info' | 'rejected' | 'revision_requested', note?: string | null }) => void | Promise<void>
-  onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
+  onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null, apply_to_current_completion_set?: boolean }) => void | Promise<void>
   onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null, document_type?: string | null }) => void | Promise<void>
   onCustomerApprovalResend?: (payload?: { note?: string | null }) => void | Promise<void>
   fieldDocumentReviewInFlight?: string | null
   fieldDocumentReviewError?: string | null
   customerApprovalResendLoading?: boolean
   customerApprovalResendError?: string | null
+  partnerCompletionApproveInFlight?: boolean
+  partnerCompletionApproveError?: string | null
   partnerActionReviewInFlight?: string | null
   partnerActionReviewError?: string | null
   appointmentApprovalInFlight?: string | null
@@ -1481,6 +1520,7 @@ export function ServiceRequestDetails({
   warranty = null,
   warrantyLoading = false,
   warrantyError = null,
+  postApprovalState = null,
   onAssign,
   onSchedule,
   onComplete,
@@ -1553,6 +1593,8 @@ export function ServiceRequestDetails({
   fieldDocumentReviewError = null,
   customerApprovalResendLoading = false,
   customerApprovalResendError = null,
+  partnerCompletionApproveInFlight = false,
+  partnerCompletionApproveError = null,
   partnerActionReviewInFlight = null,
   partnerActionReviewError = null,
   appointmentApprovalInFlight = null,
@@ -1644,6 +1686,12 @@ export function ServiceRequestDetails({
     ?? '',
   )
   const latestCustomerApprovalMessageStatusLabel = (() => {
+    const canonicalTransportSummary = postApprovalState?.approval.transport?.summary
+
+    if (canonicalTransportSummary) {
+      return canonicalTransportSummary
+    }
+
     if (['sent', 'test_sent'].includes(latestCustomerApprovalDispatchStatus)) {
       return 'Gönderildi'
     }
@@ -1666,6 +1714,18 @@ export function ServiceRequestDetails({
 
     return 'Bastırıldı'
   })()
+  const requestApprovalFields = request as ServiceRequest & {
+    customerClosureApprovalStatus?: string | null
+    customerClosureApprovedAt?: string | null
+  }
+  const customerApprovalBusinessStatus = postApprovalState?.approval.business_status
+    ?? (requestApprovalFields.customerClosureApprovalStatus === 'onaylandı' ? 'approved' : 'pending')
+  const customerApprovalBusinessLabel = postApprovalState?.approval.business_label
+    ?? (customerApprovalBusinessStatus === 'approved' ? 'Müşteri onayı alındı' : 'Müşteri onayı bekleniyor')
+  const customerApprovalApprovedAt = postApprovalState?.approval.approved_at
+    ?? requestApprovalFields.customerClosureApprovedAt
+  const customerApprovalNormalResendAllowed = postApprovalState?.approval.normal_resend_allowed
+    ?? (customerApprovalBusinessStatus !== 'approved')
   const latestCustomerApprovalUrl = stringValue(latestCustomerApprovalPayload, 'approval_url')
     ?? stringValue(latestCustomerApprovalPayload, 'confirmation_url')
     ?? stringValue(latestCustomerApprovalMessagePayload, 'approval_url')
@@ -1873,7 +1933,8 @@ export function ServiceRequestDetails({
     ? null
     : serviceVisitHistoryRecords.find((record) => String(record.id) === String(historyRecordId)) ?? null
   const [fieldDocumentOverallRejectNote, setFieldDocumentOverallRejectNote] = useState('')
-  const [fieldDocumentOverallReviewLoading, setFieldDocumentOverallReviewLoading] = useState(false)
+  const [fieldDocumentOverallReviewLoading, setFieldDocumentOverallReviewLoading] = useState<'accepted' | 'rejected' | null>(null)
+  const fieldDocumentOverallReviewLoadingRef = useRef(false)
   const [fieldDocumentOverallReviewEditing, setFieldDocumentOverallReviewEditing] = useState(false)
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
@@ -4586,7 +4647,13 @@ export function ServiceRequestDetails({
     pending: 'Uygunluk bekliyor',
     missing: 'Belge bekleniyor',
   }[fieldDocumentOverallReviewStatus]
-  const isFieldDocumentOverallReviewBusy = fieldDocumentOverallReviewLoading || fieldDocumentReviewInFlight !== null
+  const activeFieldDocumentOverallDecision = fieldDocumentOverallReviewLoading
+    ?? (fieldDocumentReviewInFlight === 'overall:accepted'
+      ? 'accepted'
+      : fieldDocumentReviewInFlight === 'overall:rejected'
+        ? 'rejected'
+        : null)
+  const isFieldDocumentOverallReviewBusy = activeFieldDocumentOverallDecision !== null
   const showFieldDocumentOverallReviewControls = reviewableFieldDocuments.length > 0
     && (fieldDocumentOverallReviewStatus === 'pending' || fieldDocumentOverallReviewEditing)
   const finalCheckActionChecklistComplete = Boolean(
@@ -4598,6 +4665,7 @@ export function ServiceRequestDetails({
     && Object.values(finalCheckActionChecklist).every(Boolean),
   )
   const backendControlComplete = request.checklistStatus === 'tamamlandı' || (checklistTotalCount > 0 && checklistMissingCount === 0) || finalCheckActionChecklistComplete
+  const finalCheckCompleted = postApprovalState?.completion.completed === true || request.status === 'Tamamlandı'
   const finalCompletionMissingReasons = [
     ...missingFieldDocumentLabels.map((label) => `${label} eksik`),
     ...(fieldDocumentOverallReviewStatus === 'accepted' ? [] : [
@@ -4605,7 +4673,7 @@ export function ServiceRequestDetails({
         ? 'Saha belgeleri uygun değil'
         : 'Saha belgeleri uygunluk kararı bekliyor',
     ]),
-    ...(request.customerClosureApprovalStatus === 'onaylandı' ? [] : ['Müşteri onayı bekliyor']),
+    ...(customerApprovalBusinessStatus === 'approved' ? [] : ['Müşteri onayı bekliyor']),
     ...(backendControlComplete ? [] : ['Backend kontrol eksik']),
     ...(earningBaseDraftDirty ? ['Önce işçilik/yol hakedişi değişikliklerini kaydedin'] : []),
     ...(companyPaymentDecisionsPersisted ? [] : ['Müşteriden alınan ek ödemeler için dağıtım kararı onaylanıp kaydedilmedi']),
@@ -4639,7 +4707,7 @@ export function ServiceRequestDetails({
     })
   }
   const reviewFieldDocumentsOverall = async (status: 'accepted' | 'rejected') => {
-    if (! onFieldDocumentReview || reviewableFieldDocuments.length === 0) {
+    if (fieldDocumentOverallReviewLoadingRef.current || ! onFieldDocumentReview || reviewableFieldDocuments.length === 0) {
       return
     }
 
@@ -4649,23 +4717,26 @@ export function ServiceRequestDetails({
       return
     }
 
-    setFieldDocumentOverallReviewLoading(true)
+    fieldDocumentOverallReviewLoadingRef.current = true
+    setFieldDocumentOverallReviewLoading(status)
 
     try {
-      for (const document of reviewableFieldDocuments) {
-        await onFieldDocumentReview(document.id!, {
-          status,
-          note: status === 'rejected' ? note : null,
-        })
-      }
+      await onFieldDocumentReview(reviewableFieldDocuments[0].id!, {
+        status,
+        note: status === 'rejected' ? note : null,
+        apply_to_current_completion_set: true,
+      })
 
       if (status === 'accepted') {
         setFieldDocumentOverallRejectNote('')
       }
 
       setFieldDocumentOverallReviewEditing(false)
+    } catch {
+      return
     } finally {
-      setFieldDocumentOverallReviewLoading(false)
+      fieldDocumentOverallReviewLoadingRef.current = false
+      setFieldDocumentOverallReviewLoading(null)
     }
   }
   const handleOpsExtraDocumentUpload = async () => {
@@ -4732,7 +4803,7 @@ export function ServiceRequestDetails({
     ? formatTechnicalServiceDate(request.scheduledDate)
     : dateTimeOrEmpty(request.scheduledAt, 'Randevu bekliyor')
   const scheduledTimeLabel = displayOrEmpty(request.scheduledTime || request.appointment, 'Saat planlanmadı')
-  const closureApprovalLabel = displayOrEmpty(request.customerClosureApprovalStatus, 'Kapanış onayı yok')
+  const closureApprovalLabel = displayOrEmpty(customerApprovalBusinessLabel, 'Kapanış onayı yok')
   const canonicalActionLabel = request.operationalState?.action_label
     ?? request.operationalState?.display_action_label
     ?? request.displayActionLabel
@@ -5137,6 +5208,7 @@ export function ServiceRequestDetails({
 
     setNextActionNavigationMessage('Bu aksiyon için gidilecek bölüm bulunamadı.')
   }
+  const completionPaymentBadge = postApprovalState?.completion.payment_badge ?? null
   const compactControlChips = [
     {
       label: 'Görseller',
@@ -5145,8 +5217,15 @@ export function ServiceRequestDetails({
     },
     {
       label: 'Ödeme',
-      value: mountPaymentReceived ? 'Alındı' : canonicalPaymentRequiresPayment || mountExclusionAckRequired ? 'Bekleniyor' : 'Gerekmez',
-      tone: mountPaymentReceived ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800',
+      value: completionPaymentBadge?.label
+        ?? (mountPaymentReceived ? 'Alındı' : canonicalPaymentRequiresPayment || mountExclusionAckRequired ? 'Bekleniyor' : 'Gerekmez'),
+      tone: completionPaymentBadge?.tone === 'positive'
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+        : completionPaymentBadge?.tone === 'neutral'
+          ? 'border-slate-200 bg-white text-slate-700'
+          : mountPaymentReceived
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-amber-200 bg-amber-50 text-amber-800',
     },
     {
       label: 'Usta',
@@ -5703,7 +5782,7 @@ export function ServiceRequestDetails({
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Seri garanti durumu</p>
                 <h3 className="mt-1 text-base font-bold text-slate-950">
-                  {warrantyLoading ? 'Garanti bilgisi okunuyor' : warranty?.status ?? 'Garanti bilgisi okunamadı'}
+                  {warrantyLoading ? 'Garanti bilgisi okunuyor' : warrantyIsActive ? 'Garanti Başladı' : warranty?.status ?? 'Garanti bilgisi okunamadı'}
                 </h3>
                 {warrantyError ? <p className="mt-1 text-sm text-rose-700">{warrantyError}</p> : null}
               </div>
@@ -7577,14 +7656,21 @@ export function ServiceRequestDetails({
                 hint={backendControlComplete ? 'Backend kontrol tamam' : checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Checklist bu işte henüz tamamlanmadı'}
               />
             </div>
-            {onCustomerApprovalResend ? (
+            {(onCustomerApprovalResend || postApprovalState) ? (
               <div className="flex flex-col gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="font-semibold">Son mesaj durumu</p>
+                  <p className="font-semibold">{customerApprovalBusinessLabel}</p>
                   <p className="mt-1 text-xs text-violet-800">
-                    {latestCustomerApprovalMessageStatusLabel}
+                    {customerApprovalApprovedAt
+                      ? formatTechnicalServiceDateTime(customerApprovalApprovedAt, 'Bilinmiyor')
+                      : latestCustomerApprovalMessageStatusLabel}
                   </p>
-                  {latestCustomerApprovalRequest?.created_at ? (
+                  {customerApprovalBusinessStatus === 'approved' && postApprovalState?.approval.transport?.summary ? (
+                    <p className="mt-1 text-[11px] font-semibold text-violet-700">
+                      {postApprovalState.approval.transport.summary}
+                    </p>
+                  ) : null}
+                  {customerApprovalBusinessStatus !== 'approved' && latestCustomerApprovalRequest?.created_at ? (
                     <p className="mt-1 text-[11px] font-semibold text-violet-700">
                       Son istek: {formatTechnicalServiceDateTime(latestCustomerApprovalRequest.created_at, 'Bilinmiyor')}
                     </p>
@@ -7650,19 +7736,21 @@ export function ServiceRequestDetails({
                     <p className="mt-2 text-xs font-semibold text-rose-700">{customerApprovalResendError}</p>
                   ) : null}
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={customerApprovalResendLoading}
-                  onClick={() => setCustomerApprovalModalOpen(true)}
-                  className="border-violet-200 bg-white text-violet-800 hover:bg-violet-100"
-                >
-                  Müşteri onayını tekrar gönder
-                </Button>
+                {customerApprovalNormalResendAllowed && onCustomerApprovalResend ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={customerApprovalResendLoading}
+                    onClick={() => setCustomerApprovalModalOpen(true)}
+                    className="border-violet-200 bg-white text-violet-800 hover:bg-violet-100"
+                  >
+                    Müşteri onayını tekrar gönder
+                  </Button>
+                ) : null}
               </div>
             ) : null}
-            {onCustomerApprovalResend && customerApprovalModalOpen ? (
+            {onCustomerApprovalResend && customerApprovalNormalResendAllowed && customerApprovalModalOpen ? (
               <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Müşteri onayı / OTP">
                 <div className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-violet-100 bg-white p-4 shadow-2xl">
                   <div className="flex items-start justify-between gap-3">
@@ -7757,7 +7845,17 @@ export function ServiceRequestDetails({
                 </div>
               </div>
             ) : null}
-            {finalCheckCompletionAction ? (
+            {finalCheckCompletionAction && finalCheckCompleted ? (
+              <div data-testid="final-check-completed-state" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-950">
+                <div>
+                  <p className="text-sm font-semibold">Son kontrol tamamlandı</p>
+                  <p className="mt-1 text-xs text-emerald-800">
+                    İş tamamlandı ve güncel garanti durumu aynı işlem sonucuna yansıtıldı.
+                  </p>
+                </div>
+                <Badge variant="secondary">Tamamlandı</Badge>
+              </div>
+            ) : finalCheckCompletionAction ? (
               <div className="grid gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-950">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
@@ -7828,6 +7926,11 @@ export function ServiceRequestDetails({
                   Son kontrol notu
                   <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
                 </label>
+                {partnerCompletionApproveError ? (
+                  <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+                    {partnerCompletionApproveError}
+                  </p>
+                ) : null}
               </div>
             ) : null}
             {onFieldDocumentReview ? (
@@ -7857,21 +7960,23 @@ export function ServiceRequestDetails({
                     <div className="grid gap-2 sm:grid-cols-2">
                       <Button
                         type="button"
+                        data-testid="field-documents-overall-accepted"
                         variant="outline"
                         disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0}
                         onClick={() => void reviewFieldDocumentsOverall('accepted')}
                         className="border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
                       >
-                        {isFieldDocumentOverallReviewBusy ? 'Kaydediliyor...' : 'Uygun'}
+                        {activeFieldDocumentOverallDecision === 'accepted' ? 'Kaydediliyor...' : 'Uygun'}
                       </Button>
                       <Button
                         type="button"
+                        data-testid="field-documents-overall-rejected"
                         variant="outline"
                         disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0 || fieldDocumentOverallRejectNote.trim() === ''}
                         onClick={() => void reviewFieldDocumentsOverall('rejected')}
                         className="border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100"
                       >
-                        {isFieldDocumentOverallReviewBusy ? 'Kaydediliyor...' : 'Uygun değil'}
+                        {activeFieldDocumentOverallDecision === 'rejected' ? 'Kaydediliyor...' : 'Uygun değil'}
                       </Button>
                     </div>
                   </>
@@ -8293,14 +8398,18 @@ export function ServiceRequestDetails({
               data-testid="final-completion-approve-button"
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
-              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || !companyPaymentDecisionsPersisted || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
+              disabled={isActionDisabled || partnerCompletionApproveInFlight || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || !companyPaymentDecisionsPersisted || (finalPayoutApprovalRequired && (finalPayoutSelectedRows.length === 0 || !currentVisitPayoutSelected))}
               title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : !companyPaymentDecisionsPersisted ? 'Önce dağıtım kararını onaylayıp kaydedin.' : finalPayoutApprovalRequired && !currentVisitPayoutSelected ? 'Mevcut SRV hakedişi açıkça seçilmelidir.' : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
               onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, {
                 note: completionReviewNote || null,
                 approved_visit_ids: finalPayoutApprovalRequired ? finalPayoutSelectedIds : undefined,
               })}
             >
-              {finalPayoutApprovalRequired ? 'İşaretlileri onayla' : 'Son kontrolü tamamla'}
+              {partnerCompletionApproveInFlight
+                ? 'Tamamlanıyor...'
+                : finalPayoutApprovalRequired
+                  ? 'İşaretlileri onayla'
+                  : 'Son kontrolü tamamla'}
             </Button>
           ) : null}
           {!isActionDisabled && canReassignAfterReview ? (

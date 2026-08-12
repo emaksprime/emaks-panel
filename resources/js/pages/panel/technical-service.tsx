@@ -1,5 +1,6 @@
 import { Head } from '@inertiajs/react'
 import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
+import type { MutableRefObject } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
 import {
@@ -8,6 +9,7 @@ import {
 } from '@/components/technical-service/payment-reconciliation'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult } from '@/components/technical-service/PendingPaymentLinkActions'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
+import type { PostApprovalState } from '@/components/technical-service/ServiceRequestDetails'
 import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import { TechnicalServiceWeekNavigator } from '@/components/technical-service/TechnicalServiceWeekNavigator'
@@ -61,6 +63,7 @@ type NewRequestForm = {
 
 type ApiTechnicalServiceRequest = {
   id: number | string
+  post_approval_state?: PostApprovalState | null
   mrn: string
   customer_name: string
   customer_phone: string
@@ -1102,6 +1105,151 @@ function applyOperationControlUpdate(request: ServiceRequest, update: ApiOperati
   }
 }
 
+type PostApprovalRequestDelta = ApiOperationControlUpdate & {
+  status?: string | null
+  workflow_status?: string | null
+  completed_at?: string | null
+  field_status?: string | null
+  field_completed_at?: string | null
+  customer_closure_approval_status?: string | null
+  customer_closure_approved_at?: string | null
+  field_completion_documents?: ServiceRequest['fieldCompletionDocuments']
+}
+
+type PostApprovalMutableRequest = ServiceRequest & {
+  fieldStatus?: string | null
+  fieldCompletedAt?: string | null
+  customerClosureApprovalStatus?: string | null
+  customerClosureApprovedAt?: string | null
+}
+
+export function applyPostApprovalRequestDelta(request: ServiceRequest, state: PostApprovalState): ServiceRequest {
+  const delta = (state.request ?? {}) as PostApprovalRequestDelta
+  const updated = applyOperationControlUpdate(request, {
+    ...delta,
+    id: delta.id ?? state.request_id,
+  }) as PostApprovalMutableRequest
+
+  return {
+    ...updated,
+    status: typeof delta.status === 'string' ? displayStatusLabel(delta.status) as ServiceRequest['status'] : updated.status,
+    workflowStatus: Object.prototype.hasOwnProperty.call(delta, 'workflow_status')
+      ? delta.workflow_status ?? null
+      : updated.workflowStatus,
+    completedAt: Object.prototype.hasOwnProperty.call(delta, 'completed_at')
+      ? delta.completed_at ?? null
+      : updated.completedAt,
+    fieldStatus: Object.prototype.hasOwnProperty.call(delta, 'field_status')
+      ? delta.field_status ?? null
+      : updated.fieldStatus,
+    fieldCompletedAt: Object.prototype.hasOwnProperty.call(delta, 'field_completed_at')
+      ? delta.field_completed_at ?? null
+      : updated.fieldCompletedAt,
+    customerClosureApprovalStatus: Object.prototype.hasOwnProperty.call(delta, 'customer_closure_approval_status')
+      ? delta.customer_closure_approval_status ?? null
+      : updated.customerClosureApprovalStatus,
+    customerClosureApprovedAt: Object.prototype.hasOwnProperty.call(delta, 'customer_closure_approved_at')
+      ? delta.customer_closure_approved_at ?? null
+      : updated.customerClosureApprovedAt,
+    fieldCompletionDocuments: Object.prototype.hasOwnProperty.call(delta, 'field_completion_documents')
+      ? delta.field_completion_documents ?? []
+      : updated.fieldCompletionDocuments,
+  } as PostApprovalMutableRequest
+}
+
+type PostApprovalRevalidationOptions = {
+  isOpen: boolean
+  requestId: string | null
+  businessStatus: PostApprovalState['approval']['business_status'] | null | undefined
+  currentState: PostApprovalState | null
+  selectedRequestIdRef: MutableRefObject<string | null>
+  onState: (state: PostApprovalState) => void
+  pollIntervalMs?: number
+  isDocumentHidden?: () => boolean
+}
+
+const defaultPostApprovalDocumentHidden = (): boolean => document.hidden
+
+const postApprovalStateSignature = (state: PostApprovalState | null): string | null => {
+  if (!state) {
+    return null
+  }
+
+  return JSON.stringify({
+    ...state,
+    generated_at: undefined,
+  })
+}
+
+export function usePostApprovalRevalidation({
+  isOpen,
+  requestId,
+  businessStatus,
+  currentState,
+  selectedRequestIdRef,
+  onState,
+  pollIntervalMs = 4000,
+  isDocumentHidden = defaultPostApprovalDocumentHidden,
+}: PostApprovalRevalidationOptions): void {
+  useEffect(() => {
+    if (!isOpen || !requestId || businessStatus !== 'pending') {
+      return
+    }
+
+    let stopped = false
+    let inFlight = false
+    let controller: AbortController | null = null
+
+    const revalidate = async () => {
+      if (stopped || inFlight || isDocumentHidden() || selectedRequestIdRef.current !== requestId) {
+        return
+      }
+
+      inFlight = true
+      controller = new AbortController()
+
+      try {
+        const response = await apiRequest(`/api/technical-service/requests/${requestId}?section=post-approval`, {
+          signal: controller.signal,
+        }) as PostApprovalState
+
+        if (
+          !stopped
+          && selectedRequestIdRef.current === requestId
+          && postApprovalStateSignature(response) !== postApprovalStateSignature(currentState)
+        ) {
+          onState(response)
+        }
+      } catch (caught) {
+        if (!controller.signal.aborted && selectedRequestIdRef.current === requestId) {
+          console.error('Customer approval revalidation failed', caught)
+        }
+      } finally {
+        inFlight = false
+        controller = null
+      }
+    }
+
+    const intervalId = window.setInterval(() => void revalidate(), pollIntervalMs)
+    const handleVisibilityChange = () => {
+      if (isDocumentHidden()) {
+        controller?.abort()
+      } else {
+        void revalidate()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      stopped = true
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      controller?.abort()
+    }
+  }, [businessStatus, currentState, isDocumentHidden, isOpen, onState, pollIntervalMs, requestId, selectedRequestIdRef])
+}
+
 function isUnassignedWorkflowRequest(request: ServiceRequest): boolean {
   const technicianName = normalizeTechnicalServiceText(request.technician)
 
@@ -1165,6 +1313,10 @@ export function TechnicalServiceOperationCenter() {
   const [fieldDocumentReviewError, setFieldDocumentReviewError] = useState<string | null>(null)
   const [customerApprovalResendLoading, setCustomerApprovalResendLoading] = useState(false)
   const [customerApprovalResendError, setCustomerApprovalResendError] = useState<string | null>(null)
+  const [postApprovalState, setPostApprovalState] = useState<PostApprovalState | null>(null)
+  const [partnerCompletionApproveInFlight, setPartnerCompletionApproveInFlight] = useState(false)
+  const [partnerCompletionApproveError, setPartnerCompletionApproveError] = useState<string | null>(null)
+  const partnerCompletionApproveInFlightRef = useRef(false)
   const [partnerActionReviewLoading, setPartnerActionReviewLoading] = useState<string | null>(null)
   const [partnerActionReviewError, setPartnerActionReviewError] = useState<string | null>(null)
   const [appointmentApprovalInFlight, setAppointmentApprovalInFlight] = useState<string | null>(null)
@@ -1438,6 +1590,27 @@ export function TechnicalServiceOperationCenter() {
     })
   }, [])
 
+  const applyPostApprovalState = useCallback((state: PostApprovalState) => {
+    const requestId = String(state.request_id)
+
+    if (selectedIdRef.current !== requestId) {
+      return
+    }
+
+    preserveDetailScroll(() => {
+      setPostApprovalState(state)
+      setRequests((current) => current.map((item) => (
+        item.id === requestId ? applyPostApprovalRequestDelta(item, state) : item
+      )))
+      setSelectedListRequest((current) => (
+        current?.id === requestId ? applyPostApprovalRequestDelta(current, state) : current
+      ))
+      setSelectedDetailRequest((current) => (
+        current?.id === requestId ? applyPostApprovalRequestDelta(current, state) : current
+      ))
+    })
+  }, [preserveDetailScroll])
+
   const loadRequestDetail = useCallback(async (id: string) => {
     const requestId = String(id)
     const requestToken = detailRequestTokenRef.current + 1
@@ -1506,6 +1679,7 @@ export function TechnicalServiceOperationCenter() {
 
       setSelectedDetailRequest(mappedDetail)
       setSelectedEvents(Array.isArray(request?.events) ? request.events : [])
+      setPostApprovalState(request.post_approval_state ?? null)
 
       void financialWorkspacePromise
         .then(({ workspace, error }) => {
@@ -1552,6 +1726,15 @@ export function TechnicalServiceOperationCenter() {
       }
     }
   }, [preserveDetailScroll])
+
+  usePostApprovalRevalidation({
+    isOpen: isDetailDialogOpen,
+    requestId: selectedId,
+    businessStatus: postApprovalState?.approval.business_status,
+    currentState: postApprovalState,
+    selectedRequestIdRef: selectedIdRef,
+    onState: applyPostApprovalState,
+  })
 
   const loadPaymentWorkspace = useCallback((id: string): Promise<void> => {
     const requestId = String(id)
@@ -3988,28 +4171,57 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handlePartnerCompletionApprove = async (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string> }) => {
-    if (!selectedId) {
+  const handlePartnerCompletionApprove = async (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string>, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => {
+    if (!selectedId || partnerCompletionApproveInFlightRef.current) {
       return
     }
 
-    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-completions/${actionId}/approve`, {
-      method: 'POST',
-      body: JSON.stringify(payload ?? {}),
-    })
-    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+    const requestId = selectedId
+    partnerCompletionApproveInFlightRef.current = true
+    setPartnerCompletionApproveInFlight(true)
+    setPartnerCompletionApproveError(null)
 
-    if (updatedRequest) {
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${requestId}/partner-completions/${actionId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify(payload ?? {}),
+      })
+
+      if (selectedIdRef.current !== requestId) {
+        return
+      }
+
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+      const nextPostApproval = (response.post_approval ?? response.request?.post_approval_state ?? null) as PostApprovalState | null
+
+      if (!updatedRequest || !nextPostApproval) {
+        throw new Error('Son kontrol sonucu canonical detayla birlikte dönmedi.')
+      }
+
       preserveDetailScroll(() => {
-        setRequests((current) => current.map((request) => (
-          request.id === updatedRequest.id ? updatedRequest : request
+        setRequests((current) => current.map((item) => (
+          item.id === updatedRequest.id ? updatedRequest : item
         )))
         setSelectedListRequest((current) => (
           current?.id === updatedRequest.id ? updatedRequest : current
         ))
         setSelectedDetailRequest(updatedRequest)
+        setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+        setPostApprovalState(nextPostApproval)
+
+        if (response.warranty) {
+          setWarranty(response.warranty as WarrantySerialResponse)
+          setWarrantyError(null)
+          setWarrantyLoading(false)
+        }
       })
-      await loadRequests({ silent: true, preserveSelection: true })
+    } catch (caught) {
+      if (selectedIdRef.current === requestId) {
+        setPartnerCompletionApproveError(caught instanceof Error ? caught.message : 'Son kontrol tamamlanamadı.')
+      }
+    } finally {
+      partnerCompletionApproveInFlightRef.current = false
+      setPartnerCompletionApproveInFlight(false)
     }
   }
 
@@ -4184,8 +4396,8 @@ export function TechnicalServiceOperationCenter() {
           ))
           setSelectedDetailRequest(updatedRequest)
           setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+          setPostApprovalState((response.post_approval ?? response.request?.post_approval_state ?? null) as PostApprovalState | null)
         })
-        await loadRequests({ silent: true, preserveSelection: true })
       } else {
         await loadRequestDetail(selectedId)
       }
@@ -4200,12 +4412,13 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleFieldDocumentReview = async (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => {
+  const handleFieldDocumentReview = async (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null, apply_to_current_completion_set?: boolean }) => {
     if (!selectedId) {
       return
     }
 
-    const uploadKey = String(uploadId)
+    const requestId = selectedId
+    const uploadKey = payload.apply_to_current_completion_set ? `overall:${payload.status}` : String(uploadId)
     setFieldDocumentReviewLoading(uploadKey)
     setFieldDocumentReviewError(null)
 
@@ -4214,25 +4427,22 @@ export function TechnicalServiceOperationCenter() {
         method: 'PATCH',
         body: JSON.stringify(payload),
       })
-      const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
-      if (updatedRequest) {
-        preserveDetailScroll(() => {
-          setRequests((current) => current.map((request) => (
-            request.id === updatedRequest.id ? updatedRequest : request
-          )))
-          setSelectedListRequest((current) => (
-            current?.id === updatedRequest.id ? updatedRequest : current
-          ))
-          setSelectedDetailRequest(updatedRequest)
-          setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
-        })
-        await loadRequests({ silent: true, preserveSelection: true })
-      } else {
-        await loadRequestDetail(selectedId)
+      if (selectedIdRef.current !== requestId) {
+        return
       }
+
+      if (!response.post_approval) {
+        throw new Error('Saha belgesi kararı canonical detayla birlikte dönmedi.')
+      }
+
+      applyPostApprovalState(response.post_approval as PostApprovalState)
     } catch (caught) {
-      setFieldDocumentReviewError(caught instanceof Error ? caught.message : 'Saha belgesi uygunluğu kaydedilemedi.')
+      if (selectedIdRef.current === requestId) {
+        setFieldDocumentReviewError(caught instanceof Error ? caught.message : 'Saha belgesi uygunluğu kaydedilemedi.')
+      }
+
+      throw caught
     } finally {
       setFieldDocumentReviewLoading(null)
     }
@@ -4787,6 +4997,10 @@ export function TechnicalServiceOperationCenter() {
     setWarranty(null)
     setWarrantyError(null)
     setWarrantyLoading(false)
+    setPostApprovalState(null)
+    setPartnerCompletionApproveError(null)
+    setPartnerCompletionApproveInFlight(false)
+    partnerCompletionApproveInFlightRef.current = false
     setPriorityUpdateError(null)
     setPriorityUpdateLoading(false)
     setAssignTechnicianOption(request.technicianId ?? '')
@@ -6247,6 +6461,10 @@ export function TechnicalServiceOperationCenter() {
             setWarranty(null)
             setWarrantyError(null)
             setWarrantyLoading(false)
+            setPostApprovalState(null)
+            setPartnerCompletionApproveError(null)
+            setPartnerCompletionApproveInFlight(false)
+            partnerCompletionApproveInFlightRef.current = false
             setPriorityUpdateError(null)
             setPriorityUpdateLoading(false)
           }
@@ -6298,6 +6516,7 @@ export function TechnicalServiceOperationCenter() {
                     warranty={warranty}
                     warrantyLoading={warrantyLoading}
                     warrantyError={warrantyError}
+                    postApprovalState={postApprovalState}
                     onAssign={openAssignmentDialog}
                     onSchedule={() => setScheduleDialogOpen(true)}
                     onComplete={openCompleteDialog}
@@ -6365,6 +6584,8 @@ export function TechnicalServiceOperationCenter() {
                     appointmentApprovalError={appointmentApprovalError}
                     appointmentApprovalSuccess={appointmentApprovalSuccess}
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
+                    partnerCompletionApproveInFlight={partnerCompletionApproveInFlight}
+                    partnerCompletionApproveError={partnerCompletionApproveError}
                     onRevisitServiceVisitCreate={handleRevisitServiceVisitCreate}
                     onPartRequestCreate={handlePartRequestCreate}
                     onPartRequestTransition={handlePartRequestTransition}

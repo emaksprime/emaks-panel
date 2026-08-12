@@ -4,6 +4,7 @@ namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceAuditLog;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
@@ -1942,6 +1943,8 @@ class TechnicalServiceWorkflowService
         $payload['field_correction_policy'] = app(TechnicalServiceAdminOverrideService::class)->correctionPolicyPayload();
 
         if ($includeHistory) {
+            $payload['post_approval_state'] = $this->postApprovalStatePayload($request);
+
             if ($this->auditLogTableAvailable()) {
                 $request->loadMissing(['auditLogs' => fn ($query) => $query->latest()]);
                 $payload['audit_logs'] = $this->auditLogPayload($request->auditLogs);
@@ -1998,6 +2001,201 @@ class TechnicalServiceWorkflowService
         return [
             'request_id' => (int) $request->id,
             'sale_and_payment' => $this->saleAndPaymentPayload($request, true),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function postApprovalStatePayload(TechnicalServiceRequest $request): array
+    {
+        $this->applyDerivedState($request);
+        $request->loadMissing([
+            'uploads',
+            'settlement',
+            'partnerJobActions' => fn ($query) => $query->latest()->limit(12),
+        ]);
+
+        $approvedConfirmation = TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED)
+            ->latest('approved_at')
+            ->latest('id')
+            ->first();
+        $latestConfirmation = TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $request->id)
+            ->latest('id')
+            ->first();
+        $requestApproved = (string) $request->customer_closure_approval_status === 'onaylandı';
+        $businessStatus = match (true) {
+            $requestApproved || $approvedConfirmation instanceof TechnicalServiceCustomerConfirmation => 'approved',
+            $latestConfirmation?->status === TechnicalServiceCustomerConfirmation::STATUS_REJECTED => 'rejected',
+            $latestConfirmation?->status === TechnicalServiceCustomerConfirmation::STATUS_EXPIRED => 'expired',
+            $latestConfirmation?->status === TechnicalServiceCustomerConfirmation::STATUS_CANCELLED => 'cancelled',
+            $latestConfirmation?->status === TechnicalServiceCustomerConfirmation::STATUS_PENDING => 'pending',
+            default => 'not_requested',
+        };
+        $businessLabel = match ($businessStatus) {
+            'approved' => 'Müşteri onayı alındı',
+            'rejected' => 'Müşteri onayı reddedildi',
+            'expired' => 'Müşteri onay bağlantısının süresi doldu',
+            'cancelled' => 'Müşteri onay talebi iptal edildi',
+            'pending' => 'Müşteri onayı bekleniyor',
+            default => 'Müşteri onayı henüz istenmedi',
+        };
+        $approvedAt = $request->customer_closure_approved_at
+            ?? $approvedConfirmation?->approved_at;
+        $completed = (string) $request->status === 'Tamamlandı'
+            || (string) $request->workflow_status === 'Tamamlandı';
+
+        return [
+            'request_id' => (int) $request->id,
+            'generated_at' => now()->toISOString(),
+            'approval' => [
+                'business_status' => $businessStatus,
+                'business_label' => $businessLabel,
+                'approved_at' => $this->dateTimeString($approvedAt),
+                'terminal' => in_array($businessStatus, ['approved', 'rejected', 'expired', 'cancelled'], true),
+                'normal_resend_allowed' => ! $completed && $businessStatus !== 'approved',
+                'transport' => $this->customerApprovalTransportPayload($request),
+            ],
+            'field_completion_documents' => $this->fieldCompletionDocumentPayload($request),
+            'completion' => [
+                'completed' => $completed,
+                'completed_at' => $this->dateTimeString($request->completed_at),
+                'final_check_state' => $completed ? 'completed' : 'pending',
+                'payment_badge' => $this->completionPaymentBadgePayload($request),
+            ],
+            'request' => array_merge($this->operationControlUpdatePayload($request), [
+                'status' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
+                'workflow_status' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
+                'completed_at' => $this->dateTimeString($request->completed_at),
+                'field_status' => $request->field_status,
+                'field_completed_at' => $this->dateTimeString($request->field_completed_at),
+                'customer_closure_approval_status' => $request->customer_closure_approval_status,
+                'customer_closure_approved_at' => $this->dateTimeString($approvedAt),
+                'field_completion_documents' => $this->fieldCompletionDocumentPayload($request),
+            ]),
+        ];
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    public function currentFieldCompletionDocumentIds(TechnicalServiceRequest $request): array
+    {
+        return $this->currentFieldCompletionDocuments($request)
+            ->map(fn (TechnicalServiceRequestUpload $upload): int => (int) $upload->id)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function customerApprovalTransportPayload(TechnicalServiceRequest $request): array
+    {
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'customer_approval_request')
+            ->where('recipient_role', 'customer')
+            ->whereIn('channel', ['whatsapp', 'sms'])
+            ->latest('id')
+            ->get()
+            ->unique('channel')
+            ->keyBy('channel');
+        $statusLabel = static fn (?string $status): string => match ($status) {
+            TechnicalServiceMessageDispatch::STATUS_SENT,
+            TechnicalServiceMessageDispatch::STATUS_TEST_SENT => 'Gönderildi',
+            TechnicalServiceMessageDispatch::STATUS_QUEUED => 'Kuyrukta',
+            TechnicalServiceMessageDispatch::STATUS_SENDING => 'Gönderiliyor',
+            TechnicalServiceMessageDispatch::STATUS_FAILED,
+            TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+            TechnicalServiceMessageDispatch::STATUS_TEST_FAILED => 'Başarısız',
+            TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED,
+            TechnicalServiceMessageDispatch::STATUS_COOLDOWN_BLOCKED => 'Bloklandı',
+            default => 'Henüz gönderilmedi',
+        };
+        $channels = collect(['whatsapp', 'sms'])
+            ->mapWithKeys(function (string $channel) use ($dispatches, $statusLabel): array {
+                $dispatch = $dispatches->get($channel);
+
+                return [$channel => [
+                    'dispatch_id' => $dispatch?->id,
+                    'status' => $dispatch?->status,
+                    'status_label' => $statusLabel($dispatch?->status),
+                    'sent_at' => $this->dateTimeString($dispatch?->sent_at),
+                    'attempt_count' => (int) ($dispatch?->attempt_count ?? 0),
+                ]];
+            })
+            ->all();
+        $sentCount = collect($channels)
+            ->filter(fn (array $channel): bool => in_array($channel['status'], TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true))
+            ->count();
+        $hasInFlight = collect($channels)
+            ->contains(fn (array $channel): bool => in_array($channel['status'], [
+                TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                TechnicalServiceMessageDispatch::STATUS_SENDING,
+            ], true));
+
+        return [
+            'channels' => $channels,
+            'summary' => match (true) {
+                $sentCount === 2 => 'Onay bağlantısı WhatsApp ve SMS ile gönderildi.',
+                $sentCount === 1 => 'Onay bağlantısı kanallardan birine gönderildi.',
+                $hasInFlight => 'Onay bağlantısı gönderim sırasında.',
+                $dispatches->isNotEmpty() => 'Onay bağlantısı gönderilemedi.',
+                default => null,
+            },
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completionPaymentBadgePayload(TechnicalServiceRequest $request): array
+    {
+        $ownership = $this->paymentOwnershipForRequest($request);
+        $state = (string) ($ownership['payer_state_key'] ?? TechnicalServicePaymentOwnershipService::STATE_PAYMENT_DECISION_MISSING);
+        $completed = (string) $request->status === 'Tamamlandı'
+            || (string) $request->workflow_status === 'Tamamlandı';
+        $directAssumedPaid = (float) ($ownership['customer_direct_assumed_paid_amount'] ?? 0) > 0;
+
+        [$label, $detail, $tone, $blocksCompletion] = match ($state) {
+            TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
+            TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL => [
+                'Alındı',
+                'Müşteri ödemesi EMAKS Prime tarafından alındı.',
+                'positive',
+                false,
+            ],
+            TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN => $completed && $directAssumedPaid
+                ? ['Alındı', 'Müşteri ödemeyi ustaya doğrudan yaptı.', 'positive', false]
+                : ['Müşteri ödeyecek', 'Ödeme müşteriden ustaya doğrudan yapılacak.', 'neutral', false],
+            TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED => [
+                'Gerekmez',
+                'Bu iş için müşteri ödemesi gerekmiyor.',
+                'neutral',
+                false,
+            ],
+            TechnicalServicePaymentOwnershipService::STATE_PENDING_ONLINE_PAYMENT => $completed
+                ? ['Ek tahsilat bekliyor', 'Tamamlamayı engellemeyen ek tahsilat açık.', 'warning', false]
+                : ['Bekleniyor', 'Zorunlu müşteri ödemesi henüz alınmadı.', 'warning', true],
+            default => [
+                'Kontrol gerekli',
+                'Ödeme yöntemi canonical kayıtta netleşmedi.',
+                'warning',
+                ! $completed,
+            ],
+        };
+
+        return [
+            'state' => $state,
+            'label' => $label,
+            'detail' => $detail,
+            'tone' => $tone,
+            'blocks_completion' => $blocksCompletion,
         ];
     }
 

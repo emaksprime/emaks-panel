@@ -149,6 +149,10 @@ class TechnicalServiceController extends Controller
             return response()->json($this->workflowService->paymentWorkspacePayload($technicalServiceRequest));
         }
 
+        if ($request->query('section') === 'post-approval') {
+            return response()->json($this->workflowService->postApprovalStatePayload($technicalServiceRequest));
+        }
+
         return response()->json([
             'request' => $this->workflowService->serialize($technicalServiceRequest, true, false, false),
         ]);
@@ -2099,6 +2103,7 @@ class TechnicalServiceController extends Controller
         $validated = $request->validate([
             'status' => ['required', 'string', 'in:accepted,rejected'],
             'note' => ['nullable', 'string', 'max:2000'],
+            'apply_to_current_completion_set' => ['sometimes', 'boolean'],
         ]);
 
         if ($validated['status'] === 'rejected' && trim((string) ($validated['note'] ?? '')) === '') {
@@ -2107,32 +2112,69 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        $upload->forceFill([
-            'review_status' => $validated['status'],
-            'review_note' => $validated['note'] ?? null,
-            'reviewed_by' => $request->user()?->id,
-            'reviewed_at' => now(),
-            'review_payload' => ['source' => 'technical_service_ops'],
-        ])->save();
+        $result = DB::transaction(function () use ($request, $technicalServiceRequest, $upload, $validated): array {
+            $lockedRequest = TechnicalServiceRequest::query()
+                ->whereKey($technicalServiceRequest->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $targetIds = ($validated['apply_to_current_completion_set'] ?? false) === true
+                ? $this->workflowService->currentFieldCompletionDocumentIds($lockedRequest)
+                : [(int) $upload->id];
 
-        $technicalServiceRequest->events()->create([
-            'event_type' => 'field_document_reviewed',
-            'title' => $validated['status'] === 'accepted' ? 'Saha belgesi uygun işaretlendi' : 'Saha belgesi uygun değil işaretlendi',
-            'note' => $validated['note'] ?? null,
-            'from_status' => $technicalServiceRequest->workflow_status,
-            'to_status' => $technicalServiceRequest->workflow_status,
-            'author_user_id' => $request->user()?->id,
-            'metadata' => [
-                'upload_id' => $upload->id,
-                'field_code' => $upload->field_code,
-                'review_status' => $validated['status'],
-            ],
-        ]);
+            abort_unless(in_array((int) $upload->id, $targetIds, true), 409);
 
-        return response()->json([
-            'status' => 'ok',
-            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
-        ]);
+            $targets = TechnicalServiceRequestUpload::query()
+                ->where('technical_service_request_id', $lockedRequest->id)
+                ->whereIn('id', $targetIds)
+                ->lockForUpdate()
+                ->get();
+            abort_unless($targets->count() === count($targetIds), 409);
+            $targets->each(fn (TechnicalServiceRequestUpload $target) => abort_unless($this->isReviewableFieldCompletionDocument($target), 404));
+
+            $note = $validated['status'] === 'rejected' ? trim((string) ($validated['note'] ?? '')) : null;
+            $changedTargets = $targets->filter(fn (TechnicalServiceRequestUpload $target): bool => (
+                (string) $target->review_status !== $validated['status']
+                || trim((string) ($target->review_note ?? '')) !== (string) ($note ?? '')
+            ));
+
+            if ($changedTargets->isNotEmpty()) {
+                $reviewedAt = now();
+                $changedTargets->each(function (TechnicalServiceRequestUpload $target) use ($request, $validated, $note, $reviewedAt): void {
+                    $target->forceFill([
+                        'review_status' => $validated['status'],
+                        'review_note' => $note,
+                        'reviewed_by' => $request->user()?->id,
+                        'reviewed_at' => $reviewedAt,
+                        'review_payload' => ['source' => 'technical_service_ops'],
+                    ])->save();
+                });
+
+                $lockedRequest->events()->create([
+                    'event_type' => 'field_document_reviewed',
+                    'title' => $validated['status'] === 'accepted' ? 'Saha belgeleri uygun işaretlendi' : 'Saha belgeleri uygun değil işaretlendi',
+                    'note' => $note,
+                    'from_status' => $lockedRequest->workflow_status,
+                    'to_status' => $lockedRequest->workflow_status,
+                    'author_user_id' => $request->user()?->id,
+                    'metadata' => [
+                        'upload_ids' => $changedTargets->pluck('id')->map(fn ($id): int => (int) $id)->values()->all(),
+                        'field_codes' => $changedTargets->pluck('field_code')->values()->all(),
+                        'review_status' => $validated['status'],
+                    ],
+                ]);
+            }
+
+            $lockedRequest->unsetRelation('uploads');
+            $postApproval = $this->workflowService->postApprovalStatePayload($lockedRequest->refresh());
+
+            return [
+                'status' => $changedTargets->isEmpty() ? 'duplicate_noop' : 'ok',
+                'request' => $postApproval['request'],
+                'post_approval' => $postApproval,
+            ];
+        });
+
+        return response()->json($result);
     }
 
     public function uploadOpsExtraDocuments(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse

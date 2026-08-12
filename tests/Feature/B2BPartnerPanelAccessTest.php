@@ -36,6 +36,7 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Models\WarrantyCard;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
@@ -46,6 +47,7 @@ use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\TechnicalService\WarrantyService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
@@ -8692,6 +8694,222 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(1, $job->events()->where('event_type', 'partner_completion_approved')->count());
     }
 
+    public function test_approved_customer_state_overrides_old_queued_message_state(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-APPROVED-OVERRIDES-QUEUED');
+        $this->createCustomerApprovalDispatch($fixture['job'], 'whatsapp', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->postApprovalStatePayload($fixture['job']->refresh());
+
+        $this->assertSame('approved', data_get($payload, 'approval.business_status'));
+        $this->assertSame('Müşteri onayı alındı', data_get($payload, 'approval.business_label'));
+        $this->assertSame('queued', data_get($payload, 'approval.transport.channels.whatsapp.status'));
+        $this->assertFalse((bool) data_get($payload, 'approval.normal_resend_allowed'));
+    }
+
+    public function test_approved_customer_does_not_expose_normal_resend_cta(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-APPROVED-NO-RESEND');
+        $beforeDispatches = TechnicalServiceMessageDispatch::query()->count();
+
+        $this->actingAs($fixture['admin'])
+            ->postJson("/api/technical-service/requests/{$fixture['job']->id}/customer-approval-requests", [
+                'note' => 'Normal tekrar gönderim denenmemeli.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer_approval');
+
+        $payload = app(TechnicalServiceWorkflowService::class)->postApprovalStatePayload($fixture['job']->refresh());
+        $this->assertFalse((bool) data_get($payload, 'approval.normal_resend_allowed'));
+        $this->assertSame($beforeDispatches, TechnicalServiceMessageDispatch::query()->count());
+    }
+
+    public function test_latest_transport_state_is_separate_from_business_approval_state(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-APPROVAL-TRANSPORT-SEPARATE');
+        $this->createCustomerApprovalDispatch($fixture['job'], 'sms', TechnicalServiceMessageDispatch::STATUS_SENT);
+        $this->createCustomerApprovalDispatch($fixture['job'], 'whatsapp', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->postApprovalStatePayload($fixture['job']->refresh());
+
+        $this->assertSame('approved', data_get($payload, 'approval.business_status'));
+        $this->assertSame('sent', data_get($payload, 'approval.transport.channels.sms.status'));
+        $this->assertSame('queued', data_get($payload, 'approval.transport.channels.whatsapp.status'));
+        $this->assertSame('Onay bağlantısı kanallardan birine gönderildi.', data_get($payload, 'approval.transport.summary'));
+    }
+
+    public function test_final_check_completes_request_and_starts_warranty_atomically(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-FINAL-CHECK-ATOMIC');
+
+        $this->actingAs($fixture['admin'])
+            ->postJson($fixture['endpoint'], ['note' => 'Canonical son kontrol tamamlandı.'])
+            ->assertOk()
+            ->assertJsonPath('status', 'applied')
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı')
+            ->assertJsonPath('post_approval.completion.completed', true)
+            ->assertJsonPath('warranty.status', WarrantyService::STATUS_ACTIVE);
+
+        $fixture['job']->refresh();
+        $this->assertSame('Tamamlandı', $fixture['job']->workflow_status);
+        $this->assertNotNull($fixture['job']->completed_at);
+        $this->assertDatabaseHas('warranty_cards', [
+            'serial_no' => $fixture['job']->serial_number,
+            'status' => WarrantyService::STATUS_ACTIVE,
+            'warranty_period_months' => WarrantyService::DEFAULT_PERIOD_MONTHS,
+        ]);
+    }
+
+    public function test_final_check_response_contains_active_warranty(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-FINAL-CHECK-WARRANTY-RESPONSE');
+
+        $this->actingAs($fixture['admin'])
+            ->postJson($fixture['endpoint'])
+            ->assertOk()
+            ->assertJsonPath('warranty.status', WarrantyService::STATUS_ACTIVE)
+            ->assertJsonPath('warranty.warranty_period_months', 24)
+            ->assertJsonPath('post_approval.completion.final_check_state', 'completed')
+            ->assertJsonPath('request.post_approval_state.completion.completed', true)
+            ->assertJsonPath('warranty.warnings', []);
+    }
+
+    public function test_duplicate_final_check_does_not_duplicate_warranty(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-FINAL-CHECK-WARRANTY-NO-DUPLICATE');
+
+        $this->actingAs($fixture['admin'])->postJson($fixture['endpoint'])->assertOk()->assertJsonPath('status', 'applied');
+        $card = WarrantyCard::query()->where('serial_no', $fixture['job']->serial_number)->firstOrFail();
+
+        $this->actingAs($fixture['admin'])
+            ->postJson($fixture['endpoint'])
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop')
+            ->assertJsonPath('warranty.status', WarrantyService::STATUS_ACTIVE);
+
+        $this->assertSame(1, WarrantyCard::query()->where('serial_no', $fixture['job']->serial_number)->count());
+        $this->assertSame(1, $card->events()
+            ->where('event_type', 'warranty_started_from_completed_installation')
+            ->count());
+    }
+
+    public function test_duplicate_final_check_does_not_duplicate_message_intents(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-FINAL-CHECK-MESSAGE-NO-DUPLICATE');
+
+        $this->actingAs($fixture['admin'])->postJson($fixture['endpoint'])->assertOk()->assertJsonPath('status', 'applied');
+        $firstDispatchIds = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $fixture['job']->id)
+            ->where('message_type', 'activation_warranty_customer')
+            ->orderBy('id')
+            ->pluck('id')
+            ->all();
+
+        $this->actingAs($fixture['admin'])
+            ->postJson($fixture['endpoint'])
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop')
+            ->assertJsonPath('message_dispatches', []);
+
+        $this->assertCount(2, $firstDispatchIds);
+        $this->assertSame($firstDispatchIds, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $fixture['job']->id)
+            ->where('message_type', 'activation_warranty_customer')
+            ->orderBy('id')
+            ->pluck('id')
+            ->all());
+    }
+
+    public function test_completed_payment_badge_uses_canonical_payment_requirement(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-COMPLETED-PAYMENT-BADGE');
+        $fixture['job']->forceFill([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ])->save();
+        TechnicalServiceSettlement::query()->create([
+            'technical_service_request_id' => $fixture['job']->id,
+            'root_request_id' => $fixture['job']->id,
+            'request_code' => $fixture['job']->mrn,
+            'root_mrn' => $fixture['job']->mrn,
+            'technical_service_technician_id' => $fixture['technician']->id,
+            'currency' => 'TRY',
+            'technician_earning_total' => 3000,
+            'customer_direct_to_technician_amount' => 3000,
+            'customer_direct_assumed_paid_amount' => 3000,
+            'status' => TechnicalServiceSettlement::STATUS_FINALIZED,
+            'settlement_source' => 'test',
+        ]);
+
+        $badge = data_get(
+            app(TechnicalServiceWorkflowService::class)->postApprovalStatePayload($fixture['job']->refresh()),
+            'completion.payment_badge',
+        );
+
+        $this->assertSame('Alındı', $badge['label'] ?? null);
+        $this->assertFalse((bool) ($badge['blocks_completion'] ?? true));
+    }
+
+    public function test_optional_extra_collection_is_not_rendered_as_completion_blocker(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-COMPLETED-OPTIONAL-COLLECTION');
+        $fixture['job']->forceFill([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => now(),
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ])->save();
+        $session = $this->mountSessionForServiceRequest($fixture['job']->refresh());
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $fixture['job']->id,
+            'provider' => 'fake',
+            'provider_reference' => 'OPTIONAL-COLLECTION-'.$fixture['job']->id,
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 10,
+            'currency' => 'TRY',
+            'payment_url' => 'https://sandbox.iyzi.link/optional-test',
+            'raw_payload' => ['source' => 'extra_service'],
+        ]);
+
+        $badge = data_get(
+            app(TechnicalServiceWorkflowService::class)->postApprovalStatePayload($fixture['job']->refresh()),
+            'completion.payment_badge',
+        );
+
+        $this->assertSame('Ek tahsilat bekliyor', $badge['label'] ?? null);
+        $this->assertFalse((bool) ($badge['blocks_completion'] ?? true));
+    }
+
+    public function test_historical_dispatches_are_not_replayed(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-FINAL-CHECK-HISTORY-IMMUTABLE');
+        $historical = $this->createCustomerApprovalDispatch(
+            $fixture['job'],
+            'whatsapp',
+            TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+        );
+        $historical->forceFill([
+            'attempt_count' => 0,
+            'last_error_code' => 'HISTORICAL_RELEASE_MISMATCH',
+            'provider_message_id' => null,
+        ])->save();
+        $before = $historical->only([
+            'status',
+            'attempt_count',
+            'last_error_code',
+            'provider_message_id',
+            'idempotency_key',
+        ]);
+        $beforeUpdatedAt = $historical->updated_at?->toISOString();
+
+        $this->actingAs($fixture['admin'])->postJson($fixture['endpoint'])->assertOk();
+
+        $this->assertSame($before, $historical->refresh()->only(array_keys($before)));
+        $this->assertSame($beforeUpdatedAt, $historical->updated_at?->toISOString());
+    }
+
     public function test_partner_customer_approval_sheet_has_mobile_editable_message_contract(): void
     {
         $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
@@ -10971,6 +11189,132 @@ class B2BPartnerPanelAccessTest extends TestCase
         ])->save();
 
         return $confirmation;
+    }
+
+    /**
+     * @return array{
+     *     admin: User,
+     *     partner: B2BPartner,
+     *     technician: TechnicalServiceTechnician,
+     *     job: TechnicalServiceRequest,
+     *     action: TechnicalServicePartnerJobAction,
+     *     endpoint: string
+     * }
+     */
+    private function postApprovalFinalCheckFixture(string $mrn): array
+    {
+        config(['services.partner_portal.public_url' => 'https://panel.test']);
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'real_send_enabled' => false,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '905467647428',
+            'customer_test_phone' => '905372081633',
+            'message_types' => [
+                'activation_warranty_customer' => [
+                    'enabled' => true,
+                    'real_send_allowed' => true,
+                    'channel_policy' => 'whatsapp_and_sms',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => $mrn.' Final Check Partner',
+        ]);
+        $technician = $this->technician(['name' => $mrn.' Final Check Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, $mrn, [
+            'source_channel' => 'panel',
+            'workflow_status' => 'Son Kontrol',
+            'status' => 'Son Kontrol',
+            'field_status' => 'son_kontrol',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => now()->subMinute(),
+            'serial_number' => 'SN-'.substr(hash('sha256', $mrn), 0, 24),
+            'activation_code' => 'ACT-'.substr(hash('sha256', 'activation-'.$mrn), 0, 12),
+        ]);
+        $this->approveCustomerForJob($job, $partner->id, 'confirmation-'.substr(hash('sha256', $mrn), 0, 24));
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode)->forceFill([
+                'review_status' => 'accepted',
+                'reviewed_at' => now(),
+                'reviewed_by' => $admin->id,
+            ])->save();
+        }
+
+        $action = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $admin->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => [
+                'checklist_gate' => 'server_checked',
+                'checklist' => ['job_completed' => true],
+                'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+                'ops_final_check_required' => true,
+            ],
+        ]);
+
+        return [
+            'admin' => $admin,
+            'partner' => $partner,
+            'technician' => $technician,
+            'job' => $job,
+            'action' => $action,
+            'endpoint' => "/api/technical-service/requests/{$job->id}/partner-completions/{$action->id}/approve",
+        ];
+    }
+
+    private function createCustomerApprovalDispatch(
+        TechnicalServiceRequest $request,
+        string $channel,
+        string $status,
+    ): TechnicalServiceMessageDispatch {
+        $sent = in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true);
+
+        return TechnicalServiceMessageDispatch::query()->create([
+            'event' => 'customer_approval_request',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'root_mrn' => $request->root_mrn ?: $request->mrn,
+            'mrn' => $request->mrn,
+            'message_type' => 'customer_approval_request',
+            'channel' => $channel,
+            'provider_key' => $channel === 'sms' ? 'nac_sms' : 'evo_whatsapp',
+            'recipient_role' => 'customer',
+            'idempotency_key' => implode(':', [
+                'test-approval',
+                $request->id,
+                $channel,
+                $status,
+                uniqid(),
+            ]),
+            'target_type' => 'customer',
+            'target_phone' => '905372081633',
+            'test_mode' => true,
+            'status' => $status,
+            'attempt_count' => $sent ? 1 : 0,
+            'max_attempts' => 1,
+            'queued_at' => now()->subMinutes(2),
+            'sent_at' => $sent ? now()->subMinute() : null,
+            'provider_message_id' => $sent ? 'provider-'.$channel.'-'.$request->id : null,
+            'request_payload' => ['body' => 'Canonical customer approval test body.'],
+        ]);
     }
 
     private function mountSessionForServiceRequest(TechnicalServiceRequest $request): TechnicalServiceMountSession

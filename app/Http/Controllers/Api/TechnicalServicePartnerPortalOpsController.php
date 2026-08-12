@@ -320,10 +320,17 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $actionPayload = is_array($action->payload) ? $action->payload : [];
             if ($action->status === TechnicalServicePartnerJobAction::STATUS_APPLIED
                 && is_array($actionPayload['ops_final_check'] ?? null)) {
+                $warranty = $job->serial_number && $job->service_type === 'Montaj'
+                    ? app(WarrantyService::class)->statusForCompletedRequest($job->refresh(), $request->user())
+                    : null;
+                $serializedRequest = $this->workflow->serialize($job->refresh(), true);
+
                 return [
                     'status' => 'duplicate_noop',
                     'message_dispatches' => [],
-                    'request' => $this->workflow->serialize($job->refresh(), true),
+                    'request' => $serializedRequest,
+                    'post_approval' => $serializedRequest['post_approval_state'] ?? null,
+                    'warranty' => $warranty,
                 ];
             }
             $customerApprovedFinalCheckPending = $action->status === TechnicalServicePartnerJobAction::STATUS_APPLIED
@@ -426,35 +433,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             $warranty = null;
             if ($job->serial_number && $job->service_type === 'Montaj') {
-                try {
-                    $warranty = app(WarrantyService::class)->statusForSerial((string) $job->serial_number);
-                    $job->events()->create([
-                        'event_type' => 'product_warranty_start_checked',
-                        'title' => 'Garanti başlangıcı kontrol edildi',
-                        'note' => null,
-                        'from_status' => $job->workflow_status,
-                        'to_status' => $job->workflow_status,
-                        'author_user_id' => $request->user()?->id,
-                        'metadata' => [
-                            'serial_no' => $job->serial_number,
-                            'warranty' => $warranty,
-                            'source' => 'partner_completion_approved',
-                        ],
-                    ]);
-                } catch (Throwable $exception) {
-                    $job->events()->create([
-                        'event_type' => 'product_warranty_start_failed',
-                        'title' => 'Garanti başlangıcı kontrol edilemedi',
-                        'note' => $exception->getMessage(),
-                        'from_status' => $job->workflow_status,
-                        'to_status' => $job->workflow_status,
-                        'author_user_id' => $request->user()?->id,
-                        'metadata' => [
-                            'serial_no' => $job->serial_number,
-                            'source' => 'partner_completion_approved',
-                        ],
-                    ]);
-                }
+                $warranty = app(WarrantyService::class)->statusForCompletedRequest($job->refresh(), $request->user());
             }
             $completionVersion = $job->updated_at?->timestamp ?? 'missing';
             $warrantyStartedAt = $job->installation_completed_at ?: $job->completed_at ?: $job->field_completed_at;
@@ -490,10 +469,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ),
             ];
 
+            $serializedRequest = $this->workflow->serialize($job->refresh(), true);
+
             return [
                 'status' => 'applied',
                 'message_dispatches' => $messageSummaries,
-                'request' => $this->workflow->serialize($job->refresh(), true),
+                'request' => $serializedRequest,
+                'post_approval' => $serializedRequest['post_approval_state'] ?? null,
+                'warranty' => $warranty,
             ];
         });
 
@@ -1070,6 +1053,18 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $request, $validated): array {
             $job = TechnicalServiceRequest::query()->whereKey($technicalServiceRequest->id)->lockForUpdate()->firstOrFail();
+            $approvalAlreadyReceived = (string) $job->customer_closure_approval_status === 'onaylandı'
+                || TechnicalServiceCustomerConfirmation::query()
+                    ->where('technical_service_request_id', $job->id)
+                    ->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED)
+                    ->exists();
+
+            if ($approvalAlreadyReceived) {
+                throw ValidationException::withMessages([
+                    'customer_approval' => 'Müşteri onayı zaten alındı; normal tekrar gönderim yapılamaz.',
+                ]);
+            }
+
             $partnerId = $this->partnerIdForRequest($job);
 
             if ($partnerId === null) {

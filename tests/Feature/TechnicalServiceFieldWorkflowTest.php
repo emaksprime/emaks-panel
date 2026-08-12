@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Collection;
 use Tests\TestCase;
 
 class TechnicalServiceFieldWorkflowTest extends TestCase
@@ -142,6 +143,70 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
             'technical_service_request_id' => $request->id,
             'event_type' => 'field_document_reviewed',
         ]);
+    }
+
+    public function test_field_document_suitability_returns_canonical_detail_delta(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'workflow_status' => 'Son Kontrol',
+            'field_status' => 'son_kontrol',
+        ]);
+        $documents = $this->fieldCompletionDocuments($request);
+
+        $response = $this->actingAs($this->adminUser())
+            ->patchJson("/api/technical-service/requests/{$request->id}/field-documents/{$documents->first()->id}/review", [
+                'status' => 'accepted',
+                'apply_to_current_completion_set' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('post_approval.request_id', $request->id)
+            ->assertJsonCount(3, 'post_approval.field_completion_documents');
+
+        $this->assertSame(
+            ['accepted'],
+            collect($response->json('post_approval.field_completion_documents'))
+                ->pluck('review_status')
+                ->unique()
+                ->values()
+                ->all(),
+        );
+        $this->assertSame(
+            $response->json('post_approval.field_completion_documents'),
+            $response->json('request.field_completion_documents'),
+        );
+    }
+
+    public function test_duplicate_suitability_decision_is_idempotent(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'workflow_status' => 'Son Kontrol',
+            'field_status' => 'son_kontrol',
+        ]);
+        $documents = $this->fieldCompletionDocuments($request);
+        $admin = $this->adminUser();
+        $endpoint = "/api/technical-service/requests/{$request->id}/field-documents/{$documents->first()->id}/review";
+        $payload = [
+            'status' => 'accepted',
+            'apply_to_current_completion_set' => true,
+        ];
+
+        $this->actingAs($admin)->patchJson($endpoint, $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'ok');
+        $reviewedAt = TechnicalServiceRequestUpload::query()
+            ->whereKey($documents->first()->id)
+            ->value('reviewed_at');
+
+        $this->actingAs($admin)->patchJson($endpoint, $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'duplicate_noop');
+
+        $this->assertSame(1, $request->events()->where('event_type', 'field_document_reviewed')->count());
+        $this->assertSame(
+            (string) $reviewedAt,
+            (string) TechnicalServiceRequestUpload::query()->whereKey($documents->first()->id)->value('reviewed_at'),
+        );
     }
 
     public function test_customer_closure_approval_is_required_for_completion(): void
@@ -365,6 +430,23 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
             'Müşteriye kullanım bilgisi verildi' => true,
             'Garanti / servis formu bilgisi kontrol edildi' => true,
         ];
+    }
+
+    /**
+     * @return Collection<int, TechnicalServiceRequestUpload>
+     */
+    private function fieldCompletionDocuments(TechnicalServiceRequest $request): Collection
+    {
+        return collect(['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->map(fn (string $fieldCode): TechnicalServiceRequestUpload => TechnicalServiceRequestUpload::query()->create([
+                'technical_service_request_id' => $request->id,
+                'field_code' => $fieldCode,
+                'category' => TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+                'original_name' => $fieldCode.'.jpg',
+                'path' => 'technical-service/test/'.$fieldCode.'.jpg',
+                'mime' => 'image/jpeg',
+                'size' => 128,
+            ]));
     }
 
     /**

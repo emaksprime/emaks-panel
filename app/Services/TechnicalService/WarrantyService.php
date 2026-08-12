@@ -12,18 +12,22 @@ use Illuminate\Support\Facades\DB;
 class WarrantyService
 {
     public const STATUS_NOT_STARTED = 'Garanti Başlamadı';
+
     public const STATUS_ACTIVE = 'Garanti Aktif';
+
     public const STATUS_EXPIRED = 'Garanti Bitti';
+
     public const STATUS_REPLACEMENT_CLOSED = 'Değişimle Kapandı';
+
     public const STATUS_TRANSFERRED_TO_NEW_SERIAL = 'Yeni SN’ye Devredildi';
+
     public const STATUS_WAITING_FOR_RESALE = 'Yeniden Satış Bekliyor';
 
     public const DEFAULT_PERIOD_MONTHS = 24;
 
     public function __construct(
         private readonly MikroSerialNumberService $serialNumbers,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -58,6 +62,82 @@ class WarrantyService
         $this->appendReopenedInstallationWarning($card, $warnings);
 
         return $this->response($serialNo, $card, $latestSale, $warnings);
+    }
+
+    /**
+     * Starts or reads the warranty from the already-completed canonical request.
+     * This path deliberately performs no Mikro/network lookup inside final check.
+     *
+     * @return array<string, mixed>
+     */
+    public function statusForCompletedRequest(TechnicalServiceRequest $request, ?User $user = null): array
+    {
+        $serialNo = trim((string) $request->serial_number);
+        $completedAt = $request->installation_completed_at
+            ?? $request->completed_at
+            ?? $request->field_completed_at;
+
+        if ($serialNo === '' || ! $completedAt) {
+            throw new \LogicException('Tamamlanan montaj için seri ve tamamlanma tarihi zorunludur.');
+        }
+
+        $card = WarrantyCard::query()
+            ->where('serial_no', $serialNo)
+            ->whereNotIn('status', [
+                self::STATUS_REPLACEMENT_CLOSED,
+                self::STATUS_TRANSFERRED_TO_NEW_SERIAL,
+                self::STATUS_WAITING_FOR_RESALE,
+            ])
+            ->latest('id')
+            ->lockForUpdate()
+            ->first();
+
+        if (! $card instanceof WarrantyCard) {
+            $card = WarrantyCard::query()->create([
+                'serial_no' => $serialNo,
+                'warranty_period_months' => self::DEFAULT_PERIOD_MONTHS,
+                'status' => self::STATUS_NOT_STARTED,
+                'source' => 'panel_completed_installation',
+                'created_by_user_id' => $user?->id,
+                'updated_by_user_id' => $user?->id,
+            ]);
+        }
+
+        $previousStatus = $card->status;
+        if ($card->installation_completed_at === null) {
+            $card->forceFill([
+                'installation_completed_at' => $completedAt->toDateString(),
+                'source' => 'panel_completed_installation',
+                'updated_by_user_id' => $user?->id,
+            ])->save();
+        }
+
+        if (! $this->hasActiveCompletedInstallationStartEvent($card, (int) $request->id)) {
+            $card->events()->create([
+                'event_type' => 'warranty_started_from_completed_installation',
+                'title' => 'Garanti montaj tamamlanma tarihiyle başlatıldı',
+                'note' => null,
+                'from_status' => $previousStatus,
+                'to_status' => self::STATUS_ACTIVE,
+                'author_user_id' => $user?->id,
+                'metadata' => [
+                    'technical_service_request_id' => $request->id,
+                    'mrn' => $request->mrn,
+                    'serial_no' => $serialNo,
+                    'completed_at' => $completedAt->toDateString(),
+                    'completed_at_datetime' => $completedAt->toIso8601String(),
+                    'technical_service_completed_at' => $request->completed_at?->toDateString(),
+                    'technical_service_completed_at_datetime' => $request->completed_at?->toIso8601String(),
+                    'installation_completed_at' => $completedAt->toDateString(),
+                    'installation_completed_at_datetime' => $completedAt->toIso8601String(),
+                    'source' => 'final_check_canonical_transaction',
+                ],
+            ]);
+        }
+
+        $card = $this->recalculateCard($card);
+
+        return $this->response($serialNo, $card, null, []);
     }
 
     public function transferToReplacement(WarrantyCard $oldCard, string $newSerialNo, string $replacementDate, ?string $reason = null, ?int $userId = null): WarrantyTransfer
@@ -212,7 +292,7 @@ class WarrantyService
     }
 
     /**
-     * @param array<string, mixed> $latestSale
+     * @param  array<string, mixed>  $latestSale
      */
     private function findOrCreateCardForSale(string $serialNo, array $latestSale): WarrantyCard
     {
@@ -340,8 +420,8 @@ class WarrantyService
     }
 
     /**
-     * @param array<string, mixed> $latestSale
-     * @param list<string> $warnings
+     * @param  array<string, mixed>  $latestSale
+     * @param  list<string>  $warnings
      */
     private function applyCompletedInstallationRequest(WarrantyCard $card, array $latestSale, array &$warnings): WarrantyCard
     {
@@ -502,7 +582,7 @@ class WarrantyService
     }
 
     /**
-     * @param list<string> $warnings
+     * @param  list<string>  $warnings
      */
     private function appendReopenedInstallationWarning(WarrantyCard $card, array &$warnings): void
     {
@@ -580,7 +660,7 @@ class WarrantyService
     }
 
     /**
-     * @param array<string, mixed> $latestSale
+     * @param  array<string, mixed>  $latestSale
      * @return list<string>
      */
     private function warningsForSale(array $latestSale): array
@@ -599,8 +679,8 @@ class WarrantyService
     }
 
     /**
-     * @param array<string, mixed>|null $latestSale
-     * @param list<string> $warnings
+     * @param  array<string, mixed>|null  $latestSale
+     * @param  list<string>  $warnings
      * @return array<string, mixed>
      */
     private function response(string $serialNo, ?WarrantyCard $card, ?array $latestSale, array $warnings): array
