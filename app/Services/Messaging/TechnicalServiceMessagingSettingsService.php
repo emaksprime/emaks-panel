@@ -3640,6 +3640,7 @@ class TechnicalServiceMessagingSettingsService
     public function localManualAcceptancePayload(): array
     {
         $settings = $this->settings();
+        $runtimeProfileFingerprint = $this->localManualAcceptanceFingerprint($settings);
         $allowlist = array_values(array_filter(array_map(
             fn (mixed $phone): string => $this->normalizePhone((string) $phone),
             (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
@@ -3651,6 +3652,7 @@ class TechnicalServiceMessagingSettingsService
             'enabled' => $this->localManualAcceptanceIsCurrent($settings),
             'activated_at' => $this->nullableScalar($settings['local_manual_acceptance_activated_at'] ?? null),
             'profile_fingerprint' => $this->nullableScalar($settings['local_manual_acceptance_profile_fingerprint'] ?? null),
+            'runtime_profile_fingerprint' => $runtimeProfileFingerprint,
             'allowlist' => array_map(fn (string $phone): string => $this->maskPhone($phone), $allowlist),
             'allowlist_fingerprints' => array_map(fn (string $phone): string => hash('sha256', $phone), $allowlist),
             'real_send_enabled' => (bool) ($settings['real_send_enabled'] ?? false),
@@ -4699,10 +4701,11 @@ class TechnicalServiceMessagingSettingsService
             $current = $locked['settings'];
             $this->validateManualE2ELifecycleState($current);
             $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+            $durableAmbiguousClaim = $this->durableAmbiguousNormalOutboundClaim($current);
             if ($context->enabled()
                 || $context->activeRunId() !== null
                 || $context->phase() !== self::MANUAL_E2E_PHASE_FROZEN
-                || is_array($current['normal_outbound_active_claim'] ?? null)) {
+                || (is_array($current['normal_outbound_active_claim'] ?? null) && $durableAmbiguousClaim === null)) {
                 throw new ConflictHttpException('Normal outbound transport yalnız frozen lifecycle içinde başlatılabilir.');
             }
 
@@ -8945,7 +8948,8 @@ SQL,
 
         $current = $this->settings();
         $this->validateManualE2ELifecycleState($current);
-        if (is_array($current['normal_outbound_active_claim'] ?? null)) {
+        if (is_array($current['normal_outbound_active_claim'] ?? null)
+            && $this->durableAmbiguousNormalOutboundClaim($current) === null) {
             throw ValidationException::withMessages([
                 'manual_e2e' => 'Authoritative external provider attempt sonucu çözülmeden yeni outbound başlatılamaz.',
             ]);
@@ -8975,12 +8979,58 @@ SQL,
                         ->whereNull('failed_at');
                 });
             })
-            ->exists();
+            ->get()
+            ->contains(fn (TechnicalServiceMessageDispatch $candidate): bool => ! $this->isDurableAmbiguousNormalOutboundDispatch($candidate));
         if ($otherUnresolvedAttempt) {
             throw ValidationException::withMessages([
                 'manual_e2e' => 'Başka bir external provider attempt sonucu belirsizken normal outbound başlatılamaz.',
             ]);
         }
+    }
+
+    /** @param array<string, mixed> $settings */
+    private function durableAmbiguousNormalOutboundClaim(array $settings): ?TechnicalServiceMessageDispatch
+    {
+        $claim = is_array($settings['normal_outbound_active_claim'] ?? null)
+            ? $settings['normal_outbound_active_claim']
+            : null;
+        if ($claim === null || (string) ($claim['status'] ?? '') !== 'ambiguous_no_retry') {
+            return null;
+        }
+
+        $dispatch = TechnicalServiceMessageDispatch::query()->find((int) ($claim['dispatch_id'] ?? 0));
+        if (! $dispatch instanceof TechnicalServiceMessageDispatch
+            || ! $this->isDurableAmbiguousNormalOutboundDispatch($dispatch)) {
+            return null;
+        }
+
+        $claimHash = (string) ($claim['claim_hash'] ?? '');
+
+        return hash_equals((string) data_get($dispatch->metadata, 'normal_outbound_finalized_claim_hash', ''), $claimHash)
+            && (string) $dispatch->provider_key === (string) ($claim['provider'] ?? '')
+            && (string) $dispatch->channel === (string) ($claim['channel'] ?? '')
+                ? $dispatch
+                : null;
+    }
+
+    private function isDurableAmbiguousNormalOutboundDispatch(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        $metadata = (array) $dispatch->metadata;
+        $claimHash = trim((string) ($metadata['normal_outbound_finalized_claim_hash'] ?? ''));
+
+        return preg_match('/^[a-f0-9]{64}$/', $claimHash) === 1
+            && hash_equals((string) ($metadata['normal_processor_claim_hash'] ?? ''), $claimHash)
+            && hash_equals((string) ($metadata['normal_outbound_authoritative_claim_hash'] ?? ''), $claimHash)
+            && filled($metadata['normal_outbound_finalized_at'] ?? null)
+            && $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENDING
+            && (int) $dispatch->attempt_count === 1
+            && $dispatch->provider_message_id === null
+            && $dispatch->sent_at === null
+            && $dispatch->failed_at === null
+            && filter_var($metadata['provider_send_attempted'] ?? false, FILTER_VALIDATE_BOOL)
+            && filter_var($metadata['external_provider_call'] ?? false, FILTER_VALIDATE_BOOL)
+            && filter_var($metadata['normal_outbound_replay_blocked'] ?? false, FILTER_VALIDATE_BOOL)
+            && (string) ($metadata['normal_outbound_outcome'] ?? '') === 'ambiguous_no_retry';
     }
 
     private function databaseBoolean(mixed $value): bool
@@ -9393,14 +9443,23 @@ SQL,
         $worker = $this->outboundWorkerLeaseStatus();
         $rawWorker = $this->outboundWorkerLease();
         $releaseSha = $this->runtimeReleaseSha();
-        if (($worker['state'] ?? null) !== 'active'
-            || $releaseSha === null
+        if (($worker['state'] ?? null) !== 'active') {
+            return $this->executionBlock('outbound_worker_not_healthy', 'Normal outbound worker claim ilerlemesi sağlıklı değil.');
+        }
+        if ($releaseSha === null
             || ! hash_equals((string) ($worker['release_sha'] ?? ''), $releaseSha)) {
-            return $this->executionBlock('outbound_worker_not_healthy', 'Normal outbound worker heartbeat current release ile eşleşmiyor.');
+            return $this->executionBlock('outbound_worker_release_mismatch', 'Normal outbound worker heartbeat current release ile eşleşmiyor.');
         }
         if ($normalLocalOutbound
             && ($rawWorker['profile'] ?? null) !== self::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
             return $this->executionBlock('outbound_worker_profile_mismatch', 'Normal outbound worker yerel sender owner ile eşleşmiyor.');
+        }
+        if ($normalLocalOutbound
+            && ! hash_equals(
+                $this->localManualAcceptanceFingerprint($settings),
+                (string) ($rawWorker['profile_fingerprint'] ?? ''),
+            )) {
+            return $this->executionBlock('outbound_worker_profile_mismatch', 'Normal outbound worker current messaging profili ile eşleşmiyor.');
         }
         $currentOwner = trim((string) ($rawWorker['lock_owner'] ?? ''));
         $expectedOwnerHash = $currentOwner === '' ? '' : hash('sha256', $currentOwner);
@@ -9653,7 +9712,6 @@ SQL,
         $settings = $this->settings();
         $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
         $production = $this->runtimeEnvironment() === 'production';
-        $localAcceptance = $this->localManualAcceptanceIsCurrent($settings);
         $localSender = ! $production
             && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL;
         if (trim($lockOwner) === '' || $releaseSha === null) {
@@ -9668,6 +9726,12 @@ SQL,
             throw new ConflictHttpException('Normal outbound worker frozen normal lifecycle dışında kaydedilemez.');
         }
         $now = CarbonImmutable::now();
+        $currentLease = $this->outboundWorkerLease();
+        if ($currentLease !== null
+            && ! hash_equals((string) ($currentLease['lock_owner'] ?? ''), trim($lockOwner))
+            && ($this->outboundWorkerLeasePublicPayload($currentLease, $now)['state'] ?? 'none') !== 'stale') {
+            throw new ConflictHttpException('Başka bir normal outbound sender owner zaten aktif.');
+        }
         $profile = $production
             ? 'PRODUCTION_NORMAL_OUTBOUND'
             : self::LOCAL_MANUAL_ACCEPTANCE_PROFILE;
@@ -9677,10 +9741,10 @@ SQL,
             'release_sha' => $releaseSha,
             'mode' => $production ? 'normal_live_worker' : 'local_message_sender',
             'profile' => $profile,
-            'profile_fingerprint' => $localAcceptance
-                ? (string) ($settings['local_manual_acceptance_profile_fingerprint'] ?? '')
+            'profile_fingerprint' => $localSender
+                ? $this->localManualAcceptanceFingerprint($settings)
                 : null,
-            'activated_at' => $localAcceptance
+            'activated_at' => $localSender
                 ? (string) ($settings['local_manual_acceptance_activated_at'] ?? '')
                 : null,
             'started_at' => $startedAt->toIso8601String(),
@@ -9704,6 +9768,7 @@ SQL,
         if ($lease === null
             || ($lease['lock_owner'] ?? null) !== $lockOwner
             || ($lease['release_sha'] ?? null) !== $this->runtimeReleaseSha()
+            || ($this->outboundWorkerLeasePublicPayload($lease, CarbonImmutable::now())['state'] ?? 'none') === 'stale'
             || ! $this->outboundWorkerLeaseMatchesCurrentScope($lease, $this->settings())) {
             return false;
         }
@@ -9775,6 +9840,7 @@ SQL,
             || trim($lockOwner) === ''
             || ! hash_equals((string) ($lease['lock_owner'] ?? ''), trim($lockOwner))
             || ! hash_equals((string) ($lease['release_sha'] ?? ''), (string) $this->runtimeReleaseSha())
+            || ($this->outboundWorkerLeasePublicPayload($lease, CarbonImmutable::now())['state'] ?? 'none') !== 'active'
             || ! $this->outboundWorkerLeaseMatchesCurrentScope($lease, $settings)) {
             return ['allowed' => false, 'profile' => null, 'created_after' => null, 'allowlisted_phones' => []];
         }
@@ -9826,7 +9892,12 @@ SQL,
 
         if (($lease['profile'] ?? null) === self::LOCAL_MANUAL_ACCEPTANCE_PROFILE) {
             return $this->runtimeEnvironment() !== 'production'
-                && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL;
+                && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
+                && preg_match('/^[a-f0-9]{64}$/', (string) ($lease['profile_fingerprint'] ?? '')) === 1
+                && hash_equals(
+                    $this->localManualAcceptanceFingerprint($settings),
+                    (string) $lease['profile_fingerprint'],
+                );
         }
 
         return ($lease['profile'] ?? null) === 'PRODUCTION_NORMAL_OUTBOUND'

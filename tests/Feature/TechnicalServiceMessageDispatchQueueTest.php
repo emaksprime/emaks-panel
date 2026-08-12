@@ -2808,7 +2808,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::fake(function () use (&$httpAttempts) {
             $httpAttempts++;
 
-            return Http::response([], 200);
+            return $httpAttempts === 1
+                ? Http::response([], 200)
+                : Http::response(['messageId' => 'EVO-AFTER-AMBIGUOUS-1'], 200);
         });
         $processor = app(TechnicalServiceMessageDispatchProcessor::class);
         $arguments = [
@@ -2831,6 +2833,52 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame('ambiguous_no_retry', data_get($dispatch->fresh()->metadata, 'normal_outbound_outcome'));
         $this->assertTrue((bool) ($second['skipped'] ?? false));
         $this->assertSame(1, $httpAttempts);
+
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        Arr::set(
+            $layout,
+            TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY.'.normal_outbound_history',
+            [],
+        );
+        $page->forceFill(['layout_json' => $layout])->save();
+
+        $unrelated = $this->enqueueDispatch([
+            'event' => 'normal_after_ambiguous',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'test',
+            'target_type' => 'test',
+            'target_phone' => '905372081633',
+            'payload' => ['body' => 'NORMAL-AFTER-AMBIGUOUS controlled fake message.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'smoke_run_id' => 'NORMAL-AFTER-AMBIGUOUS',
+            ],
+        ]);
+        $next = $processor->processOne(
+            $unrelated->id,
+            false,
+            ['905372081633'],
+            [
+                'smoke_run_id' => 'NORMAL-AFTER-AMBIGUOUS',
+                'expected_body_token' => 'NORMAL-AFTER-AMBIGUOUS',
+                'outbound_worker_owner' => $this->productionWorkerOwner,
+            ],
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $next['status']);
+        $this->assertSame('EVO-AFTER-AMBIGUOUS-1', $unrelated->fresh()->provider_message_id);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertNull($dispatch->fresh()->provider_message_id);
+        $this->assertSame(2, $httpAttempts);
+        $this->assertNull($this->authoritativeLifecycleSetting('normal_outbound_active_claim'));
+        $this->assertSame('ambiguous_no_retry', data_get($dispatch->fresh()->metadata, 'normal_outbound_outcome'));
+        $this->assertSame(64, strlen((string) data_get($dispatch->fresh()->metadata, 'normal_outbound_finalized_claim_hash')));
     }
 
     public function test_normal_provider_ack_then_finalize_crash_preserves_claim_and_blocks_second_http(): void
@@ -3885,6 +3933,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                 ],
             ],
         ]);
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-TEMPLATE-AUTHORITY-001',
             'customer_name' => 'Şablon Yetki Müşterisi',
@@ -3984,6 +4033,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                 ],
             ],
         ]);
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
         $technician = TechnicalServiceTechnician::query()->create([
             'name' => 'Hakediş Kanal Ustası',
             'phone_e164' => '+905399999999',
@@ -4670,7 +4720,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertSentCount(2);
 
         $this->travel(120)->seconds();
-        $this->assertTrue($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
         $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
             'limit' => 10,
             'outbound_worker_owner' => $owner,
@@ -4735,6 +4786,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
                 ],
             ],
         ]);
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
         $payment = $this->canonicalSandboxIyzicoPayment('https://sandbox.iyzi.link/payment-link-allowed');
 
         $whatsapp = $this->enqueueDispatch([
@@ -4849,6 +4901,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $page->forceFill(['layout_json' => $layout])->save();
 
         $this->assertFalse((bool) $settings->localManualAcceptancePayload()['enabled']);
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
         $dispatch = $this->enqueueDispatch([
             'event' => 'mount_request_created_customer',
             'message_type' => 'mount_request_created_customer',
@@ -4878,16 +4933,149 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 
+    public function test_current_runtime_and_sender_release_must_match(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $releaseSha = (string) config('app.release_sha');
+
+        $this->assertSame($releaseSha, $settings->outboundWorkerLeaseStatus()['release_sha']);
+        config(['app.release_sha' => str_repeat('f', 40)]);
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+    }
+
+    public function test_stale_sender_heartbeat_blocks_claim(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Stale heartbeat must not claim this message.'],
+            'idempotency_key' => 'stale-heartbeat-no-claim',
+        ]);
+
+        $this->travel(TechnicalServiceMessagingSettingsService::OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS + 1)->seconds();
+        $this->assertSame('stale', $settings->outboundWorkerLeaseStatus()['state']);
+        $this->assertSame(0, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 1,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        Http::assertNothingSent();
+    }
+
+    public function test_restarted_current_release_sender_allows_normal_claim(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake([
+            'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-RESTARTED-RELEASE-1'], 200),
+        ]);
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        config(['app.release_sha' => str_repeat('e', 40)]);
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905000000001',
+            'payload' => ['body' => 'Restarted current release message.'],
+            'idempotency_key' => 'restarted-current-release-message',
+        ]);
+
+        $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 1,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->fresh()->status);
+        $this->assertSame('EVO-RESTARTED-RELEASE-1', $dispatch->fresh()->provider_message_id);
+        Http::assertSentCount(1);
+    }
+
+    public function test_blocked_historical_dispatch_is_not_replayed(): void
+    {
+        Http::fake();
+        $request = $this->technicalServiceRequest();
+        $dispatch = app(TechnicalServiceMessageDispatchQueue::class)->blocked([
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'message_type' => 'customer_approval_request',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905000000001',
+        ], $this->admin(), 'outbound_worker_release_mismatch', 'Historical release mismatch.');
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+
+        $this->assertSame(0, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->fresh()->status);
+        $this->assertSame(0, $dispatch->fresh()->attempt_count);
+        $this->assertNull($dispatch->fresh()->provider_message_id);
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_duplicate_sender_owner_is_rejected(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+
+        try {
+            $settings->registerOutboundWorkerLease(
+                'duplicate-local-sender-owner',
+                now()->toImmutable(),
+                now()->addMinute()->toImmutable(),
+            );
+            $this->fail('İkinci aktif sender owner reddedilmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertSame('Başka bir normal outbound sender owner zaten aktif.', $exception->getMessage());
+        }
+
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_current_profile_fingerprint_is_required(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $leaseFingerprint = (string) $settings->outboundWorkerLeaseStatus()['profile_fingerprint'];
+
+        $settings->update(['test_mode_enabled' => false]);
+        $profile = $settings->localManualAcceptancePayload();
+        $this->assertNotSame($leaseFingerprint, $profile['runtime_profile_fingerprint']);
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
+    }
+
     public function test_stale_lease_is_recovered_safely(): void
     {
         [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
 
         $this->travel(TechnicalServiceMessagingSettingsService::OUTBOUND_WORKER_HEARTBEAT_STALE_AFTER_SECONDS + 1)->seconds();
         $this->assertSame('stale', $settings->outboundWorkerLeaseStatus()['state']);
-        $this->assertTrue($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $nextOwner = 'recovered-local-sender-'.Str::lower(Str::random(12));
+        $settings->registerOutboundWorkerLease(
+            $nextOwner,
+            now()->toImmutable(),
+            now()->addMinute()->toImmutable(),
+        );
         $this->assertSame('active', $settings->outboundWorkerLeaseStatus()['state']);
-        $this->assertFalse($settings->heartbeatOutboundWorkerLease('different-owner'));
-        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertTrue($settings->heartbeatOutboundWorkerLease($nextOwner));
+        $this->assertTrue($settings->clearOutboundWorkerLease($nextOwner));
     }
 
     public function test_heartbeat_without_claim_progress_is_reported_unhealthy(): void
@@ -4967,7 +5155,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'outbound_worker_owner' => $owner,
         ])['count']);
         $this->travel(120)->seconds();
-        $this->assertTrue($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
         $this->assertSame(1, app(TechnicalServiceMessageDispatchProcessor::class)->process([
             'limit' => 1,
             'outbound_worker_owner' => $owner,
@@ -5526,13 +5715,13 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         }
         $settings->saveEvoWhatsappCredentials(['api_key' => 'local-evo-test-key']);
         $settings->saveNacSmsCredentials(['username' => 'local-nac-user', 'password' => 'local-nac-pass']);
-        $owner = 'local-acceptance-worker-'.Str::lower(Str::random(12));
+        $bootstrapOwner = 'local-acceptance-worker-'.Str::lower(Str::random(12));
         $settings->registerOutboundWorkerLease(
-            $owner,
+            $bootstrapOwner,
             now()->toImmutable(),
             now()->addHours(2)->toImmutable(),
         );
-        $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        $this->assertFalse($settings->normalOutboundWorkerMayProcess($bootstrapOwner));
         $this->actingAs($this->admin())
             ->patchJson('/api/technical-service/messaging-settings', [
                 'real_send_enabled' => true,
@@ -5543,9 +5732,29 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->assertJsonPath('messaging_settings.global.test_mode_enabled', $testMode);
         $profile = $settings->localManualAcceptancePayload();
         $this->assertFalse((bool) $profile['enabled'], json_encode($profile, JSON_THROW_ON_ERROR));
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $bootstrapOwner);
         $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
 
         return [$settings, $owner, $profile];
+    }
+
+    private function restartLocalManualAcceptanceWorker(
+        TechnicalServiceMessagingSettingsService $settings,
+        string $owner,
+    ): string {
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+        $nextOwner = 'local-acceptance-worker-'.Str::lower(Str::random(12));
+        $lease = $settings->registerOutboundWorkerLease(
+            $nextOwner,
+            now()->toImmutable(),
+            now()->addHours(2)->toImmutable(),
+        );
+        $profile = $settings->localManualAcceptancePayload();
+
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', (string) $lease['profile_fingerprint']);
+        $this->assertSame($profile['runtime_profile_fingerprint'], $lease['profile_fingerprint']);
+
+        return $nextOwner;
     }
 
     private function canonicalSandboxIyzicoPayment(string $paymentUrl): TechnicalServiceMountPayment
