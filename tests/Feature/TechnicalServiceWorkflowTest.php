@@ -6089,7 +6089,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertTrue($requiredPayload['assignment_blockers']['payment_check_required']);
         $this->assertSame('payment_required', $requiredPayload['next_action_payload']['code']);
         $this->assertSame(
-            ['Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.'],
+            ['Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.'],
             $requiredPayload['assignment_blockers']['messages'],
         );
     }

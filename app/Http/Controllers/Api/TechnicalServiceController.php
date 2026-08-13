@@ -2513,6 +2513,16 @@ class TechnicalServiceController extends Controller
                 );
             }
 
+            $assignmentPaymentModel = $this->assignmentSettlementService->assignmentPaymentModel($technicalServiceRequest);
+            $requestedEarningPaymentSource = trim((string) ($payload['earning_payment_source'] ?? ''));
+            $earningPaymentSource = $requestedEarningPaymentSource;
+            if ($earningPaymentSource === '') {
+                $earningPaymentSource = ($assignmentPaymentModel['technician_payment_source_key'] ?? null) === 'emaks_prime'
+                    ? TechnicalServiceAssignmentSettlementService::EARNING_PAYMENT_SOURCE_COMPANY
+                    : TechnicalServiceAssignmentSettlementService::EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT;
+            }
+            $assignmentOfferPayload['earning_payment_source'] = $earningPaymentSource;
+
             $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
             $mountExclusionAcknowledged = (bool) ($payload['mount_exclusion_acknowledged'] ?? false);
             if ($mountExclusionAcknowledged || $mountExclusionNote !== '') {
@@ -2571,6 +2581,10 @@ class TechnicalServiceController extends Controller
                 'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
                 'technician_approval_status' => 'bekliyor',
                 'route_quote_id' => $payload['route_quote_id'] ?? null,
+                'customer_direct_to_technician_amount' => $assignmentOfferPayload['customer_direct_to_technician_amount'] ?? null,
+                'earning_payment_source' => $earningPaymentSource,
+                'earning_payment_source_explicit' => $requestedEarningPaymentSource !== '',
+                'assignment_offer' => $assignmentOfferPayload,
                 'note' => $payload['note'] ?? null,
                 'reassign_after_review' => $isReviewReassignment,
             ];
@@ -3145,6 +3159,7 @@ class TechnicalServiceController extends Controller
                 'route_quote_id' => $routeQuote?->id,
                 'assignment_partner_id' => $assignmentLink?->partner_id,
                 'assignment_partner_technician_link_id' => $assignmentLink?->id,
+                'earning_payment_source' => $offerPayload['earning_payment_source'] ?? null,
             ],
         ]);
 
@@ -3162,6 +3177,7 @@ class TechnicalServiceController extends Controller
             $routeFeeAmount,
             $customerDirectAmount,
             $user,
+            $offerPayload['earning_payment_source'] ?? null,
         );
 
         $presentation = $this->workflowService->technicianAssignmentPresentation(
@@ -3199,6 +3215,7 @@ class TechnicalServiceController extends Controller
                 'route_fee_amount' => $routeFeeAmount,
                 'total_amount' => $earningSnapshot['total_amount'],
                 'currency' => $currency,
+                'earning_payment_source' => $offerPayload['earning_payment_source'] ?? null,
                 'assignment_partner_id' => $assignmentLink?->partner_id,
                 'assignment_partner_technician_link_id' => $assignmentLink?->id,
                 'message_payload' => $messagePayload,

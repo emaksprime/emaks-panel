@@ -158,6 +158,13 @@ const initialAssignmentRequest = (): ServiceRequest => ({
   assignmentOffer: null,
   settlement: null,
   technicianJobCard: null,
+  assignmentBlockers: {
+    applies_to_assignment: true,
+    payment_check_required: true,
+    messages: [
+      'Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.',
+    ],
+  },
 })
 
 const canonicalTechnicianBoardRequest: ServiceRequest = {

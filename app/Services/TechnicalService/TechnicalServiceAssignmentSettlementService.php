@@ -28,6 +28,10 @@ class TechnicalServiceAssignmentSettlementService
 
     public const SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT = 'company_payment';
 
+    public const EARNING_PAYMENT_SOURCE_COMPANY = 'company';
+
+    public const EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT = 'customer_direct';
+
     private const ALLOCATION_TABLE = 'technical_service_payment_settlement_allocations';
 
     private const ALLOCATION_STATUS_ACTIVE = 'active';
@@ -78,7 +82,17 @@ class TechnicalServiceAssignmentSettlementService
         }
 
         $companyCollectedAmount = $this->money($ownership['company_collected_amount'] ?? 0);
-        $companyPaysTechnician = $mountIncluded || $companyCollectedAmount > 0;
+        $settlement = $request->relationLoaded('settlement')
+            ? $request->settlement
+            : $request->settlement()->first();
+        $settlementMetadata = is_array($settlement?->metadata) ? $settlement->metadata : [];
+        $persistedPaymentSource = (string) ($settlementMetadata['earning_payment_source'] ?? '');
+        $companyPaysTechnician = $mountIncluded
+            || $companyCollectedAmount > 0
+            || $persistedPaymentSource === self::EARNING_PAYMENT_SOURCE_COMPANY;
+        $earningPaymentSource = $companyPaysTechnician
+            ? self::EARNING_PAYMENT_SOURCE_COMPANY
+            : self::EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT;
 
         return [
             'mount_included' => $mountIncluded,
@@ -86,6 +100,7 @@ class TechnicalServiceAssignmentSettlementService
             'customer_direct_payment_locked' => $companyPaysTechnician,
             'customer_direct_payment_amount' => $companyPaysTechnician ? 0.0 : null,
             'customer_direct_payment_amount_label' => $companyPaysTechnician ? '0,00 TL' : null,
+            'earning_payment_source' => $earningPaymentSource,
             'technician_payment_source_key' => $companyPaysTechnician ? 'emaks_prime' : 'customer',
             'technician_payment_source_label' => $companyPaysTechnician ? 'EMAKS Prime' : 'Müşteri',
         ];
@@ -100,6 +115,7 @@ class TechnicalServiceAssignmentSettlementService
         float $routeFeeAmount,
         ?float $customerDirectAmount,
         ?Authenticatable $user = null,
+        ?string $earningPaymentSource = null,
     ): TechnicalServiceSettlement {
         $this->assertCompanyPaymentAssignmentIsStable($request, $technician, $offer, $routeFeeAmount);
 
@@ -109,8 +125,22 @@ class TechnicalServiceAssignmentSettlementService
         $mountPaymentCollected = $customerCollectionAmount > 0;
         $technicianEarningTotal = $this->money($laborAmount + $routeFeeAmount);
         $directAmount = $customerDirectAmount;
+        $earningPaymentSource = in_array($earningPaymentSource, [
+            self::EARNING_PAYMENT_SOURCE_COMPANY,
+            self::EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT,
+        ], true)
+            ? $earningPaymentSource
+            : (string) $paymentModel['earning_payment_source'];
 
-        if ($paymentModel['customer_direct_payment_locked']) {
+        if ($paymentModel['customer_direct_payment_locked']
+            && $earningPaymentSource !== self::EARNING_PAYMENT_SOURCE_COMPANY
+        ) {
+            throw ValidationException::withMessages([
+                'earning_payment_source' => 'Bu işte usta hakedişi EMAKS Prime tarafından ödenmelidir.',
+            ]);
+        }
+
+        if ($earningPaymentSource === self::EARNING_PAYMENT_SOURCE_COMPANY) {
             if (($directAmount ?? 0.0) > 0) {
                 throw ValidationException::withMessages([
                     'assignment_offer.customer_direct_to_technician_amount' => $paymentModel['mount_included']
@@ -124,6 +154,15 @@ class TechnicalServiceAssignmentSettlementService
             $directAmount = $technicianEarningTotal;
         }
 
+        if ($earningPaymentSource === self::EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT
+            && $technicianEarningTotal > 0
+            && ($directAmount ?? 0.0) <= 0
+        ) {
+            throw ValidationException::withMessages([
+                'assignment_offer.customer_direct_to_technician_amount' => 'Müşterinin ustaya doğrudan ödeyeceği tutar 0 TL üzerinde olmalıdır.',
+            ]);
+        }
+
         try {
             $calculation = $this->calculator->calculate(
                 $technicianEarningTotal,
@@ -135,7 +174,7 @@ class TechnicalServiceAssignmentSettlementService
                 'assignment_offer.customer_direct_to_technician_amount' => $exception->getMessage(),
             ]);
         }
-        $canonicalPayerState = $paymentModel['mount_included']
+        $canonicalPayerState = $earningPaymentSource === self::EARNING_PAYMENT_SOURCE_COMPANY
             ? self::PAYER_STATE_COMPANY_PAYS_TECHNICIAN
             : ($mountPaymentCollected
             ? ($ownership['payer_state_key'] ?? TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL)
@@ -196,6 +235,7 @@ class TechnicalServiceAssignmentSettlementService
                 'mount_payment_collected' => $mountPaymentCollected,
                 'mount_included' => $paymentModel['mount_included'],
                 'mount_included_source' => $paymentModel['mount_included_source'],
+                'earning_payment_source' => $earningPaymentSource,
                 'payer_state_key' => $canonicalPayerState,
                 'company_collected_source' => $ownership['company_collected_source'] ?? null,
                 'route_quote_id' => $routeQuote?->id,

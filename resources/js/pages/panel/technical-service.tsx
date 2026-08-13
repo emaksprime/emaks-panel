@@ -61,6 +61,8 @@ type NewRequestForm = {
   notes: string
 }
 
+type AssignmentEarningPaymentSource = 'company' | 'customer_direct'
+
 type ApiTechnicalServiceRequest = {
   id: number | string
   post_approval_state?: PostApprovalState | null
@@ -1375,6 +1377,7 @@ export function TechnicalServiceOperationCenter() {
   const [assignOfferLaborAmount, setAssignOfferLaborAmount] = useState('')
   const [assignOfferRouteFeeAmount, setAssignOfferRouteFeeAmount] = useState('')
   const [assignCustomerDirectAmount, setAssignCustomerDirectAmount] = useState('')
+  const [assignEarningPaymentSource, setAssignEarningPaymentSource] = useState<AssignmentEarningPaymentSource>('customer_direct')
   const [assignOfferNote, setAssignOfferNote] = useState('')
   const assignmentDraftRequestId = useRef<string | null>(null)
   const [contactMethod, setContactMethod] = useState('telefon')
@@ -1397,6 +1400,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignOfferLaborAmount('')
     setAssignOfferRouteFeeAmount('')
     setAssignCustomerDirectAmount('')
+    setAssignEarningPaymentSource('customer_direct')
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
   }, [])
@@ -2610,8 +2614,16 @@ export function TechnicalServiceOperationCenter() {
   const finalAssignmentCompanyPaymentAmount = roundTwo(modalCanonicalEarningSnapshot?.company_payment_amount ?? 0)
   const finalAssignmentTotalAmount = roundTwo(finalAssignmentLaborAmount + finalAssignmentRouteAmount + finalAssignmentCompanyPaymentAmount)
   const canonicalAssignmentCustomerDirectAmount = parseNullableNumber(modalAssignmentPaymentModel?.customer_direct_payment_amount)
-  const customerDirectPaymentDisabled = modalAssignmentPaymentModel?.customer_direct_payment_locked === true
+  const canonicalAssignmentPaymentSource: AssignmentEarningPaymentSource = modalAssignmentPaymentModel?.technician_payment_source_key === 'emaks_prime'
+    ? 'company'
+    : 'customer_direct'
+  const assignmentPaymentSourceLocked = modalAssignmentPaymentModel?.customer_direct_payment_locked === true
     || hasMountPaymentReceived(modalRequest)
+  const effectiveAssignmentPaymentSource: AssignmentEarningPaymentSource = assignmentPaymentSourceLocked
+    ? 'company'
+    : assignEarningPaymentSource
+  const assignmentCompanyPaysTechnician = effectiveAssignmentPaymentSource === 'company'
+  const customerDirectPaymentDisabled = assignmentCompanyPaysTechnician
   const finalAssignmentCustomerDirectDefault = customerDirectPaymentDisabled
     ? canonicalAssignmentCustomerDirectAmount ?? 0
     : finalAssignmentTotalAmount
@@ -2691,7 +2703,7 @@ export function TechnicalServiceOperationCenter() {
   })()
   const assignmentHumanPaymentSentence = finalAssignmentTotalAmount <= 0
     ? 'Bu iş için hakediş 0 TL olarak belirlenmiştir.'
-    : finalAssignmentCompanyPayableAmount > 0
+    : assignmentCompanyPaysTechnician
       ? 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.'
       : 'Hakedişiniz müşteri tarafından ödenecektir.'
   const assignmentCompanyPaymentLines = (modalCanonicalEarningSnapshot?.company_payment_breakdown ?? [])
@@ -2739,7 +2751,9 @@ export function TechnicalServiceOperationCenter() {
     modalRequest?.saleAndPayment?.extra_mount_payment?.status === 'pending'
     && (modalRequest.saleAndPayment.extra_mount_payment.copy_url || modalRequest.saleAndPayment.extra_mount_payment.payment_url),
   )
-  const assignmentCustomerPaysTechnician = !customerDirectPaymentDisabled && finalAssignmentCustomerDirectAmount > 0
+  const assignmentCustomerPaysTechnician = effectiveAssignmentPaymentSource === 'customer_direct'
+    && finalAssignmentCustomerDirectAmount > 0
+  const assignmentPaymentSourceDecided = assignmentCompanyPaysTechnician || assignmentCustomerPaysTechnician
   const preFormPaymentControlEnabledForModal = Boolean(modalRequest?.operationControl?.show_payment_control)
   const paymentNeededNoDecision = Boolean(
     preFormPaymentControlEnabledForModal
@@ -2747,15 +2761,18 @@ export function TechnicalServiceOperationCenter() {
     && !hasMountPaymentReceived(modalRequest)
     && (effectiveMountPaymentMissing || mountExclusionAckRequired)
     && !assignmentPendingOnlinePaymentLink
-    && !assignmentCustomerPaysTechnician,
+    && !assignmentPaymentSourceDecided,
   )
-  const paymentDecisionRequiredMessage = 'Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.'
+  const paymentDecisionRequiredMessages = [
+    'Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.',
+    'Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.',
+  ]
   const assignmentBlockerMessages = (modalRequest?.assignmentBlockers?.messages ?? []).filter((message) => {
-    if (message !== paymentDecisionRequiredMessage) {
+    if (!paymentDecisionRequiredMessages.includes(message)) {
       return true
     }
 
-    return !assignmentPendingOnlinePaymentLink && !assignmentCustomerPaysTechnician
+    return !assignmentPendingOnlinePaymentLink && !assignmentPaymentSourceDecided
   })
   const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
   const canSubmitAssign = Boolean(
@@ -3272,6 +3289,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignOfferLaborAmount(assignmentTechnicianLaborAmount !== null ? String(assignmentTechnicianLaborAmount) : '0')
     setAssignOfferRouteFeeAmount(assignmentRouteFeeAmount !== null ? String(assignmentRouteFeeAmount) : '0')
     setAssignCustomerDirectAmount('')
+    setAssignEarningPaymentSource(canonicalAssignmentPaymentSource)
     setAssignOfferNote(modalCanonicalEarningSnapshot?.operation_note ?? '')
     setAssignError(null)
     setAssignSuccess(null)
@@ -4940,7 +4958,7 @@ export function TechnicalServiceOperationCenter() {
       const offerLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
       const offerRouteFeeAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
       const offerTotalAmount = Math.round((offerLaborAmount + offerRouteFeeAmount) * 100) / 100
-      const customerDirectAmount = customerDirectPaymentDisabled
+      const customerDirectAmount = assignmentCompanyPaysTechnician
         ? 0
         : roundTwo(parseNullableNumber(assignCustomerDirectAmount) ?? offerTotalAmount)
       const response = await apiRequest(`/api/technical-service/requests/${requestId}/assign`, {
@@ -4964,6 +4982,7 @@ export function TechnicalServiceOperationCenter() {
           labor_amount: offerLaborAmount,
           travel_amount: offerRouteFeeAmount,
           customer_direct_to_technician_amount: customerDirectAmount,
+          earning_payment_source: effectiveAssignmentPaymentSource,
           earning_note: assignOfferNote.trim() || (isManualTechnician ? assignNote : null) || null,
           expected_earning_revision: modalPersistedEarningSnapshot?.revision ?? null,
           confirm_assignment: true,
@@ -5733,7 +5752,7 @@ export function TechnicalServiceOperationCenter() {
                     </div>
                   </div>
                   {paymentNeededNoDecision ? (
-                    <p>Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.</p>
+                    <p>Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.</p>
                   ) : null}
                   {mikroMountCheck?.montaj_ek_aciklama ? <p>{mikroMountCheck.montaj_ek_aciklama}</p> : null}
                   {mikroMountCheck?.farkli_cari_uyarisi ? <p>Sonradan montaj carisi, son geçerli satış carisinden farklı.</p> : null}
@@ -5742,8 +5761,8 @@ export function TechnicalServiceOperationCenter() {
                 {paymentNeededNoDecision ? (
                   <div className="grid gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                     <div>
-                      <p className="font-semibold">Ödeme yöntemi netleşmeden atama güncellenemez.</p>
-                      <p className="mt-1">Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin. Gizli montaj hariç onayı artık atama kapısı değildir.</p>
+                      <p className="font-semibold">Hakediş ödeme kaynağı netleşmeden atama güncellenemez.</p>
+                      <p className="mt-1">EMAKS Prime veya müşteri doğrudan seçimini yapın.</p>
                     </div>
                   </div>
                 ) : null}
@@ -6106,9 +6125,44 @@ export function TechnicalServiceOperationCenter() {
                       </p>
                     </div>
                   </div>
-                  <p data-testid="assignment-payment-source" className="rounded-xl border border-emerald-100 bg-white/80 px-3 py-2 text-xs text-emerald-900">
-                    Hakediş ödeme kaynağı: <strong>{modalAssignmentPaymentModel?.technician_payment_source_label ?? 'EMAKS Prime'}</strong>
-                  </p>
+                  <div data-testid="assignment-payment-source" className="grid gap-2 rounded-xl border border-emerald-100 bg-white/80 px-3 py-3 text-xs text-emerald-900">
+                    <p className="font-semibold">Hakediş ödeme kaynağı</p>
+                    {assignmentPaymentSourceLocked ? (
+                      <strong>EMAKS Prime</strong>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="group" aria-label="Hakediş ödeme kaynağı">
+                        <Button
+                          type="button"
+                          variant={effectiveAssignmentPaymentSource === 'company' ? 'default' : 'outline'}
+                          onClick={() => {
+                            setAssignEarningPaymentSource('company')
+                            setAssignCustomerDirectAmount('0')
+                          }}
+                          data-testid="assignment-payment-source-company"
+                        >
+                          EMAKS Prime
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={effectiveAssignmentPaymentSource === 'customer_direct' ? 'default' : 'outline'}
+                          onClick={() => {
+                            setAssignEarningPaymentSource('customer_direct')
+                            setAssignCustomerDirectAmount('')
+                          }}
+                          data-testid="assignment-payment-source-customer-direct"
+                        >
+                          Müşteri doğrudan
+                        </Button>
+                      </div>
+                    )}
+                    <p className="leading-5">
+                      {assignmentCompanyPaysTechnician
+                        ? modalAssignmentPaymentModel?.mount_included
+                          ? 'Montaj dahil olduğu için ustanın hakedişini EMAKS Prime ödeyecektir.'
+                          : 'Şirket ödemeli seçildiği için ustanın hakedişini EMAKS Prime ödeyecektir.'
+                        : 'Müşterinin ustaya doğrudan ödeyeceği tutarı ayrıca belirtin.'}
+                    </p>
+                  </div>
                   <div className="grid gap-2 rounded-xl border border-emerald-100 bg-white/80 p-3 text-xs text-emerald-900">
                     <p className="font-semibold">
                       {modalAssignmentPaymentModel?.mount_included

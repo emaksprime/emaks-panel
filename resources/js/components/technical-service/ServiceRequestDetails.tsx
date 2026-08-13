@@ -2424,14 +2424,21 @@ export function ServiceRequestDetails({
     showDoorPhotoControl && operationControl.door_photos_checked !== 'compatible' ? 'Önce kapı görsellerini uygun olarak işaretleyin.' : null,
   ].filter((message): message is string => Boolean(message)) : []
   const combinedAssignmentBlockerMessages = Array.from(new Set([...assignmentUiBlockerMessages, ...assignmentBlockerMessages]))
-  const isAssignmentBlocked = combinedAssignmentBlockerMessages.length > 0
+  const paymentSourceDecisionMessages = [
+    'Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.',
+    'Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.',
+  ]
+  const assignmentModalBlockingMessages = combinedAssignmentBlockerMessages.filter(
+    (message) => !paymentSourceDecisionMessages.includes(message),
+  )
+  const isAssignmentBlocked = assignmentModalBlockingMessages.length > 0
   const assignmentModalOpenAction = onAssignSelectedTechnician ?? onAssign
   const assignmentModalOpenDisabledReason = assignLoading
     ? 'Atama işlemi devam ediyor.'
     : !selectedTechnicianId
       ? 'Önce atanacak ustayı seçin.'
       : isAssignmentBlocked
-        ? combinedAssignmentBlockerMessages.join(' ')
+        ? assignmentModalBlockingMessages.join(' ')
         : !assignmentModalOpenAction
           ? 'Atama detayını açacak işlem bulunamadı.'
           : null
@@ -3526,14 +3533,19 @@ export function ServiceRequestDetails({
     )
   }
   const renderTechnicianSearch = (surface: 'main' | 'modal') => (
-    <div className="relative" data-testid={`technician-search-${surface}`}>
-      <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+    <div className="relative isolate h-10 self-start" data-testid={`technician-search-${surface}`}>
+      <Search
+        aria-hidden="true"
+        data-testid={`technician-search-icon-${surface}`}
+        className="pointer-events-none absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-slate-400"
+      />
       <Input
+        data-testid={`technician-search-input-${surface}`}
         value={technicianSearch}
         onChange={(event) => setTechnicianSearch(event.target.value)}
         placeholder="Usta ara"
         aria-label="Usta ara"
-        className="pl-9 pr-10"
+        className="h-10 pl-10 pr-10"
       />
       {technicianSearch ? (
         <Button

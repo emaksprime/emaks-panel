@@ -20,7 +20,9 @@ use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\TechnicalService\QrPublicFlowSettingsService;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
+use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
@@ -198,8 +200,8 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
 
         $this->assertStringContainsString('modalAssignmentPaymentModel', $source);
         $this->assertStringContainsString('Müşterinin ustaya ödeyeceği tutar', $source);
-        $this->assertStringContainsString('Hakediş ödeme kaynağı:', $source);
-        $this->assertStringContainsString('Montaj dahil olduğu için ustanın hakedişini EMAKS Prime ödeyecek.', $source);
+        $this->assertStringContainsString('Hakediş ödeme kaynağı', $source);
+        $this->assertStringContainsString('Montaj dahil olduğu için ustanın hakedişini EMAKS Prime ödeyecektir.', $source);
         $this->assertStringContainsString('Kalan şirket ödemesi', $source);
         $this->assertStringContainsString('Müşteriye bildirilen tutar usta hakedişinden yüksek. Admin incelemesi gerekecek.', $source);
         $this->assertStringContainsString('customer_direct_to_technician_amount', $source);
@@ -217,6 +219,206 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ->assertJsonPath('request.sale_and_payment.assignment_payment_model.customer_direct_payment_locked', true)
             ->assertJsonPath('request.sale_and_payment.assignment_payment_model.customer_direct_payment_amount', 0)
             ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 0);
+    }
+
+    public function test_mount_included_assignment_allows_zero_customer_direct_payment(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $this->markMountIncluded($request);
+        $payload = $this->companyPaidAssignmentPayload($request, $technician, 3000, 500);
+
+        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.total_amount', 3500)
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 0)
+            ->assertJsonPath('request.settlement.company_payable_amount', 3500)
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.technician_payment_source_label', 'EMAKS Prime');
+    }
+
+    public function test_assignment_persists_earning_and_assignment_atomically(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ])->save();
+        $payload = $this->companyPaidAssignmentPayload($request, $technician, 3000, 500);
+
+        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertOk();
+
+        $offer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceAssignmentOffer::STATUS_SENT)
+            ->sole();
+        $settlement = TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->sole();
+        $this->assertSame($technician->id, $request->fresh()->technical_service_technician_id);
+        $this->assertSame($technician->id, $offer->technical_service_technician_id);
+        $this->assertSame($offer->id, $settlement->technical_service_assignment_offer_id);
+        $this->assertSame('company', data_get($offer->metadata, 'earning_payment_source'));
+        $this->assertSame('company', data_get($settlement->metadata, 'earning_payment_source'));
+        $this->assertSame('company_collected_company_pays_technician', data_get($settlement->metadata, 'payer_state_key'));
+    }
+
+    public function test_company_paid_assignment_message_uses_emaks_prime(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ])->save();
+
+        $response = $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/assign",
+                $this->companyPaidAssignmentPayload($request, $technician, 3000, 500),
+            )
+            ->assertOk();
+
+        $message = (string) $response->json('request.assignment_offer.message_preview');
+        $this->assertStringContainsString('Hakedişiniz EMAKS Prime tarafından yapılacaktır.', $message);
+        $this->assertStringNotContainsString('Hakedişiniz müşteri tarafından ödenecektir.', $message);
+    }
+
+    public function test_zero_customer_direct_payment_does_not_zero_technician_earning(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $this->markMountIncluded($request);
+
+        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/assign",
+                $this->companyPaidAssignmentPayload($request, $technician, 3000, 500),
+            )
+            ->assertOk()
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 0)
+            ->assertJsonPath('request.settlement.technician_earning_total', 3500)
+            ->assertJsonPath('request.settlement.company_remaining_amount', 3500);
+    }
+
+    public function test_assignment_retry_is_idempotent(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $this->markMountIncluded($request);
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $payload = $this->companyPaidAssignmentPayload($request, $technician, 3000, 500);
+
+        $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertOk();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count();
+        $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertStatus(409);
+
+        $this->assertSame(1, TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceAssignmentOffer::STATUS_SENT)
+            ->count());
+        $this->assertSame(1, TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+    }
+
+    public function test_payment_source_is_not_inferred_from_amount(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
+        $request->forceFill([
+            'root_mrn' => $request->mrn,
+            'service_code' => null,
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ])->save();
+        $this->assertTrue(app(QrPublicFlowSettingsService::class)->preFormPaymentEnabled());
+        $this->assertTrue((bool) data_get(
+            app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true),
+            'assignment_blockers.payment_check_required',
+        ));
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $amountOnlyPayload = $this->assignmentPayload($request, $technician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+            'customer_direct_to_technician_amount' => 3500,
+        ]);
+        $amountOnlyPayload['customer_direct_to_technician_amount'] = 3500;
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $amountOnlyPayload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('payment_decision');
+
+        $this->actingAs($actor)
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/assign",
+                $this->companyPaidAssignmentPayload($request, $technician, 3000, 500),
+            )
+            ->assertOk()
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 0)
+            ->assertJsonPath('request.settlement.company_payable_amount', 3500)
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.technician_payment_source_label', 'EMAKS Prime');
+    }
+
+    public function test_customer_collection_can_be_created_after_assignment(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ])->save();
+        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson(
+                "/api/technical-service/requests/{$request->id}/assign",
+                $this->companyPaidAssignmentPayload($request, $technician, 3000, 500),
+            )
+            ->assertOk();
+
+        $this->assertSame(0, TechnicalServiceMountPayment::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+        $payment = $this->paidChargePayment($request, 'service_payment', 3500, '2026-08-13 20:30:00');
+        $ownership = app(TechnicalServicePaymentOwnershipService::class)->summary($request->refresh());
+
+        $this->assertSame(3500.0, $ownership['company_collected_amount']);
+        $this->assertSame($request->id, $payment->technical_service_request_id);
+        $this->assertSame(3500.0, (float) $request->settlement()->value('technician_earning_total'));
+    }
+
+    public function test_reassignment_reason_and_revision_guards_are_preserved(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Yeni Test Usta', '905300000299');
+        $payload = $this->companyPaidAssignmentPayload($request, $newTechnician, 3000, 500);
+        $payload['note'] = '';
+        $actor = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('note');
+        $this->assertSame($oldTechnician->id, $request->fresh()->technical_service_technician_id);
+
+        $payload['note'] = 'Önceki usta işi tamamlayamadı';
+        $payload['expected_earning_revision'] = str_repeat('0', 64);
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'TECHNICAL_SERVICE_ASSIGNMENT_CONFLICT');
+        $this->assertSame($oldTechnician->id, $request->fresh()->technical_service_technician_id);
     }
 
     public function test_mount_included_technician_earning_is_company_payable(): void
@@ -2826,6 +3028,25 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             $payload['expected_earning_revision'] = app(TechnicalServiceWorkflowService::class)
                 ->canonicalTechnicianEarningSnapshot($currentOffer)['revision'];
         }
+
+        return $payload;
+    }
+
+    private function companyPaidAssignmentPayload(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        float $laborAmount,
+        float $routeFeeAmount,
+    ): array {
+        $payload = $this->assignmentPayload($request, $technician, [
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'customer_direct_to_technician_amount' => 0,
+        ]);
+        $payload['labor_amount'] = $laborAmount;
+        $payload['travel_amount'] = $routeFeeAmount;
+        $payload['customer_direct_to_technician_amount'] = 0;
+        $payload['earning_payment_source'] = TechnicalServiceAssignmentSettlementService::EARNING_PAYMENT_SOURCE_COMPANY;
 
         return $payload;
     }

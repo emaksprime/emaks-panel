@@ -16,6 +16,48 @@ const assert = (condition, message) => {
 
 const outputText = async (page, testId) => (await page.getByTestId(testId).textContent() ?? '').trim()
 
+const inspectSearchGeometry = async (page, surface, name) => {
+  const wrapper = page.getByTestId(`technician-search-${surface}`)
+  const icon = page.getByTestId(`technician-search-icon-${surface}`)
+  const input = page.getByTestId(`technician-search-input-${surface}`)
+  const [wrapperBox, iconBox, inputBox, iconStyle] = await Promise.all([
+    wrapper.boundingBox(),
+    icon.boundingBox(),
+    input.boundingBox(),
+    icon.evaluate((element) => {
+      const style = window.getComputedStyle(element)
+
+      return {
+        pointerEvents: style.pointerEvents,
+        borderWidth: style.borderWidth,
+      }
+    }),
+  ])
+
+  assert(wrapperBox && iconBox && inputBox, `${name}: ${surface} search geometry is unavailable`)
+
+  if (!wrapperBox || !iconBox || !inputBox) {
+    return
+  }
+
+  const iconCenterY = iconBox.y + (iconBox.height / 2)
+  const inputCenterY = inputBox.y + (inputBox.height / 2)
+  const centerDelta = Math.abs(iconCenterY - inputCenterY)
+  assert(iconBox.x >= inputBox.x && iconBox.x + iconBox.width <= inputBox.x + inputBox.width, `${name}: ${surface} search icon is outside the input`)
+  assert(centerDelta <= 1, `${name}: ${surface} search icon is not vertically centered (${centerDelta}px)`)
+  assert(inputBox.x >= wrapperBox.x && inputBox.x + inputBox.width <= wrapperBox.x + wrapperBox.width + 1, `${name}: ${surface} search input exceeds its wrapper`)
+  assert(iconStyle.pointerEvents === 'none', `${name}: ${surface} search icon captures pointer events`)
+  assert(iconStyle.borderWidth === '0px', `${name}: ${surface} search icon renders as a separate bordered cell`)
+
+  return {
+    wrapper: wrapperBox,
+    icon: iconBox,
+    input: inputBox,
+    centerDelta,
+    iconStyle,
+  }
+}
+
 const inspectViewport = async (browser, name, viewport) => {
   const page = await browser.newPage({ viewport })
   page.on('pageerror', (error) => browserErrors.push(`${name}:page:${error.message}`))
@@ -143,8 +185,27 @@ const inspectViewport = async (browser, name, viewport) => {
   assert(await page.getByText('Denizli / Pamukkale', { exact: true }).count() > 0, `${name}: reassignment did not apply canonical location`)
 
   await page.getByTestId('load-initial-assignment-scenario').click()
+  const mainSearch = page.getByTestId('technician-search-input-main')
+  await mainSearch.waitFor({ state: 'visible' })
+  const mainSearchGeometry = await inspectSearchGeometry(page, 'main', name)
+  await mainSearch.fill('Usta 49')
+  assert(await page.getByText('Usta 49', { exact: true }).count() > 0, `${name}: main search cannot find a technician outside the first group`)
+  assert(await outputText(page, 'assignment-route-request-count') === '0', `${name}: main search typing triggered route calculation`)
+  await mainSearch.fill('')
+  assert(await outputText(page, 'assignment-route-request-count') === '0', `${name}: clearing main search triggered route calculation`)
+
+  await page.getByRole('button', { name: /Diğer ustalar \(\d+\)/ }).click()
+  const modalSearchGeometry = await inspectSearchGeometry(page, 'modal', name)
+  const modalSearch = page.getByTestId('technician-search-input-modal')
+  await modalSearch.fill('90532000048')
+  assert(await page.getByText('Usta 49', { exact: true }).count() > 0, `${name}: modal search cannot filter by phone`)
+  assert(await outputText(page, 'assignment-route-request-count') === '0', `${name}: modal search typing triggered route calculation`)
+  await page.getByRole('button', { name: 'Kapat', exact: true }).click()
+
   const initialOpenStartedAt = performance.now()
-  await page.getByRole('button', { name: 'Servis Ata', exact: true }).first().click()
+  const initialAssignButton = page.getByRole('button', { name: 'Servis Ata', exact: true }).first()
+  assert(!(await initialAssignButton.isDisabled()), `${name}: unresolved collection/source blocker prevents opening assignment source decision`)
+  await initialAssignButton.click()
   await page.getByTestId('assignment-final-popup').waitFor({ state: 'visible' })
   const initialAssignmentMapLink = page.getByTestId('assignment-preview-map-link')
   assert(await initialAssignmentMapLink.count() === 1, `${name}: initial assignment preview map link is missing`)
@@ -169,7 +230,14 @@ const inspectViewport = async (browser, name, viewport) => {
   })
   await page.close()
 
-  return { reassignmentOpenMs, reassignmentCloseMs, initialOpenMs, initialCloseMs }
+  return {
+    reassignmentOpenMs,
+    reassignmentCloseMs,
+    initialOpenMs,
+    initialCloseMs,
+    mainSearchGeometry,
+    modalSearchGeometry,
+  }
 }
 
 const pageSource = fs.readFileSync(path.join(process.cwd(), 'resources/js/pages/panel/technical-service.tsx'), 'utf8')
@@ -177,7 +245,11 @@ const detailsSource = fs.readFileSync(path.join(process.cwd(), 'resources/js/com
 const cardSource = fs.readFileSync(path.join(process.cwd(), 'resources/js/components/technical-service/TechnicalServiceKanbanCard.tsx'), 'utf8')
 assert(pageSource.includes('modalAssignmentPaymentModel?.mount_included'), 'source: mount-included payment model is not authoritative')
 assert(pageSource.includes('Müşterinin ustaya ödeyeceği tutar'), 'source: corrected customer-direct-payment label is missing')
-assert(pageSource.includes('Hakediş ödeme kaynağı:'), 'source: technician payment source is missing')
+assert(pageSource.includes('Hakediş ödeme kaynağı'), 'source: technician payment source is missing')
+assert(pageSource.includes("type AssignmentEarningPaymentSource = 'company' | 'customer_direct'"), 'source: payment-source decision is not typed')
+assert(pageSource.includes('earning_payment_source: effectiveAssignmentPaymentSource'), 'source: assignment submit omits the explicit payment-source decision')
+assert(pageSource.includes("effectiveAssignmentPaymentSource === 'company'"), 'source: company-paid assignment state is missing')
+assert(pageSource.includes('customerDirectAmount = assignmentCompanyPaysTechnician'), 'source: customer-direct amount is not separated from technician earning')
 assert(!pageSource.includes('Önerilen slotlar'), 'source: proposed slots remain in assignment modal')
 assert(!pageSource.includes('Gidiş-geliş km'), 'source: raw round-trip kilometre input remains in assignment modal')
 assert(!pageSource.includes('Mesajdaki canonical iş kartı bağlantısı bu açık atama kapsamından üretilir.'), 'source: internal canonical-link explanation is user-facing')

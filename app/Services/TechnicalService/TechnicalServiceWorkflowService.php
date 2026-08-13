@@ -2289,9 +2289,9 @@ class TechnicalServiceWorkflowService
         $errors = [];
 
         if ($this->assignmentPaymentCheckRequired($request, $operationControl)
-            && ! $this->payloadHasCustomerDirectTechnicianDecision($assignmentPayload)
+            && ! $this->payloadHasTechnicianPaymentSourceDecision($assignmentPayload)
         ) {
-            $errors['payment_decision'] = 'Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.';
+            $errors['payment_decision'] = 'Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.';
         }
 
         if (($operationControl['door_photos_checked'] ?? 'unreviewed') !== 'compatible') {
@@ -2306,15 +2306,34 @@ class TechnicalServiceWorkflowService
     /**
      * @param  array<string, mixed>  $payload
      */
-    private function payloadHasCustomerDirectTechnicianDecision(array $payload): bool
+    private function payloadHasTechnicianPaymentSourceDecision(array $payload): bool
     {
+        if (array_key_exists('earning_payment_source_explicit', $payload)
+            && $payload['earning_payment_source_explicit'] !== true
+        ) {
+            return false;
+        }
+
+        $paymentSource = Arr::get($payload, 'earning_payment_source');
+        if (! is_string($paymentSource)) {
+            $paymentSource = Arr::get($payload, 'assignment_offer.earning_payment_source');
+        }
+
         $amount = Arr::get($payload, 'customer_direct_to_technician_amount');
 
         if (! is_numeric($amount)) {
             $amount = Arr::get($payload, 'assignment_offer.customer_direct_to_technician_amount');
         }
 
-        return is_numeric($amount) && (float) $amount > 0;
+        if ($paymentSource === TechnicalServiceAssignmentSettlementService::EARNING_PAYMENT_SOURCE_COMPANY) {
+            return ! is_numeric($amount) || (float) $amount <= 0;
+        }
+
+        if ($paymentSource === TechnicalServiceAssignmentSettlementService::EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT) {
+            return is_numeric($amount) && (float) $amount > 0;
+        }
+
+        return false;
     }
 
     /**
@@ -5990,7 +6009,7 @@ class TechnicalServiceWorkflowService
         $mountExclusionAckRequired = $this->requiresMountExclusionAcknowledgement($request);
 
         if ($paymentRequired) {
-            $messages[] = 'Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.';
+            $messages[] = 'Hakediş ödeme kaynağı netleşmeden atama güncellenemez. EMAKS Prime veya müşteri doğrudan seçimini yapın.';
         }
 
         if ($doorPhotoRequired) {
