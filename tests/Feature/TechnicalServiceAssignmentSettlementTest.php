@@ -1077,6 +1077,95 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertStringContainsString('expected_earning_revision: modalPersistedEarningSnapshot?.revision ?? null', $source);
     }
 
+    public function test_reassignment_reason_is_required_when_technician_changes(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000221');
+        $payload = $this->assignmentPayload($request, $newTechnician);
+        $payload['note'] = '';
+        $archiveCount = TechnicalServiceAssignmentArchive::query()->count();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()->count();
+
+        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('note')
+            ->assertJsonPath('errors.note.0', 'Usta değişikliği için en az 5 karakterlik yeniden atama nedeni girin.');
+
+        $this->assertSame($oldTechnician->id, $request->fresh()->technical_service_technician_id);
+        $this->assertSame($archiveCount, TechnicalServiceAssignmentArchive::query()->count());
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()->count());
+    }
+
+    public function test_backend_reason_error_maps_to_reassignment_field(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+        $submitStart = strpos($source, 'const canSubmitAssign = Boolean(');
+        $submitEnd = strpos($source, 'const technicianMatches = technicians', $submitStart ?: 0);
+
+        $this->assertIsInt($submitStart);
+        $this->assertIsInt($submitEnd);
+        $this->assertStringNotContainsString('assignNote', substr($source, $submitStart, $submitEnd - $submitStart));
+        $this->assertStringContainsString('validationPayload.errors?.note?.[0]', $source);
+        $this->assertStringContainsString("setAssignReasonError('Yeniden atama nedeni yazınız.')", $source);
+        $this->assertStringContainsString('assignReasonInputRef.current?.focus()', $source);
+        $this->assertStringContainsString('data-testid="assignment-reason-error"', $source);
+        $this->assertStringContainsString('Bu açıklama eski atamanın tarihçesinde saklanacaktır.', $source);
+    }
+
+    public function test_successful_reassignment_returns_canonical_assignment_delta(): void
+    {
+        [$request] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000222');
+
+        $this->assign($request, $newTechnician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+        ])->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $newTechnician->id)
+            ->assertJsonPath('request.technician_name', $newTechnician->name)
+            ->assertJsonPath('request.technician_phone', $newTechnician->phone)
+            ->assertJsonPath('request.assignment_offer.technical_service_technician_id', $newTechnician->id)
+            ->assertJsonPath('request.assignment_offer.labor_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 500)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3500)
+            ->assertJsonPath('request.settlement.technical_service_technician_id', $newTechnician->id)
+            ->assertJsonPath('request.settlement.technician_earning_total', 3500);
+
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+        $assignHandlerStart = strpos($source, 'const handleAssignSubmit = async () => {');
+        $successStart = strpos($source, 'if (selectedIdRef.current === requestId) {', $assignHandlerStart ?: 0);
+        $successEnd = strpos($source, '} catch (caught) {', $successStart ?: 0);
+        $successHandler = substr($source, $successStart ?: 0, ($successEnd ?: 0) - ($successStart ?: 0));
+
+        $this->assertIsInt($assignHandlerStart);
+        $this->assertStringContainsString('setAssignDialogOpen(false)', $successHandler);
+        $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $successHandler);
+        $this->assertStringNotContainsString('loadSummary()', $successHandler);
+        $this->assertStringNotContainsString('loadRequestDetail(', $successHandler);
+    }
+
+    public function test_successful_reassignment_does_not_duplicate_message_intent(): void
+    {
+        [$request] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000223');
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $payload = $this->assignmentPayload($request, $newTechnician);
+
+        $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertOk();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count();
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertStatus(409);
+
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->count());
+    }
+
     public function test_ready_route_and_explicit_new_technician_can_open_assignment_modal(): void
     {
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';

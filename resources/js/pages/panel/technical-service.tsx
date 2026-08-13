@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react'
-import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
+import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench, X } from 'lucide-react'
 import type { MutableRefObject } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
@@ -782,6 +782,8 @@ type TechnicianAssignmentInsight = {
   id: string
   name: string
   location: string
+  city?: string | null
+  district?: string | null
   phone?: string | null
   priority?: string | number | null
   latitude?: number | string | null
@@ -1293,6 +1295,9 @@ export function TechnicalServiceOperationCenter() {
   const [assignPartnerOption, setAssignPartnerOption] = useState('')
   const [assignOtherTechnician, setAssignOtherTechnician] = useState('')
   const [assignNote, setAssignNote] = useState('')
+  const [assignReasonError, setAssignReasonError] = useState<string | null>(null)
+  const assignReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const [assignTechnicianSearch, setAssignTechnicianSearch] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null)
@@ -2588,7 +2593,6 @@ export function TechnicalServiceOperationCenter() {
       || (selectedAssignmentTechnicianId && modalRequestTechnicianId !== selectedAssignmentTechnicianId)
     ),
   )
-  const reassignmentReasonReady = !isTechnicianReassignment || assignNote.trim().length >= 5
   const selectedAssignTechnicianPartnerId = assignPartnerOption || (selectedAssignPartnerLinks.length === 1 ? String(selectedAssignPartnerLinks[0].partner_id) : null)
   const assignmentPartnerJobPath = modalRequest?.id && selectedAssignmentTechnicianId && selectedAssignTechnicianPartnerId
     ? `/partner/service-jobs?${new URLSearchParams({
@@ -2714,8 +2718,7 @@ export function TechnicalServiceOperationCenter() {
     (assignTechnicianOption === 'other' || selectedAssignPartnerLinks.length === 0 || Boolean(selectedAssignTechnicianPartnerId)) &&
     !hasAssignmentBlockers &&
     !paymentNeededNoDecision &&
-    mountExclusionAckComplete &&
-    reassignmentReasonReady
+    mountExclusionAckComplete
   )
   const technicianMatches = technicians
     .map((technician) => technicianMatchInfo(technician, modalRequest))
@@ -2730,10 +2733,26 @@ export function TechnicalServiceOperationCenter() {
 
       return technicianDisplayName(a.technician).localeCompare(technicianDisplayName(b.technician), 'tr')
     })
-  const sameCityTechnicians = technicianMatches.filter((match) => match.sameCity)
-  const otherCityTechnicians = technicianMatches.filter((match) => !match.sameCity)
-  const visibleTechnicianMatches = showNearbyTechnicians
+  const normalizedAssignTechnicianSearch = normalizeTechnicalServiceText(assignTechnicianSearch)
+  const assignTechnicianSearchTerms = normalizedAssignTechnicianSearch.split(/\s+/).filter(Boolean)
+  const searchedTechnicianMatches = normalizedAssignTechnicianSearch === ''
     ? technicianMatches
+    : technicianMatches.filter((match) => {
+        const searchableTechnician = normalizeTechnicalServiceText([
+          technicianDisplayName(match.technician),
+          match.technician.phone,
+          match.technician.phone_display,
+          match.technician.phone_e164,
+          match.technician.city,
+          match.technician.district,
+        ].filter(Boolean).join(' '))
+
+        return assignTechnicianSearchTerms.every((term) => searchableTechnician.includes(term))
+      })
+  const sameCityTechnicians = searchedTechnicianMatches.filter((match) => match.sameCity)
+  const otherCityTechnicians = searchedTechnicianMatches.filter((match) => !match.sameCity)
+  const visibleTechnicianMatches = normalizedAssignTechnicianSearch !== '' || showNearbyTechnicians
+    ? searchedTechnicianMatches
     : sameCityTechnicians
   const assignmentReferenceDateKey = (() => {
     if (modalRequest?.scheduledDate) {
@@ -2795,6 +2814,8 @@ export function TechnicalServiceOperationCenter() {
         id: match.technician.id,
         name: technicianName,
         location: [match.technician.city, match.technician.district].filter(Boolean).join(' / ') || 'Konum bilgisi yok',
+        city: match.technician.city ?? null,
+        district: match.technician.district ?? null,
         phone: match.technician.phone_display ?? match.technician.phone_e164 ?? match.technician.phone ?? null,
         priority: match.technician.priority ?? null,
         latitude: match.technician.latitude ?? null,
@@ -3135,6 +3156,8 @@ export function TechnicalServiceOperationCenter() {
     setAssignPartnerOption(modalRequest?.technicianJobCard?.partner_id ? String(modalRequest.technicianJobCard.partner_id) : '')
     setAssignOtherTechnician('')
     setAssignNote('')
+    setAssignReasonError(null)
+    setAssignTechnicianSearch('')
     setTravelRoundTripKm(
       typeof modalRequest?.travelRoundTripKm === 'number' && Number.isFinite(modalRequest.travelRoundTripKm)
         ? String(modalRequest.travelRoundTripKm)
@@ -3182,6 +3205,7 @@ export function TechnicalServiceOperationCenter() {
     }
 
     setAssignError(null)
+    setAssignReasonError(null)
     setAssignDialogOpen(true)
   }
 
@@ -4774,10 +4798,14 @@ export function TechnicalServiceOperationCenter() {
     }
 
     if (isTechnicianReassignment && assignNote.trim().length < 5) {
-      setAssignError('Usta değişikliği için en az 5 karakterlik yeniden atama nedeni girin.')
+      setAssignError(null)
+      setAssignReasonError('Yeniden atama nedeni yazınız.')
+      assignReasonInputRef.current?.focus()
 
       return
     }
+
+    setAssignReasonError(null)
 
     const manualRouteAmount = parseNullableNumber(assignOfferRouteFeeAmount)
 
@@ -4852,7 +4880,11 @@ export function TechnicalServiceOperationCenter() {
       setAssignTechnicianOption(submittedTechnicianOption)
       setTravelRoundTripKm(submittedTravelRoundTripKm)
 
-      if (updatedRequest && selectedIdRef.current === requestId) {
+      if (!updatedRequest) {
+        throw new Error('Atama kaydedildi ancak güncel talep detayı alınamadı.')
+      }
+
+      if (selectedIdRef.current === requestId) {
         preserveDetailScroll(() => {
           setRequests((current) => current.map((request) => (
             request.id === updatedRequest.id ? updatedRequest : request
@@ -4862,13 +4894,13 @@ export function TechnicalServiceOperationCenter() {
           ))
           setSelectedDetailRequest(updatedRequest)
         })
-        setAssignSuccess('Usta atandı; hakediş, iş kartı ve bildirim kaydı hazırlandı.')
-      } else if (selectedIdRef.current === requestId) {
-        await loadRequestDetail(requestId)
-        setAssignSuccess('Usta atandı; talep detayı yenilendi.')
+        setAssignSuccess(`Atama ${selectedTechnician} olarak güncellendi.`)
+        setAssignReasonError(null)
+        setAssignNote('')
+        setAssignTechnicianSearch('')
+        assignmentDraftRequestId.current = null
+        setAssignDialogOpen(false)
       }
-
-      void loadSummary()
     } catch (caught) {
       const assignmentError = caught as Error & { status?: number, detail?: string }
 
@@ -4906,7 +4938,24 @@ export function TechnicalServiceOperationCenter() {
 
         setAssignError('Kayıt başka bir işlemle güncellendi. Güncel bilgiler yüklendi; seçiminizi kontrol ederek tekrar onaylayın.')
       } else if (selectedIdRef.current === requestId) {
-        setAssignError(assignmentError.message || 'Usta atama işlemi başarısız oldu.')
+        let reasonValidationError: string | null = null
+
+        if (assignmentError.status === 422) {
+          try {
+            const validationPayload = JSON.parse(assignmentError.detail ?? '{}') as { errors?: { note?: string[] } }
+            reasonValidationError = validationPayload.errors?.note?.[0] ?? null
+          } catch {
+            reasonValidationError = null
+          }
+        }
+
+        if (reasonValidationError) {
+          setAssignError(null)
+          setAssignReasonError('Yeniden atama nedeni yazınız.')
+          assignReasonInputRef.current?.focus()
+        } else {
+          setAssignError(assignmentError.message || 'Usta atama işlemi başarısız oldu.')
+        }
       }
     } finally {
       assignMutationInFlightRef.current = false
@@ -5604,6 +5653,30 @@ export function TechnicalServiceOperationCenter() {
 
                 <fieldset className="grid gap-3">
                   <legend className="text-sm font-medium text-slate-700">Usta / Çilingir adı</legend>
+                  <div className="relative">
+                    <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      data-testid="assignment-technician-search"
+                      value={assignTechnicianSearch}
+                      onChange={(event) => setAssignTechnicianSearch(event.target.value)}
+                      placeholder="Usta ara"
+                      aria-label="Usta ara"
+                      className="pl-9 pr-10"
+                    />
+                    {assignTechnicianSearch ? (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                        onClick={() => setAssignTechnicianSearch('')}
+                        aria-label="Usta aramasını temizle"
+                        title="Usta aramasını temizle"
+                      >
+                        <X aria-hidden="true" className="h-4 w-4" />
+                      </Button>
+                    ) : null}
+                  </div>
                   <div className="grid gap-2">
                     {techniciansLoading ? (
                       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
@@ -5615,17 +5688,25 @@ export function TechnicalServiceOperationCenter() {
                         Aktif usta kaydı bulunamadı. Manuel giriş için Diğer seçeneğini kullanabilirsiniz.
                       </div>
                     ) : null}
-                    {!techniciansLoading && technicians.length > 0 && sameCityTechnicians.length > 0 ? (
+                    {!techniciansLoading && normalizedAssignTechnicianSearch !== '' ? (
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Arama sonuçları ({searchedTechnicianMatches.length})</p>
+                    ) : null}
+                    {!techniciansLoading && normalizedAssignTechnicianSearch === '' && technicians.length > 0 && sameCityTechnicians.length > 0 ? (
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Aynı şehirdeki ustalar</p>
                     ) : null}
-                    {!techniciansLoading && technicians.length > 0 && sameCityTechnicians.length === 0 ? (
+                    {!techniciansLoading && normalizedAssignTechnicianSearch === '' && technicians.length > 0 && sameCityTechnicians.length === 0 ? (
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                         Bu taleple aynı şehirde aktif usta bulunamadı.
                       </div>
                     ) : null}
+                    {!techniciansLoading && normalizedAssignTechnicianSearch !== '' && searchedTechnicianMatches.length === 0 ? (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                        Aramaya uygun usta bulunamadı.
+                      </div>
+                    ) : null}
                     {visibleTechnicianMatches.map((match, index) => (
                       <div key={match.technician.id} className="grid gap-2">
-                        {showNearbyTechnicians && index === sameCityTechnicians.length && otherCityTechnicians.length > 0 ? (
+                        {normalizedAssignTechnicianSearch === '' && showNearbyTechnicians && index === sameCityTechnicians.length && otherCityTechnicians.length > 0 ? (
                           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Yakın / diğer şehirlerdeki ustalar</p>
                         ) : null}
                         <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300">
@@ -5638,6 +5719,7 @@ export function TechnicalServiceOperationCenter() {
                               resetAssignmentDraftForTechnicianChange()
                               setRouteQuoteAutoEnabled(true)
                               setAssignTechnicianOption(match.technician.id)
+                              setAssignReasonError(null)
                               const links = activeTechnicianPartnerLinks(match.technician)
                               setAssignPartnerOption(links.length === 1 ? String(links[0].partner_id) : '')
                               setTravelRoundTripKm('')
@@ -5680,7 +5762,7 @@ export function TechnicalServiceOperationCenter() {
                         </label>
                       </div>
                     ))}
-                    {!showNearbyTechnicians && otherCityTechnicians.length > 0 ? (
+                    {normalizedAssignTechnicianSearch === '' && !showNearbyTechnicians && otherCityTechnicians.length > 0 ? (
                       <Button type="button" variant="secondary" onClick={() => setShowNearbyTechnicians(true)}>
                         Diğer / Yakın İlleri Göster
                       </Button>
@@ -5695,6 +5777,7 @@ export function TechnicalServiceOperationCenter() {
                           resetAssignmentDraftForTechnicianChange()
                           setRouteQuoteAutoEnabled(false)
                           setAssignTechnicianOption('other')
+                          setAssignReasonError(null)
                           setAssignPartnerOption('')
                           setTravelRoundTripKm('')
                           setShowNearbyTechnicians(false)
@@ -5743,29 +5826,42 @@ export function TechnicalServiceOperationCenter() {
                       />
                     </label>
 
-                    <label className="grid gap-2 text-sm font-medium text-slate-700">
-                      Not / açıklama
-                      <textarea
-                        value={assignNote}
-                        onChange={(event) => setAssignNote(event.target.value)}
-                        className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                        placeholder="Not / açıklama"
-                      />
-                    </label>
+                    {!isTechnicianReassignment ? (
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Not / açıklama
+                        <textarea
+                          value={assignNote}
+                          onChange={(event) => setAssignNote(event.target.value)}
+                          className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                          placeholder="Not / açıklama"
+                        />
+                      </label>
+                    ) : null}
                   </div>
                 ) : null}
 
-                {isTechnicianReassignment && assignTechnicianOption !== 'other' ? (
+                {isTechnicianReassignment ? (
                   <label className="grid gap-2 text-sm font-medium text-slate-700">
-                    Yeniden atama nedeni
+                    Yeniden atama nedeni *
                     <textarea
                       data-testid="assignment-reason-input"
+                      ref={assignReasonInputRef}
                       value={assignNote}
-                      onChange={(event) => setAssignNote(event.target.value)}
-                      className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                      placeholder="Önceki ustanın işi yapmama nedenini yazın"
+                      onChange={(event) => {
+                        setAssignNote(event.target.value)
+                        setAssignReasonError(null)
+                      }}
+                      className={[
+                        'min-h-[92px] rounded-md border bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:ring-[3px]',
+                        assignReasonError ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : 'border-slate-200 focus:border-ring focus:ring-ring/50',
+                      ].join(' ')}
+                      placeholder="Önceki ustanın işi neden tamamlayamadığını yazınız"
+                      required
+                      aria-invalid={assignReasonError ? 'true' : 'false'}
+                      aria-describedby={assignReasonError ? 'assignment-reason-error assignment-reason-help' : 'assignment-reason-help'}
                     />
-                    <span className="text-xs font-normal text-slate-500">En az 5 karakter. Önceki atama tarihçede korunur.</span>
+                    {assignReasonError ? <span id="assignment-reason-error" data-testid="assignment-reason-error" className="text-xs font-semibold text-rose-700">{assignReasonError}</span> : null}
+                    <span id="assignment-reason-help" className="text-xs font-normal text-slate-500">Bu açıklama eski atamanın tarihçesinde saklanacaktır. En az 5 karakter.</span>
                   </label>
                 ) : null}
 
@@ -6705,6 +6801,7 @@ export function TechnicalServiceOperationCenter() {
                       resetAssignmentDraftForTechnicianChange()
                       setRouteQuoteAutoEnabled(true)
                       setAssignTechnicianOption(technicianId)
+                      setAssignReasonError(null)
                       const technician = technicians.find((item) => item.id === technicianId) ?? null
                       const links = activeTechnicianPartnerLinks(technician)
                       setAssignPartnerOption(links.length === 1 ? String(links[0].partner_id) : '')

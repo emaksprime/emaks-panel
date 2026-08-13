@@ -11,6 +11,8 @@ type HarnessState = {
   assignmentActionCount: number
   assignmentPopupCount: number
   assignmentConfirmCount: number
+  routeRequestCount: number
+  scrollResetCount: number
   completionApproveCount: number
   allocationSubmitCount: number
   boardRefetchCount: number
@@ -124,6 +126,77 @@ const initialRequest: ServiceRequest = {
   fieldCompletionDocuments: [],
   previousFieldCompletionDocuments: [],
 }
+
+const technicianSuggestions = [
+  {
+    id: '111',
+    name: 'Test Usta',
+    location: 'Denizli / Pamukkale',
+    city: 'Denizli',
+    district: 'Pamukkale',
+    phone: '905467647428',
+    distanceKmLabel: '0 km',
+    scheduledCount: 0,
+    availableSlots: [],
+    technicianAmountLabel: '3.000,00 TL',
+    technicianAmountSourceLabel: 'Canonical assignment',
+    travelAmountLabel: '0,00 TL',
+    totalCostLabel: '3.000,00 TL',
+    costDeltaLabel: '0,00 TL',
+    recommended: true,
+  },
+  {
+    id: '54',
+    name: 'BAHATTİN ÖZBEK',
+    location: 'Ankara / Çankaya',
+    city: 'Ankara',
+    district: 'Çankaya',
+    phone: '905353345959',
+    distanceKmLabel: '12 km',
+    scheduledCount: 2,
+    availableSlots: [],
+    technicianAmountLabel: '3.000,00 TL',
+    technicianAmountSourceLabel: 'Canonical assignment',
+    travelAmountLabel: '500,00 TL',
+    totalCostLabel: '3.500,00 TL',
+    costDeltaLabel: '0,00 TL',
+    recommended: false,
+  },
+  {
+    id: '112',
+    name: 'Şule Çilingir',
+    location: 'İstanbul / Şişli',
+    city: 'İstanbul',
+    district: 'Şişli',
+    phone: '905551112233',
+    distanceKmLabel: '8 km',
+    scheduledCount: 1,
+    availableSlots: [],
+    technicianAmountLabel: '3.000,00 TL',
+    technicianAmountSourceLabel: 'Canonical assignment',
+    travelAmountLabel: '400,00 TL',
+    totalCostLabel: '3.400,00 TL',
+    costDeltaLabel: '0,00 TL',
+    recommended: false,
+  },
+  ...Array.from({ length: 49 }, (_, index) => ({
+    id: String(200 + index),
+    name: `Usta ${String(index + 1).padStart(2, '0')}`,
+    location: index % 2 === 0 ? 'İzmir / Bornova' : 'Bursa / Nilüfer',
+    city: index % 2 === 0 ? 'İzmir' : 'Bursa',
+    district: index % 2 === 0 ? 'Bornova' : 'Nilüfer',
+    phone: `9053200${String(index).padStart(4, '0')}`,
+    distanceKmLabel: `${20 + index} km`,
+    scheduledCount: index % 4,
+    availableSlots: [],
+    technicianAmountLabel: '3.000,00 TL',
+    technicianAmountSourceLabel: 'Canonical assignment',
+    travelAmountLabel: '400,00 TL',
+    totalCostLabel: '3.400,00 TL',
+    costDeltaLabel: '0,00 TL',
+    recommended: false,
+  })),
+]
 
 const staleSrvRouteRequest = (): ServiceRequest => {
   const requestCode = 'SRV-2607SP070002-001'
@@ -587,6 +660,8 @@ const state: HarnessState = {
   assignmentActionCount: 0,
   assignmentPopupCount: 0,
   assignmentConfirmCount: 0,
+  routeRequestCount: 0,
+  scrollResetCount: 0,
   completionApproveCount: 0,
   allocationSubmitCount: 0,
   boardRefetchCount: 0,
@@ -674,8 +749,12 @@ function Harness() {
   const [assignmentPopupOpen, setAssignmentPopupOpen] = useState(false)
   const [assignmentPopupCount, setAssignmentPopupCount] = useState(0)
   const [assignmentConfirmCount, setAssignmentConfirmCount] = useState(0)
+  const [routeRequestCount, setRouteRequestCount] = useState(0)
   const [lastAssignmentDraft, setLastAssignmentDraft] = useState<ServiceRequestAssignmentDraft | null>(null)
   const [selectedTechnicianId, setSelectedTechnicianId] = useState<string | null>('111')
+  const [assignmentReason, setAssignmentReason] = useState('')
+  const [assignmentReasonError, setAssignmentReasonError] = useState<string | null>(null)
+  const [assignmentSuccess, setAssignmentSuccess] = useState<string | null>(null)
   const [allocationSubmitCount, setAllocationSubmitCount] = useState(0)
   const [lastAllocationPayload, setLastAllocationPayload] = useState<ServiceRequestCompanyPaymentDecisionSubmit[] | null>(null)
   const [allocationError, setAllocationError] = useState<string | null>(null)
@@ -684,6 +763,8 @@ function Harness() {
   const [failNextSave, setFailNextSave] = useState(false)
   const saveLock = useRef(false)
   const assignmentPopupOpenRef = useRef(false)
+  const assignmentReasonRef = useRef<HTMLTextAreaElement | null>(null)
+  const assignmentConfirmInFlightRef = useRef(false)
 
   return (
     <>
@@ -724,14 +805,21 @@ function Harness() {
           state.assignmentActionCount = 0
           state.assignmentPopupCount = 0
           state.assignmentConfirmCount = 0
+          state.routeRequestCount = 0
+          state.scrollResetCount = 0
           state.boardRefetchCount = 0
           state.lastAssignmentDraft = null
           assignmentPopupOpenRef.current = false
+          assignmentConfirmInFlightRef.current = false
           setAssignmentActionCount(0)
           setAssignmentPopupCount(0)
           setAssignmentConfirmCount(0)
+          setRouteRequestCount(0)
           setLastAssignmentDraft(null)
           setAssignmentPopupOpen(false)
+          setAssignmentReason('')
+          setAssignmentReasonError(null)
+          setAssignmentSuccess(null)
           setSelectedTechnicianId('111')
           setRequest(reassignmentEligibilityRequest())
         }}
@@ -798,6 +886,11 @@ function Harness() {
       <output data-testid="assignment-action-count" className="sr-only">{assignmentActionCount}</output>
       <output data-testid="assignment-popup-count" className="sr-only">{assignmentPopupCount}</output>
       <output data-testid="assignment-confirm-count" className="sr-only">{assignmentConfirmCount}</output>
+      <output data-testid="assignment-route-request-count" className="sr-only">{routeRequestCount}</output>
+      <output data-testid="assignment-scroll-reset-count" className="sr-only">{state.scrollResetCount}</output>
+      <output data-testid="assignment-selected-technician-id" className="sr-only">{selectedTechnicianId}</output>
+      <output data-testid="assignment-popup-open" className="sr-only">{assignmentPopupOpen ? 'true' : 'false'}</output>
+      <output data-testid="request-detail-open" className="sr-only">true</output>
       <output data-testid="assignment-last-draft" className="sr-only">{JSON.stringify(lastAssignmentDraft)}</output>
       <output data-testid="earning-last-send-revision" className="sr-only">{lastSendRevision}</output>
       <output data-testid="earning-last-send-payload" className="sr-only">{JSON.stringify(lastSendPayload)}</output>
@@ -810,22 +903,14 @@ function Harness() {
         events={[]}
         loading={false}
         displayMrn={request.mrn}
-        technicianSuggestions={[{
-        id: '111',
-        name: 'Test Usta',
-        location: 'İstanbul',
-        phone: '9054****428',
-        distanceKmLabel: '0 km',
-        scheduledCount: 0,
-        availableSlots: [],
-        technicianAmountLabel: '3.000,00 TL',
-        technicianAmountSourceLabel: 'Canonical assignment',
-        travelAmountLabel: '0,00 TL',
-        totalCostLabel: '3.000,00 TL',
-        costDeltaLabel: '0,00 TL',
-        recommended: true,
-        }]}
+        technicianSuggestions={technicianSuggestions}
         selectedTechnicianId={selectedTechnicianId}
+        assignSuccess={assignmentSuccess}
+        onTechnicianSelect={(technicianId) => {
+          setSelectedTechnicianId(technicianId)
+          state.routeRequestCount += 1
+          setRouteRequestCount(state.routeRequestCount)
+        }}
         onAssignSelectedTechnician={(draft) => {
           state.assignmentActionCount += 1
           state.lastAssignmentDraft = draft ?? null
@@ -836,6 +921,8 @@ function Harness() {
             assignmentPopupOpenRef.current = true
             state.assignmentPopupCount += 1
             setAssignmentPopupCount(state.assignmentPopupCount)
+            setAssignmentReason('')
+            setAssignmentReasonError(null)
             setAssignmentPopupOpen(true)
           }
         }}
@@ -1220,12 +1307,51 @@ function Harness() {
             İşçilik: {lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0} TL · Yol: {lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0} TL · Toplam: {(lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0) + (lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0)} TL
           </div>
           <pre data-testid="assignment-final-popup-preview" className="whitespace-pre-wrap">{request.assignmentOffer?.message_preview ?? ''}</pre>
+          <label className="grid gap-2">
+            Yeniden atama nedeni *
+            <textarea
+              ref={assignmentReasonRef}
+              data-testid="assignment-reason-input"
+              value={assignmentReason}
+              onChange={(event) => {
+                setAssignmentReason(event.target.value)
+                setAssignmentReasonError(null)
+              }}
+              placeholder="Önceki ustanın işi neden tamamlayamadığını yazınız"
+              aria-invalid={assignmentReasonError ? 'true' : 'false'}
+            />
+            {assignmentReasonError ? <span data-testid="assignment-reason-error">{assignmentReasonError}</span> : null}
+            <span>Bu açıklama eski atamanın tarihçesinde saklanacaktır.</span>
+          </label>
           <button
             type="button"
             data-testid="assignment-final-popup-confirm"
             onClick={() => {
+              if (assignmentReason.trim().length < 5) {
+                setAssignmentReasonError('Yeniden atama nedeni yazınız.')
+                assignmentReasonRef.current?.focus()
+
+                return
+              }
+
+              if (assignmentConfirmInFlightRef.current) {
+                return
+              }
+
+              assignmentConfirmInFlightRef.current = true
               state.assignmentConfirmCount += 1
               setAssignmentConfirmCount(state.assignmentConfirmCount)
+              setRequest((current) => ({
+                ...current,
+                technician: 'Test Usta',
+                technicianId: '111',
+                technicianPhone: '905467647428',
+                technicianPaymentAmount: lastAssignmentDraft?.labor_amount ?? current.technicianPaymentAmount,
+                travelFeeAmount: lastAssignmentDraft?.route_fee_amount ?? current.travelFeeAmount,
+              }))
+              setAssignmentSuccess('Atama Test Usta olarak güncellendi.')
+              assignmentPopupOpenRef.current = false
+              setAssignmentPopupOpen(false)
             }}
           >Atamayı onayla ve mesajı hazırla</button>
         </section>

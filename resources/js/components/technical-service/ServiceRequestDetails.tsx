@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, Eye, Pencil, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Eye, Pencil, Search, Wrench, X, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { ReactNode, Ref } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -166,6 +166,8 @@ type ServiceRequestDetailsProps = {
     id: string
     name: string
     location: string
+    city?: string | null
+    district?: string | null
     phone?: string | null
     priority?: string | number | null
     latitude?: number | string | null
@@ -1791,6 +1793,11 @@ export function ServiceRequestDetails({
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [otherTechniciansModalOpenByRequest, setOtherTechniciansModalOpenByRequest] = useState<Record<string, boolean>>({})
+  const [technicianSearchByRequest, setTechnicianSearchByRequest] = useState<Record<string, string>>({})
+  const technicianSearch = technicianSearchByRequest[request.id] ?? ''
+  const setTechnicianSearch = (value: string) => {
+    setTechnicianSearchByRequest((current) => ({ ...current, [request.id]: value }))
+  }
   const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
   const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? defaultOpenOpsSections.has('finalCheck')
   const setFinalCheckOpen = (open: boolean) => {
@@ -1953,8 +1960,28 @@ export function ServiceRequestDetails({
   const requestTechnicianIdString = request.technicianId !== null && request.technicianId !== undefined
     ? String(request.technicianId)
     : null
-  const topTechnicianSuggestions = technicianSuggestions.slice(0, 4)
+  const normalizedTechnicianSearch = normalizeTechnicalServiceText(technicianSearch)
+  const technicianSearchTerms = normalizedTechnicianSearch.split(/\s+/).filter(Boolean)
+  const searchedTechnicianSuggestions = normalizedTechnicianSearch === ''
+    ? technicianSuggestions
+    : technicianSuggestions.filter((technician) => {
+        const searchableTechnician = normalizeTechnicalServiceText([
+          technician.name,
+          technician.phone,
+          technician.city,
+          technician.district,
+          technician.location,
+        ].filter(Boolean).join(' '))
+
+        return technicianSearchTerms.every((term) => searchableTechnician.includes(term))
+      })
+  const topTechnicianSuggestions = normalizedTechnicianSearch === ''
+    ? technicianSuggestions.slice(0, 4)
+    : searchedTechnicianSuggestions
   const remainingTechnicianSuggestions = technicianSuggestions.slice(4)
+  const modalTechnicianSuggestions = normalizedTechnicianSearch === ''
+    ? remainingTechnicianSuggestions
+    : searchedTechnicianSuggestions
   const otherTechnicianCount = remainingTechnicianSuggestions.length
   const otherTechniciansModalOpen = otherTechniciansModalOpenByRequest[request.id] ?? false
   const selectedTechnicianMatchesRequest = selectedTechnicianIdString
@@ -3437,6 +3464,31 @@ export function ServiceRequestDetails({
       </div>
     )
   }
+  const renderTechnicianSearch = (surface: 'main' | 'modal') => (
+    <div className="relative" data-testid={`technician-search-${surface}`}>
+      <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+      <Input
+        value={technicianSearch}
+        onChange={(event) => setTechnicianSearch(event.target.value)}
+        placeholder="Usta ara"
+        aria-label="Usta ara"
+        className="pl-9 pr-10"
+      />
+      {technicianSearch ? (
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+          onClick={() => setTechnicianSearch('')}
+          aria-label="Usta aramasını temizle"
+          title="Usta aramasını temizle"
+        >
+          <X aria-hidden="true" className="h-4 w-4" />
+        </Button>
+      ) : null}
+    </div>
+  )
   const handleCustomerChargeCreate = async () => {
     if (!onExtraMountPaymentCreate) {
       setRouteFeeEditorMessage('Ödeme linki oluşturma servisi bağlı değil.')
@@ -4038,12 +4090,13 @@ export function ServiceRequestDetails({
             Kapat
           </Button>
         </div>
+        <div className="mt-4">{renderTechnicianSearch('modal')}</div>
         <div className="mt-4 grid gap-2">
-          {remainingTechnicianSuggestions.length > 0 ? (
-            remainingTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))
+          {modalTechnicianSuggestions.length > 0 ? (
+            modalTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))
           ) : (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-              Gösterilecek ek usta yok.
+              {normalizedTechnicianSearch === '' ? 'Gösterilecek ek usta yok.' : 'Aramaya uygun usta bulunamadı.'}
             </div>
           )}
         </div>
@@ -6865,17 +6918,22 @@ export function ServiceRequestDetails({
                     ) : null}
                   </div>
                 </div>
+                {renderTechnicianSearch('main')}
                 {topTechnicianSuggestions.length > 0 ? (
                   <div className="grid gap-2">
                     {topTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))}
                   </div>
                 ) : (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                    <p className="font-semibold">Bu taleple aynı şehirde aktif usta bulunamadı.</p>
-                    <p className="mt-1">Diğer / Yakın İlleri Göster ile farklı şehirlerdeki ustaları kontrol edin.</p>
-                    <Button type="button" variant="outline" className="mt-3 border-amber-200 bg-white text-amber-900 hover:bg-amber-100" onClick={() => onAssign?.()}>
-                      Diğer / Yakın İlleri Göster
-                    </Button>
+                    {normalizedTechnicianSearch === '' ? (
+                      <>
+                        <p className="font-semibold">Bu taleple aynı şehirde aktif usta bulunamadı.</p>
+                        <p className="mt-1">Diğer / Yakın İlleri Göster ile farklı şehirlerdeki ustaları kontrol edin.</p>
+                        <Button type="button" variant="outline" className="mt-3 border-amber-200 bg-white text-amber-900 hover:bg-amber-100" onClick={() => onAssign?.()}>
+                          Diğer / Yakın İlleri Göster
+                        </Button>
+                      </>
+                    ) : <p className="font-semibold">Aramaya uygun usta bulunamadı.</p>}
                   </div>
                 )}
                 {scheduleSupport ? (
