@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react'
-import { Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, Wrench, X } from 'lucide-react'
 import type { MutableRefObject } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
@@ -1326,6 +1326,7 @@ export function TechnicalServiceOperationCenter() {
   const [assignReasonError, setAssignReasonError] = useState<string | null>(null)
   const assignReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const [assignTechnicianSearch, setAssignTechnicianSearch] = useState('')
+  const [showOtherTechnicians, setShowOtherTechnicians] = useState(false)
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null)
@@ -2596,6 +2597,14 @@ export function TechnicalServiceOperationCenter() {
     : modalPayoutStatus === 'draft'
       ? 'Önerilen / taslak hakediş'
       : 'Usta hakedişi'
+  const assignmentTotalSummaryLabel = modalPayoutStatus === 'confirmed'
+    ? 'Onaylanan toplam hakediş'
+    : modalPayoutStatus === 'draft'
+      ? 'Önerilen toplam hakediş'
+      : 'Toplam hakediş'
+  const assignmentRouteFeeHelperLabel = modalPayoutStatus === 'confirmed'
+    ? 'Onaylanan yol hakedişi'
+    : 'Önerilen yol hakedişi'
   const finalAssignmentLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
   const finalAssignmentRouteAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
   const finalAssignmentCompanyPaymentAmount = roundTwo(modalCanonicalEarningSnapshot?.company_payment_amount ?? 0)
@@ -2770,6 +2779,7 @@ export function TechnicalServiceOperationCenter() {
       return technicianDisplayName(a.technician).localeCompare(technicianDisplayName(b.technician), 'tr')
     })
   const normalizedAssignTechnicianSearch = normalizeTechnicalServiceText(assignTechnicianSearch)
+  const assignmentTechnicianSearchActive = normalizedAssignTechnicianSearch !== ''
   const assignTechnicianSearchTerms = normalizedAssignTechnicianSearch.split(/\s+/).filter(Boolean)
   const searchedTechnicianMatches = normalizedAssignTechnicianSearch === ''
     ? technicianMatches
@@ -3249,6 +3259,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignNote('')
     setAssignReasonError(null)
     setAssignTechnicianSearch('')
+    setShowOtherTechnicians(false)
     setTravelRoundTripKm(
       typeof modalRequest?.travelRoundTripKm === 'number' && Number.isFinite(modalRequest.travelRoundTripKm)
         ? String(modalRequest.travelRoundTripKm)
@@ -4979,6 +4990,7 @@ export function TechnicalServiceOperationCenter() {
       setAssignReasonError(null)
       setAssignNote('')
       setAssignTechnicianSearch('')
+      setShowOtherTechnicians(false)
 
       if (selectedIdRef.current === requestId) {
         preserveDetailScroll(() => {
@@ -5736,15 +5748,26 @@ export function TechnicalServiceOperationCenter() {
 
                 <fieldset className="grid gap-3">
                   <legend className="text-sm font-medium text-slate-700">Usta / Çilingir adı</legend>
-                  <div className="relative">
-                    <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <div data-testid="assignment-technician-search-wrapper" className="relative">
+                    <Search
+                      data-testid="assignment-technician-search-icon"
+                      aria-hidden="true"
+                      className="pointer-events-none absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    />
                     <Input
                       data-testid="assignment-technician-search"
                       value={assignTechnicianSearch}
-                      onChange={(event) => setAssignTechnicianSearch(event.target.value)}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        setAssignTechnicianSearch(value)
+
+                        if (normalizeTechnicalServiceText(value) === '') {
+                          setShowOtherTechnicians(false)
+                        }
+                      }}
                       placeholder="Usta ara"
                       aria-label="Usta ara"
-                      className="pl-9 pr-10"
+                      className="pl-10 pr-10"
                     />
                     {assignTechnicianSearch ? (
                       <Button
@@ -5752,7 +5775,10 @@ export function TechnicalServiceOperationCenter() {
                         size="icon"
                         variant="ghost"
                         className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
-                        onClick={() => setAssignTechnicianSearch('')}
+                        onClick={() => {
+                          setAssignTechnicianSearch('')
+                          setShowOtherTechnicians(false)
+                        }}
                         aria-label="Usta aramasını temizle"
                         title="Usta aramasını temizle"
                       >
@@ -5787,17 +5813,48 @@ export function TechnicalServiceOperationCenter() {
                         Aramaya uygun usta bulunamadı.
                       </div>
                     ) : null}
-                    {!techniciansLoading && sameCityTechnicians.length > 0 ? (
+                    {!techniciansLoading && assignmentTechnicianSearchActive && unselectedSearchedTechnicianMatches.length > 0 ? (
                       <>
-                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Aynı şehirdeki ustalar</p>
-                        {sameCityTechnicians.map((match) => renderAssignmentTechnicianOption(match))}
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Arama sonuçları</p>
+                        <div data-testid="assignment-technician-search-results" className="grid gap-2">
+                          {unselectedSearchedTechnicianMatches.map((match) => renderAssignmentTechnicianOption(match))}
+                        </div>
                       </>
                     ) : null}
-                    {!techniciansLoading && otherCityTechnicians.length > 0 ? (
+                    {!techniciansLoading && !assignmentTechnicianSearchActive && sameCityTechnicians.length > 0 ? (
                       <>
-                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Diğer ustalar</p>
-                        {otherCityTechnicians.map((match) => renderAssignmentTechnicianOption(match))}
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Aynı şehirdeki ustalar</p>
+                        <div data-testid="assignment-same-city-technicians" className="grid gap-2">
+                          {sameCityTechnicians.map((match) => renderAssignmentTechnicianOption(match))}
+                        </div>
                       </>
+                    ) : null}
+                    {!techniciansLoading && !assignmentTechnicianSearchActive && otherCityTechnicians.length > 0 ? (
+                      <div className="grid gap-2">
+                        <Button
+                          data-testid="assignment-other-technicians-toggle"
+                          type="button"
+                          variant="outline"
+                          className="w-full justify-between border-slate-200 bg-white text-slate-700"
+                          onClick={() => setShowOtherTechnicians((current) => !current)}
+                          aria-expanded={showOtherTechnicians}
+                        >
+                          <span>
+                            {showOtherTechnicians
+                              ? 'Diğer / Yakın İlleri Gizle'
+                              : `Diğer / Yakın İlleri Göster (${otherCityTechnicians.length})`}
+                          </span>
+                          {showOtherTechnicians
+                            ? <ChevronUp aria-hidden="true" className="h-4 w-4" />
+                            : <ChevronDown aria-hidden="true" className="h-4 w-4" />}
+                        </Button>
+                        {showOtherTechnicians ? (
+                          <div data-testid="assignment-other-technicians" className="grid gap-2">
+                            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Diğer / yakın illerdeki ustalar</p>
+                            {otherCityTechnicians.map((match) => renderAssignmentTechnicianOption(match))}
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                     <label className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300">
                       <input
@@ -5988,9 +6045,9 @@ export function TechnicalServiceOperationCenter() {
                     </div>
                     <p className="mt-1 text-xs text-emerald-800">Hakediş tutarları atama onayıyla birlikte kaydedilir.</p>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-4">
-                    <label className="grid gap-1 text-xs font-semibold text-emerald-800">
-                      İşçilik / montaj
+                  <div data-testid="assignment-earning-field-grid" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <label data-testid="assignment-earning-field-labor" className="grid min-w-0 content-start gap-2 rounded-xl bg-white/80 p-3 text-xs font-semibold text-emerald-800">
+                      <span>İşçilik / montaj</span>
                       <Input
                         type="number"
                         min="0"
@@ -5999,9 +6056,10 @@ export function TechnicalServiceOperationCenter() {
                         onChange={(event) => setAssignOfferLaborAmount(event.target.value)}
                         placeholder={assignmentTechnicianLaborAmount !== null ? String(assignmentTechnicianLaborAmount) : '0'}
                       />
+                      <span className="font-normal leading-5 text-emerald-800">Kaynak: {assignmentTechnicianLaborSourceLabel}</span>
                     </label>
-                    <label className="grid gap-1 text-xs font-semibold text-emerald-800">
-                      Usta yol hakedişi
+                    <label data-testid="assignment-earning-field-route" className="grid min-w-0 content-start gap-2 rounded-xl bg-white/80 p-3 text-xs font-semibold text-emerald-800">
+                      <span>Usta yol hakedişi</span>
                       <Input
                         type="number"
                         min="0"
@@ -6010,16 +6068,21 @@ export function TechnicalServiceOperationCenter() {
                         onChange={(event) => setAssignOfferRouteFeeAmount(event.target.value)}
                         placeholder={assignmentRouteFeeAmount !== null ? String(assignmentRouteFeeAmount) : '0'}
                       />
+                      <span className="font-normal leading-5 text-emerald-800">{assignmentRouteFeeHelperLabel}</span>
                     </label>
                     {customerDirectPaymentDisabled ? (
-                      <div data-testid="assignment-customer-direct-payment" className="rounded-xl bg-white/80 p-3">
+                      <div data-testid="assignment-customer-direct-payment" className="grid min-w-0 content-start gap-2 rounded-xl bg-white/80 p-3">
                         <p className="text-xs font-semibold text-emerald-700">Müşterinin ustaya ödeyeceği tutar</p>
-                        <p className="mt-1 font-semibold text-slate-950">{formatMoneyLabel(finalAssignmentCustomerDirectAmount)}</p>
-                        <p className="mt-1 text-xs text-emerald-800">Hakediş ödeme kaynağı: {modalAssignmentPaymentModel?.technician_payment_source_label ?? 'EMAKS Prime'}</p>
+                        <p className="font-semibold text-slate-950">{formatMoneyLabel(finalAssignmentCustomerDirectAmount)}</p>
+                        <p className="text-xs leading-5 text-emerald-800">
+                          {modalAssignmentPaymentModel?.mount_included
+                            ? 'Montaj dahil olduğu için müşteriye doğrudan ödeme bildirilmez.'
+                            : 'Müşteri tahsilatı şirket tarafından alındığı için doğrudan ödeme bildirilmez.'}
+                        </p>
                       </div>
                     ) : (
-                      <label className="grid gap-1 text-xs font-semibold text-emerald-800">
-                        Müşterinin ustaya ödeyeceği tutar
+                      <label data-testid="assignment-earning-field-customer-direct" className="grid min-w-0 content-start gap-2 rounded-xl bg-white/80 p-3 text-xs font-semibold text-emerald-800">
+                        <span>Müşterinin ustaya ödeyeceği tutar</span>
                         <Input
                           type="number"
                           min="0"
@@ -6028,15 +6091,22 @@ export function TechnicalServiceOperationCenter() {
                           onChange={(event) => setAssignCustomerDirectAmount(event.target.value)}
                           placeholder={String(finalAssignmentCustomerDirectDefault)}
                         />
+                        <span className="font-normal leading-5 text-emerald-800">Müşterinin ustaya doğrudan ödeyeceği tutar.</span>
                       </label>
                     )}
-                    <div className="rounded-xl bg-white/80 p-3">
-                      <p className="text-xs font-semibold text-emerald-700">{assignmentPayoutSummaryLabel}</p>
-                      <p className="mt-1 font-semibold text-slate-950">
+                    <div data-testid="assignment-earning-field-total" className="grid min-w-0 content-start gap-2 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
+                      <p className="text-xs font-semibold text-emerald-700">{assignmentTotalSummaryLabel}</p>
+                      <p className="font-semibold text-slate-950">
                         {formatMoneyLabel(finalAssignmentTotalAmount)}
+                      </p>
+                      <p className="text-xs leading-5 text-emerald-800">
+                        {finalAssignmentCompanyPaymentAmount > 0 ? 'İşçilik + yol + şirket ödemesi' : 'İşçilik + yol'}
                       </p>
                     </div>
                   </div>
+                  <p data-testid="assignment-payment-source" className="rounded-xl border border-emerald-100 bg-white/80 px-3 py-2 text-xs text-emerald-900">
+                    Hakediş ödeme kaynağı: <strong>{modalAssignmentPaymentModel?.technician_payment_source_label ?? 'EMAKS Prime'}</strong>
+                  </p>
                   <div className="grid gap-2 rounded-xl border border-emerald-100 bg-white/80 p-3 text-xs text-emerald-900">
                     <p className="font-semibold">
                       {modalAssignmentPaymentModel?.mount_included

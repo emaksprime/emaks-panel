@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import type { ServiceRequestAssignmentDraft } from '../../resources/js/components/technical-service/ServiceRequestDetails'
+import { TechnicalServiceKanbanCard } from '../../resources/js/components/technical-service/TechnicalServiceKanbanCard'
 import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
 import '../../resources/css/app.css'
 
@@ -147,6 +148,21 @@ const initialAssignmentRequest = (): ServiceRequest => ({
   settlement: null,
   technicianJobCard: null,
 })
+
+const canonicalTechnicianBoardRequest: ServiceRequest = {
+  ...initialRequest,
+  city: 'Ankara',
+  district: 'Beypazarı',
+}
+
+const missingTechnicianCityBoardRequest: ServiceRequest = {
+  ...canonicalTechnicianBoardRequest,
+  technicianProfile: {
+    ...canonicalTechnicianBoardRequest.technicianProfile!,
+    city: null,
+    district: null,
+  },
+}
 
 const partContextRequest = (status: 'paid' | 'unpaid' | 'free' | 'none'): ServiceRequest => {
   if (status === 'none') {
@@ -1016,6 +1032,17 @@ function Harness() {
       <output data-testid="company-payment-decision-last-payload" className="sr-only">{JSON.stringify(lastAllocationPayload)}</output>
       <output data-testid="financial-board-refetch-count" className="sr-only">{state.boardRefetchCount}</output>
       <output data-testid="financial-modal-mount-count" className="sr-only">{modalMountId}</output>
+      <section className="grid max-w-md gap-4 p-4" aria-label="Board technician location fixtures">
+        <div data-testid="assignment-dynamic-board-card">
+          <TechnicalServiceKanbanCard request={request} onClick={() => undefined} />
+        </div>
+        <div data-testid="canonical-technician-board-card">
+          <TechnicalServiceKanbanCard request={canonicalTechnicianBoardRequest} onClick={() => undefined} />
+        </div>
+        <div data-testid="missing-technician-city-board-card">
+          <TechnicalServiceKanbanCard request={missingTechnicianCityBoardRequest} onClick={() => undefined} />
+        </div>
+      </section>
       <ServiceRequestDetails
         request={request}
         events={[]}

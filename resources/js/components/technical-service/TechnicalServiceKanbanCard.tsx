@@ -486,8 +486,9 @@ export function TechnicalServiceKanbanCard({
   const actionOwner = request.actionOwner ?? request.operationalState?.dashboard_action_owner ?? request.operationalState?.action_owner ?? null
   const actionOwnerLabel = request.actionOwnerLabel ?? request.operationalState?.action_owner_label ?? null
 
+  const technicianCity = request.technicianProfile?.city?.trim() ?? ''
   const technicianLabel = request.technician && normalizeTechnicalServiceText(request.technician) !== 'atanmadi'
-    ? `TS - ${request.technician} - ${request.city || '-'}`
+    ? ['TS', request.technician, technicianCity || null].filter(Boolean).join(' - ')
     : null
 
   return (
@@ -563,7 +564,7 @@ export function TechnicalServiceKanbanCard({
 
       {technicianLabel ? (
         <div className="mt-3 space-y-1.5">
-          <span className="inline-flex max-w-full rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+          <span data-testid="technical-service-technician-badge" className="inline-flex max-w-full rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
             <span className="truncate">{technicianLabel}</span>
           </span>
           {technicianPhone ? (

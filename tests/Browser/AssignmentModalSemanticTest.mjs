@@ -28,6 +28,11 @@ const inspectViewport = async (browser, name, viewport) => {
   await page.goto(`${baseUrl}/tests/Browser/assignment-earning-canonical.html`, { waitUntil: 'networkidle' })
   await page.waitForFunction(() => window.__assignmentEarningDomReady === true)
 
+  const canonicalBoardBadge = page.getByTestId('canonical-technician-board-card').getByTestId('technical-service-technician-badge')
+  const missingCityBoardBadge = page.getByTestId('missing-technician-city-board-card').getByTestId('technical-service-technician-badge')
+  assert(await canonicalBoardBadge.innerText() === 'TS - Test Usta - Denizli', `${name}: board badge does not use the canonical technician city`)
+  assert(await missingCityBoardBadge.innerText() === 'TS - Test Usta', `${name}: missing technician city uses a false fallback suffix`)
+
   await page.getByTestId('load-matched-route-collection-scenario').click()
   assert(await page.getByText(/Residual:/).count() === 0, `${name}: internal Residual label is visible`)
   assert(await page.getByText('Dağıtıma kalan tutar', { exact: true }).count() === 0, `${name}: zero residual is rendered`)
@@ -53,6 +58,8 @@ const inspectViewport = async (browser, name, viewport) => {
   assert(await page.getByText(/Gateway —/).count() === 0, `${name}: no-part request renders a part row`)
 
   await page.getByTestId('load-reassignment-eligibility-scenario').click()
+  const dynamicBoardBadge = page.getByTestId('assignment-dynamic-board-card').getByTestId('technical-service-technician-badge')
+  assert(await dynamicBoardBadge.innerText() === 'TS - BAHATTİN ÖZBEK - Ankara', `${name}: reassignment fixture does not expose the old canonical technician location`)
   const reassignmentOpenStartedAt = performance.now()
   await page.getByRole('button', { name: 'Atamayı Güncelle', exact: true }).first().click()
   await page.getByTestId('assignment-final-popup').waitFor({ state: 'visible' })
@@ -72,6 +79,7 @@ const inspectViewport = async (browser, name, viewport) => {
   assert(await outputText(page, 'financial-board-refetch-count') === '0', `${name}: reassignment refetched the board`)
   assert(await outputText(page, 'financial-modal-mount-count') === '1', `${name}: reassignment remounted the detail modal`)
   assert(await outputText(page, 'assignment-scroll-reset-count') === '0', `${name}: reassignment reset scroll`)
+  assert(await dynamicBoardBadge.innerText() === 'TS - Test Usta - Denizli', `${name}: canonical assignment delta did not update the board technician location in place`)
   assert(await page.getByText('Atama Test Usta olarak güncellendi.', { exact: true }).count() > 0, `${name}: reassignment success notice is missing`)
   assert(await page.getByText('Denizli / Pamukkale', { exact: true }).count() > 0, `${name}: reassignment did not apply canonical location`)
 
@@ -104,6 +112,7 @@ const inspectViewport = async (browser, name, viewport) => {
 
 const pageSource = fs.readFileSync(path.join(process.cwd(), 'resources/js/pages/panel/technical-service.tsx'), 'utf8')
 const detailsSource = fs.readFileSync(path.join(process.cwd(), 'resources/js/components/technical-service/ServiceRequestDetails.tsx'), 'utf8')
+const cardSource = fs.readFileSync(path.join(process.cwd(), 'resources/js/components/technical-service/TechnicalServiceKanbanCard.tsx'), 'utf8')
 assert(pageSource.includes('modalAssignmentPaymentModel?.mount_included'), 'source: mount-included payment model is not authoritative')
 assert(pageSource.includes('Müşterinin ustaya ödeyeceği tutar'), 'source: corrected customer-direct-payment label is missing')
 assert(pageSource.includes('Hakediş ödeme kaynağı:'), 'source: technician payment source is missing')
@@ -113,7 +122,17 @@ assert(!pageSource.includes('Mesajdaki canonical iş kartı bağlantısı bu aç
 assert(pageSource.includes('data-testid="assignment-single-partner-scope"'), 'source: single partner scope is not rendered as read-only')
 assert(pageSource.includes('selectedAssignPartnerLinks.length > 1'), 'source: multiple partner scopes do not render a functional selector')
 assert(pageSource.includes('Seçili usta'), 'source: selected technician is not pinned')
-assert(pageSource.includes('Aynı şehirdeki ustalar') && pageSource.includes('Diğer ustalar'), 'source: technician sections are not preserved')
+assert(pageSource.includes('Aynı şehirdeki ustalar'), 'source: same-city technician section is missing')
+assert(pageSource.includes('Diğer / Yakın İlleri Göster') && pageSource.includes('Diğer / Yakın İlleri Gizle'), 'source: other technicians do not use progressive disclosure')
+assert(pageSource.includes('showOtherTechnicians') && pageSource.includes('assignmentTechnicianSearchActive'), 'source: collapsed and search-all state owners are missing')
+assert(pageSource.includes('data-testid="assignment-other-technicians-toggle"'), 'source: other-technician toggle is not testable')
+assert(pageSource.includes('data-testid="assignment-technician-search-results"'), 'source: search cannot expose matches from collapsed groups')
+assert(pageSource.includes('data-testid="assignment-technician-search-wrapper"') && pageSource.includes('data-testid="assignment-technician-search-icon"'), 'source: search icon/input wrapper contract is missing')
+assert(pageSource.includes('grid-cols-1 gap-3 sm:grid-cols-2'), 'source: earning layout does not step from one to two readable columns')
+assert(!pageSource.includes('assignment-earning-field-grid" className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4'), 'source: viewport breakpoint can still compress the narrow modal into four columns')
+assert(pageSource.includes('data-testid="assignment-earning-field-labor"') && pageSource.includes('data-testid="assignment-earning-field-total"'), 'source: earning field semantic order is not testable')
+assert(cardSource.includes('request.technicianProfile?.city?.trim()'), 'source: board badge does not use canonical technician profile city')
+assert(!cardSource.includes('request.technician} - ${request.city'), 'source: board badge still uses customer/request city')
 assert(!detailsSource.includes('Atanan usta özeti'), 'source: duplicate assigned-technician summary remains')
 
 const browser = await chromium.launch({

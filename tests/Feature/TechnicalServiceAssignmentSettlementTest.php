@@ -289,6 +289,97 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ->assertJsonPath('request.technician_record.district', 'Pamukkale');
     }
 
+    public function test_board_summary_uses_active_technician_canonical_city(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill([
+            'customer_city' => 'Ankara',
+            'customer_district' => 'Beypazarı',
+        ])->save();
+        $technician->forceFill([
+            'city' => 'Denizli',
+            'district' => 'Pamukkale',
+        ])->save();
+
+        $this->assign($request, $technician)->assertOk();
+
+        $this->getJson('/api/technical-service/requests?search='.urlencode($request->mrn))
+            ->assertOk()
+            ->assertJsonPath('items.0.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('items.0.customer_city', 'Ankara')
+            ->assertJsonPath('items.0.technician_record.id', $technician->id)
+            ->assertJsonPath('items.0.technician_record.city', 'Denizli')
+            ->assertJsonPath('items.0.technician_record.district', 'Pamukkale');
+    }
+
+    public function test_old_assignment_city_cannot_leak_to_board_badge(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        $oldTechnician->forceFill(['city' => 'Ankara', 'district' => 'Çankaya'])->save();
+        $request->forceFill(['customer_city' => 'Ankara', 'customer_district' => 'Beypazarı'])->save();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000292');
+        $newTechnician->forceFill(['city' => 'Denizli', 'district' => 'Pamukkale'])->save();
+
+        $this->assign($request, $newTechnician)->assertOk();
+
+        $response = $this->getJson('/api/technical-service/requests?search='.urlencode($request->mrn))
+            ->assertOk()
+            ->assertJsonPath('items.0.technical_service_technician_id', $newTechnician->id)
+            ->assertJsonPath('items.0.technician_record.city', 'Denizli');
+        $this->assertNotSame('Ankara', $response->json('items.0.technician_record.city'));
+
+        $this->assertDatabaseHas('technical_service_assignment_archives', [
+            'technical_service_request_id' => $request->id,
+            'old_technician_id' => $oldTechnician->id,
+            'new_technician_id' => $newTechnician->id,
+        ]);
+    }
+
+    public function test_request_customer_city_cannot_replace_technician_city(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill(['customer_city' => 'Ankara'])->save();
+        $technician->forceFill(['city' => 'Denizli', 'district' => 'Pamukkale'])->save();
+        $this->assign($request, $technician)->assertOk();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->refresh(), false, false, false);
+
+        $this->assertSame('Ankara', $payload['customer_city']);
+        $this->assertSame('Denizli', data_get($payload, 'technician_record.city'));
+        $this->assertNotSame($payload['customer_city'], data_get($payload, 'technician_record.city'));
+    }
+
+    public function test_missing_technician_city_omits_suffix_without_false_fallback(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill(['customer_city' => 'Ankara'])->save();
+        $technician->forceFill(['city' => null, 'district' => null])->save();
+
+        $this->assign($request, $technician)
+            ->assertOk()
+            ->assertJsonPath('request.customer_city', 'Ankara')
+            ->assertJsonPath('request.technician_record.city', null);
+
+        $cardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanCard.tsx')) ?: '';
+        $this->assertStringContainsString('request.technicianProfile?.city?.trim()', $cardSource);
+        $this->assertStringNotContainsString('request.technician} - ${request.city', $cardSource);
+    }
+
+    public function test_assignment_response_board_delta_contains_canonical_technician_location(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill(['customer_city' => 'Ankara', 'customer_district' => 'Beypazarı'])->save();
+        $technician->forceFill(['city' => 'Denizli', 'district' => 'Pamukkale'])->save();
+
+        $this->assign($request, $technician)
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.technician_name', $technician->name)
+            ->assertJsonPath('request.technician_record.id', $technician->id)
+            ->assertJsonPath('request.technician_record.city', 'Denizli')
+            ->assertJsonPath('request.technician_record.district', 'Pamukkale');
+    }
+
     public function test_zero_residual_requires_no_decision(): void
     {
         [$request] = $this->assignedSettlementFixture();
