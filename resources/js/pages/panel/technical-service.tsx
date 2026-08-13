@@ -2472,6 +2472,7 @@ export function TechnicalServiceOperationCenter() {
     && modalRequest?.assignmentOffer?.technical_service_technician_id !== undefined
     ? String(modalRequest.assignmentOffer.technical_service_technician_id)
     : null
+  const modalPersistedEarningSnapshot = modalRequest?.assignmentOffer?.earning_snapshot ?? null
   const modalCanonicalEarningSnapshot = modalRequest?.assignmentOffer?.earning_snapshot
     && selectedAssignmentTechnicianId
     && modalAssignmentOfferTechnicianId === selectedAssignmentTechnicianId
@@ -2580,6 +2581,14 @@ export function TechnicalServiceOperationCenter() {
   const selectedAssignTechnicianName = assignTechnicianOption === 'other'
     ? assignOtherTechnician.trim()
     : selectedAssignTechnicianRecord ? technicianDisplayName(selectedAssignTechnicianRecord) : ''
+  const isTechnicianReassignment = Boolean(
+    modalRequestTechnicianId
+    && (
+      assignTechnicianOption === 'other'
+      || (selectedAssignmentTechnicianId && modalRequestTechnicianId !== selectedAssignmentTechnicianId)
+    ),
+  )
+  const reassignmentReasonReady = !isTechnicianReassignment || assignNote.trim().length >= 5
   const selectedAssignTechnicianPartnerId = assignPartnerOption || (selectedAssignPartnerLinks.length === 1 ? String(selectedAssignPartnerLinks[0].partner_id) : null)
   const assignmentPartnerJobPath = modalRequest?.id && selectedAssignmentTechnicianId && selectedAssignTechnicianPartnerId
     ? `/partner/service-jobs?${new URLSearchParams({
@@ -2705,7 +2714,8 @@ export function TechnicalServiceOperationCenter() {
     (assignTechnicianOption === 'other' || selectedAssignPartnerLinks.length === 0 || Boolean(selectedAssignTechnicianPartnerId)) &&
     !hasAssignmentBlockers &&
     !paymentNeededNoDecision &&
-    mountExclusionAckComplete
+    mountExclusionAckComplete &&
+    reassignmentReasonReady
   )
   const technicianMatches = technicians
     .map((technician) => technicianMatchInfo(technician, modalRequest))
@@ -3147,9 +3157,21 @@ export function TechnicalServiceOperationCenter() {
 
   const openAssignmentDialog = () => {
     const currentRequestId = modalRequest?.id ?? selectedId ?? null
+    const currentTechnicianId = modalRequest?.technicianId !== null && modalRequest?.technicianId !== undefined
+      ? String(modalRequest.technicianId)
+      : ''
+    const explicitCandidateSelected = Boolean(
+      assignTechnicianOption
+      && assignTechnicianOption !== 'other'
+      && assignTechnicianOption !== currentTechnicianId
+      && technicians.some((technician) => technician.id === assignTechnicianOption),
+    )
 
     if (assignmentDraftRequestId.current !== currentRequestId) {
-      handleAssignReset()
+      if (!explicitCandidateSelected) {
+        handleAssignReset()
+      }
+
       assignmentDraftRequestId.current = currentRequestId
     }
 
@@ -4745,6 +4767,12 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if (isTechnicianReassignment && assignNote.trim().length < 5) {
+      setAssignError('Usta değişikliği için en az 5 karakterlik yeniden atama nedeni girin.')
+
+      return
+    }
+
     const manualRouteAmount = parseNullableNumber(assignOfferRouteFeeAmount)
 
     if (!isManualTechnician && !assignmentRouteQuote && manualRouteAmount === null) {
@@ -4787,6 +4815,8 @@ export function TechnicalServiceOperationCenter() {
                 technical_service_technician_id: assignTechnicianOption,
                 b2b_partner_id: selectedAssignTechnicianPartnerId ? Number(selectedAssignTechnicianPartnerId) : null,
               }),
+          expected_current_technician_id: modalRequest?.technicianId ?? null,
+          expected_assignment_offer_id: modalRequest?.assignmentOffer?.id ?? null,
           route_quote_id: assignmentRouteQuote?.id ?? null,
           travel_round_trip_km: parsedTravelRoundTripKm,
           mount_payment_missing: paymentNeededNoDecision,
@@ -4797,8 +4827,8 @@ export function TechnicalServiceOperationCenter() {
           labor_amount: offerLaborAmount,
           travel_amount: offerRouteFeeAmount,
           customer_direct_to_technician_amount: customerDirectAmount,
-          earning_note: assignOfferNote.trim() || assignNote || null,
-          expected_earning_revision: modalCanonicalEarningSnapshot?.revision ?? null,
+          earning_note: assignOfferNote.trim() || (isManualTechnician ? assignNote : null) || null,
+          expected_earning_revision: modalPersistedEarningSnapshot?.revision ?? null,
           confirm_assignment: true,
           assignment_offer: {
             labor_amount: offerLaborAmount,
@@ -4806,7 +4836,7 @@ export function TechnicalServiceOperationCenter() {
             total_amount: offerTotalAmount,
             customer_direct_to_technician_amount: customerDirectAmount,
             currency: 'TRY',
-            note: assignOfferNote.trim() || assignNote || null,
+            note: assignOfferNote.trim() || (isManualTechnician ? assignNote : null) || null,
           },
           note: assignNote || null,
         }),
@@ -5682,6 +5712,20 @@ export function TechnicalServiceOperationCenter() {
                       />
                     </label>
                   </div>
+                ) : null}
+
+                {isTechnicianReassignment && assignTechnicianOption !== 'other' ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Yeniden atama nedeni
+                    <textarea
+                      data-testid="assignment-reason-input"
+                      value={assignNote}
+                      onChange={(event) => setAssignNote(event.target.value)}
+                      className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                      placeholder="Önceki ustanın işi yapmama nedenini yazın"
+                    />
+                    <span className="text-xs font-normal text-slate-500">En az 5 karakter. Önceki atama tarihçede korunur.</span>
+                  </label>
                 ) : null}
 
                 <label className="grid gap-2 text-sm font-medium text-slate-700">

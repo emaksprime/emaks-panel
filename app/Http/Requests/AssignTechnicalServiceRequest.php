@@ -41,6 +41,8 @@ class AssignTechnicalServiceRequest extends FormRequest
             'travel_amount' => ['nullable', 'numeric', 'min:0'],
             'customer_direct_to_technician_amount' => ['nullable', 'numeric', 'min:0'],
             'earning_note' => ['nullable', 'string', 'max:2000'],
+            'expected_current_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
+            'expected_assignment_offer_id' => ['nullable', 'integer', 'exists:technical_service_assignment_offers,id'],
             'expected_earning_revision' => ['nullable', 'string', 'size:64'],
             'confirm_assignment' => ['nullable', 'boolean'],
         ];

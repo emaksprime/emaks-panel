@@ -357,6 +357,106 @@ const companyPaymentRequest = (): ServiceRequest => ({
   ],
 })
 
+const routeCollectionMatchingRequest = (contextReady: boolean): ServiceRequest => {
+  const request = companyPaymentRequest()
+  const routeAmount = 1787.4
+  const decisionPayload = {
+    schema_version: 1,
+    eligible_items: contextReady ? [] : [{
+      payment_id: 16,
+      payment_purpose: 'route_fee',
+      payment_purpose_label: 'Yol ücreti',
+      provider: 'fake',
+      provider_label: 'Local fake',
+      paid_at: '2026-06-23T08:00:00+00:00',
+      source_paid_amount: routeAmount,
+      source_paid_amount_label: '1.787,40 TL',
+      covered_amount: 0,
+      covered_amount_label: '0,00 TL',
+      previously_allocated_amount: 0,
+      previously_allocated_amount_label: '0,00 TL',
+      eligible_amount: routeAmount,
+      eligible_amount_label: '1.787,40 TL',
+      currency: 'TRY',
+      request_id: 9001,
+      root_request_id: 9001,
+      current_srv_id: 9001,
+      mrn_or_srv: 'MRN-2606SY230001',
+      assignment_id: null,
+      technician_id: null,
+      technician_name: null,
+      can_pay_technician: false,
+      disabled_reason: 'Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır.',
+    }],
+    decisions: [],
+    eligible_count: contextReady ? 0 : 1,
+    pending_decision_count: 0,
+    pending_decision_amount: 0,
+    pending_decision_amount_label: '0,00 TL',
+    all_decisions_required: false,
+    context_ready: contextReady,
+    context_state: contextReady ? 'ready' as const : 'awaiting_assignment' as const,
+    context_blocker: contextReady ? null : 'Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır.',
+    earning_revision: contextReady ? initialRevision : null,
+    component_matching: {
+      route: {
+        earning_amount: contextReady ? routeAmount : 0,
+        earning_amount_label: contextReady ? '1.787,40 TL' : '0,00 TL',
+        collection_amount: routeAmount,
+        collection_amount_label: '1.787,40 TL',
+        covered_amount: contextReady ? routeAmount : 0,
+        covered_amount_label: contextReady ? '1.787,40 TL' : '0,00 TL',
+        residual_allocatable_amount: contextReady ? 0 : routeAmount,
+        residual_allocatable_amount_label: contextReady ? '0,00 TL' : '1.787,40 TL',
+        company_top_up_amount: 0,
+        company_top_up_amount_label: '0,00 TL',
+        payments: [{
+          payment_id: 16,
+          paid_amount: routeAmount,
+          paid_amount_label: '1.787,40 TL',
+          covered_amount: contextReady ? routeAmount : 0,
+          covered_amount_label: contextReady ? '1.787,40 TL' : '0,00 TL',
+          previously_allocated_amount: 0,
+          previously_allocated_amount_label: '0,00 TL',
+          residual_allocatable_amount: contextReady ? 0 : routeAmount,
+          residual_allocatable_amount_label: contextReady ? '0,00 TL' : '1.787,40 TL',
+        }],
+      },
+    },
+    visit_count_used: false as const,
+  }
+
+  return {
+    ...request,
+    mrn: 'MRN-2606SY230001',
+    settlement: request.settlement ? {
+      ...request.settlement,
+      technical_service_technician_id: contextReady ? 111 : null,
+      route_earning_amount: contextReady ? routeAmount : 0,
+      technician_earning_total: contextReady ? 4787.4 : 3000,
+      company_payment_decisions: decisionPayload,
+    } : null,
+    financeSummary: request.financeSummary ? {
+      ...request.financeSummary,
+      current_visit: {
+        ...request.financeSummary.current_visit,
+        company_payment_decisions: null,
+        result_state: contextReady ? 'definitive' : 'allocation_pending',
+        result_state_label: contextReady ? 'Kesinleşmiş' : 'Tahsilat dağılımı atama bekliyor',
+        locksmith_payout: {
+          ...request.financeSummary.current_visit.locksmith_payout,
+          technician_id: contextReady ? 111 : null,
+          technician_name: contextReady ? 'Test Usta' : null,
+          route_fee_amount: contextReady ? routeAmount : 0,
+          route_fee_amount_label: contextReady ? '1.787,40 TL' : '0,00 TL',
+          total_amount: contextReady ? 4787.4 : 3000,
+          total_amount_label: contextReady ? '4.787,40 TL' : '3.000,00 TL',
+        },
+      },
+    } : null,
+  }
+}
+
 const companyPaymentMessageRequest = (): ServiceRequest => {
   const snapshot: ServiceRequestCanonicalEarningSnapshot = {
     schema_version: 3,
@@ -552,6 +652,24 @@ function Harness() {
           setRequest(companyPaymentRequest())
         }}
       >Uygun şirket ödemesi senaryosunu yükle</button>
+      <button
+        type="button"
+        data-testid="load-unbound-route-collection-scenario"
+        onClick={() => {
+          state.assignmentActionCount = 0
+          state.assignmentPopupCount = 0
+          assignmentPopupOpenRef.current = false
+          setAssignmentActionCount(0)
+          setAssignmentPopupCount(0)
+          setAssignmentPopupOpen(false)
+          setRequest(routeCollectionMatchingRequest(false))
+        }}
+      >Atama bekleyen yol tahsilatını yükle</button>
+      <button
+        type="button"
+        data-testid="load-matched-route-collection-scenario"
+        onClick={() => setRequest(routeCollectionMatchingRequest(true))}
+      >Eşleşmiş yol tahsilatını yükle</button>
       <button
         type="button"
         data-testid="load-company-payment-message-scenario"

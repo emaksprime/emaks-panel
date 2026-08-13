@@ -227,6 +227,32 @@ export type ServiceRequestCompanyPaymentDecision = {
   status?: string | null
 }
 
+export type ServiceRequestRouteCollectionMatch = {
+  payment_id: number | string
+  paid_amount: number
+  paid_amount_label?: string | null
+  covered_amount: number
+  covered_amount_label?: string | null
+  previously_allocated_amount: number
+  previously_allocated_amount_label?: string | null
+  residual_allocatable_amount: number
+  residual_allocatable_amount_label?: string | null
+}
+
+export type ServiceRequestRouteCollectionMatching = {
+  earning_amount: number
+  earning_amount_label?: string | null
+  collection_amount: number
+  collection_amount_label?: string | null
+  covered_amount: number
+  covered_amount_label?: string | null
+  residual_allocatable_amount: number
+  residual_allocatable_amount_label?: string | null
+  company_top_up_amount: number
+  company_top_up_amount_label?: string | null
+  payments: ServiceRequestRouteCollectionMatch[]
+}
+
 export type ServiceRequestCompanyPaymentDecisionPayload = {
   schema_version: number
   eligible_items: ServiceRequestCompanyPaymentDecisionItem[]
@@ -237,8 +263,12 @@ export type ServiceRequestCompanyPaymentDecisionPayload = {
   pending_decision_amount_label?: string | null
   all_decisions_required: boolean
   context_ready: boolean
+  context_state?: 'ready' | 'awaiting_assignment' | 'invalid'
   context_blocker?: string | null
   earning_revision?: string | null
+  component_matching?: {
+    route?: ServiceRequestRouteCollectionMatching | null
+  } | null
   visit_count_used: false
 }
 

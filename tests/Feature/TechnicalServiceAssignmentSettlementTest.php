@@ -6,6 +6,7 @@ use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\PageConfig;
+use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarningPayment;
 use App\Models\TechnicalServiceMessageDispatch;
@@ -1038,6 +1039,162 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(200.0, $items[$second->id]['eligible_amount']);
     }
 
+    public function test_unbound_paid_collection_does_not_block_reassignment(): void
+    {
+        [$request, $oldTechnician] = $this->assignmentFixture();
+        $request->forceFill([
+            'technical_service_technician_id' => $oldTechnician->id,
+            'technician_name' => $oldTechnician->name,
+        ])->save();
+        $payment = $this->paidChargePayment($request, 'route_fee', 1787.40, '2026-08-13 08:00:00');
+
+        $before = app(TechnicalServiceAssignmentSettlementService::class)
+            ->companyPaymentDecisionPayload($request->refresh());
+
+        $this->assertSame('awaiting_assignment', $before['context_state']);
+        $this->assertSame(0, $before['pending_decision_count']);
+        $this->assertFalse($before['all_decisions_required']);
+        $this->assertSame($payment->id, $before['eligible_items'][0]['payment_id']);
+
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000201');
+        $this->assign($request, $newTechnician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1787.40,
+        ])->assertOk();
+
+        $this->assertSame($newTechnician->id, $request->fresh()->technical_service_technician_id);
+    }
+
+    public function test_explicit_recommendation_selection_is_preserved_in_assignment_modal(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+
+        $this->assertStringContainsString('const explicitCandidateSelected = Boolean(', $source);
+        $this->assertStringContainsString('if (!explicitCandidateSelected) {', $source);
+        $this->assertStringContainsString('technical_service_technician_id: assignTechnicianOption', $source);
+        $this->assertStringContainsString('expected_current_technician_id: modalRequest?.technicianId ?? null', $source);
+        $this->assertStringContainsString('expected_assignment_offer_id: modalRequest?.assignmentOffer?.id ?? null', $source);
+        $this->assertStringContainsString('expected_earning_revision: modalPersistedEarningSnapshot?.revision ?? null', $source);
+    }
+
+    public function test_reassignment_uses_explicit_new_technician_not_old_assignment(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000202');
+
+        $this->assign($request, $newTechnician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+        ])->assertOk();
+
+        $this->assertSame($newTechnician->id, $request->fresh()->technical_service_technician_id);
+        $this->assertSame($newTechnician->id, TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->value('technical_service_technician_id'));
+        $this->assertDatabaseHas('technical_service_assignment_archives', [
+            'technical_service_request_id' => $request->id,
+            'old_technician_id' => $oldTechnician->id,
+            'new_technician_id' => $newTechnician->id,
+        ]);
+        $this->assertSame(1, TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceAssignmentOffer::STATUS_SENT)
+            ->count());
+    }
+
+    public function test_route_collection_matches_new_assignment_route_earning_without_double_payment(): void
+    {
+        [$request, $oldTechnician] = $this->assignmentFixture();
+        $request->forceFill([
+            'technical_service_technician_id' => $oldTechnician->id,
+            'technician_name' => $oldTechnician->name,
+        ])->save();
+        $payment = $this->paidChargePayment($request, 'route_fee', 1787.40, '2026-08-13 08:00:00');
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000203');
+
+        $response = $this->assign($request, $newTechnician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1787.40,
+        ])->assertOk();
+        $payload = $response->json('request.settlement.company_payment_decisions');
+
+        $this->assertSame(1787.40, data_get($payload, 'component_matching.route.covered_amount'));
+        $this->assertEquals(0.0, data_get($payload, 'component_matching.route.residual_allocatable_amount'));
+        $this->assertEquals(0.0, data_get($payload, 'component_matching.route.company_top_up_amount'));
+        $this->assertSame($payment->id, data_get($payload, 'component_matching.route.payments.0.payment_id'));
+        $this->assertSame(0, data_get($payload, 'pending_decision_count'));
+        $this->assertDatabaseMissing('technical_service_earning_payments', [
+            'technical_service_request_id' => $request->id,
+            'payment_type' => TechnicalServiceAssignmentSettlementService::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT,
+        ]);
+        $this->assertSame('4787.40', TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->value('technician_earning_total'));
+    }
+
+    public function test_customer_collection_shortfall_creates_company_top_up_not_fake_payment(): void
+    {
+        [$request] = $this->assignedSettlementFixture();
+        $payment = $this->paidChargePayment($request, 'route_fee', 300, '2026-08-13 08:00:00');
+
+        $payload = app(TechnicalServiceAssignmentSettlementService::class)
+            ->companyPaymentDecisionPayload($request->refresh());
+
+        $this->assertSame(300.0, data_get($payload, 'component_matching.route.covered_amount'));
+        $this->assertSame(200.0, data_get($payload, 'component_matching.route.company_top_up_amount'));
+        $this->assertSame(0.0, data_get($payload, 'component_matching.route.residual_allocatable_amount'));
+        $this->assertSame(0, $payload['pending_decision_count']);
+        $this->assertSame(1, TechnicalServiceMountPayment::query()->whereKey($payment->id)->count());
+    }
+
+    public function test_duplicate_reassignment_is_idempotent(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000204');
+        $oldOffer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->latest('id')
+            ->firstOrFail();
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $payload = $this->assignmentPayload($request, $newTechnician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+        ]);
+
+        $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertOk();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()->count();
+        $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertStatus(422);
+
+        $this->assertSame(1, TechnicalServiceAssignmentArchive::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('old_technician_id', $oldTechnician->id)
+            ->where('new_technician_id', $newTechnician->id)
+            ->count());
+        $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_CANCELLED, $oldOffer->fresh()->status);
+        $this->assertSame(1, TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceAssignmentOffer::STATUS_SENT)
+            ->count());
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()->count());
+    }
+
+    public function test_reassignment_with_existing_old_technician_payout_is_rejected(): void
+    {
+        [$request, $oldTechnician, , , $settlement] = $this->assignedSettlementFixture();
+        $settlement->forceFill([
+            'company_paid_amount' => 100,
+            'status' => TechnicalServiceSettlement::STATUS_PARTIAL_PAID,
+            'paid_at' => now(),
+        ])->save();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000205');
+
+        $this->assign($request, $newTechnician)->assertStatus(422)
+            ->assertJsonValidationErrors('technical_service_technician_id');
+
+        $this->assertSame($oldTechnician->id, $request->fresh()->technical_service_technician_id);
+        $this->assertSame($oldTechnician->id, $settlement->fresh()->technical_service_technician_id);
+    }
+
     public function test_visit_count_does_not_change_company_payment_eligibility(): void
     {
         [$request] = $this->assignedSettlementFixture();
@@ -1902,6 +2059,39 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         return [$request, $technician, $partner];
     }
 
+    /** @return array{0: TechnicalServiceTechnician, 1: B2BPartner} */
+    private function technicianWithPartner(string $name, string $phone): array
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => $name,
+            'first_name' => Str::before($name, ' '),
+            'last_name' => Str::after($name, ' '),
+            'phone' => $phone,
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REASSIGN-'.uniqid(),
+            'display_name' => $name.' Partner',
+            'active' => true,
+        ]);
+        B2BPartnerCapability::query()->create([
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+            'is_primary' => true,
+        ]);
+
+        return [$technician, $partner];
+    }
+
     private function paidMountPayment(TechnicalServiceRequest $request, string $reference): TechnicalServiceMountPayment
     {
         ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
@@ -1948,6 +2138,20 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
     private function assign(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician, array $offerOverrides = [])
     {
         $user = User::factory()->create(['role_code' => 'admin']);
+
+        return $this->actingAs($user)->postJson(
+            "/api/technical-service/requests/{$request->id}/assign",
+            $this->assignmentPayload($request, $technician, $offerOverrides),
+        );
+    }
+
+    /** @param array<string, mixed> $offerOverrides */
+    private function assignmentPayload(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        array $offerOverrides = [],
+    ): array {
+        $request->refresh();
         $currentOffer = TechnicalServiceAssignmentOffer::query()
             ->where('technical_service_request_id', $request->id)
             ->whereIn('status', [
@@ -1957,17 +2161,24 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ])
             ->latest('id')
             ->first();
+        $laborAmount = (float) ($offerOverrides['labor_amount'] ?? 1000);
+        $routeFeeAmount = (float) ($offerOverrides['route_fee_amount'] ?? 500);
+        $isReassignment = is_numeric($request->technical_service_technician_id)
+            && (int) $request->technical_service_technician_id !== (int) $technician->id;
         $payload = [
             'technical_service_technician_id' => $technician->id,
+            'expected_current_technician_id' => $request->technical_service_technician_id,
+            'expected_assignment_offer_id' => $currentOffer?->id,
             'travel_round_trip_km' => 12,
-            'labor_amount' => 1000,
-            'travel_amount' => 500,
+            'labor_amount' => $laborAmount,
+            'travel_amount' => $routeFeeAmount,
             'earning_note' => 'REL3B2 hakediş',
+            'note' => $isReassignment ? 'Önceki usta işi yapamadı' : null,
             'confirm_assignment' => true,
             'assignment_offer' => array_merge([
-                'labor_amount' => 1000,
-                'route_fee_amount' => 500,
-                'total_amount' => 1500,
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => round($laborAmount + $routeFeeAmount, 2),
                 'currency' => 'TRY',
                 'note' => 'REL3B2 hakediş',
             ], $offerOverrides),
@@ -1977,6 +2188,6 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
                 ->canonicalTechnicianEarningSnapshot($currentOffer)['revision'];
         }
 
-        return $this->actingAs($user)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload);
+        return $payload;
     }
 }

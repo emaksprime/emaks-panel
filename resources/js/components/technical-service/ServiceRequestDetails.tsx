@@ -2520,6 +2520,10 @@ export function ServiceRequestDetails({
     ?? null
   const companyPaymentEligibleItems = companyPaymentDecisionPayload?.eligible_items ?? []
   const companyPaymentCompletedDecisions = companyPaymentDecisionPayload?.decisions ?? []
+  const routeCollectionMatching = companyPaymentDecisionPayload?.component_matching?.route ?? null
+  const routeCollectionMatchRows = routeCollectionMatching?.payments ?? []
+  const companyPaymentAwaitingAssignment = companyPaymentDecisionPayload?.context_state === 'awaiting_assignment'
+    && companyPaymentEligibleItems.length > 0
   const companyPaymentDecisionDrafts = companyPaymentDecisionDraftByRequest[requestStateKey] ?? {}
   const companyPaymentDecisionSubmissions = companyPaymentEligibleItems
     .map((item): ServiceRequestCompanyPaymentDecisionSubmit | null => {
@@ -5290,6 +5294,20 @@ export function ServiceRequestDetails({
   }
 
   const renderCompanyPaymentDecisionSection = (surface: 'earning' | 'completion') => {
+    if (companyPaymentAwaitingAssignment) {
+      return (
+        <section
+          data-testid={`company-payment-decisions-${surface}`}
+          className="grid gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950"
+        >
+          <p className="text-sm font-semibold">Tahsilat eşleştirmesi atama bekliyor</p>
+          <p data-testid="company-payment-awaiting-assignment" className="text-xs">
+            {companyPaymentDecisionPayload?.context_blocker ?? 'Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır.'}
+          </p>
+        </section>
+      )
+    }
+
     if (companyPaymentEligibleItems.length === 0 && companyPaymentCompletedDecisions.length === 0) {
       return null
     }
@@ -5321,7 +5339,10 @@ export function ServiceRequestDetails({
       )
     }
 
-    const selectionDisabled = earningBaseDraftDirty || assignmentOfferUpdateInFlight || companyPaymentDecisionSubmitInFlight
+    const selectionDisabled = !companyPaymentDecisionContextReady
+      || earningBaseDraftDirty
+      || assignmentOfferUpdateInFlight
+      || companyPaymentDecisionSubmitInFlight
 
     return (
       <section
@@ -7140,7 +7161,12 @@ export function ServiceRequestDetails({
                     </div>
                   ) : null}
 
-                  {isCurrentFinancialScope && companyPaymentEligibleItems.length > 0 ? (
+                  {isCurrentFinancialScope && companyPaymentAwaitingAssignment ? (
+                    <div data-testid="company-payment-assignment-reconciliation-pending" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                      <p className="font-semibold">Tahsilat dağılımı atamadan sonra hesaplanacak</p>
+                      <p className="mt-1 text-xs">Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır. Bu durum usta atamasını engellemez.</p>
+                    </div>
+                  ) : isCurrentFinancialScope && companyPaymentEligibleItems.length > 0 ? (
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
                       <div>
                         <p className="font-semibold">Ek ödeme dağıtım kararı bekliyor</p>
@@ -7153,6 +7179,32 @@ export function ServiceRequestDetails({
                       >
                         Karar alanına git
                       </Button>
+                    </div>
+                  ) : null}
+
+                  {isCurrentFinancialScope && routeCollectionMatchRows.length > 0 ? (
+                    <div data-testid="route-collection-matching" className="grid gap-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-xs text-cyan-950">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold">Yol tahsilatı eşleştirmesi</p>
+                        <span>Aktif usta: <strong>{displayOrEmpty(activeFinanceLocksmithPayout?.technician_name, 'Atama bekliyor')}</strong></span>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                        <MiniMetric label="Onaylı yol hakedişi" value={routeCollectionMatching?.earning_amount_label ?? '0 TL'} />
+                        <MiniMetric label="Tahsil edilen yol" value={routeCollectionMatching?.collection_amount_label ?? '0 TL'} />
+                        <MiniMetric label="Hakedişte karşılanan" value={routeCollectionMatching?.covered_amount_label ?? '0 TL'} />
+                        <MiniMetric label="Karar verilebilir bakiye" value={routeCollectionMatching?.residual_allocatable_amount_label ?? '0 TL'} />
+                        <MiniMetric label="Şirketin tamamlayacağı fark" value={routeCollectionMatching?.company_top_up_amount_label ?? '0 TL'} />
+                      </div>
+                      <div className="grid gap-2">
+                        {routeCollectionMatchRows.map((row) => (
+                          <div key={String(row.payment_id)} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cyan-200 bg-white px-3 py-2">
+                            <strong>Payment #{row.payment_id}</strong>
+                            <span>Ödenen: {row.paid_amount_label ?? formatMoneyValue(row.paid_amount)}</span>
+                            <span>Karşılanan: {row.covered_amount_label ?? formatMoneyValue(row.covered_amount)}</span>
+                            <span>Residual: {row.residual_allocatable_amount_label ?? formatMoneyValue(row.residual_allocatable_amount)}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : null}
 
@@ -8327,6 +8379,7 @@ export function ServiceRequestDetails({
       {(() => {
         const visibleFooterWorkflowActions = isActionDisabled ? [] : footerWorkflowActions
         const showCompanyPaymentDecisionApproval = companyPaymentEligibleItems.length > 0
+          && companyPaymentDecisionContextReady
         const showEarningSave = !isCancelledOrReviewContext && isCurrentFinancialScope && earningBaseDraftDirty
         const showFooterBar = visibleFooterWorkflowActions.length > 0
           || shouldShowFooterPaymentLinkAction

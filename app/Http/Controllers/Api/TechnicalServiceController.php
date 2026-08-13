@@ -2369,6 +2369,34 @@ class TechnicalServiceController extends Controller
             $technician = isset($payload['technical_service_technician_id'])
                 ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
                 : null;
+            $oldTechnicianId = is_numeric($technicalServiceRequest->technical_service_technician_id)
+                ? (int) $technicalServiceRequest->technical_service_technician_id
+                : null;
+            $expectedTechnicianId = is_numeric($payload['expected_current_technician_id'] ?? null)
+                ? (int) $payload['expected_current_technician_id']
+                : null;
+            if (array_key_exists('expected_current_technician_id', $payload)
+                && $expectedTechnicianId !== $oldTechnicianId) {
+                throw ValidationException::withMessages([
+                    'expected_current_technician_id' => 'Usta ataması değişti. Güncel kaydı yenileyip tekrar deneyin.',
+                ]);
+            }
+
+            $newTechnicianId = $technician instanceof TechnicalServiceTechnician ? (int) $technician->id : null;
+            $manualTechnicianName = trim((string) ($payload['technician_name'] ?? ''));
+            $hasExistingTechnician = $oldTechnicianId !== null || filled($technicalServiceRequest->technician_name);
+            $isTechnicianChange = $oldTechnicianId !== null
+                ? $newTechnicianId !== $oldTechnicianId
+                : ($hasExistingTechnician && ! hash_equals(
+                    trim((string) $technicalServiceRequest->technician_name),
+                    $technician?->name ?? $manualTechnicianName,
+                ));
+            if ($isTechnicianChange && mb_strlen(trim((string) ($payload['note'] ?? ''))) < 5) {
+                throw ValidationException::withMessages([
+                    'note' => 'Usta değişikliği için en az 5 karakterlik yeniden atama nedeni girin.',
+                ]);
+            }
+
             $routeQuote = isset($payload['route_quote_id'])
                 ? TechnicalServiceRouteQuote::query()
                     ->where('technical_service_request_id', $technicalServiceRequest->id)
@@ -2419,11 +2447,21 @@ class TechnicalServiceController extends Controller
                 ->where('technical_service_request_id', $technicalServiceRequest->id)
                 ->whereIn('status', [
                     TechnicalServiceAssignmentOffer::STATUS_SENT,
+                    TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
                     TechnicalServiceAssignmentOffer::STATUS_REVISED,
                 ])
                 ->latest('id')
                 ->lockForUpdate()
                 ->first();
+            $expectedAssignmentOfferId = is_numeric($payload['expected_assignment_offer_id'] ?? null)
+                ? (int) $payload['expected_assignment_offer_id']
+                : null;
+            if (array_key_exists('expected_assignment_offer_id', $payload)
+                && $expectedAssignmentOfferId !== ($currentOffer?->id === null ? null : (int) $currentOffer->id)) {
+                throw ValidationException::withMessages([
+                    'expected_assignment_offer_id' => 'Hakediş ataması değişti. Güncel kaydı yenileyip tekrar deneyin.',
+                ]);
+            }
             if ($currentOffer instanceof TechnicalServiceAssignmentOffer) {
                 $currentSettlement = $technicalServiceRequest->settlement()->lockForUpdate()->first();
                 $currentEarningSnapshot = $this->workflowService->canonicalTechnicianEarningSnapshot(
@@ -2519,7 +2557,6 @@ class TechnicalServiceController extends Controller
 
             $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
             $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
-            $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
             $oldPartnerId = $this->partnerJobScope->activeAssignmentLink($technicalServiceRequest)?->partner_id;
             $assignmentLink = $this->assignmentLinkForTechnician($technician, $payload['b2b_partner_id'] ?? null);
 
@@ -3038,6 +3075,7 @@ class TechnicalServiceController extends Controller
             ->where('technical_service_request_id', $request->id)
             ->whereIn('status', [
                 TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
                 TechnicalServiceAssignmentOffer::STATUS_REVISED,
             ])
             ->update([
@@ -3252,6 +3290,7 @@ class TechnicalServiceController extends Controller
             ->where('technical_service_request_id', $request->id)
             ->whereIn('status', [
                 TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
                 TechnicalServiceAssignmentOffer::STATUS_REVISED,
             ])
             ->update([

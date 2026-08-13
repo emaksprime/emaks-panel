@@ -313,6 +313,10 @@ class TechnicalServiceAssignmentSettlementService
         $routeRemaining = $settlement instanceof TechnicalServiceSettlement
             ? $this->minorUnits($settlement->route_earning_amount)
             : 0;
+        $routeEarningAmount = $routeRemaining;
+        $routeCollectionAmount = 0;
+        $routeCoveredAmount = 0;
+        $routePaymentRows = collect();
         $items = collect();
         $decisions = collect();
 
@@ -330,6 +334,22 @@ class TechnicalServiceAssignmentSettlementService
                 ->first(fn (object $row): bool => (string) $row->status === self::ALLOCATION_STATUS_ACTIVE);
             $allocated = $activeAllocation ? $this->minorUnits($activeAllocation->eligible_amount) : 0;
             $eligible = max($sourceAmount - $covered - $allocated, 0);
+
+            if ($purpose === self::PURPOSE_ROUTE_FEE) {
+                $routeCollectionAmount += $sourceAmount;
+                $routeCoveredAmount += $covered;
+                $routePaymentRows->push([
+                    'payment_id' => (int) $payment->id,
+                    'paid_amount' => $this->fromMinorUnits($sourceAmount),
+                    'paid_amount_label' => $this->moneyLabel($sourceAmount),
+                    'covered_amount' => $this->fromMinorUnits($covered),
+                    'covered_amount_label' => $this->moneyLabel($covered),
+                    'previously_allocated_amount' => $this->fromMinorUnits($allocated),
+                    'previously_allocated_amount_label' => $this->moneyLabel($allocated),
+                    'residual_allocatable_amount' => $this->fromMinorUnits($eligible),
+                    'residual_allocatable_amount_label' => $this->moneyLabel($eligible),
+                ]);
+            }
 
             if ($activeAllocation) {
                 $decisions->push($this->allocationDecisionPayload($activeAllocation));
@@ -378,22 +398,44 @@ class TechnicalServiceAssignmentSettlementService
             $earningRevision = $this->canonicalEarningSnapshot($context['offer'])['revision'];
         }
 
+        $contextReady = (bool) ($context['ready'] ?? false);
+        $pendingItems = $contextReady ? $items : collect();
+        $routeResidualAmount = (int) $routePaymentRows->sum(
+            fn (array $item): int => $this->minorUnits($item['residual_allocatable_amount'] ?? 0),
+        );
+
         return [
             'schema_version' => 1,
             'eligible_items' => $items->values()->all(),
             'decisions' => $decisions->values()->all(),
             'eligible_count' => $items->count(),
-            'pending_decision_count' => $items->count(),
-            'pending_decision_amount' => $this->fromMinorUnits((int) $items->sum(
+            'pending_decision_count' => $pendingItems->count(),
+            'pending_decision_amount' => $this->fromMinorUnits((int) $pendingItems->sum(
                 fn (array $item): int => $this->minorUnits($item['eligible_amount'] ?? 0),
             )),
-            'pending_decision_amount_label' => $this->moneyLabel((int) $items->sum(
+            'pending_decision_amount_label' => $this->moneyLabel((int) $pendingItems->sum(
                 fn (array $item): int => $this->minorUnits($item['eligible_amount'] ?? 0),
             )),
-            'all_decisions_required' => $items->isNotEmpty(),
-            'context_ready' => (bool) ($context['ready'] ?? false),
+            'all_decisions_required' => $contextReady && $items->isNotEmpty(),
+            'context_ready' => $contextReady,
+            'context_state' => $context['state'] ?? ($contextReady ? 'ready' : 'invalid'),
             'context_blocker' => $context['blocker'] ?? null,
             'earning_revision' => $earningRevision,
+            'component_matching' => [
+                'route' => [
+                    'earning_amount' => $this->fromMinorUnits($routeEarningAmount),
+                    'earning_amount_label' => $this->moneyLabel($routeEarningAmount),
+                    'collection_amount' => $this->fromMinorUnits($routeCollectionAmount),
+                    'collection_amount_label' => $this->moneyLabel($routeCollectionAmount),
+                    'covered_amount' => $this->fromMinorUnits($routeCoveredAmount),
+                    'covered_amount_label' => $this->moneyLabel($routeCoveredAmount),
+                    'residual_allocatable_amount' => $this->fromMinorUnits($routeResidualAmount),
+                    'residual_allocatable_amount_label' => $this->moneyLabel($routeResidualAmount),
+                    'company_top_up_amount' => $this->fromMinorUnits($routeRemaining),
+                    'company_top_up_amount_label' => $this->moneyLabel($routeRemaining),
+                    'payments' => $routePaymentRows->values()->all(),
+                ],
+            ],
             'visit_count_used' => false,
         ];
     }
@@ -835,6 +877,37 @@ class TechnicalServiceAssignmentSettlementService
         TechnicalServiceAssignmentOffer $offer,
         float $routeFeeAmount,
     ): void {
+        $existingSettlement = TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->lockForUpdate()
+            ->first();
+        if ($existingSettlement instanceof TechnicalServiceSettlement
+            && is_numeric($existingSettlement->technical_service_technician_id)
+            && (int) $existingSettlement->technical_service_technician_id !== (int) $technician->id) {
+            $hasProtectedPayout = $this->minorUnits($existingSettlement->company_paid_amount) > 0
+                || $existingSettlement->earningPayments()
+                    ->whereIn('status', [
+                        TechnicalServiceEarningPayment::STATUS_PENDING,
+                        TechnicalServiceEarningPayment::STATUS_APPLIED,
+                    ])
+                    ->exists()
+                || in_array($existingSettlement->status, [
+                    TechnicalServiceSettlement::STATUS_FINALIZED,
+                    TechnicalServiceSettlement::STATUS_SENT,
+                    TechnicalServiceSettlement::STATUS_PARTIAL_PAID,
+                    TechnicalServiceSettlement::STATUS_PAID,
+                ], true)
+                || $existingSettlement->finalized_at !== null
+                || $existingSettlement->completed_at !== null
+                || $existingSettlement->paid_at !== null;
+
+            if ($hasProtectedPayout) {
+                throw ValidationException::withMessages([
+                    'technical_service_technician_id' => 'Önceki ustaya ait kesinleşmiş veya ödenmiş hakediş sessizce yeni ustaya aktarılamaz. Önce explicit correction/reversal uygulanmalıdır.',
+                ]);
+            }
+        }
+
         if (! $this->allocationSchemaAvailable()) {
             return;
         }
@@ -882,7 +955,11 @@ class TechnicalServiceAssignmentSettlementService
         if (! $settlement instanceof TechnicalServiceSettlement
             || ! is_numeric($settlement->technical_service_assignment_offer_id)
             || ! is_numeric($settlement->technical_service_technician_id)) {
-            return ['ready' => false, 'blocker' => 'Bu tahsilatın bağlı olduğu servis ve usta belirlenemedi.'];
+            return [
+                'ready' => false,
+                'state' => 'awaiting_assignment',
+                'blocker' => 'Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır.',
+            ];
         }
 
         $offerQuery = TechnicalServiceAssignmentOffer::query()
@@ -896,16 +973,17 @@ class TechnicalServiceAssignmentSettlementService
             || (int) $offer->technical_service_technician_id !== (int) $settlement->technical_service_technician_id
             || ($request->technical_service_technician_id !== null
                 && (int) $request->technical_service_technician_id !== (int) $settlement->technical_service_technician_id)) {
-            return ['ready' => false, 'blocker' => 'Bu tahsilatın bağlı olduğu servis ve usta belirlenemedi.'];
+            return ['ready' => false, 'state' => 'invalid', 'blocker' => 'Bu tahsilatın bağlı olduğu servis ve usta belirlenemedi.'];
         }
 
         $technician = TechnicalServiceTechnician::query()->find($settlement->technical_service_technician_id);
         if (! $technician instanceof TechnicalServiceTechnician) {
-            return ['ready' => false, 'blocker' => 'Bu tahsilatın bağlı olduğu servis ve usta belirlenemedi.'];
+            return ['ready' => false, 'state' => 'invalid', 'blocker' => 'Bu tahsilatın bağlı olduğu servis ve usta belirlenemedi.'];
         }
 
         return [
             'ready' => true,
+            'state' => 'ready',
             'assignment_id' => (int) $offer->id,
             'technician_id' => (int) $technician->id,
             'technician_name' => TechnicalServiceUiLabelService::displayName($technician->name),
@@ -1142,8 +1220,24 @@ class TechnicalServiceAssignmentSettlementService
             'pending_decision_amount_label' => '0,00 TL',
             'all_decisions_required' => false,
             'context_ready' => false,
+            'context_state' => 'invalid',
             'context_blocker' => null,
             'earning_revision' => null,
+            'component_matching' => [
+                'route' => [
+                    'earning_amount' => 0.0,
+                    'earning_amount_label' => '0,00 TL',
+                    'collection_amount' => 0.0,
+                    'collection_amount_label' => '0,00 TL',
+                    'covered_amount' => 0.0,
+                    'covered_amount_label' => '0,00 TL',
+                    'residual_allocatable_amount' => 0.0,
+                    'residual_allocatable_amount_label' => '0,00 TL',
+                    'company_top_up_amount' => 0.0,
+                    'company_top_up_amount_label' => '0,00 TL',
+                    'payments' => [],
+                ],
+            ],
             'visit_count_used' => false,
         ];
     }
