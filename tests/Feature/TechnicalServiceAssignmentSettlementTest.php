@@ -209,7 +209,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
 
         $this->assertIsString($source);
         $this->assertStringContainsString('const assignmentDraftRequestId = useRef<string | null>(null)', $source);
-        $this->assertStringContainsString('const openAssignmentDialog = () =>', $source);
+        $this->assertStringContainsString('const openAssignmentDialog = (draft?: ServiceRequestAssignmentDraft) =>', $source);
         $this->assertStringContainsString('const closeAssignmentDialog = () =>', $source);
         $this->assertStringContainsString('const handleAssignDialogOpenChange = (open: boolean) =>', $source);
         $this->assertStringContainsString('if (assignLoading)', $source);
@@ -1077,6 +1077,42 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertStringContainsString('expected_earning_revision: modalPersistedEarningSnapshot?.revision ?? null', $source);
     }
 
+    public function test_ready_route_and_explicit_new_technician_can_open_assignment_modal(): void
+    {
+        $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+
+        $this->assertStringContainsString('const assignmentModalOpenDisabledReason = assignLoading', $detailsSource);
+        $this->assertStringContainsString('await assignmentModalOpenAction?.(assignmentModalDraft)', $detailsSource);
+        $this->assertStringNotContainsString('canSubmitAssign?: boolean', $detailsSource);
+        $this->assertStringContainsString('const openAssignmentDialog = (draft?: ServiceRequestAssignmentDraft) => {', $pageSource);
+        $this->assertStringContainsString('setAssignOfferRouteFeeAmount(String(draft.route_fee_amount))', $pageSource);
+    }
+
+    public function test_disabled_assignment_action_returns_exact_blocker_reason(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+
+        $this->assertStringContainsString('data-testid="assignment-action-disabled-reason"', $source);
+        $this->assertStringContainsString('Atama şu nedenle tamamlanamıyor: {assignmentModalOpenDisabledReason}', $source);
+        $this->assertStringContainsString('title={assignmentModalOpenDisabledReason ?? undefined}', $source);
+    }
+
+    public function test_high_route_amount_requires_visible_confirmation_not_silent_disable(): void
+    {
+        $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $harnessSource = file_get_contents(base_path('tests/Browser/AssignmentEarningCanonicalHarness.tsx')) ?: '';
+        $gateStart = strpos($detailsSource, 'const assignmentModalOpenDisabledReason = assignLoading');
+        $gateEnd = strpos($detailsSource, 'const resolvedSaleMountLabel', $gateStart ?: 0);
+
+        $this->assertIsInt($gateStart);
+        $this->assertIsInt($gateEnd);
+        $this->assertStringNotContainsString('earningRouteAmount', substr($detailsSource, $gateStart, $gateEnd - $gateStart));
+        $this->assertStringContainsString('fee_amount: 9778.6', $harnessSource);
+        $this->assertStringContainsString("status: 'calculated'", $harnessSource);
+        $this->assertStringContainsString('data-testid="assignment-action-disabled-reason"', $detailsSource);
+    }
+
     public function test_reassignment_uses_explicit_new_technician_not_old_assignment(): void
     {
         [$request, $oldTechnician] = $this->assignedSettlementFixture();
@@ -1163,7 +1199,13 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
 
         $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertOk();
         $dispatchCount = TechnicalServiceMessageDispatch::query()->count();
-        $this->actingAs($actor)->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)->assertStatus(422);
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'TECHNICAL_SERVICE_ASSIGNMENT_CONFLICT')
+            ->assertJsonPath('conflict.field', 'expected_current_technician_id')
+            ->assertJsonPath('conflict.current_technician_id', $newTechnician->id)
+            ->assertJsonPath('request.technical_service_technician_id', $newTechnician->id);
 
         $this->assertSame(1, TechnicalServiceAssignmentArchive::query()
             ->where('technical_service_request_id', $request->id)
@@ -1176,6 +1218,48 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             ->where('status', TechnicalServiceAssignmentOffer::STATUS_SENT)
             ->count());
         $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()->count());
+    }
+
+    public function test_stale_assignment_revision_returns_controlled_conflict(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000206');
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $payload = $this->assignmentPayload($request, $newTechnician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+        ]);
+        $payload['expected_earning_revision'] = str_repeat('0', 64);
+        $archiveCount = TechnicalServiceAssignmentArchive::query()->count();
+        $dispatchCount = TechnicalServiceMessageDispatch::query()->count();
+        $eventCount = $request->events()->count();
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Kayıt başka bir işlemle güncellendi. Güncel bilgiler yüklendi; seçiminizi kontrol ederek tekrar onaylayın.')
+            ->assertJsonPath('code', 'TECHNICAL_SERVICE_ASSIGNMENT_CONFLICT')
+            ->assertJsonPath('conflict.field', 'expected_earning_revision')
+            ->assertJsonPath('conflict.current_technician_id', $oldTechnician->id)
+            ->assertJsonPath('request.technical_service_technician_id', $oldTechnician->id);
+
+        $this->assertSame($archiveCount, TechnicalServiceAssignmentArchive::query()->count());
+        $this->assertSame($oldTechnician->id, $request->fresh()->technical_service_technician_id);
+        $this->assertSame($dispatchCount, TechnicalServiceMessageDispatch::query()->count());
+        $this->assertSame($eventCount, $request->events()->count());
+
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+        $conflictStart = strpos($pageSource, 'if (selectedIdRef.current === requestId && assignmentError.status === 409)');
+        $conflictEnd = strpos($pageSource, '} finally {', $conflictStart ?: 0);
+        $conflictHandler = substr($pageSource, $conflictStart ?: 0, ($conflictEnd ?: 0) - ($conflictStart ?: 0));
+
+        $this->assertIsInt($conflictStart);
+        $this->assertIsInt($conflictEnd);
+        $this->assertStringContainsString('preserveDetailScroll(() => {', $conflictHandler);
+        $this->assertStringNotContainsString('setAssignTechnicianOption(', $conflictHandler);
+        $this->assertStringNotContainsString('setAssignOverrideReason(', $conflictHandler);
+        $this->assertStringNotContainsString('setAssignOfferRouteFeeAmount(', $conflictHandler);
+        $this->assertStringNotContainsString('setAssignDialogOpen(false)', $conflictHandler);
     }
 
     public function test_reassignment_with_existing_old_technician_payout_is_rejected(): void

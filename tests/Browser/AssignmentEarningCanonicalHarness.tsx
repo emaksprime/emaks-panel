@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
+import type { ServiceRequestAssignmentDraft } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
 import '../../resources/css/app.css'
 
@@ -25,6 +26,7 @@ type HarnessState = {
   lastSendPayload: ServiceRequestTechnicianEarningMessagePayload | null
   lastCompanyPaymentDecision: 'pay_technician' | 'retain_company' | null
   lastCompanyPaymentDecisionPayload: ServiceRequestCompanyPaymentDecisionSubmit[] | null
+  lastAssignmentDraft: ServiceRequestAssignmentDraft | null
 }
 
 declare global {
@@ -457,6 +459,53 @@ const routeCollectionMatchingRequest = (contextReady: boolean): ServiceRequest =
   }
 }
 
+const reassignmentEligibilityRequest = (): ServiceRequest => {
+  const request = routeCollectionMatchingRequest(false)
+  const oldSnapshot = request.assignmentOffer?.earning_snapshot
+
+  return {
+    ...request,
+    technician: 'BAHATTİN ÖZBEK',
+    technicianId: '54',
+    technicianPhone: '9054****054',
+    routeQuote: {
+      ok: true,
+      id: 88,
+      technician_id: 111,
+      status: 'calculated',
+      one_way_distance_km: 503.93,
+      round_trip_distance_km: 1007.86,
+      distance_km: 1007.86,
+      threshold_km: 30,
+      billable_km: 977.86,
+      fee_per_km: 10,
+      fee_amount: 9778.6,
+      provider: 'google_routes',
+      source: 'google_routes',
+      calculated_at: '2026-08-13T07:45:00+00:00',
+    },
+    assignmentOffer: request.assignmentOffer ? {
+      ...request.assignmentOffer,
+      technical_service_technician_id: 54,
+      technician_name: 'BAHATTİN ÖZBEK',
+      labor_amount: 3000,
+      route_fee_amount: 1787.4,
+      total_amount: 4787.4,
+      earning_snapshot: oldSnapshot ? {
+        ...oldSnapshot,
+        technician_id: 54,
+        labor_amount: 3000,
+        route_fee_amount: 1787.4,
+        total_amount: 4787.4,
+      } : null,
+    } : null,
+    technicianJobCard: request.technicianJobCard ? {
+      ...request.technicianJobCard,
+      technician_id: 54,
+    } : null,
+  }
+}
+
 const companyPaymentMessageRequest = (): ServiceRequest => {
   const snapshot: ServiceRequestCanonicalEarningSnapshot = {
     schema_version: 3,
@@ -548,6 +597,7 @@ const state: HarnessState = {
   lastSendPayload: null,
   lastCompanyPaymentDecision: null,
   lastCompanyPaymentDecisionPayload: null,
+  lastAssignmentDraft: null,
 }
 
 window.__assignmentEarningDomState = state
@@ -624,6 +674,8 @@ function Harness() {
   const [assignmentPopupOpen, setAssignmentPopupOpen] = useState(false)
   const [assignmentPopupCount, setAssignmentPopupCount] = useState(0)
   const [assignmentConfirmCount, setAssignmentConfirmCount] = useState(0)
+  const [lastAssignmentDraft, setLastAssignmentDraft] = useState<ServiceRequestAssignmentDraft | null>(null)
+  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string | null>('111')
   const [allocationSubmitCount, setAllocationSubmitCount] = useState(0)
   const [lastAllocationPayload, setLastAllocationPayload] = useState<ServiceRequestCompanyPaymentDecisionSubmit[] | null>(null)
   const [allocationError, setAllocationError] = useState<string | null>(null)
@@ -665,6 +717,33 @@ function Harness() {
           setRequest(routeCollectionMatchingRequest(false))
         }}
       >Atama bekleyen yol tahsilatını yükle</button>
+      <button
+        type="button"
+        data-testid="load-reassignment-eligibility-scenario"
+        onClick={() => {
+          state.assignmentActionCount = 0
+          state.assignmentPopupCount = 0
+          state.assignmentConfirmCount = 0
+          state.boardRefetchCount = 0
+          state.lastAssignmentDraft = null
+          assignmentPopupOpenRef.current = false
+          setAssignmentActionCount(0)
+          setAssignmentPopupCount(0)
+          setAssignmentConfirmCount(0)
+          setLastAssignmentDraft(null)
+          setAssignmentPopupOpen(false)
+          setSelectedTechnicianId('111')
+          setRequest(reassignmentEligibilityRequest())
+        }}
+      >Yeniden atama CTA senaryosunu yükle</button>
+      <button
+        type="button"
+        data-testid="load-assignment-missing-technician-scenario"
+        onClick={() => {
+          setSelectedTechnicianId(null)
+          setRequest(reassignmentEligibilityRequest())
+        }}
+      >Usta seçilmemiş atama senaryosunu yükle</button>
       <button
         type="button"
         data-testid="load-matched-route-collection-scenario"
@@ -719,6 +798,7 @@ function Harness() {
       <output data-testid="assignment-action-count" className="sr-only">{assignmentActionCount}</output>
       <output data-testid="assignment-popup-count" className="sr-only">{assignmentPopupCount}</output>
       <output data-testid="assignment-confirm-count" className="sr-only">{assignmentConfirmCount}</output>
+      <output data-testid="assignment-last-draft" className="sr-only">{JSON.stringify(lastAssignmentDraft)}</output>
       <output data-testid="earning-last-send-revision" className="sr-only">{lastSendRevision}</output>
       <output data-testid="earning-last-send-payload" className="sr-only">{JSON.stringify(lastSendPayload)}</output>
       <output data-testid="company-payment-decision-submit-count" className="sr-only">{allocationSubmitCount}</output>
@@ -745,11 +825,12 @@ function Harness() {
         costDeltaLabel: '0,00 TL',
         recommended: true,
         }]}
-        selectedTechnicianId="111"
-        canSubmitAssign
-        onAssignSelectedTechnician={() => {
+        selectedTechnicianId={selectedTechnicianId}
+        onAssignSelectedTechnician={(draft) => {
           state.assignmentActionCount += 1
+          state.lastAssignmentDraft = draft ?? null
           setAssignmentActionCount(state.assignmentActionCount)
+          setLastAssignmentDraft(state.lastAssignmentDraft)
 
           if (!assignmentPopupOpenRef.current) {
             assignmentPopupOpenRef.current = true
@@ -1136,7 +1217,7 @@ function Harness() {
         <section role="dialog" aria-modal="true" data-testid="assignment-final-popup" className="grid gap-3 border border-slate-300 bg-white p-4">
           <h2>Atamayı onayla ve mesajı hazırla</h2>
           <div data-testid="assignment-final-popup-values">
-            İşçilik: {request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0} TL · Yol: {request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0} TL · Toplam: {request.assignmentOffer?.earning_snapshot?.total_amount ?? 0} TL
+            İşçilik: {lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0} TL · Yol: {lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0} TL · Toplam: {(lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0) + (lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0)} TL
           </div>
           <pre data-testid="assignment-final-popup-preview" className="whitespace-pre-wrap">{request.assignmentOffer?.message_preview ?? ''}</pre>
           <button

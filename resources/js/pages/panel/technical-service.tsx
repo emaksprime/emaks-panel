@@ -9,7 +9,7 @@ import {
 } from '@/components/technical-service/payment-reconciliation'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult } from '@/components/technical-service/PendingPaymentLinkActions'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
-import type { PostApprovalState } from '@/components/technical-service/ServiceRequestDetails'
+import type { PostApprovalState, ServiceRequestAssignmentDraft } from '@/components/technical-service/ServiceRequestDetails'
 import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import { TechnicalServiceWeekNavigator } from '@/components/technical-service/TechnicalServiceWeekNavigator'
@@ -3155,7 +3155,7 @@ export function TechnicalServiceOperationCenter() {
     setRouteQuoteLoading(false)
   }
 
-  const openAssignmentDialog = () => {
+  const openAssignmentDialog = (draft?: ServiceRequestAssignmentDraft) => {
     const currentRequestId = modalRequest?.id ?? selectedId ?? null
     const currentTechnicianId = modalRequest?.technicianId !== null && modalRequest?.technicianId !== undefined
       ? String(modalRequest.technicianId)
@@ -3173,6 +3173,12 @@ export function TechnicalServiceOperationCenter() {
       }
 
       assignmentDraftRequestId.current = currentRequestId
+    }
+
+    if (draft) {
+      setAssignOfferLaborAmount(String(draft.labor_amount))
+      setAssignOfferRouteFeeAmount(String(draft.route_fee_amount))
+      setAssignOfferNote(draft.note ?? '')
     }
 
     setAssignError(null)
@@ -4864,8 +4870,43 @@ export function TechnicalServiceOperationCenter() {
 
       void loadSummary()
     } catch (caught) {
-      if (selectedIdRef.current === requestId) {
-        setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
+      const assignmentError = caught as Error & { status?: number, detail?: string }
+
+      if (selectedIdRef.current === requestId && assignmentError.status === 409) {
+        let conflictRequest: ServiceRequest | null = null
+
+        try {
+          const conflictPayload = JSON.parse(assignmentError.detail ?? '{}') as { request?: ApiTechnicalServiceRequest }
+          conflictRequest = conflictPayload.request ? mapApiRequest(conflictPayload.request) : null
+        } catch {
+          conflictRequest = null
+        }
+
+        if (conflictRequest && String(conflictRequest.id) === String(requestId)) {
+          preserveDetailScroll(() => {
+            setRequests((current) => current.map((item) => (
+              item.id === conflictRequest?.id ? { ...item, ...conflictRequest } : item
+            )))
+            setSelectedListRequest((current) => (
+              current?.id === conflictRequest?.id ? { ...current, ...conflictRequest } : current
+            ))
+            setSelectedDetailRequest((current) => (
+              current?.id === conflictRequest?.id
+                ? {
+                    ...current,
+                    ...conflictRequest,
+                    earningBreakdown: conflictRequest?.earningBreakdown ?? current.earningBreakdown,
+                    financeSummary: conflictRequest?.financeSummary ?? current.financeSummary,
+                    settlement: conflictRequest?.settlement ?? current.settlement,
+                  }
+                : current
+            ))
+          })
+        }
+
+        setAssignError('Kayıt başka bir işlemle güncellendi. Güncel bilgiler yüklendi; seçiminizi kontrol ederek tekrar onaylayın.')
+      } else if (selectedIdRef.current === requestId) {
+        setAssignError(assignmentError.message || 'Usta atama işlemi başarısız oldu.')
       }
     } finally {
       assignMutationInFlightRef.current = false
@@ -6654,7 +6695,6 @@ export function TechnicalServiceOperationCenter() {
                     technicianEarningMessageLoading={technicianEarningMessageLoading}
                     technicianEarningMessageError={technicianEarningMessageError}
                     assignLoading={assignLoading}
-                    canSubmitAssign={canSubmitAssign}
                     assignError={assignError}
                     assignSuccess={assignSuccess}
                     mountExclusionAcknowledged={assignOverrideWithoutPayment}

@@ -30,6 +30,12 @@ type AssignmentEarningDraft = {
   baseRevision: string
 }
 
+export type ServiceRequestAssignmentDraft = {
+  labor_amount: number
+  route_fee_amount: number
+  note?: string | null
+}
+
 const COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON = 'Hakediş mesajı metin ve satır düzeni düzeltmesi'
 const COMPANY_PAYMENT_EARNING_MESSAGE_CONTRACT_VERSION = 4
 
@@ -131,7 +137,7 @@ type ServiceRequestDetailsProps = {
   warrantyLoading?: boolean
   warrantyError?: string | null
   postApprovalState?: PostApprovalState | null
-  onAssign?: () => void
+  onAssign?: (draft?: ServiceRequestAssignmentDraft) => void | Promise<void>
   onSchedule?: () => void
   onComplete?: () => void
   onCancel?: () => void
@@ -202,7 +208,6 @@ type ServiceRequestDetailsProps = {
   technicianEarningMessageLoading?: boolean
   technicianEarningMessageError?: string | null
   assignLoading?: boolean
-  canSubmitAssign?: boolean
   assignError?: string | null
   assignSuccess?: string | null
   mountExclusionAcknowledged?: boolean
@@ -218,7 +223,7 @@ type ServiceRequestDetailsProps = {
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
   onMountPaymentSend?: (paymentId: number | string, payload: PaymentLinkSendPayload) => Promise<PaymentLinkSendResult | void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, corrective_resend?: boolean, dispatch?: ServiceRequestTechnicianEarningMessageDispatch, dispatches?: ServiceRequestTechnicianEarningMessageDispatch[] } | void>
-  onAssignSelectedTechnician?: () => void | Promise<void>
+  onAssignSelectedTechnician?: (draft?: ServiceRequestAssignmentDraft) => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string>, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<void>
@@ -1558,7 +1563,6 @@ export function ServiceRequestDetails({
   technicianEarningMessageLoading = false,
   technicianEarningMessageError = null,
   assignLoading = false,
-  canSubmitAssign = false,
   assignError = null,
   assignSuccess = null,
   mountExclusionAcknowledged = false,
@@ -2394,11 +2398,17 @@ export function ServiceRequestDetails({
   ].filter((message): message is string => Boolean(message)) : []
   const combinedAssignmentBlockerMessages = Array.from(new Set([...assignmentUiBlockerMessages, ...assignmentBlockerMessages]))
   const isAssignmentBlocked = combinedAssignmentBlockerMessages.length > 0
-  const assignmentSubmitDisabled = assignLoading
-    || !selectedTechnicianId
-    || isAssignmentBlocked
-    || !canSubmitAssign
-    || !onAssignSelectedTechnician
+  const assignmentModalOpenAction = onAssignSelectedTechnician ?? onAssign
+  const assignmentModalOpenDisabledReason = assignLoading
+    ? 'Atama işlemi devam ediyor.'
+    : !selectedTechnicianId
+      ? 'Önce atanacak ustayı seçin.'
+      : isAssignmentBlocked
+        ? combinedAssignmentBlockerMessages.join(' ')
+        : !assignmentModalOpenAction
+          ? 'Atama detayını açacak işlem bulunamadı.'
+          : null
+  const assignmentModalOpenDisabled = assignmentModalOpenDisabledReason !== null
   const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
   const resolvedMountPaymentLabel = mountPaymentReceived
     ? mountPaymentStageLabel
@@ -2679,13 +2689,22 @@ export function ServiceRequestDetails({
     : hasAssignmentChange
       ? 'Hakedişi kaydet ve atamayı güncelle'
       : 'Hakedişi kaydet'
-  const earningSaveDisabled = !activeAssignmentOffer
-    || !onAssignmentOfferUpdate
-    || assignmentOfferUpdateInFlight
-    || earningLaborAmount === null
-    || earningRouteAmount === null
-    || !persistedEarningRevision
-  const primaryAssignmentActionDisabled = assignmentSubmitDisabled || earningDraftDirty
+  const assignmentModalDraft = earningLaborAmount !== null && earningRouteAmount !== null
+    ? {
+        labor_amount: earningLaborAmount,
+        route_fee_amount: earningRouteAmount,
+        note: earningOperationNote.trim() || null,
+      }
+    : undefined
+  const earningSaveDisabled = hasAssignmentChange
+    ? assignmentModalOpenDisabled
+    : !activeAssignmentOffer
+      || !onAssignmentOfferUpdate
+      || assignmentOfferUpdateInFlight
+      || earningLaborAmount === null
+      || earningRouteAmount === null
+      || !persistedEarningRevision
+  const primaryAssignmentActionDisabled = assignmentModalOpenDisabled
   const draftEarningPaymentSentence = persistedEarningSnapshot?.payer_state === 'customer_pays_technician'
     ? 'Hakedişiniz müşteri tarafından ödenecektir.'
     : persistedEarningSnapshot?.technician_payment_status_key === 'paid'
@@ -3766,14 +3785,14 @@ export function ServiceRequestDetails({
       setCompanyPaymentDecisionSubmitInFlight(false)
     }
   }
-  const handleAssignmentSave = async () => {
-    if (earningDraftDirty) {
-      setRouteFeeEditorMessage('Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.')
+  const handleAssignmentModalOpen = async () => {
+    if (assignmentModalOpenDisabledReason) {
+      setRouteFeeEditorMessage(assignmentModalOpenDisabledReason)
 
       return
     }
 
-    await onAssignSelectedTechnician?.()
+    await assignmentModalOpenAction?.(assignmentModalDraft)
   }
   const handleTechnicianEarningMessageCreate = async () => {
     if (technicianEarningMessageSubmitLock.current || technicianEarningMessageLoading) {
@@ -4521,9 +4540,9 @@ export function ServiceRequestDetails({
       : selectedTechnician
         ? { title: 'Usta yol hakedişi gönderilmeli', status: 'İşlem gerekli', message: 'Seçili usta için yol hakedişi bekliyor.' }
         : { title: 'Usta yol hakedişi bekliyor', status: 'Bekliyor', message: 'Önce usta seçilmeli.' },
-    !assignmentSubmitDisabled
+    !assignmentModalOpenDisabled
       ? { title: 'Servis atama', status: 'Tamamlandı', message: 'Servis atanabilir.' }
-      : { title: 'Servis atama', status: 'Bekliyor', message: combinedAssignmentBlockerMessages[0] ?? (mountExclusionAckRequired && !mountExclusionAckComplete ? 'Montaj hariç çoklu ürün onayı gerekiyor.' : 'Atama koşulları tamamlanmalı.') },
+      : { title: 'Servis atama', status: 'Bekliyor', message: assignmentModalOpenDisabledReason ?? 'Atama koşulları tamamlanmalı.' },
     approvalState.title.toLocaleLowerCase('tr-TR').includes('bek')
       ? { title: 'Usta onayı bekleme', status: 'Bekliyor', message: 'Usta onayı bekleniyor.' }
       : hasAssignedTechnician
@@ -5142,7 +5161,7 @@ export function ServiceRequestDetails({
 
     if (action === 'assign_technician' || action === 'select_technician') {
       scrollToNextActionSection('assignment')
-      void onAssignSelectedTechnician?.()
+      void handleAssignmentModalOpen()
 
       return
     }
@@ -6306,9 +6325,9 @@ export function ServiceRequestDetails({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => void onAssignSelectedTechnician?.()}
-                disabled={assignmentSubmitDisabled}
-                title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                onClick={() => void handleAssignmentModalOpen()}
+                disabled={assignmentModalOpenDisabled}
+                title={assignmentModalOpenDisabledReason ?? undefined}
               >
                 {hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
@@ -6330,9 +6349,9 @@ export function ServiceRequestDetails({
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => void onAssignSelectedTechnician?.()}
-                      disabled={assignmentSubmitDisabled}
-                      title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                      onClick={() => void handleAssignmentModalOpen()}
+                      disabled={assignmentModalOpenDisabled}
+                      title={assignmentModalOpenDisabledReason ?? undefined}
                     >
                       {sameTechnicianReviewActionLabel}
                     </Button>
@@ -7497,28 +7516,33 @@ export function ServiceRequestDetails({
             ) : null}
             {!isCancelledOrReviewContext ? (
             <div className="flex flex-wrap justify-end gap-2">
-              {hasAssignmentChange ? (
+              {hasAssignmentChange && !assignmentModalOpenDisabled ? (
                 <Badge variant="warning">Atama değişikliği hazır</Badge>
+              ) : hasAssignmentChange ? (
+                <Badge variant="outline">Atama değişikliği bekliyor</Badge>
               ) : null}
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => onAssign?.()}
+                onClick={() => void onAssign?.(assignmentModalDraft)}
               >
-                Gelişmiş atama ayarları
+                Atama detayını aç
               </Button>
               <Button
                 data-testid="assignment-action-button"
                 type="button"
-                onClick={() => void handleAssignmentSave()}
+                onClick={() => void handleAssignmentModalOpen()}
                 disabled={primaryAssignmentActionDisabled}
-                title={earningDraftDirty
-                  ? 'Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.'
-                  : isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                title={assignmentModalOpenDisabledReason ?? undefined}
               >
                 {assignLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
+            ) : null}
+            {!isCancelledOrReviewContext && assignmentModalOpenDisabledReason ? (
+              <p data-testid="assignment-action-disabled-reason" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                Atama şu nedenle tamamlanamıyor: {assignmentModalOpenDisabledReason}
+              </p>
             ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               {hasAssignedTechnician && optionalMetricValue(request.technician) ? <MiniMetric label="Atanan servis" value={optionalMetricValue(request.technician)} /> : null}
@@ -8402,10 +8426,15 @@ export function ServiceRequestDetails({
               data-testid="earning-save-button"
               className="col-span-2 h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
-              onClick={() => void handleCanonicalEarningSave()}
+              onClick={() => void (hasAssignmentChange ? handleAssignmentModalOpen() : handleCanonicalEarningSave())}
               disabled={earningSaveDisabled}
+              title={hasAssignmentChange ? assignmentModalOpenDisabledReason ?? undefined : undefined}
             >
-              {assignmentOfferUpdateInFlight ? 'Kaydediliyor...' : earningSaveLabel}
+              {hasAssignmentChange && assignLoading
+                ? 'Kaydediliyor...'
+                : !hasAssignmentChange && assignmentOfferUpdateInFlight
+                  ? 'Kaydediliyor...'
+                  : earningSaveLabel}
             </Button>
           ) : null}
           {showCompanyPaymentDecisionApproval ? (
@@ -8480,9 +8509,9 @@ export function ServiceRequestDetails({
                   className="h-9 w-full text-xs sm:text-sm lg:w-auto"
                   type="button"
                   variant="outline"
-                  onClick={() => void onAssignSelectedTechnician?.()}
-                  disabled={assignmentSubmitDisabled}
-                  title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                  onClick={() => void handleAssignmentModalOpen()}
+                  disabled={assignmentModalOpenDisabled}
+                  title={assignmentModalOpenDisabledReason ?? undefined}
                 >
                   {sameTechnicianReviewActionLabel}
                 </Button>

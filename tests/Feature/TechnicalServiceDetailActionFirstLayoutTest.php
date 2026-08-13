@@ -776,7 +776,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('setEarningMessageText(response.message_preview ??', $detailsSource);
         $this->assertStringContainsString('delete next[requestStateKey]', $detailsSource);
         $this->assertStringContainsString('return response', $pageSource);
-        $this->assertStringContainsString('onClick={() => void handleAssignmentSave()}', $detailsSource);
+        $this->assertStringContainsString('onClick={() => void (hasAssignmentChange ? handleAssignmentModalOpen() : handleCanonicalEarningSave())}', $detailsSource);
     }
 
     public function test_corrective_earning_send_renders_two_channels_and_uses_one_targeted_request(): void

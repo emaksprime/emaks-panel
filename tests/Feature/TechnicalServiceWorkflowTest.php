@@ -6790,7 +6790,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Bu fatura son satış değil',
             'Son satış kontrolü doğrulanamadı',
             'Son satış kontrolü çelişkili',
-            'assignmentSubmitDisabled',
+            'assignmentModalOpenDisabledReason',
             'routeFeeEditorMessage',
             'Servis onay durumu',
             'Hakedi',

@@ -2377,9 +2377,11 @@ class TechnicalServiceController extends Controller
                 : null;
             if (array_key_exists('expected_current_technician_id', $payload)
                 && $expectedTechnicianId !== $oldTechnicianId) {
-                throw ValidationException::withMessages([
-                    'expected_current_technician_id' => 'Usta ataması değişti. Güncel kaydı yenileyip tekrar deneyin.',
-                ]);
+                return $this->assignmentConflictResponse(
+                    $technicalServiceRequest,
+                    'expected_current_technician_id',
+                    'Usta ataması değişti.',
+                );
             }
 
             $newTechnicianId = $technician instanceof TechnicalServiceTechnician ? (int) $technician->id : null;
@@ -2458,9 +2460,11 @@ class TechnicalServiceController extends Controller
                 : null;
             if (array_key_exists('expected_assignment_offer_id', $payload)
                 && $expectedAssignmentOfferId !== ($currentOffer?->id === null ? null : (int) $currentOffer->id)) {
-                throw ValidationException::withMessages([
-                    'expected_assignment_offer_id' => 'Hakediş ataması değişti. Güncel kaydı yenileyip tekrar deneyin.',
-                ]);
+                return $this->assignmentConflictResponse(
+                    $technicalServiceRequest,
+                    'expected_assignment_offer_id',
+                    'Hakediş ataması değişti.',
+                );
             }
             if ($currentOffer instanceof TechnicalServiceAssignmentOffer) {
                 $currentSettlement = $technicalServiceRequest->settlement()->lockForUpdate()->first();
@@ -2472,9 +2476,11 @@ class TechnicalServiceController extends Controller
                 if ($expectedRevision === ''
                     || ! hash_equals((string) ($currentEarningSnapshot['revision'] ?? ''), $expectedRevision)
                 ) {
-                    throw ValidationException::withMessages([
-                        'expected_earning_revision' => 'Hakediş bilgisi değişti. Güncel kaydı yenileyip tekrar deneyin.',
-                    ]);
+                    return $this->assignmentConflictResponse(
+                        $technicalServiceRequest,
+                        'expected_earning_revision',
+                        'Hakediş bilgisi değişti.',
+                    );
                 }
             }
 
@@ -2662,6 +2668,44 @@ class TechnicalServiceController extends Controller
 
             return response()->json(['request' => $requestPayload]);
         });
+    }
+
+    private function assignmentConflictResponse(
+        TechnicalServiceRequest $technicalServiceRequest,
+        string $field,
+        string $reason,
+    ): JsonResponse {
+        $currentOffer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->whereIn('status', [
+                TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            ])
+            ->latest('id')
+            ->first();
+        $currentSettlement = $technicalServiceRequest->settlement()->first();
+        $currentEarningSnapshot = $currentOffer instanceof TechnicalServiceAssignmentOffer
+            ? $this->workflowService->canonicalTechnicianEarningSnapshot($currentOffer, $currentSettlement)
+            : null;
+
+        return response()->json([
+            'message' => 'Kayıt başka bir işlemle güncellendi. Güncel bilgiler yüklendi; seçiminizi kontrol ederek tekrar onaylayın.',
+            'code' => 'TECHNICAL_SERVICE_ASSIGNMENT_CONFLICT',
+            'conflict' => [
+                'field' => $field,
+                'reason' => $reason,
+                'current_technician_id' => $technicalServiceRequest->technical_service_technician_id,
+                'current_assignment_offer_id' => $currentOffer?->id,
+                'current_earning_revision' => $currentEarningSnapshot['revision'] ?? null,
+            ],
+            'request' => $this->workflowService->serialize(
+                $technicalServiceRequest->refresh(),
+                false,
+                false,
+                false,
+            ),
+        ], 409);
     }
 
     public function summary(): JsonResponse
