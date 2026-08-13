@@ -71,6 +71,14 @@ const initialRequest: ServiceRequest = {
   technician: 'Test Usta',
   technicianId: '111',
   technicianPhone: '9054****428',
+  technicianProfile: {
+    id: '111',
+    name: 'Test Usta',
+    phone: '905467647428',
+    city: 'Denizli',
+    district: 'Pamukkale',
+    active: true,
+  },
   appointment: '-',
   status: 'Atandı',
   workflowStatus: 'Usta Onayı Bekleyen',
@@ -125,6 +133,73 @@ const initialRequest: ServiceRequest = {
   doorPhotos: [],
   fieldCompletionDocuments: [],
   previousFieldCompletionDocuments: [],
+}
+
+const initialAssignmentRequest = (): ServiceRequest => ({
+  ...initialRequest,
+  technician: 'Atanmadı',
+  technicianId: null,
+  technicianPhone: null,
+  technicianProfile: null,
+  status: 'Yeni',
+  workflowStatus: 'Yeni Talep',
+  assignmentOffer: null,
+  settlement: null,
+  technicianJobCard: null,
+})
+
+const partContextRequest = (status: 'paid' | 'unpaid' | 'free' | 'none'): ServiceRequest => {
+  if (status === 'none') {
+    return {
+      ...initialRequest,
+      partRequests: [],
+    }
+  }
+
+  const isFree = status === 'free'
+  const isPaid = status === 'paid'
+
+  return {
+    ...initialRequest,
+    partRequests: [{
+      id: status === 'paid' ? 26 : status === 'unpaid' ? 27 : 28,
+      technical_service_request_id: 9001,
+      root_request_id: 9001,
+      status: 'approved',
+      status_label: 'Parça talebi onaylandı',
+      part_name: 'Gateway',
+      quantity: 1,
+      requires_service_visit: false,
+      charge_decision: isFree ? 'free' : 'chargeable',
+      charge_decision_label: isFree ? 'Ücretsiz / garanti kapsamında' : 'Ücretli',
+      service_amount: 0,
+      service_amount_label: '0,00 TL',
+      part_amount: isFree ? 0 : 2000,
+      part_amount_label: isFree ? '0,00 TL' : '2.000,00 TL',
+      total_amount: isFree ? 0 : 2000,
+      total_amount_label: isFree ? '0,00 TL' : '2.000,00 TL',
+      charge_status: isPaid ? 'paid' : isFree ? null : 'pending',
+      is_payment_required: status === 'unpaid',
+      is_payment_paid: isPaid,
+      can_ship: isPaid || isFree,
+      payment_id: isPaid ? 167 : null,
+      provider_payment_reference: isPaid ? '37164237' : null,
+      provider_transaction_reference: isPaid ? '39067702' : null,
+      paid_at: isPaid ? '2026-08-07T07:04:50+00:00' : null,
+      customer_charge: isPaid ? {
+        id: 167,
+        status: 'paid',
+        status_label: 'Ödendi',
+        total_amount: 2000,
+        total_amount_label: '2.000,00 TL',
+        provider: 'iyzico',
+        provider_payment_reference: '37164237',
+        provider_transaction_reference: '39067702',
+        paid_at: '2026-08-07T07:04:50+00:00',
+        currency: 'TRY',
+      } : null,
+    }],
+  }
 }
 
 const technicianSuggestions = [
@@ -541,6 +616,14 @@ const reassignmentEligibilityRequest = (): ServiceRequest => {
     technician: 'BAHATTİN ÖZBEK',
     technicianId: '54',
     technicianPhone: '9054****054',
+    technicianProfile: {
+      id: '54',
+      name: 'BAHATTİN ÖZBEK',
+      phone: '9054****054',
+      city: 'Ankara',
+      district: 'Çankaya',
+      active: true,
+    },
     routeQuote: {
       ok: true,
       id: 88,
@@ -765,6 +848,11 @@ function Harness() {
   const assignmentPopupOpenRef = useRef(false)
   const assignmentReasonRef = useRef<HTMLTextAreaElement | null>(null)
   const assignmentConfirmInFlightRef = useRef(false)
+  const assignmentRequiresReason = Boolean(
+    request.technicianId
+    && selectedTechnicianId
+    && String(request.technicianId) !== String(selectedTechnicianId),
+  )
 
   return (
     <>
@@ -826,6 +914,32 @@ function Harness() {
       >Yeniden atama CTA senaryosunu yükle</button>
       <button
         type="button"
+        data-testid="load-initial-assignment-scenario"
+        onClick={() => {
+          state.assignmentActionCount = 0
+          state.assignmentPopupCount = 0
+          state.assignmentConfirmCount = 0
+          state.routeRequestCount = 0
+          state.scrollResetCount = 0
+          state.boardRefetchCount = 0
+          state.lastAssignmentDraft = null
+          assignmentPopupOpenRef.current = false
+          assignmentConfirmInFlightRef.current = false
+          setAssignmentActionCount(0)
+          setAssignmentPopupCount(0)
+          setAssignmentConfirmCount(0)
+          setRouteRequestCount(0)
+          setLastAssignmentDraft(null)
+          setAssignmentPopupOpen(false)
+          setAssignmentReason('')
+          setAssignmentReasonError(null)
+          setAssignmentSuccess(null)
+          setSelectedTechnicianId('111')
+          setRequest(initialAssignmentRequest())
+        }}
+      >İlk atama senaryosunu yükle</button>
+      <button
+        type="button"
         data-testid="load-assignment-missing-technician-scenario"
         onClick={() => {
           setSelectedTechnicianId(null)
@@ -850,6 +964,10 @@ function Harness() {
           setRequest(companyPaymentMessageRequest())
         }}
       >Şirket ödemeli mesaj senaryosunu yükle</button>
+      <button type="button" data-testid="load-paid-part-scenario" onClick={() => setRequest(partContextRequest('paid'))}>Ödenmiş parça senaryosunu yükle</button>
+      <button type="button" data-testid="load-unpaid-part-scenario" onClick={() => setRequest(partContextRequest('unpaid'))}>Ödenmemiş parça senaryosunu yükle</button>
+      <button type="button" data-testid="load-free-part-scenario" onClick={() => setRequest(partContextRequest('free'))}>Ücretsiz parça senaryosunu yükle</button>
+      <button type="button" data-testid="load-no-part-scenario" onClick={() => setRequest(partContextRequest('none'))}>Parçasız senaryoyu yükle</button>
       <button
         type="button"
         data-testid="load-stale-srv-route-scenario"
@@ -1307,27 +1425,29 @@ function Harness() {
             İşçilik: {lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0} TL · Yol: {lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0} TL · Toplam: {(lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0) + (lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0)} TL
           </div>
           <pre data-testid="assignment-final-popup-preview" className="whitespace-pre-wrap">{request.assignmentOffer?.message_preview ?? ''}</pre>
-          <label className="grid gap-2">
-            Yeniden atama nedeni *
-            <textarea
-              ref={assignmentReasonRef}
-              data-testid="assignment-reason-input"
-              value={assignmentReason}
-              onChange={(event) => {
-                setAssignmentReason(event.target.value)
-                setAssignmentReasonError(null)
-              }}
-              placeholder="Önceki ustanın işi neden tamamlayamadığını yazınız"
-              aria-invalid={assignmentReasonError ? 'true' : 'false'}
-            />
-            {assignmentReasonError ? <span data-testid="assignment-reason-error">{assignmentReasonError}</span> : null}
-            <span>Bu açıklama eski atamanın tarihçesinde saklanacaktır.</span>
-          </label>
+          {assignmentRequiresReason ? (
+            <label className="grid gap-2">
+              Yeniden atama nedeni *
+              <textarea
+                ref={assignmentReasonRef}
+                data-testid="assignment-reason-input"
+                value={assignmentReason}
+                onChange={(event) => {
+                  setAssignmentReason(event.target.value)
+                  setAssignmentReasonError(null)
+                }}
+                placeholder="Önceki ustanın işi neden tamamlayamadığını yazınız"
+                aria-invalid={assignmentReasonError ? 'true' : 'false'}
+              />
+              {assignmentReasonError ? <span data-testid="assignment-reason-error">{assignmentReasonError}</span> : null}
+              <span>Bu açıklama eski atamanın tarihçesinde saklanacaktır.</span>
+            </label>
+          ) : null}
           <button
             type="button"
             data-testid="assignment-final-popup-confirm"
             onClick={() => {
-              if (assignmentReason.trim().length < 5) {
+              if (assignmentRequiresReason && assignmentReason.trim().length < 5) {
                 setAssignmentReasonError('Yeniden atama nedeni yazınız.')
                 assignmentReasonRef.current?.focus()
 
@@ -1346,6 +1466,14 @@ function Harness() {
                 technician: 'Test Usta',
                 technicianId: '111',
                 technicianPhone: '905467647428',
+                technicianProfile: {
+                  id: '111',
+                  name: 'Test Usta',
+                  phone: '905467647428',
+                  city: 'Denizli',
+                  district: 'Pamukkale',
+                  active: true,
+                },
                 technicianPaymentAmount: lastAssignmentDraft?.labor_amount ?? current.technicianPaymentAmount,
                 travelFeeAmount: lastAssignmentDraft?.route_fee_amount ?? current.travelFeeAmount,
               }))

@@ -2559,6 +2559,8 @@ export function ServiceRequestDetails({
   const companyPaymentCompletedDecisions = companyPaymentDecisionPayload?.decisions ?? []
   const routeCollectionMatching = companyPaymentDecisionPayload?.component_matching?.route ?? null
   const routeCollectionMatchRows = routeCollectionMatching?.payments ?? []
+  const routeCollectionResidualAmount = Number(routeCollectionMatching?.residual_allocatable_amount ?? 0)
+  const routeCollectionCompanyTopUpAmount = Number(routeCollectionMatching?.company_top_up_amount ?? 0)
   const companyPaymentAwaitingAssignment = companyPaymentDecisionPayload?.context_state === 'awaiting_assignment'
     && companyPaymentEligibleItems.length > 0
   const companyPaymentDecisionDrafts = companyPaymentDecisionDraftByRequest[requestStateKey] ?? {}
@@ -2890,7 +2892,10 @@ export function ServiceRequestDetails({
     || revisitRequests.length > 0
     || assignmentOffer,
   )
-  const assignedTechnicianCityLabel = displayOrEmpty(selectedTechnician?.location ?? request.city, '-')
+  const assignedTechnicianLocation = [request.technicianProfile?.city, request.technicianProfile?.district]
+    .filter(Boolean)
+    .join(' / ')
+  const assignedTechnicianCityLabel = displayOrEmpty(assignedTechnicianLocation, '-')
   const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || shouldShowRouteQuoteLoading
   const routeFeeEditorSnapshot = (
     oneWay: string,
@@ -6487,24 +6492,6 @@ export function ServiceRequestDetails({
                 {assignSuccess}
               </div>
             ) : null}
-            {hasAssignedTechnician ? (
-              <div className="grid gap-3 rounded-2xl border border-sky-100 bg-white p-3 text-sm text-slate-800">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-sky-700">Atanan usta özeti</p>
-                    <p className="mt-1 text-base font-bold text-slate-950">{displayOrEmpty(request.technician, 'Atanmadı')}</p>
-                    <p className="mt-1 text-xs font-semibold text-blue-700">{displayOrEmpty(request.technicianPhone, 'Telefon yok')}</p>
-                  </div>
-                  <Badge variant={assignmentOfferDispatchStatus === 'sent' ? 'secondary' : activeAssignmentOffer ? 'outline' : 'warning'}>
-                    {earningDispatchStatusLabel}
-                  </Badge>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <MiniMetric label="Şehir" value={assignedTechnicianCityLabel} />
-                  <MiniMetric label="Hakediş yönetimi" value="Finans ve Hakediş alanında" />
-                </div>
-              </div>
-            ) : null}
             {shouldShowPartCreateAction ? (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-100 bg-white p-3 text-sm text-slate-700">
                 <div>
@@ -6536,6 +6523,18 @@ export function ServiceRequestDetails({
                   const partRequestPayment = customerChargeSummary?.rows?.find((payment) => String(payment.id) === String(partRequestPaymentId)) ?? null
                   const partRequestPaymentStatus = partRequestPayment?.status ?? partRequest.customer_charge?.status
                   const partRequestPaymentPending = partRequestPaymentStatus === 'pending'
+                  const partRequestPaymentPaid = partRequest.is_payment_paid === true || partRequestPaymentStatus === 'paid'
+                  const partRequestIsFree = partRequest.charge_decision === 'free'
+                  const partRequestProviderPaymentReference = partRequest.customer_charge?.provider_payment_reference
+                    ?? partRequest.provider_payment_reference
+                    ?? partRequest.customer_charge?.provider_receipt_reference
+                    ?? partRequest.provider_receipt_reference
+                    ?? partRequest.customer_charge?.payment_reference
+                    ?? partRequest.payment_reference
+                    ?? null
+                  const partRequestDisplayAmount = partRequestIsFree
+                    ? 'Ücretsiz'
+                    : partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)
                   const partRequestPaymentAction: PaymentLinkSendTarget | null = partRequestPayment ?? (partRequestPaymentId ? {
                     id: partRequestPaymentId,
                     status: partRequestPaymentStatus,
@@ -6557,7 +6556,7 @@ export function ServiceRequestDetails({
                     <div key={partKey} className="grid gap-3 rounded-xl border border-violet-100 bg-white p-3">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
-                          <p className="font-semibold text-slate-950">{partRequest.part_name} {partRequest.quantity > 1 ? `x${partRequest.quantity}` : ''}</p>
+                          <p className="font-semibold text-slate-950">{partRequest.part_name} {partRequest.quantity > 1 ? `x${partRequest.quantity}` : ''} — {partRequestDisplayAmount}</p>
                           <p className="mt-1 text-xs text-slate-600">{partRequest.technician_note || partRequest.reason || 'Usta açıklaması yok'}</p>
                           {partRequest.tracking_no ? (
                             <p className="mt-1 text-xs text-slate-600">Kargo: {[partRequest.shipment_provider, partRequest.tracking_no].filter(Boolean).join(' / ')}</p>
@@ -6578,14 +6577,17 @@ export function ServiceRequestDetails({
                           {partRequest.charge_decision === 'chargeable' ? (
                             <div className="mt-1 grid gap-1">
                               <p>Servis: {partRequest.service_amount_label ?? formatMoneyValue(partRequest.service_amount ?? 0)} · Parça: {partRequest.part_amount_label ?? formatMoneyValue(partRequest.part_amount ?? 0)} · Toplam: {partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)}</p>
-                              {partRequest.customer_charge?.status_label ? (
-                                <p>Ödeme: {partRequest.customer_charge.status_label}</p>
-                              ) : null}
+                              <p className="font-semibold">
+                                {partRequestPaymentPaid && partRequestProviderPaymentReference
+                                  ? `Ödeme ref: ${partRequestProviderPaymentReference} ile online alındı.`
+                                  : partRequestPaymentPaid && partRequestPaymentId
+                                  ? `Panel ödeme kaydı #${partRequestPaymentId} ile alındı.`
+                                  : partRequestPaymentPaid
+                                  ? 'Ödeme alındı.'
+                                  : 'Ödeme alınmadı.'}
+                              </p>
                               {partRequest.customer_charge?.paid_at || partRequest.paid_at ? (
                                 <p>Ödeme tarihi: {dateTimeOrEmpty(partRequest.customer_charge?.paid_at ?? partRequest.paid_at, '-')}</p>
-                              ) : null}
-                              {partRequest.customer_charge?.payment_reference || partRequest.payment_reference || partRequest.provider_reference ? (
-                                <p>Referans: {displayOrEmpty(partRequest.customer_charge?.payment_reference ?? partRequest.payment_reference ?? partRequest.provider_reference, '-')}</p>
                               ) : null}
                               {partRequestPaymentPending && partRequestPaymentAction ? (
                                 <div className="grid gap-2">
@@ -6593,7 +6595,7 @@ export function ServiceRequestDetails({
                                   {renderPendingPaymentLinkActions(partRequestPaymentAction, 'part-request')}
                                 </div>
                               ) : null}
-                              {partRequest.is_payment_paid !== true ? (
+                              {!partRequestPaymentPaid ? (
                                 <div className="flex flex-wrap justify-end">
                                   <Button type="button" size="sm" onClick={() => openManualPartPaymentModal(partRequest)}>
                                     Ödeme alındı
@@ -6601,7 +6603,7 @@ export function ServiceRequestDetails({
                                 </div>
                               ) : null}
                             </div>
-                          ) : null}
+                          ) : partRequestIsFree ? <p className="mt-1 font-semibold">Ücretsiz parça.</p> : null}
                         </div>
                       ) : null}
                       {['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status) ? (
@@ -7011,7 +7013,7 @@ export function ServiceRequestDetails({
                   <MiniMetric label="Google Routes tek yön mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : hasStoredRouteCost ? routeFeeSavedHint : 'Yol hesabı yapılınca gösterilir.'} />
                   <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasRouteCostEvidence ? undefined : 'Yol hesabı sonucu yok.'} />
                   <MiniMetric
-                    label="Tahmini usta yol hakedişi"
+                    label={hasCanonicalPayout ? 'Yol hakedişi' : 'Önerilen yol hakedişi'}
                     value={hasRouteCostEvidence ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
                     hint={hasActiveRouteQuote && activeRouteQuote ? routeQuoteMessage(activeRouteQuote.message) : hasStoredRouteCost ? routeFeeSavedHint : routeFeeNotCalculatedHint}
                   />
@@ -7269,8 +7271,8 @@ export function ServiceRequestDetails({
                         <MiniMetric label="Onaylı yol hakedişi" value={routeCollectionMatching?.earning_amount_label ?? '0 TL'} />
                         <MiniMetric label="Tahsil edilen yol" value={routeCollectionMatching?.collection_amount_label ?? '0 TL'} />
                         <MiniMetric label="Hakedişte karşılanan" value={routeCollectionMatching?.covered_amount_label ?? '0 TL'} />
-                        <MiniMetric label="Karar verilebilir bakiye" value={routeCollectionMatching?.residual_allocatable_amount_label ?? '0 TL'} />
-                        <MiniMetric label="Şirketin tamamlayacağı fark" value={routeCollectionMatching?.company_top_up_amount_label ?? '0 TL'} />
+                        {routeCollectionResidualAmount > 0 ? <MiniMetric label="Dağıtıma kalan tutar" value={routeCollectionMatching?.residual_allocatable_amount_label ?? formatMoneyValue(routeCollectionResidualAmount)} /> : null}
+                        {routeCollectionCompanyTopUpAmount > 0 ? <MiniMetric label="Şirketin tamamlayacağı fark" value={routeCollectionMatching?.company_top_up_amount_label ?? formatMoneyValue(routeCollectionCompanyTopUpAmount)} /> : null}
                       </div>
                       <div className="grid gap-2">
                         {routeCollectionMatchRows.map((row) => (
@@ -7278,7 +7280,9 @@ export function ServiceRequestDetails({
                             <strong>Payment #{row.payment_id}</strong>
                             <span>Ödenen: {row.paid_amount_label ?? formatMoneyValue(row.paid_amount)}</span>
                             <span>Karşılanan: {row.covered_amount_label ?? formatMoneyValue(row.covered_amount)}</span>
-                            <span>Residual: {row.residual_allocatable_amount_label ?? formatMoneyValue(row.residual_allocatable_amount)}</span>
+                            {Number(row.residual_allocatable_amount ?? 0) > 0 ? (
+                              <span>Dağıtıma kalan tutar: {row.residual_allocatable_amount_label ?? formatMoneyValue(row.residual_allocatable_amount)}</span>
+                            ) : null}
                           </div>
                         ))}
                       </div>
@@ -7602,39 +7606,32 @@ export function ServiceRequestDetails({
                 Atama şu nedenle tamamlanamıyor: {assignmentModalOpenDisabledReason}
               </p>
             ) : null}
-            <div className="grid gap-3 sm:grid-cols-2">
-              {hasAssignedTechnician && optionalMetricValue(request.technician) ? <MiniMetric label="Atanan servis" value={optionalMetricValue(request.technician)} /> : null}
-              {hasAssignedTechnician && optionalMetricValue(request.technicianPhone) ? <MiniMetric label="Servis telefonu" value={optionalMetricValue(request.technicianPhone)} /> : null}
-              {hasAssignedTechnician && optionalMetricValue(selectedTechnician?.location ?? request.city) ? <MiniMetric label="Şehir" value={optionalMetricValue(selectedTechnician?.location ?? request.city)} /> : null}
-              <MiniMetric label="Usta yol hakedişi durumu" value={routeFeeStatusText} />
-              <MiniMetric label="Tahmini usta yol hakedişi" value={travelCostLabel} />
-              {hasAssignedTechnician && approvalState.title.toLocaleLowerCase('tr-TR').includes('bek') ? (
-                <div className="sm:col-span-2">
-                  <Badge variant="warning">Usta onayı bekleniyor</Badge>
+            {hasAssignedTechnician ? (
+              <div data-testid="assigned-technician-section" className="grid gap-3 rounded-2xl border border-sky-100 bg-sky-50/60 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold text-slate-950">Atanan Usta</p>
+                  {approvalState.title.toLocaleLowerCase('tr-TR').includes('bek') ? <Badge variant="warning">Usta onayı bekleniyor</Badge> : null}
                 </div>
-              ) : null}
-              {hasAssignedTechnician ? (
-                <>
-                  <MiniMetric label="Servis onay durumu" value={approvalState.title} hint={approvalState.detail ?? undefined} />
-                  {hasSupportRequestDetail ? (
-                    <MiniMetric label="Destek talebi" value={displayOrEmpty(request.technicianRevisionNote || request.pendingReason, 'İnceleniyor')} />
-                  ) : null}
-                  {hasSparePartDetail ? (
-                    <MiniMetric label="Yedek parça" value={partRequests.length > 0 ? `${partRequests.length} talep` : displayOrEmpty(request.pendingReason, 'İnceleniyor')} />
-                  ) : null}
-                  {hasPriceRevisionDetail ? (
-                    <MiniMetric label="Fiyat değişikliği" value={displayOrEmpty(request.technicianRevisionNote, 'Revize talebi var')} />
-                  ) : null}
-                  {hasRevisitDetail ? (
-                    <MiniMetric label="Tekrar ziyaret" value={request.requiresSecondVisit ? 'Evet' : `${revisitRequests.length} talep`} hint={request.secondVisitReason || undefined} />
-                  ) : null}
-                </>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600 sm:col-span-2">
-                  Servis atanınca onay, destek, yedek parça ve fiyat talepleri burada görünür.
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <MiniMetric label="Usta adı" value={displayOrEmpty(request.technician, 'Atanmadı')} />
+                  {optionalMetricValue(request.technicianPhone) ? <MiniMetric label="Telefon" value={optionalMetricValue(request.technicianPhone)} /> : null}
+                  {assignedTechnicianLocation ? <MiniMetric label="Şehir / ilçe" value={assignedTechnicianCityLabel} /> : null}
+                  {technicianLaborCostAmount !== null ? <MiniMetric label="İşçilik" value={formatMoneyValue(technicianLaborCostAmount)} /> : null}
+                  <MiniMetric label={hasCanonicalPayout ? 'Yol hakedişi' : 'Önerilen yol hakedişi'} value={travelCostLabel} hint={routeFeeStatusText} />
+                  <MiniMetric label="Toplam hakediş" value={totalTechnicianCostLabel} />
+                  <MiniMetric label="Atama / onay durumu" value={approvalState.title} hint={approvalState.detail ?? undefined} />
+                  <MiniMetric label="Mesaj durumu" value={earningDispatchStatusLabel} />
+                  {hasSupportRequestDetail ? <MiniMetric label="Destek talebi" value={displayOrEmpty(request.technicianRevisionNote || request.pendingReason, 'İnceleniyor')} /> : null}
+                  {hasSparePartDetail ? <MiniMetric label="Yedek parça" value={partRequests.length > 0 ? `${partRequests.length} talep` : displayOrEmpty(request.pendingReason, 'İnceleniyor')} /> : null}
+                  {hasPriceRevisionDetail ? <MiniMetric label="Fiyat değişikliği" value={displayOrEmpty(request.technicianRevisionNote, 'Revize talebi var')} /> : null}
+                  {hasRevisitDetail ? <MiniMetric label="Tekrar ziyaret" value={request.requiresSecondVisit ? 'Evet' : `${revisitRequests.length} talep`} hint={request.secondVisitReason || undefined} /> : null}
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600">
+                Servis atanınca onay, destek, yedek parça ve fiyat talepleri burada görünür.
+              </div>
+            )}
           </DetailPanel>
 
           <DetailPanel

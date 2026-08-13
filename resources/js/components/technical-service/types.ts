@@ -84,6 +84,7 @@ export type ServiceRequest = {
   technician: string
   technicianId?: string | null
   technicianPhone?: string | null
+  technicianProfile?: ServiceTechnician | null
   technicianApprovalStatus?: string | null
   technicianApprovedAt?: string | null
   technicianRevisionRequestedAt?: string | null
@@ -999,6 +1000,9 @@ export type ServiceRequestPartRequest = {
   copy_url?: string | null
   payment_reference?: string | null
   provider_reference?: string | null
+  provider_payment_reference?: string | null
+  provider_transaction_reference?: string | null
+  provider_receipt_reference?: string | null
   payment_provider?: string | null
   paid_at?: string | null
   paid_amount?: number | null
@@ -1018,6 +1022,9 @@ export type ServiceRequestPartRequest = {
     provider?: string | null
     provider_reference?: string | null
     payment_reference?: string | null
+    provider_payment_reference?: string | null
+    provider_transaction_reference?: string | null
+    provider_receipt_reference?: string | null
     paid_at?: string | null
     currency?: string | null
     message_send_count?: number | null
@@ -1079,11 +1086,22 @@ export type ServiceRequestSaleAndPayment = {
   ops_payment_check_label?: string | null
   payment_status?: ServiceRequestPaymentStatus | null
   payment_ownership?: ServiceRequestPaymentOwnership | null
+  assignment_payment_model?: ServiceRequestAssignmentPaymentModel | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
   mount_payments?: ServiceRequestMountPaymentSummary | null
   customer_charges?: ServiceRequestCustomerChargeSummary | null
   payment_summary?: ServiceRequestPaymentSummary | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
+}
+
+export type ServiceRequestAssignmentPaymentModel = {
+  mount_included?: boolean
+  mount_included_source?: string | null
+  customer_direct_payment_locked?: boolean
+  customer_direct_payment_amount?: number | null
+  customer_direct_payment_amount_label?: string | null
+  technician_payment_source_key?: 'emaks_prime' | 'customer' | string | null
+  technician_payment_source_label?: string | null
 }
 
 export type ServiceRequestPaymentSummaryLine = {

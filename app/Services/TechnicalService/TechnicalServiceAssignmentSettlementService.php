@@ -6,6 +6,7 @@ use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarningPayment;
 use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
@@ -39,12 +40,56 @@ class TechnicalServiceAssignmentSettlementService
 
     private const PURPOSE_ROUTE_FEE = 'route_fee';
 
+    private const PAYER_STATE_COMPANY_PAYS_TECHNICIAN = 'company_collected_company_pays_technician';
+
     private ?bool $allocationSchemaAvailableCache = null;
 
     public function __construct(
         private readonly TechnicalServiceSettlementCalculator $calculator,
         private readonly TechnicalServicePaymentOwnershipService $paymentOwnership,
     ) {}
+
+    /**
+     * @param  array<string, mixed>|null  $ownership
+     * @return array<string, mixed>
+     */
+    public function assignmentPaymentModel(TechnicalServiceRequest $request, ?array $ownership = null): array
+    {
+        $ownership ??= $this->paymentOwnership->summary($request);
+        $saleMountStatus = trim((string) $request->sale_mount_status);
+        $mountIncluded = in_array($saleMountStatus, [
+            TechnicalServiceMountSession::SALE_MONTAJ_DAHIL,
+            TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL,
+        ], true);
+        $mountIncludedSource = $mountIncluded ? 'request.sale_mount_status' : null;
+
+        if (! $mountIncluded && in_array($saleMountStatus, [
+            '',
+            TechnicalServiceMountSession::SALE_UNKNOWN,
+            TechnicalServiceMountSession::SALE_CHECK_FAILED,
+        ], true)) {
+            $resolverMountStatus = trim((string) Arr::get(
+                is_array($request->qr_context_payload) ? $request->qr_context_payload : [],
+                'resolver_payload.mikro_decision.montaj_durumu',
+                '',
+            ));
+            $mountIncluded = in_array($resolverMountStatus, ['Montaj Dahil', 'Montaj Sonradan Dahil'], true);
+            $mountIncludedSource = $mountIncluded ? 'qr_context_payload.resolver_payload.mikro_decision.montaj_durumu' : null;
+        }
+
+        $companyCollectedAmount = $this->money($ownership['company_collected_amount'] ?? 0);
+        $companyPaysTechnician = $mountIncluded || $companyCollectedAmount > 0;
+
+        return [
+            'mount_included' => $mountIncluded,
+            'mount_included_source' => $mountIncludedSource,
+            'customer_direct_payment_locked' => $companyPaysTechnician,
+            'customer_direct_payment_amount' => $companyPaysTechnician ? 0.0 : null,
+            'customer_direct_payment_amount_label' => $companyPaysTechnician ? '0,00 TL' : null,
+            'technician_payment_source_key' => $companyPaysTechnician ? 'emaks_prime' : 'customer',
+            'technician_payment_source_label' => $companyPaysTechnician ? 'EMAKS Prime' : 'Müşteri',
+        ];
+    }
 
     public function persistForAssignment(
         TechnicalServiceRequest $request,
@@ -59,15 +104,18 @@ class TechnicalServiceAssignmentSettlementService
         $this->assertCompanyPaymentAssignmentIsStable($request, $technician, $offer, $routeFeeAmount);
 
         $ownership = $this->paymentOwnership->summary($request);
+        $paymentModel = $this->assignmentPaymentModel($request, $ownership);
         $customerCollectionAmount = $this->money($ownership['company_collected_amount'] ?? 0);
         $mountPaymentCollected = $customerCollectionAmount > 0;
         $technicianEarningTotal = $this->money($laborAmount + $routeFeeAmount);
         $directAmount = $customerDirectAmount;
 
-        if ($mountPaymentCollected) {
+        if ($paymentModel['customer_direct_payment_locked']) {
             if (($directAmount ?? 0.0) > 0) {
                 throw ValidationException::withMessages([
-                    'assignment_offer.customer_direct_to_technician_amount' => 'Müşteriden montaj ödemesi alındığı için ustaya doğrudan ödeme tutarı 0 olmalıdır.',
+                    'assignment_offer.customer_direct_to_technician_amount' => $paymentModel['mount_included']
+                        ? 'Montaj dahil işte müşterinin ustaya doğrudan ödeme tutarı 0 olmalıdır.'
+                        : 'Müşteriden montaj ödemesi alındığı için ustaya doğrudan ödeme tutarı 0 olmalıdır.',
                 ]);
             }
 
@@ -87,11 +135,13 @@ class TechnicalServiceAssignmentSettlementService
                 'assignment_offer.customer_direct_to_technician_amount' => $exception->getMessage(),
             ]);
         }
-        $canonicalPayerState = $mountPaymentCollected
+        $canonicalPayerState = $paymentModel['mount_included']
+            ? self::PAYER_STATE_COMPANY_PAYS_TECHNICIAN
+            : ($mountPaymentCollected
             ? ($ownership['payer_state_key'] ?? TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL)
             : ($calculation['customer_direct_to_technician_amount'] > 0
                 ? TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN
-                : TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED);
+                : TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED));
 
         $settlement = TechnicalServiceSettlement::query()
             ->firstOrNew(['technical_service_request_id' => $request->id]);
@@ -144,6 +194,8 @@ class TechnicalServiceAssignmentSettlementService
             'metadata' => array_merge(is_array($settlement->metadata) ? $settlement->metadata : [], [
                 'source' => 'assignment_popup',
                 'mount_payment_collected' => $mountPaymentCollected,
+                'mount_included' => $paymentModel['mount_included'],
+                'mount_included_source' => $paymentModel['mount_included_source'],
                 'payer_state_key' => $canonicalPayerState,
                 'company_collected_source' => $ownership['company_collected_source'] ?? null,
                 'route_quote_id' => $routeQuote?->id,
@@ -197,13 +249,10 @@ class TechnicalServiceAssignmentSettlementService
         $settlementMetadata = is_array($settlement?->metadata) ? $settlement->metadata : [];
         $basePayerState = trim((string) ($settlementMetadata['payer_state_key'] ?? ''));
         $companyFunded = $companyPaymentAmount > 0
-            || in_array($basePayerState, [
-                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
-                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL,
-            ], true);
+            || str_starts_with($basePayerState, 'company_collected');
         $customerPaysTechnician = $basePayerState === TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN;
         $payerState = $companyFunded
-            ? 'company_collected_company_pays_technician'
+            ? self::PAYER_STATE_COMPANY_PAYS_TECHNICIAN
             : ($basePayerState !== '' ? $basePayerState : TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED);
         $paymentModelLabel = $companyFunded
             ? 'Şirket ödemesi'

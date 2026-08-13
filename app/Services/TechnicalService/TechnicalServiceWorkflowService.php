@@ -2783,6 +2783,7 @@ class TechnicalServiceWorkflowService
             'ops_payment_check_label' => $this->opsPaymentCheckLabel($request),
             'payment_status' => $paymentStatus,
             'payment_ownership' => $paymentOwnership,
+            'assignment_payment_model' => $this->assignmentSettlements->assignmentPaymentModel($request, $paymentOwnership),
             'extra_mount_payment' => $extraPayment,
             'mount_payments' => $mountPayments,
             'customer_charges' => $customerCharges,

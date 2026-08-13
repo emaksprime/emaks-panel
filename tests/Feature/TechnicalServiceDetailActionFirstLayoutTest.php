@@ -682,7 +682,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('const requestId = selectedId', $source);
         $this->assertStringContainsString('preserveDetailScroll(() => {', $source);
         $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $source);
-        $this->assertStringContainsString("setAssignSuccess('Usta atandı; hakediş, iş kartı ve bildirim kaydı hazırlandı.')", $source);
+        $this->assertStringContainsString('setAssignSuccess(`Atama ${updatedRequest.technician} olarak güncellendi.`)', $source);
         $this->assertStringContainsString("setAppointmentApprovalSuccess(response.status === 'duplicate_noop'", $source);
         $this->assertStringContainsString("setAssignmentOfferUpdateSuccess(response.status === 'duplicate_noop'", $source);
         $this->assertStringContainsString('setAppointmentApprovalSuccess(null)', $source);

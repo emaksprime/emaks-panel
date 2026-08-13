@@ -192,15 +192,211 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_assignment_popup_shows_customer_direct_to_technician_amount(): void
+    public function test_assignment_popup_uses_canonical_customer_direct_payment_model(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
 
-        $this->assertStringContainsString('Müşteriye bildirilecek ustaya ödeme tutarı', $source);
-        $this->assertStringContainsString('Müşteriden montaj ödemesi alınmadıysa randevu mesajında bu tutar ustaya ödenecek olarak bildirilecek.', $source);
+        $this->assertStringContainsString('modalAssignmentPaymentModel', $source);
+        $this->assertStringContainsString('Müşterinin ustaya ödeyeceği tutar', $source);
+        $this->assertStringContainsString('Hakediş ödeme kaynağı:', $source);
+        $this->assertStringContainsString('Montaj dahil olduğu için ustanın hakedişini EMAKS Prime ödeyecek.', $source);
         $this->assertStringContainsString('Kalan şirket ödemesi', $source);
         $this->assertStringContainsString('Müşteriye bildirilen tutar usta hakedişinden yüksek. Admin incelemesi gerekecek.', $source);
         $this->assertStringContainsString('customer_direct_to_technician_amount', $source);
+    }
+
+    public function test_mount_included_customer_direct_payment_is_zero(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $this->markMountIncluded($request);
+
+        $this->assign($request, $technician)
+            ->assertOk()
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.mount_included', true)
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.mount_included_source', 'qr_context_payload.resolver_payload.mikro_decision.montaj_durumu')
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.customer_direct_payment_locked', true)
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.customer_direct_payment_amount', 0)
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 0);
+    }
+
+    public function test_mount_included_technician_earning_is_company_payable(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $this->markMountIncluded($request);
+
+        $this->assign($request, $technician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1400,
+        ])
+            ->assertOk()
+            ->assertJsonPath('request.settlement.technician_earning_total', 4400)
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 0)
+            ->assertJsonPath('request.settlement.company_payable_amount', 4400)
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.payer_state', 'company_collected_company_pays_technician')
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.technician_payment_source_label', 'EMAKS Prime')
+            ->assertJsonPath('request.assignment_offer.earning_snapshot.technician_payment_status_label', 'Ödenecek');
+    }
+
+    public function test_mount_excluded_existing_payment_contract_is_preserved(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'qr_context_payload' => [],
+        ])->save();
+
+        $this->assign($request, $technician)
+            ->assertOk()
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.mount_included', false)
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.customer_direct_payment_locked', false)
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.technician_payment_source_label', 'Müşteri')
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 1500)
+            ->assertJsonPath('request.settlement.company_payable_amount', 0);
+    }
+
+    public function test_selected_technician_location_comes_from_selected_technician(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $request->forceFill([
+            'customer_city' => 'Ankara',
+            'customer_district' => 'Beypazarı',
+        ])->save();
+        $technician->forceFill([
+            'city' => 'Denizli',
+            'district' => 'Pamukkale',
+        ])->save();
+
+        $this->assign($request, $technician)
+            ->assertOk()
+            ->assertJsonPath('request.technician_record.id', $technician->id)
+            ->assertJsonPath('request.technician_record.name', $technician->name)
+            ->assertJsonPath('request.technician_record.city', 'Denizli')
+            ->assertJsonPath('request.technician_record.district', 'Pamukkale');
+    }
+
+    public function test_old_assignment_city_cannot_leak_to_new_technician(): void
+    {
+        [$request, $oldTechnician] = $this->assignedSettlementFixture();
+        $oldTechnician->forceFill(['city' => 'Ankara', 'district' => 'Çankaya'])->save();
+        $request->forceFill(['customer_city' => 'Ankara', 'customer_district' => 'Beypazarı'])->save();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000291');
+        $newTechnician->forceFill(['city' => 'Denizli', 'district' => 'Pamukkale'])->save();
+
+        $this->assign($request, $newTechnician)
+            ->assertOk()
+            ->assertJsonPath('request.technician_record.id', $newTechnician->id)
+            ->assertJsonPath('request.technician_record.city', 'Denizli')
+            ->assertJsonPath('request.technician_record.district', 'Pamukkale');
+    }
+
+    public function test_zero_residual_requires_no_decision(): void
+    {
+        [$request] = $this->assignedSettlementFixture();
+        $this->paidChargePayment($request, 'route_fee', 500, '2026-08-13 09:00:00');
+
+        $payload = app(TechnicalServiceAssignmentSettlementService::class)
+            ->companyPaymentDecisionPayload($request->refresh());
+
+        $this->assertSame(500.0, data_get($payload, 'component_matching.route.covered_amount'));
+        $this->assertSame(0.0, data_get($payload, 'component_matching.route.residual_allocatable_amount'));
+        $this->assertSame(0, $payload['pending_decision_count']);
+        $this->assertSame(0, $payload['eligible_count']);
+        $this->assertFalse($payload['all_decisions_required']);
+    }
+
+    public function test_positive_residual_is_projected_as_distributable_balance(): void
+    {
+        [$request] = $this->assignedSettlementFixture();
+        $payment = $this->paidChargePayment($request, 'route_fee', 800, '2026-08-13 09:00:00');
+
+        $payload = app(TechnicalServiceAssignmentSettlementService::class)
+            ->companyPaymentDecisionPayload($request->refresh());
+
+        $this->assertSame(500.0, data_get($payload, 'component_matching.route.covered_amount'));
+        $this->assertSame(300.0, data_get($payload, 'component_matching.route.residual_allocatable_amount'));
+        $this->assertSame($payment->id, data_get($payload, 'eligible_items.0.payment_id'));
+        $this->assertSame(300.0, data_get($payload, 'eligible_items.0.eligible_amount'));
+        $this->assertSame(1, $payload['pending_decision_count']);
+    }
+
+    public function test_assigned_technician_projection_contains_labor_and_route(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+
+        $this->assign($request, $technician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1400,
+        ])
+            ->assertOk()
+            ->assertJsonPath('request.technician_record.id', $technician->id)
+            ->assertJsonPath('request.assignment_offer.labor_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1400)
+            ->assertJsonPath('request.assignment_offer.total_amount', 4400)
+            ->assertJsonPath('request.settlement.labor_earning_amount', 3000)
+            ->assertJsonPath('request.settlement.route_earning_amount', 1400)
+            ->assertJsonPath('request.settlement.technician_earning_total', 4400);
+    }
+
+    public function test_part_projection_contains_real_payment_reference(): void
+    {
+        [$root, , $partRequest, $payment] = $this->paymentPartContextFixture();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($root, false, false, true);
+        $part = collect($payload['part_requests'])->firstWhere('id', $partRequest->id);
+
+        $this->assertIsArray($part);
+        $this->assertSame('paid', data_get($part, 'customer_charge.status'));
+        $this->assertSame($payment->id, $part['payment_id']);
+        $this->assertSame('37164237', $part['provider_payment_reference']);
+        $this->assertSame('39067702', $part['provider_transaction_reference']);
+    }
+
+    public function test_unpaid_part_projection_is_truthful(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $request->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+            'part_name' => 'Gateway',
+            'quantity' => 1,
+            'requires_service_visit' => false,
+            'metadata' => [
+                'charge_decision' => 'chargeable',
+                'part_amount' => 2000,
+                'service_amount' => 0,
+                'total_amount' => 2000,
+            ],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->refresh(), false, false, true);
+        $part = collect($payload['part_requests'])->firstWhere('id', $partRequest->id);
+
+        $this->assertIsArray($part);
+        $this->assertFalse($part['is_payment_paid']);
+        $this->assertNull($part['payment_id']);
+        $this->assertNull($part['provider_payment_reference']);
+        $this->assertSame(2000, $part['total_amount']);
+    }
+
+    public function test_part_from_another_request_is_not_projected(): void
+    {
+        [$request] = $this->assignmentFixture();
+        [$otherRequest, $otherTechnician] = $this->assignmentFixture();
+        TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $otherRequest->id,
+            'root_request_id' => $otherRequest->id,
+            'requested_by_technician_id' => $otherTechnician->id,
+            'status' => TechnicalServicePartRequest::STATUS_REQUESTED,
+            'part_name' => 'Başka MRN parçası',
+            'quantity' => 1,
+            'requires_service_visit' => false,
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->refresh(), false, false, true);
+
+        $this->assertSame([], $payload['part_requests']);
     }
 
     public function test_assignment_popup_lifecycle_preserves_draft_during_refresh_and_validation(): void
@@ -1134,15 +1330,108 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
 
         $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
         $assignHandlerStart = strpos($source, 'const handleAssignSubmit = async () => {');
-        $successStart = strpos($source, 'if (selectedIdRef.current === requestId) {', $assignHandlerStart ?: 0);
-        $successEnd = strpos($source, '} catch (caught) {', $successStart ?: 0);
-        $successHandler = substr($source, $successStart ?: 0, ($successEnd ?: 0) - ($successStart ?: 0));
+        $successEnd = strpos($source, '} catch (caught) {', $assignHandlerStart ?: 0);
+        $successHandler = substr($source, $assignHandlerStart ?: 0, ($successEnd ?: 0) - ($assignHandlerStart ?: 0));
+        $closePosition = strpos($successHandler, 'setAssignDialogOpen(false)');
+        $selectionGuardPosition = strpos($successHandler, 'if (selectedIdRef.current === requestId) {');
 
         $this->assertIsInt($assignHandlerStart);
+        $this->assertIsInt($closePosition);
+        $this->assertIsInt($selectionGuardPosition);
+        $this->assertLessThan($selectionGuardPosition, $closePosition);
         $this->assertStringContainsString('setAssignDialogOpen(false)', $successHandler);
         $this->assertStringContainsString('setSelectedDetailRequest(updatedRequest)', $successHandler);
         $this->assertStringNotContainsString('loadSummary()', $successHandler);
         $this->assertStringNotContainsString('loadRequestDetail(', $successHandler);
+    }
+
+    public function test_assignment_success_returns_canonical_detail_delta(): void
+    {
+        [$request, $technician] = $this->assignmentFixture();
+        $technician->forceFill(['city' => 'Denizli', 'district' => 'Pamukkale'])->save();
+
+        $this->assign($request, $technician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+        ])
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.technician_record.id', $technician->id)
+            ->assertJsonPath('request.technician_record.city', 'Denizli')
+            ->assertJsonPath('request.technician_record.district', 'Pamukkale')
+            ->assertJsonPath('request.assignment_offer.labor_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 500)
+            ->assertJsonPath('request.settlement.technician_earning_total', 3500)
+            ->assertJsonPath('request.sale_and_payment.assignment_payment_model.technician_payment_source_label', 'Müşteri');
+    }
+
+    public function test_initial_assignment_and_reassignment_are_idempotent(): void
+    {
+        [$initialRequest, $initialTechnician] = $this->assignmentFixture();
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $initialPayload = $this->assignmentPayload($initialRequest, $initialTechnician);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$initialRequest->id}/assign", $initialPayload)
+            ->assertOk();
+        $initialDispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $initialRequest->id)
+            ->count();
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$initialRequest->id}/assign", $initialPayload)
+            ->assertStatus(409);
+        $this->assertSame(1, TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $initialRequest->id)
+            ->where('status', TechnicalServiceAssignmentOffer::STATUS_SENT)
+            ->count());
+        $this->assertSame($initialDispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $initialRequest->id)
+            ->count());
+
+        [$reassignmentRequest] = $this->assignedSettlementFixture();
+        [$newTechnician] = $this->technicianWithPartner('Test Usta', '905300000292');
+        $reassignmentPayload = $this->assignmentPayload($reassignmentRequest, $newTechnician);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$reassignmentRequest->id}/assign", $reassignmentPayload)
+            ->assertOk();
+        $reassignmentDispatchCount = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $reassignmentRequest->id)
+            ->count();
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$reassignmentRequest->id}/assign", $reassignmentPayload)
+            ->assertStatus(409);
+        $this->assertSame(1, TechnicalServiceAssignmentArchive::query()
+            ->where('technical_service_request_id', $reassignmentRequest->id)
+            ->where('new_technician_id', $newTechnician->id)
+            ->count());
+        $this->assertSame($reassignmentDispatchCount, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $reassignmentRequest->id)
+            ->count());
+    }
+
+    public function test_payment_16_matching_is_unchanged_and_not_double_counted(): void
+    {
+        [$request, $technician] = $this->assignedSettlementFixture();
+        $this->assign($request, $technician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1787.40,
+        ])->assertOk();
+        $payment = $this->paidChargePayment($request, 'route_fee', 1787.40, '2026-08-13 08:00:00');
+
+        $payload = app(TechnicalServiceAssignmentSettlementService::class)
+            ->companyPaymentDecisionPayload($request->refresh());
+
+        $this->assertSame(1787.40, data_get($payload, 'component_matching.route.covered_amount'));
+        $this->assertSame(0.0, data_get($payload, 'component_matching.route.residual_allocatable_amount'));
+        $this->assertSame($payment->id, data_get($payload, 'component_matching.route.payments.0.payment_id'));
+        $this->assertSame(4787.40, (float) TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->value('technician_earning_total'));
+        $this->assertSame(0, TechnicalServiceEarningPayment::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('payment_type', TechnicalServiceAssignmentSettlementService::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT)
+            ->count());
     }
 
     public function test_successful_reassignment_does_not_duplicate_message_intent(): void
@@ -2168,6 +2457,21 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             'risk_level' => 'Orta',
             'source_channel' => 'panel',
         ]);
+    }
+
+    private function markMountIncluded(TechnicalServiceRequest $request): void
+    {
+        $request->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_CHECK_FAILED,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'qr_context_payload' => [
+                'resolver_payload' => [
+                    'mikro_decision' => [
+                        'montaj_durumu' => 'Montaj Dahil',
+                    ],
+                ],
+            ],
+        ])->save();
     }
 
     /**
