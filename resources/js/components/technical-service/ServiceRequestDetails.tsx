@@ -2556,7 +2556,6 @@ export function ServiceRequestDetails({
     ?? earningBreakdown?.current_visit?.company_payment_decisions
     ?? null
   const companyPaymentEligibleItems = companyPaymentDecisionPayload?.eligible_items ?? []
-  const companyPaymentCompletedDecisions = companyPaymentDecisionPayload?.decisions ?? []
   const routeCollectionMatching = companyPaymentDecisionPayload?.component_matching?.route ?? null
   const routeCollectionMatchRows = routeCollectionMatching?.payments ?? []
   const routeCollectionResidualAmount = Number(routeCollectionMatching?.residual_allocatable_amount ?? 0)
@@ -2641,6 +2640,9 @@ export function ServiceRequestDetails({
         status: 'payable',
       })),
   ]
+  const additionalEarningMetricLabel = previewCompanyPaymentBreakdown.length === 1
+    ? previewCompanyPaymentBreakdown[0]?.purpose_label ?? 'Ek tahsilattan ustaya eklenen'
+    : 'Ek tahsilattan ustaya eklenen'
   const totalTechnicianCostLabel = !hasPayoutTechnicianContext
     ? 'Usta seçilmedi'
     : hasCanonicalPayout
@@ -3323,6 +3325,57 @@ export function ServiceRequestDetails({
       </div>
     )
   }
+  const renderPaymentEarningImpact = (
+    impact: ServiceRequestFinancePaymentRecord['earning_impact'],
+    paymentId: number | string | null | undefined,
+  ) => {
+    if (!impact) {
+      return null
+    }
+
+    const coveredComponents = impact.covered_components ?? []
+    const coveredSummary = coveredComponents
+      .map((component) => `${component.label} ${component.amount_label ?? formatMoneyValue(component.amount)}`)
+      .join(' + ')
+    const hasAdditionalEarning = Number(impact.additional_earning_amount ?? 0) > 0
+    const hasRetainedAmount = Number(impact.retained_by_company_amount ?? 0) > 0
+    const hasUnmatchedResidual = Number(impact.unmatched_residual_amount ?? 0) > 0
+
+    return (
+      <div data-testid={`payment-earning-impact-${paymentId ?? 'unknown'}`} className="grid gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-800">
+        {coveredComponents.length > 0 ? (
+          <p><strong>Hakediş etkisi:</strong> {coveredSummary} ile eşleşti.</p>
+        ) : null}
+        {coveredComponents.length > 0 && !hasAdditionalEarning ? <p>Ek hakediş oluşturmadı.</p> : null}
+        {hasAdditionalEarning ? (
+          <p>
+            <strong>Hakediş etkisi:</strong>{' '}
+            {impact.technician_name ? `${impact.technician_name}’ya ` : ''}
+            {impact.additional_earning_component_label ?? 'Ek hakediş'} olarak eklendi.
+          </p>
+        ) : null}
+        {hasRetainedAmount ? (
+          <p>Şirkette bırakılan: <strong>{impact.retained_by_company_amount_label ?? formatMoneyValue(impact.retained_by_company_amount)}</strong></p>
+        ) : null}
+        {hasUnmatchedResidual ? (
+          <p>Dağıtıma kalan tutar: <strong>{impact.unmatched_residual_amount_label ?? formatMoneyValue(impact.unmatched_residual_amount)}</strong></p>
+        ) : null}
+        {impact.state === 'no_earning_effect' ? <p>Hakedişe etkisi yok.</p> : null}
+        {impact.state === 'cancelled_or_failed' ? <p>İptal/başarısız kayıt — Hakedişe etkisi yok.</p> : null}
+        {impact.decision_label ? <p><strong>Karar:</strong> {impact.decision_label}</p> : null}
+        {impact.decision_required ? (
+          <Button
+            type="button"
+            size="sm"
+            className="mt-1 justify-self-start"
+            onClick={() => document.querySelector('[data-testid="company-payment-decisions-earning"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+          >
+            Karar ver
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
   const renderFinancialPaymentRecord = (
     payment: ServiceRequestFinancePaymentRecord,
     historical = false,
@@ -3360,6 +3413,9 @@ export function ServiceRequestDetails({
           <span>Operasyon farkına dahil: {payment.operational_difference_included_amount_label ?? '0 TL'}</span>
         </div>
       ) : null}
+      {historical || payment.status_bucket !== 'paid'
+        ? renderPaymentEarningImpact(payment.earning_impact, payment.id)
+        : null}
       {payment.status_bucket === 'pending' ? renderPendingPaymentLinkActions(payment, pendingPaymentSurface) : null}
       <details className="rounded-md border border-slate-200 bg-white px-2 py-1">
         <summary className="cursor-pointer font-medium">Teknik ödeme detayları</summary>
@@ -5385,35 +5441,8 @@ export function ServiceRequestDetails({
       )
     }
 
-    if (companyPaymentEligibleItems.length === 0 && companyPaymentCompletedDecisions.length === 0) {
-      return null
-    }
-
     if (companyPaymentEligibleItems.length === 0) {
-      return (
-        <section
-          data-testid={`company-payment-decisions-${surface}`}
-          className="grid gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-emerald-950"
-        >
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">Dağıtım kararı</p>
-              <p className="mt-1 text-xs text-emerald-800">Canonical dağıtım kararı kaydedildi; düzeltme gerekiyorsa correction/reversal akışı kullanılmalıdır.</p>
-            </div>
-            <Badge data-testid="company-payment-decision-state" variant="positive">Karar tamamlandı</Badge>
-          </div>
-          <div data-testid="company-payment-decision-completed" className="grid gap-2">
-            {companyPaymentCompletedDecisions.map((decision) => (
-              <div key={String(decision.allocation_id)} className="grid gap-2 rounded-lg border border-emerald-200 bg-white p-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-                <MiniMetric label="Payment ID" value={String(decision.payment_id)} />
-                <MiniMetric label="Tahsilat amacı" value={decision.payment_purpose_label} />
-                <MiniMetric label="Karar" value={decision.decision_label ?? (decision.decision === 'pay_technician' ? 'Ustaya ödenecek' : 'Şirkette bırak')} />
-                <MiniMetric label="Tutar" value={decision.eligible_amount_label ?? formatMoneyValue(decision.eligible_amount)} />
-              </div>
-            ))}
-          </div>
-        </section>
-      )
+      return null
     }
 
     const selectionDisabled = !companyPaymentDecisionContextReady
@@ -7248,7 +7277,7 @@ export function ServiceRequestDetails({
                   ) : isCurrentFinancialScope && companyPaymentEligibleItems.length > 0 ? (
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
                       <div>
-                        <p className="font-semibold">Ek ödeme dağıtım kararı bekliyor</p>
+                        <p className="font-semibold">{companyPaymentEligibleItems.length} tahsilat için dağıtım kararı bekliyor.</p>
                         <p className="mt-1 text-xs">{companyPaymentDecisionPayload?.pending_decision_amount_label ?? 'Tutar backend tarafından hesaplanıyor'} · {companyPaymentEligibleItems.length} ödeme</p>
                       </div>
                       <Button
@@ -7291,8 +7320,8 @@ export function ServiceRequestDetails({
 
                   <div data-testid="financial-primary-cards" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                     <MiniMetric label={isRootFinancialScope ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'} value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
-                    <MiniMetric label="Usta hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
-                    <MiniMetric label="Şirket ödemesi" value={selectedFinancialPayload.company_payment_amount_label ?? '0 TL'} />
+                    <MiniMetric label="Usta toplam hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
+                    <MiniMetric label="Hakediş ödeme kaynağı" value={selectedFinancialPayout?.technician_payment_source_label ?? 'Belirlenmedi'} />
                     <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
                   </div>
 
@@ -7311,9 +7340,12 @@ export function ServiceRequestDetails({
                         <span>Kaynak toplamı: {selectedFinancialCollection?.included_source_total_label ?? '0 TL'}</span>
                       </div>
                       {selectedIncludedCollectionSources.map((source) => (
-                        <div key={`${source.source_type}-${source.source_reference}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/80 px-2 py-1">
-                          <span>{source.source_label} · {source.purpose_label ?? 'Tahsilat'} · {source.status_label}</span>
-                          <strong>{source.amount_label}</strong>
+                        <div key={`${source.source_type}-${source.source_reference}`} data-testid={`included-collection-source-${source.payment_id ?? source.source_reference}`} className="grid gap-2 rounded-md bg-white/80 px-2 py-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span>{source.source_label} · {source.purpose_label ?? 'Tahsilat'} · {source.status_label}</span>
+                            <strong>{source.amount_label}</strong>
+                          </div>
+                          {renderPaymentEarningImpact(source.earning_impact, source.payment_id)}
                         </div>
                       ))}
                       {selectedFinancialCollection?.reconciliation_ok === false ? (
@@ -7349,8 +7381,12 @@ export function ServiceRequestDetails({
                       <div className="mt-3 grid gap-1 sm:grid-cols-2">
                         <span>İşçilik: <strong>{selectedFinancialPayout?.labor_amount_label ?? '0 TL'}</strong></span>
                         <span>Yol: <strong>{selectedFinancialPayout?.route_fee_amount_label ?? '0 TL'}</strong></span>
-                        <span>Şirket ödemesi: <strong>{selectedFinancialPayout?.company_payment_amount_label ?? '0 TL'}</strong></span>
-                        <span>Toplam hakediş: <strong>{selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
+                        {(selectedFinancialPayout?.company_payment_breakdown ?? [])
+                          .filter((line) => Number(line.amount ?? 0) > 0)
+                          .map((line) => (
+                            <span key={String(line.line_id ?? line.payment_id ?? line.purpose)}>{line.purpose_label ?? 'Ek hakediş'}: <strong>{line.amount_label ?? formatMoneyValue(line.amount)}</strong></span>
+                          ))}
+                        <span>Toplam: <strong>{selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
                         <span>Ustaya ödenen: <strong>{selectedFinancialPayout?.technician_paid_amount_label ?? '0 TL'}</strong></span>
                         <span>Kalan: <strong>{selectedFinancialPayout?.technician_remaining_amount_label ?? selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
                       </div>
@@ -7481,7 +7517,7 @@ export function ServiceRequestDetails({
                 <div className="grid gap-2 sm:grid-cols-4">
                   <MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />
                   <MiniMetric label="Yol" value={formatMoneyValue(earningRouteAmount)} />
-                  <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(persistedCompanyPaymentAmount + draftCompanyPaymentAmount)} />
+                  <MiniMetric label={additionalEarningMetricLabel} value={formatMoneyValue(persistedCompanyPaymentAmount + draftCompanyPaymentAmount)} />
                   <MiniMetric label="Toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
                 </div>
                 {renderCompanyPaymentDecisionSection('earning')}

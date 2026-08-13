@@ -3327,6 +3327,15 @@ class TechnicalServiceWorkflowService
             ->map(fn (mixed $name): string => (string) $name)
             ->unique()
             ->values();
+        $paymentSourceLabels = $includedRows
+            ->pluck('technician_payment_source_label')
+            ->filter(fn (mixed $label): bool => filled($label))
+            ->map(fn (mixed $label): string => (string) $label)
+            ->unique()
+            ->values();
+        $paymentSourceLabel = $total <= 0
+            ? 'Hakediş yok'
+            : ($paymentSourceLabels->count() === 1 ? (string) $paymentSourceLabels->first() : 'Karma');
 
         return [
             'root_request_id' => $this->rootFinancialRequest($request)?->id ?? $request->id,
@@ -3348,6 +3357,8 @@ class TechnicalServiceWorkflowService
                 'technician_paid_amount_label' => $this->moneyLabel($technicianPaidTotal),
                 'technician_remaining_amount_label' => $this->moneyLabel($technicianRemainingTotal),
                 'total_amount_label' => $this->moneyLabel($total),
+                'technician_payment_source_key' => $this->technicianPaymentSourceKey($paymentSourceLabel),
+                'technician_payment_source_label' => $paymentSourceLabel,
                 'job_count' => $rows->count(),
                 'technician_count' => $technicianNames->count(),
                 'technician_names' => $technicianNames->all(),
@@ -3495,6 +3506,8 @@ class TechnicalServiceWorkflowService
                 'technician_id' => $technician['technician_id'],
                 'technician_name' => $technician['technician_name'],
                 'technician_source' => $technician['source'],
+                'payer_state' => $completedSnapshot['payer_state'] ?? null,
+                'technician_payment_source_label' => $completedSnapshot['technician_payment_source_label'] ?? null,
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
                 'company_payment_amount' => $companyPaymentAmount,
@@ -3555,6 +3568,8 @@ class TechnicalServiceWorkflowService
             'technician_id' => $technician['technician_id'],
             'technician_name' => $technician['technician_name'],
             'technician_source' => $technician['source'],
+            'payer_state' => $earningSnapshot['payer_state'] ?? null,
+            'technician_payment_source_label' => $earningSnapshot['technician_payment_source_label'] ?? null,
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
             'company_payment_amount' => round($companyPaymentAmount, 2),
@@ -3724,7 +3739,15 @@ class TechnicalServiceWorkflowService
             ($scopeContext['current_record_type'] ?? null) === 'srv',
         );
         $rootCollection = $this->financeRootCustomerCollection($request);
-        $paymentRecords = $this->financePaymentScopePayload($request);
+        $paymentRecords = $this->financePaymentScopePayload($request, $earningBreakdown);
+        $currentCollection = $this->financeCollectionWithPaymentImpacts(
+            $currentCollection,
+            (array) ($paymentRecords['current_scope_rows'] ?? []),
+        );
+        $rootCollection = $this->financeCollectionWithPaymentImpacts(
+            $rootCollection,
+            (array) ($paymentRecords['root_scope_rows'] ?? []),
+        );
         $currentPayout = $this->financePayoutFromRow($earningBreakdown['current_visit'] ?? null, $request);
         $rootPayout = $this->financePayoutFromRootTotal($earningBreakdown['root_total'] ?? null);
         $currentResultState = $this->financialResultState($currentCollection, $currentPayout);
@@ -3827,7 +3850,7 @@ class TechnicalServiceWorkflowService
      *
      * @return array<string, mixed>
      */
-    private function financePaymentScopePayload(TechnicalServiceRequest $request): array
+    private function financePaymentScopePayload(TechnicalServiceRequest $request, array $earningBreakdown = []): array
     {
         $requests = $this->rootFinancialRequests($request);
         $customerChargePayments = $this->customerChargePaymentsForRequests($requests);
@@ -3836,11 +3859,19 @@ class TechnicalServiceWorkflowService
         $payments = $this->sortedUniquePayments($mountPayments->concat($customerChargePayments));
         $this->preloadPaymentLinkMessageStates($payments);
         $this->preloadPaymentPartRequests($customerChargePayments);
+        $earningImpacts = $this->financePaymentEarningImpacts($requests, $payments, $earningBreakdown);
 
         $rows = $payments
-            ->map(fn (TechnicalServiceMountPayment $payment): array => $this->isCustomerChargePayment($payment)
-                ? $this->financeCustomerChargePaymentPayload($payment, $request)
-                : $this->financeMountPaymentPayload($payment, $request))
+            ->map(function (TechnicalServiceMountPayment $payment) use ($request, $earningImpacts): array {
+                $row = $this->isCustomerChargePayment($payment)
+                    ? $this->financeCustomerChargePaymentPayload($payment, $request)
+                    : $this->financeMountPaymentPayload($payment, $request);
+
+                return [
+                    ...$row,
+                    'earning_impact' => $earningImpacts[(int) $payment->id] ?? null,
+                ];
+            })
             ->values();
         $currentRecordType = $this->financialRecordType($request);
         $isSubordinatePartContext = fn (array $row): bool => $currentRecordType === 'mrn'
@@ -3890,6 +3921,281 @@ class TechnicalServiceWorkflowService
             ],
             'root_scope_history' => $this->financePaymentHistoryPayload($rootRows),
         ];
+    }
+
+    /**
+     * Projects existing payment, settlement and allocation authority without changing any economic row.
+     *
+     * @param  Collection<int, TechnicalServiceRequest>  $requests
+     * @param  Collection<int, TechnicalServiceMountPayment>  $payments
+     * @param  array<string, mixed>  $earningBreakdown
+     * @return array<int, array<string, mixed>>
+     */
+    private function financePaymentEarningImpacts(
+        Collection $requests,
+        Collection $payments,
+        array $earningBreakdown,
+    ): array {
+        $earningRows = collect($earningBreakdown['rows'] ?? [])
+            ->filter(fn (mixed $row): bool => is_array($row) && is_numeric($row['id'] ?? null))
+            ->keyBy(fn (array $row): int => (int) $row['id']);
+
+        if ($earningRows->isEmpty()) {
+            return [];
+        }
+
+        $impacts = [];
+
+        foreach ($requests as $related) {
+            $earningRow = $earningRows->get((int) $related->id);
+            if (! is_array($earningRow)) {
+                continue;
+            }
+
+            $requestPayments = $payments
+                ->filter(fn (TechnicalServiceMountPayment $payment): bool => (int) $payment->technical_service_request_id === (int) $related->id)
+                ->values();
+            $decisionPayload = is_array($earningRow['company_payment_decisions'] ?? null)
+                ? $earningRow['company_payment_decisions']
+                : [];
+            $decisions = collect($decisionPayload['decisions'] ?? [])
+                ->filter(fn (mixed $row): bool => is_array($row) && is_numeric($row['payment_id'] ?? null))
+                ->keyBy(fn (array $row): int => (int) $row['payment_id']);
+            $eligibleItems = collect($decisionPayload['eligible_items'] ?? [])
+                ->filter(fn (mixed $row): bool => is_array($row) && is_numeric($row['payment_id'] ?? null))
+                ->keyBy(fn (array $row): int => (int) $row['payment_id']);
+            $routeMatches = collect(data_get($decisionPayload, 'component_matching.route.payments', []))
+                ->filter(fn (mixed $row): bool => is_array($row) && is_numeric($row['payment_id'] ?? null))
+                ->keyBy(fn (array $row): int => (int) $row['payment_id']);
+            $companyPaymentLines = collect($earningRow['company_payment_breakdown'] ?? [])
+                ->filter(fn (mixed $row): bool => is_array($row) && is_numeric($row['payment_id'] ?? null))
+                ->keyBy(fn (array $row): int => (int) $row['payment_id']);
+            $technicianId = $earningRow['technician_id'] ?? null;
+            $technicianName = $earningRow['technician_name'] ?? null;
+
+            foreach ($requestPayments as $payment) {
+                $paymentId = (int) $payment->id;
+                $status = strtolower(trim((string) $payment->status));
+                $decision = $decisions->get($paymentId);
+                $eligibleItem = $eligibleItems->get($paymentId);
+                $routeMatch = $routeMatches->get($paymentId);
+                $companyPaymentLine = $companyPaymentLines->get($paymentId);
+
+                if ($status !== TechnicalServiceMountPayment::STATUS_PAID) {
+                    $impacts[$paymentId] = $this->financePaymentEarningImpactPayload(
+                        state: in_array($status, [
+                            TechnicalServiceMountPayment::STATUS_CANCELLED,
+                            TechnicalServiceMountPayment::STATUS_FAILED,
+                            TechnicalServiceMountPayment::STATUS_EXPIRED,
+                            'refunded',
+                            'reversed',
+                        ], true) ? 'cancelled_or_failed' : 'no_earning_effect',
+                        canonicalSource: 'payment_status',
+                    );
+
+                    continue;
+                }
+
+                if (is_array($companyPaymentLine) || is_array($decision)) {
+                    $decisionType = (string) ($decision['decision']
+                        ?? (is_array($companyPaymentLine)
+                            ? TechnicalServiceAssignmentSettlementService::DECISION_PAY_TECHNICIAN
+                            : ''));
+                    $additionalAmount = $decisionType === TechnicalServiceAssignmentSettlementService::DECISION_PAY_TECHNICIAN
+                        ? round((float) ($companyPaymentLine['amount'] ?? $decision['eligible_amount'] ?? 0), 2)
+                        : 0.0;
+                    $retainedAmount = $decisionType === TechnicalServiceAssignmentSettlementService::DECISION_RETAIN_COMPANY
+                        ? round((float) ($decision['eligible_amount'] ?? 0), 2)
+                        : 0.0;
+
+                    $impacts[$paymentId] = $this->financePaymentEarningImpactPayload(
+                        state: $additionalAmount > 0 ? 'adds_technician_earning' : 'retained_by_company',
+                        additionalComponent: $companyPaymentLine['purpose'] ?? $decision['payment_purpose'] ?? null,
+                        additionalComponentLabel: $companyPaymentLine['purpose_label'] ?? $decision['payment_purpose_label'] ?? null,
+                        additionalAmount: $additionalAmount,
+                        retainedAmount: $retainedAmount,
+                        decisionState: 'completed',
+                        decisionLabel: $decisionType === TechnicalServiceAssignmentSettlementService::DECISION_PAY_TECHNICIAN
+                            ? 'Ustaya ödenecek — Tamamlandı'
+                            : 'Şirkette bırakıldı — Tamamlandı',
+                        technicianId: $technicianId,
+                        technicianName: $technicianName,
+                        canonicalSource: 'payment_settlement_allocation',
+                    );
+
+                    continue;
+                }
+
+                if (is_array($routeMatch)) {
+                    $coveredAmount = round((float) ($routeMatch['covered_amount'] ?? 0), 2);
+                    $residualAmount = round((float) ($routeMatch['residual_allocatable_amount'] ?? 0), 2);
+                    $impacts[$paymentId] = $this->financePaymentEarningImpactPayload(
+                        state: $residualAmount > 0 ? 'decision_pending' : 'covers_existing_earning',
+                        coveredComponents: $coveredAmount > 0 ? [[
+                            'key' => 'route',
+                            'label' => 'Yol',
+                            'amount' => $coveredAmount,
+                            'amount_label' => $this->moneyLabel($coveredAmount),
+                        ]] : [],
+                        coveredAmount: $coveredAmount,
+                        unmatchedResidualAmount: $residualAmount,
+                        decisionState: $residualAmount > 0 ? 'pending' : 'not_required',
+                        decisionLabel: $residualAmount > 0 ? 'Karar bekliyor' : 'Karar gerekmiyor',
+                        decisionRequired: $residualAmount > 0,
+                        technicianId: $technicianId,
+                        technicianName: $technicianName,
+                        canonicalSource: 'component_matching.route',
+                    );
+
+                    continue;
+                }
+
+                if (is_array($eligibleItem)) {
+                    $residualAmount = round((float) ($eligibleItem['eligible_amount'] ?? 0), 2);
+                    $impacts[$paymentId] = $this->financePaymentEarningImpactPayload(
+                        state: 'decision_pending',
+                        unmatchedResidualAmount: $residualAmount,
+                        decisionState: 'pending',
+                        decisionLabel: 'Karar bekliyor',
+                        decisionRequired: $residualAmount > 0,
+                        technicianId: $technicianId,
+                        technicianName: $technicianName,
+                        canonicalSource: 'company_payment_decision_payload',
+                    );
+                }
+            }
+
+            $laborAmount = round((float) ($earningRow['labor_amount'] ?? 0), 2);
+            $routeAmount = round((float) ($earningRow['route_fee_amount'] ?? 0), 2);
+            $baseEarningAmount = round($laborAmount + $routeAmount, 2);
+            $settlementMetadata = is_array($related->settlement?->metadata) ? $related->settlement->metadata : [];
+            $baseCompanyPayableAmount = round((float) ($settlementMetadata['base_company_payable_amount'] ?? 0), 2);
+            $baseCandidates = $requestPayments
+                ->filter(function (TechnicalServiceMountPayment $payment) use ($impacts): bool {
+                    if (isset($impacts[(int) $payment->id]) || $payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
+                        return false;
+                    }
+
+                    $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+                    $purpose = strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')));
+
+                    return in_array($purpose, [
+                        'mount_payment',
+                        'public_mount_payment',
+                        'manual_mount_payment',
+                        'mount_extra',
+                        'manual_extra',
+                    ], true) && ! is_numeric($payload['part_request_id'] ?? null);
+                })
+                ->values();
+
+            if ($baseEarningAmount > 0
+                && $this->minorUnits($baseCompanyPayableAmount) === $this->minorUnits($baseEarningAmount)
+                && $baseCandidates->count() === 1
+                && $this->minorUnits($baseCandidates->first()->amount) === $this->minorUnits($baseCompanyPayableAmount)
+            ) {
+                $basePayment = $baseCandidates->first();
+                $components = collect([
+                    ['key' => 'labor', 'label' => 'İşçilik', 'amount' => $laborAmount],
+                    ['key' => 'route', 'label' => 'Yol', 'amount' => $routeAmount],
+                ])->filter(fn (array $component): bool => $component['amount'] > 0)
+                    ->map(fn (array $component): array => [
+                        ...$component,
+                        'amount_label' => $this->moneyLabel($component['amount']),
+                    ])
+                    ->values()
+                    ->all();
+                $impacts[(int) $basePayment->id] = $this->financePaymentEarningImpactPayload(
+                    state: 'covers_existing_earning',
+                    coveredComponents: $components,
+                    coveredAmount: $baseEarningAmount,
+                    decisionState: 'not_required',
+                    decisionLabel: 'Karar gerekmiyor',
+                    technicianId: $technicianId,
+                    technicianName: $technicianName,
+                    canonicalSource: 'settlement.base_company_payable_amount',
+                );
+            }
+
+            foreach ($requestPayments as $payment) {
+                $impacts[(int) $payment->id] ??= $this->financePaymentEarningImpactPayload(
+                    state: 'no_earning_effect',
+                    canonicalSource: 'canonical_payment_projection',
+                );
+            }
+        }
+
+        return $impacts;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $coveredComponents
+     * @return array<string, mixed>
+     */
+    private function financePaymentEarningImpactPayload(
+        string $state,
+        array $coveredComponents = [],
+        float $coveredAmount = 0,
+        mixed $additionalComponent = null,
+        ?string $additionalComponentLabel = null,
+        float $additionalAmount = 0,
+        float $retainedAmount = 0,
+        float $unmatchedResidualAmount = 0,
+        string $decisionState = 'not_required',
+        ?string $decisionLabel = null,
+        bool $decisionRequired = false,
+        mixed $technicianId = null,
+        ?string $technicianName = null,
+        string $canonicalSource = 'canonical_payment_projection',
+    ): array {
+        return [
+            'state' => $state,
+            'covered_components' => $coveredComponents,
+            'covered_amount' => round($coveredAmount, 2),
+            'covered_amount_label' => $this->moneyLabel($coveredAmount),
+            'additional_earning_component' => $additionalComponent,
+            'additional_earning_component_label' => $additionalComponentLabel,
+            'additional_earning_amount' => round($additionalAmount, 2),
+            'additional_earning_amount_label' => $this->moneyLabel($additionalAmount),
+            'retained_by_company_amount' => round($retainedAmount, 2),
+            'retained_by_company_amount_label' => $this->moneyLabel($retainedAmount),
+            'unmatched_residual_amount' => round($unmatchedResidualAmount, 2),
+            'unmatched_residual_amount_label' => $this->moneyLabel($unmatchedResidualAmount),
+            'decision_state' => $decisionState,
+            'decision_label' => $decisionLabel,
+            'decision_required' => $decisionRequired,
+            'technician_id' => $technicianId,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($technicianName),
+            'canonical_source' => $canonicalSource,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $collection
+     * @param  array<int, array<string, mixed>>  $paymentRows
+     * @return array<string, mixed>
+     */
+    private function financeCollectionWithPaymentImpacts(array $collection, array $paymentRows): array
+    {
+        $impacts = collect($paymentRows)
+            ->filter(fn (mixed $row): bool => is_array($row) && is_numeric($row['payment_id'] ?? $row['id'] ?? null))
+            ->mapWithKeys(fn (array $row): array => [
+                (int) ($row['payment_id'] ?? $row['id']) => $row['earning_impact'] ?? null,
+            ]);
+        $collection['included_collection_sources'] = collect($collection['included_collection_sources'] ?? [])
+            ->map(function (mixed $source) use ($impacts): mixed {
+                if (! is_array($source) || ! is_numeric($source['payment_id'] ?? null)) {
+                    return $source;
+                }
+
+                return [
+                    ...$source,
+                    'earning_impact' => $impacts->get((int) $source['payment_id']),
+                ];
+            })
+            ->all();
+
+        return $collection;
     }
 
     /** @return array<string, mixed> */
@@ -4347,6 +4653,10 @@ class TechnicalServiceWorkflowService
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'technician_id' => $row['technician_id'] ?? $request->technical_service_technician_id,
             'technician_name' => $row['technician_name'] ?? TechnicalServiceUiLabelService::displayName($request->technician_name),
+            'payer_state' => $row['payer_state'] ?? null,
+            'technician_payment_source_key' => $this->technicianPaymentSourceKey((string) ($row['technician_payment_source_label'] ?? '')),
+            'technician_payment_source_label' => $row['technician_payment_source_label']
+                ?? ($totalAmount <= 0 ? 'Hakediş yok' : 'Belirlenmedi'),
             'status' => $row['status'] ?? null,
             'status_label' => $row['status_label'] ?? $this->assignmentOfferStatusLabel($row['status'] ?? null),
             'payout_status' => $row['payout_status'] ?? $this->locksmithPayoutStatus($row['status'] ?? null, $totalAmount),
@@ -4380,8 +4690,23 @@ class TechnicalServiceWorkflowService
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
+            'technician_payment_source_key' => $rootTotal['technician_payment_source_key']
+                ?? $this->technicianPaymentSourceKey((string) ($rootTotal['technician_payment_source_label'] ?? '')),
+            'technician_payment_source_label' => $rootTotal['technician_payment_source_label']
+                ?? ($totalAmount <= 0 ? 'Hakediş yok' : 'Belirlenmedi'),
             'applies' => $warrantyCovered && $totalAmount > 0,
         ];
+    }
+
+    private function technicianPaymentSourceKey(string $label): string
+    {
+        return match (trim($label)) {
+            'EMAKS Prime' => 'emaks_prime',
+            'Müşteri', 'Müşteri doğrudan' => 'customer_direct',
+            'Hakediş yok' => 'none',
+            'Karma' => 'mixed',
+            default => 'unresolved',
+        };
     }
 
     /**

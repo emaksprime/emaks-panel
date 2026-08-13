@@ -816,6 +816,77 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertSame(2100.0, (float) $settlement->fresh()->technician_earning_total);
     }
 
+    public function test_payment_impacts_reconcile_base_earning_and_extra_service_without_double_count(): void
+    {
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('q', 32))]);
+        [$request, $technician] = $this->assignmentFixture();
+        $basePayment = $this->paidMountPayment($request, 'BASE-EARNING-'.uniqid());
+        $basePayment->forceFill([
+            'amount' => 4400,
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+                'charge_type' => 'manual_mount_payment',
+                'payer_state_key' => 'company_collected_online',
+            ],
+        ])->save();
+        $this->assign($request, $technician, [
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1400,
+            'total_amount' => 4400,
+        ])->assertOk();
+        $extraPayment = $this->paidChargePayment($request, 'service_payment', 600, '2026-08-10 09:00:00');
+        $cancelledPayment = $this->customerChargeAttempt(
+            $request,
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            250,
+        );
+        $actor = User::factory()->create(['role_code' => 'admin']);
+        $this->decideCompanyPayments($request, $actor, [$extraPayment->id => 'pay_technician']);
+
+        $summary = app(TechnicalServiceWorkflowService::class)
+            ->financialWorkspacePayload($request->refresh())['finance_summary'];
+        $rows = collect($summary['payment_records']['current_scope_rows'])->keyBy('id');
+        $baseImpact = $rows->get($basePayment->id)['earning_impact'];
+        $extraImpact = $rows->get($extraPayment->id)['earning_impact'];
+        $cancelledImpact = $rows->get($cancelledPayment->id)['earning_impact'];
+        $sources = collect($summary['current_visit']['customer_collection']['included_collection_sources'])->keyBy('payment_id');
+
+        $this->assertSame('EMAKS Prime', $summary['current_visit']['locksmith_payout']['technician_payment_source_label']);
+        $this->assertSame(5000.0, $summary['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(5000.0, $summary['current_visit']['locksmith_payout']['total_amount']);
+        $this->assertSame(600.0, $summary['current_visit']['locksmith_payout']['company_payment_amount']);
+        $this->assertSame('Ek servis', $summary['current_visit']['locksmith_payout']['company_payment_breakdown'][0]['purpose_label']);
+
+        $this->assertSame('covers_existing_earning', $baseImpact['state']);
+        $this->assertSame(4400.0, $baseImpact['covered_amount']);
+        $this->assertSame(['İşçilik', 'Yol'], collect($baseImpact['covered_components'])->pluck('label')->all());
+        $this->assertSame([3000.0, 1400.0], collect($baseImpact['covered_components'])->pluck('amount')->all());
+        $this->assertSame(0.0, $baseImpact['additional_earning_amount']);
+        $this->assertFalse($baseImpact['decision_required']);
+        $this->assertSame('Karar gerekmiyor', $baseImpact['decision_label']);
+
+        $this->assertSame('adds_technician_earning', $extraImpact['state']);
+        $this->assertSame('Ek servis', $extraImpact['additional_earning_component_label']);
+        $this->assertSame(600.0, $extraImpact['additional_earning_amount']);
+        $this->assertSame('Ustaya ödenecek — Tamamlandı', $extraImpact['decision_label']);
+        $this->assertSame($technician->id, $extraImpact['technician_id']);
+        $this->assertSame($baseImpact, $sources->get($basePayment->id)['earning_impact']);
+        $this->assertSame($extraImpact, $sources->get($extraPayment->id)['earning_impact']);
+        $this->assertSame('cancelled_or_failed', $cancelledImpact['state']);
+        $this->assertSame(0.0, $cancelledImpact['covered_amount']);
+        $this->assertSame(0.0, $cancelledImpact['additional_earning_amount']);
+        $this->assertFalse($cancelledImpact['decision_required']);
+
+        $this->assertSame('4400.00', $basePayment->fresh()->amount);
+        $this->assertSame('600.00', $extraPayment->fresh()->amount);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $cancelledPayment->fresh()->status);
+        $this->assertDatabaseCount('technical_service_payment_settlement_allocations', 1);
+        $this->assertSame(5000.0, (float) TechnicalServiceSettlement::query()
+            ->where('technical_service_request_id', $request->id)
+            ->value('technician_earning_total'));
+    }
+
     public function test_paid_payment_is_rendered_as_collected_amount(): void
     {
         [$root] = $this->assignmentFixture();

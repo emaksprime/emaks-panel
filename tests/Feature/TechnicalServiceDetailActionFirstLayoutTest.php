@@ -138,8 +138,9 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('updateAssignmentEarningDraft({ routeFeeAmount:', $detail);
         $this->assertStringContainsString('data-testid="financial-primary-cards"', $detail);
         $this->assertSame(1, substr_count($primaryCards, "label={isRootFinancialScope ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'}"));
-        $this->assertSame(1, substr_count($primaryCards, 'label="Usta hakedişi"'));
-        $this->assertSame(1, substr_count($primaryCards, 'label="Şirket ödemesi"'));
+        $this->assertSame(1, substr_count($primaryCards, 'label="Usta toplam hakedişi"'));
+        $this->assertSame(1, substr_count($primaryCards, 'label="Hakediş ödeme kaynağı"'));
+        $this->assertStringNotContainsString('label="Şirket ödemesi"', $primaryCards);
         $this->assertSame(1, substr_count($primaryCards, 'label="Operasyon farkı"'));
         $this->assertStringContainsString('<summary className="cursor-pointer font-semibold text-slate-950">Tahsilat kırılımı</summary>', $detail);
         $this->assertStringContainsString('<summary className="cursor-pointer font-semibold text-slate-950">Hakediş kırılımı</summary>', $detail);
@@ -148,6 +149,10 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString('selectedFinancialPaymentHistory?.context_notice', $detail);
         $this->assertStringNotContainsString('payment.scope_notice', $detail);
         $this->assertStringContainsString('component_split_persisted', $detail);
+        $this->assertStringContainsString('renderPaymentEarningImpact(source.earning_impact, source.payment_id)', $detail);
+        $this->assertStringContainsString('Ek hakediş oluşturmadı.', $detail);
+        $this->assertStringContainsString('impact.decision_label', $detail);
+        $this->assertStringNotContainsString('data-testid="company-payment-decision-completed"', $detail);
         $this->assertStringContainsString('scheduleMutationInFlightRef.current', $scheduleHandler);
         $this->assertStringContainsString('applyUpdatedRequest(updatedRequest)', $scheduleHandler);
         $this->assertStringNotContainsString('loadRequests()', $scheduleHandler);
@@ -633,7 +638,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
 
-        $this->assertStringContainsString('selectedFinancialCollection?.service_total_amount_label', $source);
+        $this->assertStringContainsString('selectedFinancialCollection?.total_amount_label', $source);
         $this->assertStringContainsString('selectedFinancialPayout?.total_amount_label', $source);
         $this->assertStringContainsString('selectedFinancialDifferenceLabel', $source);
         $this->assertStringContainsString('isRootFinancialScope ? financeRootTotal : financeCurrentVisit', $source);

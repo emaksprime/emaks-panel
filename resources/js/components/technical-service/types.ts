@@ -667,6 +667,33 @@ export type ServiceRequestFinanceCollectionSource = {
   paid_at?: string | null
   purpose_label?: string | null
   relation_label?: string | null
+  earning_impact?: ServiceRequestPaymentEarningImpact | null
+}
+
+export type ServiceRequestPaymentEarningImpact = {
+  state: 'covers_existing_earning' | 'adds_technician_earning' | 'retained_by_company' | 'decision_pending' | 'no_earning_effect' | 'cancelled_or_failed' | string
+  covered_components: Array<{
+    key: string
+    label: string
+    amount: number
+    amount_label?: string | null
+  }>
+  covered_amount: number
+  covered_amount_label?: string | null
+  additional_earning_component?: string | null
+  additional_earning_component_label?: string | null
+  additional_earning_amount: number
+  additional_earning_amount_label?: string | null
+  retained_by_company_amount: number
+  retained_by_company_amount_label?: string | null
+  unmatched_residual_amount: number
+  unmatched_residual_amount_label?: string | null
+  decision_state: 'not_required' | 'pending' | 'completed' | string
+  decision_label?: string | null
+  decision_required: boolean
+  technician_id?: number | string | null
+  technician_name?: string | null
+  canonical_source: string
 }
 
 export type ServiceRequestFinancePayout = {
@@ -700,6 +727,9 @@ export type ServiceRequestFinancePayout = {
   paid_at?: string | null
   technician_id?: number | string | null
   technician_name?: string | null
+  payer_state?: string | null
+  technician_payment_source_key?: 'emaks_prime' | 'customer_direct' | 'mixed' | 'none' | 'unresolved' | string
+  technician_payment_source_label?: string | null
   is_confirmed?: boolean
   is_draft?: boolean
   source?: string | null
@@ -833,6 +863,7 @@ export type ServiceRequestFinancePaymentRecord = ServiceRequestPaymentPartContex
   payment_action_disabled_reason?: string | null
   message_send_count?: number | null
   last_message_sent_at?: string | null
+  earning_impact?: ServiceRequestPaymentEarningImpact | null
 }
 
 export type ServiceRequestFinancePaymentHistoryGroup = {
