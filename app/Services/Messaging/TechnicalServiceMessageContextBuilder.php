@@ -27,10 +27,12 @@ class TechnicalServiceMessageContextBuilder
         $context['__sample_context'] = (bool) ($input['sample_context'] ?? true);
 
         $request = $this->requestFromInput($input);
+        $requestContext = [];
         if ($request instanceof TechnicalServiceRequest) {
+            $requestContext = $this->contextFromRequest($request);
             $context = [
                 ...$context,
-                ...$this->contextFromRequest($request),
+                ...$requestContext,
             ];
         }
 
@@ -41,6 +43,10 @@ class TechnicalServiceMessageContextBuilder
             ...$context,
             ...$overrides,
         ];
+        if ($request instanceof TechnicalServiceRequest) {
+            // Customer location is server-owned; callers cannot erase or replace it.
+            $context['maps_url'] = $requestContext['maps_url'] ?? null;
+        }
         $context = $this->clearSampleDerivedValues($context, $overrides);
         $context = $this->withCanonicalEarningContext($context, $overrides);
 
@@ -166,7 +172,7 @@ class TechnicalServiceMessageContextBuilder
         $laborAmount = $this->money($request->technician_payment_amount);
         $routeAmount = $this->money($request->travel_fee_amount);
         $totalAmount = round($laborAmount + $routeAmount, 2);
-        $mapsUrl = $request->location_map_url ?: $this->mapsLink($request);
+        $mapsUrl = $this->mapsUrlForRequest($request);
         $completedAt = $request->installation_completed_at ?: $request->completed_at ?: $request->field_completed_at;
         $parentRequest = $request->parentRequest;
         $rootMrn = $this->filledString($request->root_mrn)
@@ -1194,16 +1200,99 @@ class TechnicalServiceMessageContextBuilder
         return mb_strlen($link) > 40 ? $sampleFallback : $link;
     }
 
-    private function mapsLink(TechnicalServiceRequest $request): ?string
+    public function mapsUrlForRequest(TechnicalServiceRequest $request): ?string
     {
-        if ($request->location_latitude !== null && $request->location_longitude !== null) {
+        $coordinates = $this->validCoordinates(
+            $request->location_latitude,
+            $request->location_longitude,
+        );
+        if ($coordinates !== null) {
             return 'https://www.google.com/maps/search/?api=1&query='
-                .rawurlencode((string) $request->location_latitude.','.(string) $request->location_longitude);
+                .rawurlencode($coordinates['latitude'].','.$coordinates['longitude']);
         }
 
-        $address = $this->filledString($request->location_formatted_address ?: $request->service_address);
+        $storedUrl = $this->validatedMapsUrl($request->location_map_url);
+        if ($storedUrl !== null) {
+            return $storedUrl;
+        }
 
-        return $address === null ? null : 'https://www.google.com/maps/search/?api=1&query='.rawurlencode($address);
+        $address = $this->filledString($request->service_address)
+            ?: $this->filledString($request->location_formatted_address);
+        if ($address === null) {
+            return null;
+        }
+
+        $parts = [$address];
+        $searchableAddress = Str::lower(Str::ascii($address));
+        foreach ([$request->customer_district, $request->customer_city, 'Türkiye'] as $part) {
+            $part = $this->filledString($part);
+            if ($part === null) {
+                continue;
+            }
+
+            $normalizedPart = Str::lower(Str::ascii($part));
+            if (! str_contains($searchableAddress, $normalizedPart)) {
+                $parts[] = $part;
+                $searchableAddress .= ' '.$normalizedPart;
+            }
+        }
+
+        return 'https://www.google.com/maps/search/?api=1&query='.rawurlencode(implode(', ', $parts));
+    }
+
+    /**
+     * @return array{latitude:string,longitude:string}|null
+     */
+    private function validCoordinates(mixed $latitude, mixed $longitude): ?array
+    {
+        if (! is_numeric($latitude) || ! is_numeric($longitude)) {
+            return null;
+        }
+
+        $latitudeNumber = (float) $latitude;
+        $longitudeNumber = (float) $longitude;
+        if (! is_finite($latitudeNumber)
+            || ! is_finite($longitudeNumber)
+            || $latitudeNumber < -90
+            || $latitudeNumber > 90
+            || $longitudeNumber < -180
+            || $longitudeNumber > 180
+        ) {
+            return null;
+        }
+
+        return [
+            'latitude' => trim((string) $latitude),
+            'longitude' => trim((string) $longitude),
+        ];
+    }
+
+    private function validatedMapsUrl(mixed $value): ?string
+    {
+        $url = $this->filledString($value);
+        if ($url === null || filter_var($url, FILTER_VALIDATE_URL) === false) {
+            return null;
+        }
+
+        $parts = parse_url($url);
+        if (! is_array($parts)
+            || ! in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || isset($parts['user'])
+            || isset($parts['pass'])
+        ) {
+            return null;
+        }
+
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $path = (string) ($parts['path'] ?? '');
+        $googleMapsHost = $host === 'google.com'
+            || str_ends_with($host, '.google.com');
+        $googleMapsPath = str_starts_with($path, '/maps')
+            || $host === 'maps.google.com';
+        $shortMapsUrl = $host === 'maps.app.goo.gl'
+            || ($host === 'goo.gl' && str_starts_with($path, '/maps'));
+
+        return ($googleMapsHost && $googleMapsPath) || $shortMapsUrl ? $url : null;
     }
 
     private function filledString(mixed $value): ?string

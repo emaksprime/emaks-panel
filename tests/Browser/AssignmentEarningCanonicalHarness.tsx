@@ -44,6 +44,7 @@ const savedRevision = 'b'.repeat(64)
 const companyPaymentRevision = 'c'.repeat(64)
 const companyPaymentMessageRevision = 'd'.repeat(64)
 const historicalWrongMessageRevision = companyPaymentMessageRevision
+const assignmentMapsUrl = 'https://www.google.com/maps/search/?api=1&query=37.8980452%2C29.1855785'
 const initialPreview = [
   'Merhaba Test Usta,',
   '',
@@ -84,6 +85,16 @@ const initialRequest: ServiceRequest = {
   status: 'Atandı',
   workflowStatus: 'Usta Onayı Bekleyen',
   address: 'Test adresi',
+  location: {
+    latitude: 37.8980452,
+    longitude: 29.1855785,
+    route_latitude: 37.8980452,
+    route_longitude: 29.1855785,
+    route_source: 'request',
+    formatted_address: 'Pamukkale/Denizli, Türkiye',
+    map_url: assignmentMapsUrl,
+    shared: true,
+  },
   model: 'Test Model',
   channel: 'Web',
   notes: '',
@@ -1760,7 +1771,18 @@ function Harness() {
           <div data-testid="assignment-final-popup-values">
             İşçilik: {lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0} TL · Yol: {lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0} TL · Toplam: {(lastAssignmentDraft?.labor_amount ?? request.assignmentOffer?.earning_snapshot?.labor_amount ?? 0) + (lastAssignmentDraft?.route_fee_amount ?? request.assignmentOffer?.earning_snapshot?.route_fee_amount ?? 0)} TL
           </div>
-          <pre data-testid="assignment-final-popup-preview" className="whitespace-pre-wrap">{request.assignmentOffer?.message_preview ?? ''}</pre>
+          <div data-testid="assignment-final-popup-preview" className="whitespace-pre-wrap">
+            <span className="block">Harita:</span>
+            <a
+              data-testid="assignment-preview-map-link"
+              href={request.location?.map_url ?? undefined}
+              target="_blank"
+              rel="noreferrer"
+              className="block"
+            >
+              {request.location?.map_url}
+            </a>
+          </div>
           {assignmentRequiresReason ? (
             <label className="grid gap-2">
               Yeniden atama nedeni *

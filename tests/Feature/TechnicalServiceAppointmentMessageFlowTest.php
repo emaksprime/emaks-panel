@@ -17,6 +17,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
+use App\Services\Messaging\TechnicalServiceMessageContextBuilder;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
@@ -682,6 +683,180 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 data_get($dispatch->request_payload, 'context.technician_job_card_origin_source'),
             );
         }
+        Http::assertNothingSent();
+    }
+
+    public function test_assignment_maps_url_uses_customer_coordinates_and_ignores_client_override(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'location_latitude' => '37.8980452',
+            'location_longitude' => '29.1855785',
+            'location_map_url' => 'https://maps.app.goo.gl/stored-customer-location',
+            'service_address' => 'Merkez No:21',
+            'customer_district' => 'Pamukkale',
+            'customer_city' => 'Denizli',
+        ]);
+        $expected = 'https://www.google.com/maps/search/?api=1&query=37.8980452%2C29.1855785';
+
+        $context = app(TechnicalServiceMessageContextBuilder::class)->build(
+            'assignment_offer_technician',
+            'whatsapp',
+            [
+                'request_id' => $request->id,
+                'sample_context' => false,
+                'context' => [
+                    'maps_url' => 'https://www.google.com/maps/search/?api=1&query=39.9334%2C32.8597',
+                ],
+            ],
+        )['context'];
+
+        $this->assertSame($expected, $context['maps_url']);
+        $this->assertStringNotContainsString('39.9334', (string) $context['maps_url']);
+    }
+
+    public function test_assignment_address_maps_url_matches_preview_and_dispatch_context_without_provider_call(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'assignment_offer_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'test_mode_enabled' => false,
+            'manual_e2e_partner_portal_origin_enabled' => true,
+            'manual_e2e_partner_portal_origin' => 'http://10.0.28.64:8000',
+        ]);
+        config()->set('services.partner_portal.public_url', 'http://10.0.28.64:8000');
+        $this->activateManualE2EFixture();
+        $technician = $this->technician([
+            'name' => 'Maps Test Usta',
+            'phone' => '0546 764 74 28',
+            'phone_e164' => '905467647428',
+        ]);
+        $this->linkTechnicianToPartner($technician);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-MAPS-ADDRESS-001',
+            'technical_service_technician_id' => null,
+            'service_address' => 'Merkez No:21',
+            'customer_city' => 'Denizli',
+            'customer_district' => 'Pamukkale',
+            'location_latitude' => null,
+            'location_longitude' => null,
+            'location_map_url' => null,
+            'serial_number' => 'MAPS-SERIAL-001',
+            'operation_control_payload' => ['door_photos_checked' => 'compatible'],
+            'operation_control_checked_at' => now(),
+            'operation_control_checked_by_user_id' => $actor->id,
+        ]);
+        $expectedMapsUrl = 'https://www.google.com/maps/search/?api=1&query='
+            .rawurlencode('Merkez No:21, Pamukkale, Denizli, Türkiye');
+
+        $response = $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'confirm_assignment' => true,
+                'travel_round_trip_km' => 36,
+                'assignment_offer' => [
+                    'labor_amount' => 900,
+                    'route_fee_amount' => 350,
+                    'note' => 'Server maps URL testi.',
+                ],
+            ])
+            ->assertOk();
+
+        $this->assertSame(
+            $expectedMapsUrl,
+            data_get($response->json(), 'request.location.map_url'),
+        );
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'assignment_offer_technician')
+            ->orderBy('channel')
+            ->get();
+        $this->assertCount(2, $dispatches);
+
+        foreach ($dispatches as $dispatch) {
+            $this->assertSame($expectedMapsUrl, data_get($dispatch->request_payload, 'context.maps_url'));
+        }
+
+        $whatsappBody = (string) data_get($dispatches->firstWhere('channel', 'whatsapp')?->request_payload, 'body', '');
+        $this->assertStringContainsString("Harita:\n{$expectedMapsUrl}\n", $whatsappBody);
+        $this->assertSame(1, substr_count($whatsappBody, $expectedMapsUrl));
+        Http::assertNothingSent();
+    }
+
+    public function test_assignment_maps_url_uses_validated_stored_url_before_address(): void
+    {
+        $storedUrl = 'https://maps.app.goo.gl/customer-location-token';
+        $request = $this->technicalServiceRequest([
+            'location_latitude' => null,
+            'location_longitude' => null,
+            'location_map_url' => $storedUrl,
+            'service_address' => 'Adres fallback kullanılmamalı',
+            'customer_district' => 'Pamukkale',
+            'customer_city' => 'Denizli',
+        ]);
+
+        $context = app(TechnicalServiceMessageContextBuilder::class)->build(
+            'assignment_offer_technician',
+            'whatsapp',
+            [
+                'request_id' => $request->id,
+                'sample_context' => false,
+                'context' => ['maps_url' => null],
+            ],
+        )['context'];
+
+        $this->assertSame($storedUrl, $context['maps_url']);
+    }
+
+    public function test_true_missing_assignment_location_returns_actionable_turkish_error(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $technician = $this->technician([
+            'name' => 'Konum Test Usta',
+            'phone' => '0546 764 74 28',
+            'phone_e164' => '905467647428',
+        ]);
+        $this->linkTechnicianToPartner($technician);
+        $request = $this->technicalServiceRequest([
+            'technical_service_technician_id' => null,
+            'service_address' => ' ',
+            'customer_city' => 'Denizli',
+            'customer_district' => 'Pamukkale',
+            'location_latitude' => null,
+            'location_longitude' => null,
+            'location_formatted_address' => null,
+            'location_map_url' => null,
+            'operation_control_payload' => ['door_photos_checked' => 'compatible'],
+            'operation_control_checked_at' => now(),
+            'operation_control_checked_by_user_id' => $actor->id,
+        ]);
+
+        $response = $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'confirm_assignment' => true,
+                'travel_round_trip_km' => 0,
+                'assignment_offer' => [
+                    'labor_amount' => 900,
+                    'route_fee_amount' => 0,
+                    'note' => 'Konum eksikliği testi.',
+                ],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('assignment_offer');
+
+        $this->assertSame(
+            'Müşteri adresi veya konumu eksik. Atamadan önce müşteri bilgilerini tamamlayın.',
+            $response->json('errors.assignment_offer.0'),
+        );
+        $this->assertStringNotContainsString('maps_url', (string) $response->json('message'));
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'assignment_offer_technician',
+        ]);
         Http::assertNothingSent();
     }
 

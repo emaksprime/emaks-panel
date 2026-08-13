@@ -17,6 +17,7 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\Messaging\TechnicalServiceMessageContextBuilder;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
@@ -80,6 +81,7 @@ class TechnicalServiceWorkflowService
         private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
         private readonly TechnicalServiceMessageTemplateService $messageTemplates,
+        private readonly TechnicalServiceMessageContextBuilder $messageContextBuilder,
     ) {}
 
     public const WORKFLOW_STATUSES = [
@@ -1121,9 +1123,16 @@ class TechnicalServiceWorkflowService
             $settlement instanceof TechnicalServiceSettlement ? $settlement : null,
         );
         $jobCardContext = $this->partnerJobScope->technicianJobCardContext($request);
+        $mapsUrl = $this->messageContextBuilder->mapsUrlForRequest($request);
+        if ($mapsUrl === null) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Müşteri adresi veya konumu eksik. Atamadan önce müşteri bilgilerini tamamlayın.',
+            ]);
+        }
         $messageContext = [
             ...$contextOverrides,
             ...$this->technicianEarningMessageContext($request, $technician, $earningSnapshot, $jobCardContext),
+            'maps_url' => $mapsUrl,
         ];
 
         foreach (['job_link', 'technician_job_card_url', 'technician_job_card_short_url'] as $linkKey) {
@@ -5764,7 +5773,7 @@ class TechnicalServiceWorkflowService
             'route_source' => $routeSource,
             'place_id' => $request->location_place_id,
             'formatted_address' => TechnicalServiceUiLabelService::addressLabel($request->location_formatted_address),
-            'map_url' => $request->location_map_url,
+            'map_url' => $this->messageContextBuilder->mapsUrlForRequest($request),
             'source' => $request->location_source,
             'accuracy' => $request->location_accuracy,
             'note' => TechnicalServiceUiLabelService::addressLabel($request->location_note),
@@ -6504,7 +6513,7 @@ class TechnicalServiceWorkflowService
             'customer_phone' => $request->customer_phone,
             'address' => $request->location_formatted_address ?: $request->service_address,
             'service_address' => $request->location_formatted_address ?: $request->service_address,
-            'maps_url' => $request->location_map_url,
+            'maps_url' => $this->messageContextBuilder->mapsUrlForRequest($request),
             'product_name' => $request->product_name,
             'model' => $request->product_model,
             'product_model' => $request->product_model,

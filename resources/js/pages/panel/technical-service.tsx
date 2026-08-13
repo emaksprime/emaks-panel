@@ -2697,6 +2697,7 @@ export function TechnicalServiceOperationCenter() {
   const assignmentCompanyPaymentLines = (modalCanonicalEarningSnapshot?.company_payment_breakdown ?? [])
     .filter((line) => Number(line.amount) > 0)
     .map((line) => `${line.purpose_label || 'Ek ödeme'}: ${line.amount_label ?? formatMoneyLabel(Number(line.amount))}`)
+  const assignmentMapsUrl = modalRequest?.location?.map_url?.trim() || null
   const assignmentFinalMessagePreview = [
     `Merhaba ${selectedAssignTechnicianName || 'Usta'},`,
     '',
@@ -2705,6 +2706,7 @@ export function TechnicalServiceOperationCenter() {
     `Müşteri: ${modalRequest?.customer ?? '-'}`,
     `Telefon: ${modalRequest?.phone ?? '-'}`,
     `Adres: ${modalRequest?.address ?? '-'}`,
+    ...(assignmentMapsUrl ? ['Harita:', assignmentMapsUrl] : []),
     modalRequest?.product || modalRequest?.model ? `Ürün: ${[modalRequest?.product, modalRequest?.model].filter(Boolean).join(' / ')}` : null,
     modalRequest?.serialNumber ? `Seri: ${modalRequest.serialNumber}` : null,
     modalRequest?.productInfo?.activation_code ? `Aktivasyon: ${modalRequest.productInfo.activation_code}` : null,
@@ -6174,9 +6176,26 @@ export function TechnicalServiceOperationCenter() {
                 ) : null}
                 <div data-testid="assignment-final-preview" className="grid gap-2 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
                   <p className="font-semibold">Son hakediş ve mesaj önizlemesi</p>
-                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-blue-100 bg-white p-3 text-xs leading-5 text-slate-800">
-                    {assignmentFinalMessagePreview}
-                  </pre>
+                  <div className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-blue-100 bg-white p-3 font-mono text-xs leading-5 text-slate-800">
+                    {assignmentFinalMessagePreview.split('\n').map((line, index) => {
+                      const standaloneUrl = /^https?:\/\/[^\s]+$/i.test(line.trim())
+
+                      return standaloneUrl ? (
+                        <a
+                          key={`${line}-${index}`}
+                          data-testid={line === assignmentMapsUrl ? 'assignment-preview-map-link' : undefined}
+                          href={line}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block break-all text-blue-700 underline underline-offset-2"
+                        >
+                          {line}
+                        </a>
+                      ) : (
+                        <span key={`${line}-${index}`} className="block min-h-[1.25rem]">{line}</span>
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
 

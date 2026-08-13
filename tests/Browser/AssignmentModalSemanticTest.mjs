@@ -114,6 +114,14 @@ const inspectViewport = async (browser, name, viewport) => {
   const reassignmentOpenStartedAt = performance.now()
   await page.getByRole('button', { name: 'Atamayı Güncelle', exact: true }).first().click()
   await page.getByTestId('assignment-final-popup').waitFor({ state: 'visible' })
+  const reassignmentMapLink = page.getByTestId('assignment-preview-map-link')
+  assert(await reassignmentMapLink.count() === 1, `${name}: assignment preview map link is missing`)
+  assert((await reassignmentMapLink.getAttribute('href')) === 'https://www.google.com/maps/search/?api=1&query=37.8980452%2C29.1855785', `${name}: assignment preview map link is not canonical`)
+  assert(!(await page.getByTestId('assignment-final-popup').innerText()).includes('maps_url'), `${name}: raw maps_url variable is user-facing`)
+  await page.screenshot({
+    path: path.join(artifactDir, `assignment-maps-preview-${name}.png`),
+    fullPage: true,
+  })
   const reassignmentOpenMs = Math.round(performance.now() - reassignmentOpenStartedAt)
   assert(reassignmentOpenMs <= 500, `${name}: reassignment popup render took ${reassignmentOpenMs} ms`)
   await page.getByTestId('assignment-final-popup-confirm').click()
@@ -138,6 +146,9 @@ const inspectViewport = async (browser, name, viewport) => {
   const initialOpenStartedAt = performance.now()
   await page.getByRole('button', { name: 'Servis Ata', exact: true }).first().click()
   await page.getByTestId('assignment-final-popup').waitFor({ state: 'visible' })
+  const initialAssignmentMapLink = page.getByTestId('assignment-preview-map-link')
+  assert(await initialAssignmentMapLink.count() === 1, `${name}: initial assignment preview map link is missing`)
+  assert((await initialAssignmentMapLink.getAttribute('href')) === 'https://www.google.com/maps/search/?api=1&query=37.8980452%2C29.1855785', `${name}: initial assignment preview map link is not canonical`)
   const initialOpenMs = Math.round(performance.now() - initialOpenStartedAt)
   assert(initialOpenMs <= 500, `${name}: initial assignment popup render took ${initialOpenMs} ms`)
   assert(await page.getByTestId('assignment-reason-input').count() === 0, `${name}: initial assignment incorrectly requires a reassignment reason`)
