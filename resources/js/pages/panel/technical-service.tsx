@@ -1188,7 +1188,7 @@ export function usePostApprovalRevalidation({
   currentState,
   selectedRequestIdRef,
   onState,
-  pollIntervalMs = 4000,
+  pollIntervalMs = 1000,
   isDocumentHidden = defaultPostApprovalDocumentHidden,
 }: PostApprovalRevalidationOptions): void {
   useEffect(() => {
@@ -1230,6 +1230,7 @@ export function usePostApprovalRevalidation({
       }
     }
 
+    void revalidate()
     const intervalId = window.setInterval(() => void revalidate(), pollIntervalMs)
     const handleVisibilityChange = () => {
       if (isDocumentHidden()) {
@@ -1419,6 +1420,7 @@ export function TechnicalServiceOperationCenter() {
   const [warranty, setWarranty] = useState<WarrantySerialResponse | null>(null)
   const [warrantyLoading, setWarrantyLoading] = useState(false)
   const [warrantyError, setWarrantyError] = useState<string | null>(null)
+  const persistedWarrantyRef = useRef<{ requestId: string, warranty: WarrantySerialResponse } | null>(null)
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false)
   const [calendarMonth, setCalendarMonth] = useState<Date>(() => startOfMonth(new Date()))
   const datePickerRef = useRef<HTMLDivElement | null>(null)
@@ -1618,6 +1620,11 @@ export function TechnicalServiceOperationCenter() {
     const expectedListRequest = selectedListRequestRef.current ?? requestsRef.current.find((item) => item.id === requestId) ?? null
     const isCurrentRequest = () => detailRequestTokenRef.current === requestToken && selectedIdRef.current === requestId
     const preserveCurrentDetail = selectedDetailRequestRef.current?.id === requestId
+    const shouldHydratePersistedWarranty = Boolean(
+      expectedListRequest?.completedAt
+      || expectedListRequest?.status === 'Tamamlandı'
+      || expectedListRequest?.workflowStatus === 'Tamamlandı',
+    )
     setDetailLoading(!preserveCurrentDetail)
     setDetailError(null)
     setFinancialWorkspaceLoading(true)
@@ -1628,12 +1635,46 @@ export function TechnicalServiceOperationCenter() {
       setSelectedEvents([])
     }
 
-    const financialWorkspacePromise = apiRequest(`/api/technical-service/requests/${id}?section=financial`)
+    const persistedWarrantyPromise = shouldHydratePersistedWarranty
+      ? apiRequest(`/api/technical-service/requests/${id}?section=warranty`)
+        .then((payload) => ({ warranty: payload.warranty as WarrantySerialResponse | null, error: null as Error | null }))
+        .catch((caught) => ({
+          warranty: null,
+          error: caught instanceof Error ? caught : new Error('Garanti bilgisi alınamadı.'),
+        }))
+      : Promise.resolve({ warranty: null, error: null as Error | null })
+    const financialWorkspaceRequest = () => apiRequest(`/api/technical-service/requests/${id}?section=financial`)
       .then((workspace) => ({ workspace, error: null as Error | null }))
       .catch((caught) => ({
         workspace: null,
         error: caught instanceof Error ? caught : new Error('Finans ve hakediş özeti yüklenemedi.'),
       }))
+    const financialWorkspacePromise = shouldHydratePersistedWarranty
+      ? persistedWarrantyPromise.then(financialWorkspaceRequest)
+      : financialWorkspaceRequest()
+
+    if (shouldHydratePersistedWarranty) {
+      setWarrantyLoading(true)
+      void persistedWarrantyPromise
+        .then(({ warranty: persistedWarranty, error: persistedWarrantyError }) => {
+          if (!isCurrentRequest()) {
+            return
+          }
+
+          if (persistedWarranty) {
+            persistedWarrantyRef.current = { requestId, warranty: persistedWarranty }
+            setWarranty(persistedWarranty)
+            setWarrantyError(null)
+          } else if (persistedWarrantyError) {
+            setWarrantyError(persistedWarrantyError.message)
+          }
+        })
+        .finally(() => {
+          if (isCurrentRequest()) {
+            setWarrantyLoading(false)
+          }
+        })
+    }
 
     try {
       const response = await apiRequest(`/api/technical-service/requests/${id}`)
@@ -1675,6 +1716,14 @@ export function TechnicalServiceOperationCenter() {
 
       if (!isCurrentRequest()) {
         return
+      }
+
+      const persistedWarranty = (response.warranty ?? null) as WarrantySerialResponse | null
+
+      if (persistedWarranty) {
+        persistedWarrantyRef.current = { requestId, warranty: persistedWarranty }
+        setWarranty(persistedWarranty)
+        setWarrantyError(null)
       }
 
       setSelectedDetailRequest(mappedDetail)
@@ -1905,6 +1954,7 @@ export function TechnicalServiceOperationCenter() {
         setWarranty(null)
         setWarrantyError(null)
         setWarrantyLoading(false)
+        persistedWarrantyRef.current = null
         setShowNearbyTechnicians(false)
         setDetailError(null)
         setDetailLoading(false)
@@ -3006,6 +3056,10 @@ export function TechnicalServiceOperationCenter() {
 
   useEffect(() => {
     const serialNo = selectedDetailRequest?.serialNumber?.trim() ?? ''
+    const requestId = selectedDetailRequest?.id ?? null
+    const persistedWarranty = requestId && persistedWarrantyRef.current?.requestId === requestId
+      ? persistedWarrantyRef.current.warranty
+      : null
     const lookupToken = serialLookupTokenRef.current + 1
     serialLookupTokenRef.current = lookupToken
     const isCurrentLookup = () => serialLookupTokenRef.current === lookupToken
@@ -3017,7 +3071,7 @@ export function TechnicalServiceOperationCenter() {
 
       setMikroMountCheck(null)
       setMikroMountError(null)
-      setWarranty(null)
+      setWarranty(persistedWarranty)
       setWarrantyError(null)
 
       if (!serialNo) {
@@ -3030,11 +3084,13 @@ export function TechnicalServiceOperationCenter() {
       const params = new URLSearchParams({ serial_no: serialNo })
 
       setMikroMountLoading(true)
-      setWarrantyLoading(true)
+      setWarrantyLoading(persistedWarranty === null)
 
       void Promise.allSettled([
         apiRequest(`/api/technical-service/mikro/serial-history?${params.toString()}`),
-        apiRequest(`/api/technical-service/warranty/serial?${params.toString()}`),
+        persistedWarranty
+          ? Promise.resolve(persistedWarranty)
+          : apiRequest(`/api/technical-service/warranty/serial?${params.toString()}`),
       ]).then(([historyResponse, warrantyResponse]) => {
         if (!isCurrentLookup()) {
           return
@@ -3060,7 +3116,7 @@ export function TechnicalServiceOperationCenter() {
         }
       })
     })
-  }, [selectedDetailRequest?.serialNumber])
+  }, [selectedDetailRequest?.id, selectedDetailRequest?.serialNumber])
 
   const handleAssignReset = () => {
     routeQuoteAutoRequestSeq.current += 1
@@ -4997,6 +5053,7 @@ export function TechnicalServiceOperationCenter() {
     setWarranty(null)
     setWarrantyError(null)
     setWarrantyLoading(false)
+    persistedWarrantyRef.current = null
     setPostApprovalState(null)
     setPartnerCompletionApproveError(null)
     setPartnerCompletionApproveInFlight(false)
@@ -6461,6 +6518,7 @@ export function TechnicalServiceOperationCenter() {
             setWarranty(null)
             setWarrantyError(null)
             setWarrantyLoading(false)
+            persistedWarrantyRef.current = null
             setPostApprovalState(null)
             setPartnerCompletionApproveError(null)
             setPartnerCompletionApproveInFlight(false)

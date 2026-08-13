@@ -2025,6 +2025,32 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_customer_approval_whatsapp_body_contains_naked_url(): void
+    {
+        $url = 'http://10.0.28.64:8000/service-job-confirmation/clickable-token-001';
+        $body = $this->customerApprovalWhatsappPreviewBody($url);
+        $lines = explode("\n", $body);
+
+        $this->assertSame(1, substr_count($body, $url));
+        $this->assertContains('Onay bağlantınız:', $lines);
+        $this->assertContains($url, $lines);
+        $this->assertSame($url, $lines[array_search($url, $lines, true)]);
+        Http::assertNothingSent();
+    }
+
+    public function test_customer_approval_whatsapp_body_contains_no_markdown_link(): void
+    {
+        $url = 'http://10.0.28.64:8000/service-job-confirmation/clickable-token-002';
+        $body = $this->customerApprovalWhatsappPreviewBody($url);
+
+        $this->assertSame(0, preg_match('/\[[^\]]+\]\([^)]+\)/u', $body));
+        $this->assertStringNotContainsString("<{$url}>", $body);
+        $this->assertStringNotContainsString('\\'.$url, $body);
+        $this->assertStringNotContainsString($url.'.', $body);
+        $this->assertStringNotContainsString($url.',', $body);
+        Http::assertNothingSent();
+    }
+
     public function test_sms_readability_policy_all_default_sms_templates(): void
     {
         $payload = $this->actingAs($this->admin())
@@ -2772,6 +2798,21 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertOk()
             ->assertJsonPath('preview.preview_ready', true)
             ->json('preview');
+    }
+
+    private function customerApprovalWhatsappPreviewBody(string $url): string
+    {
+        return (string) $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'customer_approval_request',
+                'channel' => 'whatsapp',
+                'context' => [
+                    'confirmation_link' => $url,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
     }
 
     private function admin(): User

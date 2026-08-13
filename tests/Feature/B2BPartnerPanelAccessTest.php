@@ -8774,6 +8774,79 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('warranty.warnings', []);
     }
 
+    public function test_completed_detail_initial_payload_contains_persisted_warranty(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-COMPLETED-INITIAL-WARRANTY');
+
+        $this->actingAs($fixture['admin'])
+            ->postJson($fixture['endpoint'])
+            ->assertOk()
+            ->assertJsonPath('status', 'applied');
+
+        $card = WarrantyCard::query()
+            ->where('serial_no', $fixture['job']->serial_number)
+            ->firstOrFail();
+        $eventCount = $card->events()->count();
+
+        $this->actingAs($fixture['admin'])
+            ->getJson("/api/technical-service/requests/{$fixture['job']->id}")
+            ->assertOk()
+            ->assertJsonPath('warranty.status', WarrantyService::STATUS_ACTIVE)
+            ->assertJsonPath('warranty.warranty_started_at', $card->warranty_started_at?->format('Y-m-d'))
+            ->assertJsonPath('warranty.warranty_ends_at', $card->warranty_ends_at?->format('Y-m-d'))
+            ->assertJsonPath('warranty.warranty_period_months', WarrantyService::DEFAULT_PERIOD_MONTHS);
+
+        $this->actingAs($fixture['admin'])
+            ->getJson("/api/technical-service/requests/{$fixture['job']->id}?section=warranty")
+            ->assertOk()
+            ->assertJsonPath('request_id', $fixture['job']->id)
+            ->assertJsonPath('warranty.status', WarrantyService::STATUS_ACTIVE)
+            ->assertJsonPath('warranty.warranty_started_at', $card->warranty_started_at?->format('Y-m-d'))
+            ->assertJsonPath('warranty.warranty_ends_at', $card->warranty_ends_at?->format('Y-m-d'));
+
+        $this->assertSame(1, WarrantyCard::query()->where('serial_no', $fixture['job']->serial_number)->count());
+        $this->assertSame($eventCount, $card->events()->count());
+    }
+
+    public function test_completed_request_does_not_require_approval_polling(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-COMPLETED-NO-APPROVAL-POLL');
+
+        $this->actingAs($fixture['admin'])
+            ->postJson($fixture['endpoint'])
+            ->assertOk()
+            ->assertJsonPath('status', 'applied');
+
+        $this->actingAs($fixture['admin'])
+            ->getJson("/api/technical-service/requests/{$fixture['job']->id}?section=post-approval")
+            ->assertOk()
+            ->assertJsonPath('approval.business_status', 'approved')
+            ->assertJsonPath('approval.terminal', true)
+            ->assertJsonPath('completion.completed', true)
+            ->assertJsonPath('completion.final_check_state', 'completed');
+    }
+
+    public function test_customer_approval_status_delta_contains_completion_gate(): void
+    {
+        $fixture = $this->postApprovalFinalCheckFixture('MRN-APPROVAL-STATUS-COMPLETION-GATE');
+
+        $response = $this->actingAs($fixture['admin'])
+            ->getJson("/api/technical-service/requests/{$fixture['job']->id}?section=post-approval")
+            ->assertOk()
+            ->assertJsonPath('approval.business_status', 'approved')
+            ->assertJsonPath('approval.terminal', true)
+            ->assertJsonPath('approval.normal_resend_allowed', false)
+            ->assertJsonPath('completion.completed', false)
+            ->assertJsonPath('completion.final_check_state', 'pending')
+            ->assertJsonPath('request.workflow_status', 'Son Kontrol');
+
+        $documents = collect($response->json('field_completion_documents'));
+        $this->assertCount(3, $documents);
+        $this->assertTrue($documents->every(
+            fn (array $document): bool => ($document['review_status'] ?? null) === 'accepted',
+        ));
+    }
+
     public function test_duplicate_final_check_does_not_duplicate_warranty(): void
     {
         $fixture = $this->postApprovalFinalCheckFixture('MRN-FINAL-CHECK-WARRANTY-NO-DUPLICATE');

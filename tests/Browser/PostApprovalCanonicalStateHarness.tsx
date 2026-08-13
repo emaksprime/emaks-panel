@@ -9,6 +9,8 @@ import '../../resources/css/app.css'
 
 type HarnessState = {
   pollCount: number
+  pollInFlight: number
+  maxPollInFlight: number
   suitabilityPostCount: number
   finalCheckPostCount: number
   boardRefetchCount: number
@@ -20,6 +22,8 @@ type HarnessState = {
   releaseDelayedPoll: (() => void) | null
   externalApprovalStartedAt: number | null
   approvalLatencyMs: number | null
+  immediatePollLatencyMs: number | null
+  completedWarrantyLatencyMs: number | null
   suitabilityLatencyMs: number | null
   finalCheckLatencyMs: number | null
 }
@@ -35,6 +39,8 @@ declare global {
 
 const state: HarnessState = {
   pollCount: 0,
+  pollInFlight: 0,
+  maxPollInFlight: 0,
   suitabilityPostCount: 0,
   finalCheckPostCount: 0,
   boardRefetchCount: 0,
@@ -46,6 +52,8 @@ const state: HarnessState = {
   releaseDelayedPoll: null,
   externalApprovalStartedAt: null,
   approvalLatencyMs: null,
+  immediatePollLatencyMs: null,
+  completedWarrantyLatencyMs: null,
   suitabilityLatencyMs: null,
   finalCheckLatencyMs: null,
 }
@@ -82,6 +90,14 @@ const staleApprovalAction = {
   },
   created_at: '2026-08-12T12:30:00+00:00',
 }
+
+const approvalWhatsappBody = `EMAKS Prime Teknik Servis
+
+Sayın Test Müşteri,
+MRN-DOM-POST-APPROVAL numaralı işleminiz için servis tamamlandı bilgisi alınmıştır.
+
+Onay bağlantınız:
+http://10.0.28.64:8000/service-job-confirmation/dom-token`
 
 const pendingDocuments = [
   { id: 801, field_code: 'before_photo', label: 'Öncesi', review_status: null },
@@ -222,25 +238,55 @@ window.fetch = async (input, init) => {
 
   if (url.includes('section=post-approval')) {
     state.pollCount += 1
+    state.pollInFlight += 1
+    state.maxPollInFlight = Math.max(state.maxPollInFlight, state.pollInFlight)
+    let pollSettled = false
+    const settlePoll = () => {
+      if (!pollSettled) {
+        pollSettled = true
+        state.pollInFlight -= 1
+      }
+    }
     const requestId = Number(url.match(/requests\/(\d+)/)?.[1] ?? 0)
-    const payload = postApprovalState(requestId, state.serverApprovalStatus)
+    const payload = postApprovalState(
+      requestId,
+      state.serverApprovalStatus,
+      state.serverApprovalStatus === 'approved' ? acceptedDocuments : pendingDocuments,
+    )
 
-    if (state.delayNextPoll) {
-      state.delayNextPoll = false
+    try {
+      if (state.delayNextPoll) {
+        state.delayNextPoll = false
 
-      return await new Promise<Response>((resolve) => {
-        state.releaseDelayedPoll = () => {
-          state.releaseDelayedPoll = null
-          resolve(jsonResponse(payload))
-        }
-      })
+        return await new Promise<Response>((resolve, reject) => {
+          const abort = () => {
+            state.releaseDelayedPoll = null
+            settlePoll()
+            reject(new DOMException('Aborted', 'AbortError'))
+          }
+
+          state.releaseDelayedPoll = () => {
+            state.releaseDelayedPoll = null
+            init?.signal?.removeEventListener('abort', abort)
+            resolve(jsonResponse(payload))
+          }
+
+          if (init?.signal?.aborted) {
+            abort()
+          } else {
+            init?.signal?.addEventListener('abort', abort, { once: true })
+          }
+        })
+      }
+
+      if (init?.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+
+      return jsonResponse(payload)
+    } finally {
+      settlePoll()
     }
-
-    if (init?.signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError')
-    }
-
-    return jsonResponse(payload)
   }
 
   if (url.includes('/field-documents/') && init?.method === 'PATCH') {
@@ -320,7 +366,6 @@ function Harness() {
     currentState: currentPostApproval,
     selectedRequestIdRef,
     onState: applyCanonicalState,
-    pollIntervalMs: 1000,
     isDocumentHidden: isHarnessDocumentHidden,
   })
 
@@ -404,17 +449,45 @@ function Harness() {
 
     try {
       state.pollCount = 0
+      state.pollInFlight = 0
+      state.maxPollInFlight = 0
       state.suitabilityPostCount = 0
       state.finalCheckPostCount = 0
       state.appliedStateRequestIds = []
-      state.serverApprovalStatus = 'pending'
       state.documentHidden = false
       state.approvalLatencyMs = null
-      setWarranty(null)
+      state.immediatePollLatencyMs = null
+      state.completedWarrantyLatencyMs = null
       setIsOpen(true)
+      state.serverApprovalStatus = 'approved'
+
+      stage = 'completed_initial_warranty'
+      const completedWarrantyStartedAt = performance.now()
+      setRequest({
+        ...initialRequest(),
+        status: 'Tamamlandı',
+        workflowStatus: 'Tamamlandı',
+        completedAt: '2026-08-12T15:34:00+03:00',
+      })
+      setCurrentPostApproval(postApprovalState(9001, 'approved', acceptedDocuments, true))
+      setWarranty(activeWarranty)
+      await waitUntil(() => Boolean(document.querySelector('[data-testid="harness-modal"]')))
+      await waitUntil(() => document.body.innerText.includes('Garanti Başladı'))
+      state.completedWarrantyLatencyMs = Math.round(performance.now() - completedWarrantyStartedAt)
+      const completedPollStart = state.pollCount
+      await new Promise((resolve) => window.setTimeout(resolve, 1100))
+      const completedPollRequests = state.pollCount - completedPollStart
+      const completedPollingZero = completedPollRequests === 0
+
+      stage = 'immediate_pending_revalidation'
+      state.serverApprovalStatus = 'pending'
+      setWarranty(null)
+      const immediatePollStart = state.pollCount
+      const immediatePollStartedAt = performance.now()
       setRequest(initialRequest())
       setCurrentPostApproval(postApprovalState(9001, 'pending'))
-      await waitUntil(() => Boolean(document.querySelector('[data-testid="harness-modal"]')))
+      await waitUntil(() => state.pollCount > immediatePollStart)
+      state.immediatePollLatencyMs = Math.round(performance.now() - immediatePollStartedAt)
 
       stage = 'hidden_poll_stop'
       state.documentHidden = true
@@ -426,6 +499,16 @@ function Harness() {
       state.documentHidden = false
       document.dispatchEvent(new Event('visibilitychange'))
       await waitUntil(() => state.pollCount > hiddenPollStart)
+
+      stage = 'single_in_flight_revalidation'
+      state.delayNextPoll = true
+      const delayedPollStart = state.pollCount
+      document.dispatchEvent(new Event('visibilitychange'))
+      await waitUntil(() => state.pollCount > delayedPollStart)
+      await new Promise((resolve) => window.setTimeout(resolve, 1100))
+      const singleInFlight = state.pollCount === delayedPollStart + 1 && state.maxPollInFlight === 1
+      state.releaseDelayedPoll?.()
+      await waitUntil(() => state.pollInFlight === 0)
 
       stage = 'closed_modal_poll_stop'
       setIsOpen(false)
@@ -439,8 +522,8 @@ function Harness() {
       stage = 'external_approval'
       state.externalApprovalStartedAt = performance.now()
       state.serverApprovalStatus = 'approved'
-      document.dispatchEvent(new Event('visibilitychange'))
       await waitUntil(() => document.body.innerText.includes('Müşteri onayı alındı'))
+      const completionCtaAppeared = Boolean(document.querySelector('[data-testid="final-completion-approve-button"]'))
       const terminalPollStart = state.pollCount
       await new Promise((resolve) => window.setTimeout(resolve, 1100))
       const terminalPollStopped = state.pollCount === terminalPollStart
@@ -539,14 +622,46 @@ function Harness() {
 
       const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]
       const max = (values: number[]) => Math.max(...values)
+      const approvalUrl = 'http://10.0.28.64:8000/service-job-confirmation/dom-token'
+      const approvalBodyLines = approvalWhatsappBody.split('\n')
+      const approvalUrlIsOwnRawLine = approvalBodyLines.filter((line) => line === approvalUrl).length === 1
+      const approvalBodyHasNoMarkdown = !/\[[^\]]+\]\([^)]+\)/u.test(approvalWhatsappBody)
+      const acceptancePassed = completedPollingZero
+        && (state.completedWarrantyLatencyMs ?? Number.POSITIVE_INFINITY) <= 800
+        && (state.immediatePollLatencyMs ?? Number.POSITIVE_INFINITY) <= 250
+        && singleInFlight
+        && state.maxPollInFlight === 1
+        && (state.approvalLatencyMs ?? Number.POSITIVE_INFINITY) <= 2000
+        && completionCtaAppeared
+        && terminalPollStopped
+        && hiddenPollStopped
+        && closedPollStopped
+        && approvalUrlIsOwnRawLine
+        && approvalBodyHasNoMarkdown
+        && state.boardRefetchCount === 0
+        && mutationMountCounts.every((count) => count === 0)
 
       setAutomatedResult({
-        pass: true,
+        pass: acceptancePassed,
+        completed_initial_warranty: {
+          visible_latency_ms: state.completedWarrantyLatencyMs,
+          approval_poll_requests: completedPollRequests,
+          polling_zero: completedPollingZero,
+        },
         approval: {
           latency_ms: state.approvalLatencyMs,
+          immediate_check_latency_ms: state.immediatePollLatencyMs,
+          one_in_flight: singleInFlight && state.maxPollInFlight === 1,
+          max_in_flight: state.maxPollInFlight,
+          completion_cta_same_update: completionCtaAppeared,
           approved_without_resend: approvedWithoutResend,
           queued_does_not_override: queuedDoesNotOverride,
           terminal_poll_stopped: terminalPollStopped,
+        },
+        whatsapp_approval_url: {
+          raw_url_line_count: approvalBodyLines.filter((line) => line === approvalUrl).length,
+          own_raw_line: approvalUrlIsOwnRawLine,
+          markdown_absent: approvalBodyHasNoMarkdown,
         },
         lifecycle: {
           hidden_poll_stopped: hiddenPollStopped,
@@ -580,6 +695,7 @@ function Harness() {
           suitability_posts: state.suitabilityPostCount,
           final_check_posts: state.finalCheckPostCount,
           board_refetches: state.boardRefetchCount,
+          max_poll_in_flight: state.maxPollInFlight,
         },
       })
     } catch (caught) {
@@ -599,7 +715,6 @@ function Harness() {
         <button type="button" data-testid="simulate-external-approval" onClick={() => {
           state.externalApprovalStartedAt = performance.now()
           state.serverApprovalStatus = 'approved'
-          document.dispatchEvent(new Event('visibilitychange'))
         }}>Dış onayı simüle et</button>
         <button type="button" data-testid="set-document-hidden" onClick={() => {
           state.documentHidden = true
@@ -635,8 +750,11 @@ function Harness() {
       <output data-testid="selected-request-id">{request.id}</output>
       <output data-testid="applied-request-ids">{state.appliedStateRequestIds.join(',')}</output>
       <output data-testid="approval-latency-ms">{state.approvalLatencyMs ?? ''}</output>
+      <output data-testid="immediate-poll-latency-ms">{state.immediatePollLatencyMs ?? ''}</output>
+      <output data-testid="completed-warranty-latency-ms">{state.completedWarrantyLatencyMs ?? ''}</output>
       <output data-testid="suitability-latency-ms">{state.suitabilityLatencyMs ?? ''}</output>
       <output data-testid="final-check-latency-ms">{state.finalCheckLatencyMs ?? ''}</output>
+      <pre data-testid="customer-approval-whatsapp-preview" className="whitespace-pre-wrap">{approvalWhatsappBody}</pre>
       <pre data-testid="automated-result">{automatedResult ? JSON.stringify(automatedResult) : ''}</pre>
       {isOpen ? (
         <section data-testid="harness-modal" className="mt-3 h-[720px] overflow-y-auto rounded-lg bg-white p-3">

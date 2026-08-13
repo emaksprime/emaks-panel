@@ -140,6 +140,40 @@ class WarrantyService
         return $this->response($serialNo, $card, null, []);
     }
 
+    /**
+     * Reads the warranty already persisted by the completed-request transaction.
+     * This projection performs no Mikro lookup and no warranty mutation.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function persistedStatusForCompletedRequest(TechnicalServiceRequest $request): ?array
+    {
+        $serialNo = trim((string) $request->serial_number);
+        $completedAt = $request->installation_completed_at
+            ?? $request->completed_at
+            ?? $request->field_completed_at;
+
+        if ($serialNo === '' || ! $completedAt) {
+            return null;
+        }
+
+        $card = WarrantyCard::query()
+            ->where('serial_no', $serialNo)
+            ->whereNotIn('status', [
+                self::STATUS_REPLACEMENT_CLOSED,
+                self::STATUS_TRANSFERRED_TO_NEW_SERIAL,
+                self::STATUS_WAITING_FOR_RESALE,
+            ])
+            ->latest('id')
+            ->first();
+
+        if (! $card instanceof WarrantyCard) {
+            return null;
+        }
+
+        return $this->response($serialNo, $card, null, []);
+    }
+
     public function transferToReplacement(WarrantyCard $oldCard, string $newSerialNo, string $replacementDate, ?string $reason = null, ?int $userId = null): WarrantyTransfer
     {
         $newSerialNo = trim($newSerialNo);

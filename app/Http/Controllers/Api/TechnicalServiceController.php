@@ -48,6 +48,7 @@ use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\TechnicalService\WarrantyService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -75,6 +76,7 @@ class TechnicalServiceController extends Controller
         private readonly TechnicalServiceServiceVisitService $serviceVisitService,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlementService,
         private readonly B2BPartnerServiceJobScopeService $partnerJobScope,
+        private readonly WarrantyService $warranties,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -153,8 +155,16 @@ class TechnicalServiceController extends Controller
             return response()->json($this->workflowService->postApprovalStatePayload($technicalServiceRequest));
         }
 
+        if ($request->query('section') === 'warranty') {
+            return response()->json([
+                'request_id' => (int) $technicalServiceRequest->id,
+                'warranty' => $this->warranties->persistedStatusForCompletedRequest($technicalServiceRequest),
+            ]);
+        }
+
         return response()->json([
             'request' => $this->workflowService->serialize($technicalServiceRequest, true, false, false),
+            'warranty' => $this->warranties->persistedStatusForCompletedRequest($technicalServiceRequest),
         ]);
     }
 

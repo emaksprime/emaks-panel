@@ -567,7 +567,7 @@ class TechnicalServiceMessageTypeRegistry
                 : "EMAKS Prime Teknik Servis\n\nİş/randevu iptal edildi.\n\nMRN: {mrn}\n{srv_line}\nMüşteri: {customer_name}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nNeden: {cancellation_reason}\n\nİş Kartı\n{technician_job_card_url}",
             'customer_approval_request' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} işleminizi onaylamak için:\n{confirmation_link_sms}"
-                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır.\n\nİşlemi kontrol edip onaylamak için:\n{confirmation_link}",
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır.\n\nOnay bağlantınız:\n{confirmation_link}",
             'payment_link_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} için ödeme bağlantınız:\n{payment_link_sms}\nTutar: {payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için ödeme bağlantınız aşağıdadır.\n\nTutar: {payment_amount_formatted}\nÖdeme Bağlantısı:\n{payment_link}",

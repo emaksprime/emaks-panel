@@ -3974,6 +3974,80 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 
+    public function test_customer_approval_preview_dispatch_and_provider_body_match(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake([
+            'https://evo-api.example.test/*' => Http::response(['messageId' => 'EVO-APPROVAL-CLICKABLE-1'], 200),
+        ]);
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $settings->update([
+            'evo_whatsapp' => [
+                'link_preview' => true,
+            ],
+            'message_types' => [
+                'customer_approval_request' => [
+                    'enabled' => true,
+                    'real_send_allowed' => false,
+                    'channel_policy' => 'whatsapp_only',
+                    'whatsapp_mode' => 'test',
+                    'sms_mode' => 'disabled',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                    'sms_provider' => 'nac_sms',
+                ],
+            ],
+        ]);
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-APPROVAL-CLICKABLE-001',
+            'customer_name' => 'Onay Bağlantısı Müşterisi',
+            'customer_phone' => '905399999999',
+        ]);
+        $approvalUrl = 'http://10.0.28.64:8000/service-job-confirmation/provider-parity-token';
+        $preview = app(TechnicalServiceMessageTemplateService::class)->preview([
+            'message_type' => 'customer_approval_request',
+            'channel' => 'whatsapp',
+            'request_id' => $request->id,
+            'sample_context' => false,
+            'context' => [
+                'confirmation_link' => $approvalUrl,
+            ],
+        ]);
+        $body = (string) $preview['rendered_body'];
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'customer_approval_request',
+            'message_type' => 'customer_approval_request',
+            'technical_service_request_id' => $request->id,
+            'request_id' => $request->id,
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'recipient_phone' => $request->customer_phone,
+            'target_phone' => '905000000001',
+            'payload' => [
+                'body' => $body,
+                'context' => ['confirmation_link' => $approvalUrl],
+            ],
+            'idempotency_key' => 'customer-approval-clickable-provider-parity',
+        ]);
+
+        $this->assertSame($body, $dispatch->bodyForProvider());
+        $this->assertContains($approvalUrl, explode("\n", $body));
+        app(TechnicalServiceMessageDispatchProcessor::class)->processOne(
+            $dispatch->id,
+            options: ['outbound_worker_owner' => $owner],
+        );
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame(hash('sha256', $body), data_get($dispatch->provider_response_redacted, 'provider_payload_body_hash'));
+        $this->assertTrue((bool) data_get($dispatch->provider_response_redacted, 'provider_payload_body_matches_dispatch'));
+        Http::assertSent(fn ($providerRequest): bool => $providerRequest->url() === 'https://evo-api.example.test/message/sendText/local_manual_acceptance'
+            && $providerRequest['text'] === $body
+            && $providerRequest['linkPreview'] === true);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
     public function test_segment_limit_never_silently_substitutes_template(): void
     {
         Http::fake();
