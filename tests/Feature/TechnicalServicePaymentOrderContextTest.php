@@ -636,7 +636,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
-        $mikro->shouldReceive('listStocks')->once()->andReturn(['ok' => false, 'error_code' => 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED']);
+        $mikro->shouldReceive('listStocks')->once()->andReturn(['success' => false, 'error_code' => 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED']);
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
 
         try {
@@ -654,16 +654,13 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
         $mikro->shouldReceive('listStocks')->once()->andReturn([
-            'ok' => true,
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
+            'stale' => false,
             'data' => [[
-                'stock_code' => 'GERCEK-001',
-                'stock_name' => 'Gerçek Parça',
+                'item_code' => 'GERCEK-001',
+                'item_name' => 'Gerçek Parça',
                 'unit_code' => 'ADET',
-                'warehouse_code' => '1',
-                'on_hand' => 5,
-                'reserved' => 1,
-                'available' => 4,
-                'serial_tracking_required' => false,
             ]],
         ]);
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
@@ -671,101 +668,72 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
         $this->assertSame('Mikro API', $result['source_label']);
         $this->assertSame('GERCEK-001', $result['items'][0]['item_code']);
+        $this->assertSame('2026-08-14T12:00:00+03:00', $result['items'][0]['freshness_at']);
+        $this->assertNull($result['items'][0]['warehouse_code']);
+        $this->assertNull($result['items'][0]['on_hand']);
+        $this->assertNull($result['items'][0]['reserved']);
+        $this->assertNull($result['items'][0]['available']);
+        $this->assertFalse($result['items'][0]['availability_verified']);
     }
 
-    public function test_real_part_selection_is_revalidated_with_typed_stock_availability(): void
+    public function test_identity_only_part_selection_is_blocked_before_unverified_stock_availability(): void
     {
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
         $mikro->shouldReceive('listStocks')->once()->andReturn([
-            'ok' => true,
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
             'data' => [[
-                'stock_code' => 'GERCEK-002',
-                'stock_name' => 'Gerçek Kilit Gövdesi',
+                'item_code' => 'GERCEK-002',
+                'item_name' => 'Gerçek Kilit Gövdesi',
                 'unit_code' => 'ADET',
-                'warehouse_code' => '1',
-                'on_hand' => 5,
-                'reserved' => 1,
-                'available' => 4,
-                'serial_tracking_required' => false,
             ]],
         ]);
-        $mikro->shouldReceive('stockAvailability')->once()->with('GERCEK-002')->andReturn([
-            'ok' => true,
-            'data' => [[
-                'depot_1_quantity' => 2,
-                'depot_5_quantity' => 3,
-                'available_quantity' => 3,
-            ]],
-        ]);
+        $mikro->shouldNotReceive('stockAvailability');
         $mikro->shouldNotReceive('serialLookup');
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
         $stock = $service->searchParts($request, 'GERCEK-002')['items'][0];
-        $preview = $service->preview($request, 'part_charge', [
-            ...$this->billingInput(),
-            'part_supplier' => 'emaks_prime',
-            'commercial_mode' => 'paid',
-            'delivery_mode' => 'shipment',
-            'stock_selection_token' => $stock['selection_token'],
-            'quantity' => 1,
-            'shipping_same_as_billing' => true,
-        ], 600, 'TRY');
 
-        $this->assertSame('GERCEK-002', $preview['part']['item_code']);
-        $this->assertSame(5.0, $preview['part']['on_hand']);
-        $this->assertSame(2.0, $preview['part']['reserved']);
-        $this->assertSame(3.0, $preview['part']['available']);
+        try {
+            $service->preview($request, 'part_charge', [
+                ...$this->billingInput(),
+                'part_supplier' => 'emaks_prime',
+                'commercial_mode' => 'paid',
+                'delivery_mode' => 'shipment',
+                'stock_selection_token' => $stock['selection_token'],
+                'quantity' => 1,
+                'shipping_same_as_billing' => true,
+            ], 600, 'TRY');
+            $this->fail('Unverified stock availability must block order/payment preparation.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('Stok miktarı henüz doğrulanmadı', $exception->errors()['order_context.stock_selection_token'][0]);
+        }
     }
 
-    public function test_serial_tracked_real_part_uses_typed_serial_lookup(): void
+    public function test_stock_list_does_not_expose_unverified_serial_tracking_state(): void
     {
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
         $mikro->shouldReceive('listStocks')->once()->andReturn([
-            'ok' => true,
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
             'data' => [[
-                'stock_code' => 'GERCEK-SERI-001',
-                'stock_name' => 'Seri Takipli Gerçek Parça',
+                'item_code' => 'GERCEK-SERI-001',
+                'item_name' => 'Gerçek Parça',
                 'unit_code' => 'ADET',
-                'warehouse_code' => '1',
-                'on_hand' => 1,
-                'reserved' => 0,
-                'available' => 1,
-                'serial_tracking_required' => true,
+                'serial_tracking_state' => 3,
             ]],
         ]);
-        $mikro->shouldReceive('stockAvailability')->once()->with('GERCEK-SERI-001')->andReturn([
-            'ok' => true,
-            'data' => [[
-                'depot_1_quantity' => 1,
-                'depot_5_quantity' => 0,
-                'available_quantity' => 1,
-            ]],
-        ]);
-        $mikro->shouldReceive('serialLookup')->once()->with('PART-SERIAL-001')->andReturn([
-            'ok' => true,
-            'data' => [[
-                'stock_code' => 'GERCEK-SERI-001',
-                'serial_number' => 'PART-SERIAL-001',
-            ]],
-        ]);
+        $mikro->shouldNotReceive('stockAvailability');
+        $mikro->shouldNotReceive('serialLookup');
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
         $stock = $service->searchParts($request, 'GERCEK-SERI-001')['items'][0];
-        $preview = $service->preview($request, 'part_charge', [
-            ...$this->billingInput(),
-            'part_supplier' => 'emaks_prime',
-            'commercial_mode' => 'paid',
-            'delivery_mode' => 'shipment',
-            'stock_selection_token' => $stock['selection_token'],
-            'selected_part_serial' => 'PART-SERIAL-001',
-            'quantity' => 1,
-            'shipping_same_as_billing' => true,
-        ], 600, 'TRY');
 
-        $this->assertTrue($preview['part']['serial_tracking_required']);
-        $this->assertSame('PART-SERIAL-001', $preview['part']['selected_part_serial']);
+        $this->assertFalse($stock['serial_tracking_required']);
+        $this->assertSame([], $stock['serials']);
+        $this->assertFalse($stock['availability_verified']);
     }
 
     public function test_free_hand_delivery_resolves_q_and_zero_vat(): void

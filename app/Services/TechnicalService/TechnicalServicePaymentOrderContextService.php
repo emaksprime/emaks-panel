@@ -86,7 +86,7 @@ class TechnicalServicePaymentOrderContextService
 
         try {
             $result = $this->mikro->listStocks($query, size: 20);
-            if (($result['ok'] ?? false) !== true) {
+            if (($result['success'] ?? $result['ok'] ?? false) !== true) {
                 throw new DomainException((string) ($result['error_code'] ?? 'MIKRO_STOCK_READ_UNAVAILABLE'));
             }
         } catch (Throwable $exception) {
@@ -98,26 +98,33 @@ class TechnicalServicePaymentOrderContextService
         }
 
         try {
+            $freshnessAt = filled($result['freshness_at'] ?? null)
+                ? (string) $result['freshness_at']
+                : now()->toISOString();
+            $sourceLabel = (bool) ($result['stale'] ?? false)
+                ? 'Mikro API (güncel olmayan doğrulanmış kayıt)'
+                : 'Mikro API';
             $rows = collect($result['data'] ?? $result['rows'] ?? $result['result'] ?? [])
                 ->filter(fn (mixed $row): bool => is_array($row))
                 ->take(20)
-                ->map(function (array $row) use ($request): array {
+                ->map(function (array $row) use ($request, $freshnessAt, $sourceLabel): array {
                     $item = [
-                        'item_code' => trim((string) ($row['stock_code'] ?? '')),
-                        'item_name' => trim((string) ($row['stock_name'] ?? '')),
-                        'unit_code' => trim((string) ($row['unit_code'] ?? 'ADET')) ?: 'ADET',
-                        'warehouse_code' => trim((string) ($row['warehouse_code'] ?? '')) ?: null,
-                        'on_hand' => is_numeric($row['on_hand'] ?? null) ? (float) $row['on_hand'] : null,
-                        'reserved' => is_numeric($row['reserved'] ?? null) ? (float) $row['reserved'] : null,
-                        'available' => is_numeric($row['available'] ?? null) ? (float) $row['available'] : null,
-                        'serial_tracking_required' => (bool) ($row['serial_tracking_required'] ?? false),
+                        'item_code' => trim((string) ($row['item_code'] ?? '')),
+                        'item_name' => trim((string) ($row['item_name'] ?? '')),
+                        'unit_code' => filled($row['unit_code'] ?? null) ? trim((string) $row['unit_code']) : null,
+                        'warehouse_code' => null,
+                        'on_hand' => null,
+                        'reserved' => null,
+                        'available' => null,
+                        'availability_verified' => false,
+                        'serial_tracking_required' => false,
                         'serials' => [],
                         'source' => 'mikro',
-                        'source_label' => 'Mikro API',
-                        'freshness_at' => now()->toISOString(),
+                        'source_label' => $sourceLabel,
+                        'freshness_at' => $freshnessAt,
                     ];
 
-                    if ($item['item_code'] === '' || $item['item_name'] === '' || $item['available'] === null) {
+                    if ($item['item_code'] === '' || $item['item_name'] === '') {
                         throw new DomainException('MIKRO_STOCK_SELECTION_SCHEMA_INCOMPLETE');
                     }
 
@@ -135,16 +142,16 @@ class TechnicalServicePaymentOrderContextService
         if ($rows->isEmpty()) {
             return [
                 'source' => 'mikro',
-                'source_label' => 'Mikro API',
-                'freshness_at' => now()->toISOString(),
+                'source_label' => $sourceLabel,
+                'freshness_at' => $freshnessAt,
                 'items' => [],
             ];
         }
 
         return [
             'source' => 'mikro',
-            'source_label' => 'Mikro API',
-            'freshness_at' => now()->toISOString(),
+            'source_label' => $sourceLabel,
+            'freshness_at' => $freshnessAt,
             'items' => $rows->all(),
         ];
     }
@@ -1305,6 +1312,10 @@ class TechnicalServicePaymentOrderContextService
                     'order_context.selected_part_serial' => 'Seri takipli parça için doğrulanmış parça seri numarasını seçin.',
                 ]);
             }
+        } elseif (! (bool) ($decoded['availability_verified'] ?? false)) {
+            throw ValidationException::withMessages([
+                'order_context.stock_selection_token' => 'Stok miktarı henüz doğrulanmadı. Parça kimliği bulundu; stok uygunluğu doğrulanmadan ödeme ve sipariş hazırlığı başlatılamaz.',
+            ]);
         } else {
             $availability = $this->mikro->stockAvailability(trim((string) ($decoded['item_code'] ?? '')));
             $availabilityRow = collect($availability['data'] ?? [])->first(fn (mixed $row): bool => is_array($row));

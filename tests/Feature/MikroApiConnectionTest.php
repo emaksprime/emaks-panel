@@ -6,6 +6,7 @@ use App\Models\TechnicalServiceRequestSerial;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Mikro\MikroApiClient;
+use App\Services\Mikro\MikroContractEvidenceCatalog;
 use App\Services\Mikro\MikroFixedQueryCatalog;
 use App\Services\Mikro\MikroOperationRegistry;
 use App\Services\Mikro\MikroParitySource;
@@ -55,8 +56,8 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
             ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 30)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 29)
+            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 2)
+            ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
             ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
@@ -579,15 +580,154 @@ class MikroApiConnectionTest extends TestCase
         $server = $client->listStocks('TEST');
         $fixed = $client->orderLines('123e4567-e89b-42d3-a456-426614174000', 10);
 
-        foreach ([$auth, $server] as $result) {
+        foreach ([$auth] as $result) {
             $this->assertSame(MikroOperationRegistry::BLOCKED_RESPONSE_SCHEMA, $result['error_code']);
             $this->assertSame(0, $result['attempt_count']);
             $this->assertFalse($result['fallback_used']);
         }
+        $this->assertSame(MikroOperationRegistry::BLOCKED_DISABLED, $server['error_code']);
+        $this->assertSame(0, $server['attempt_count']);
+        $this->assertFalse($server['fallback_used']);
         $this->assertSame(MikroOperationRegistry::BLOCKED_SERVER_CANARY, $fixed['error_code']);
         $this->assertSame(0, $fixed['attempt_count']);
         $this->assertFalse($fixed['fallback_used']);
         Http::assertNothingSent();
+    }
+
+    public function test_stock_list_contract_discovery_never_persists_raw_payload_and_redacts_credentials(): void
+    {
+        $evidence = MikroContractEvidenceCatalog::for('stock.list', 'READ', 'DIRECT_ENDPOINT');
+        $encoded = json_encode($evidence, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('OFFICIAL_AND_SERVER_VERIFIED', $evidence['evidence_status']);
+        $this->assertSame('PASS_3_BOUNDED_HTTP_200_STABLE_WRAPPER_2026-08-14', $evidence['installed_server_canary']);
+        $this->assertSame('df832a6ade1c421c7decd0aa69ede26ba0abcfd1f5c0cc3f9178d3e24c0fdf6c', $evidence['evidence_hash']);
+        $this->assertStringNotContainsString('raw_response_body', $encoded);
+        $this->assertStringNotContainsString('raw_payload', $encoded);
+        $this->assertStringNotContainsString('password_value', $encoded);
+        $this->assertStringNotContainsString('api_key_value', $encoded);
+        Http::assertNothingSent();
+    }
+
+    public function test_stock_list_schema_matches_installed_server_fingerprint(): void
+    {
+        $schema = app(MikroResponseSchemaCatalog::class)->descriptor('stock.list');
+
+        $this->assertSame(MikroResponseSchemaCatalog::VERIFIED, $schema['schema_status']);
+        $this->assertSame(MikroResponseSchemaCatalog::STOCK_LIST_CONTRACT_VERSION, $schema['contract_version']);
+        $this->assertSame('$.result[].Data.StokListesi[]', $schema['collection_path']);
+        $this->assertSame(MikroResponseSchemaCatalog::STOCK_LIST_RESPONSE_SCHEMA_FINGERPRINT, $schema['response_schema_fingerprint']);
+        $this->assertSame(MikroResponseSchemaCatalog::STOCK_LIST_NOT_FOUND_FINGERPRINT, $schema['not_found_schema_fingerprint']);
+        $this->assertSame(['sto_kod', 'sto_isim'], $schema['required_record_fields']);
+        $this->assertSame(['item_code', 'item_name', 'unit_code'], $schema['normalized_fields']);
+        Http::assertNothingSent();
+    }
+
+    public function test_stock_list_normalizer_drops_unknown_fields_and_preserves_null_without_inventing_values(): void
+    {
+        $schemas = app(MikroResponseSchemaCatalog::class);
+        $normalized = $schemas->normalize('stock.list', [[
+            'StatusCode' => 200,
+            'Data' => ['StokListesi' => [[
+                'sto_kod' => 'STOK-001',
+                'sto_isim' => 'Gercek Parca',
+                'sto_birim1_ad' => null,
+                'sto_min_stok' => 25,
+                'sto_toptan_vergi' => 20,
+                'warehouse_code' => 'SHOULD-DROP',
+                'available' => 999,
+                'api_key' => 'SHOULD-DROP',
+            ]]],
+            'ErrorMessage' => '',
+            'IsError' => false,
+        ]]);
+
+        $this->assertSame([[
+            'item_code' => 'STOK-001',
+            'item_name' => 'Gercek Parca',
+            'unit_code' => null,
+        ]], $normalized);
+        $this->assertArrayNotHasKey('available', $normalized[0]);
+        $this->assertArrayNotHasKey('vat_rate', $normalized[0]);
+        $this->assertSame([], $schemas->normalize('stock.list', [[
+            'StatusCode' => 200,
+            'Data' => null,
+            'ErrorMessage' => '',
+            'IsError' => false,
+        ]]));
+        Http::assertNothingSent();
+    }
+
+    public function test_stock_list_requires_item_identity(): void
+    {
+        $this->expectException(DomainException::class);
+        $this->expectExceptionMessage('MIKRO_INVALID_RESPONSE');
+
+        app(MikroResponseSchemaCatalog::class)->normalize('stock.list', [[
+            'StatusCode' => 200,
+            'Data' => ['StokListesi' => [[
+                'sto_isim' => 'Kodsuz Parca',
+                'sto_birim1_ad' => 'ADET',
+            ]]],
+            'ErrorMessage' => '',
+            'IsError' => false,
+        ]]);
+    }
+
+    public function test_stock_list_runtime_enablement_requires_verified_schema_and_performs_zero_write(): void
+    {
+        $secrets = $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                    'operation_controls' => [
+                        'stock.list' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.read_sync_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false);
+
+        Http::fake([
+            'https://mikro-api.example.test/Api/APIMethods/StokListesiV2' => Http::response([
+                'result' => [[
+                    'StatusCode' => 200,
+                    'Data' => ['StokListesi' => [[
+                        'sto_kod' => 'STOK-002',
+                        'sto_isim' => 'Typed Mikro Parca',
+                        'sto_birim1_ad' => 'ADET',
+                        'sto_pasif_fl' => false,
+                        'sto_detay_takip' => 0,
+                        'unexpected_secret' => 'DROP-ME',
+                    ]]],
+                    'ErrorMessage' => '',
+                    'IsError' => false,
+                ]],
+            ], 200),
+        ]);
+
+        $result = app(MikroApiClient::class)->listStocks('STOK-002', size: 1);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame([[
+            'item_code' => 'STOK-002',
+            'item_name' => 'Typed Mikro Parca',
+            'unit_code' => 'ADET',
+        ]], $result['data']);
+        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($secrets['api_key'], $encoded);
+        $this->assertStringNotContainsString($secrets['password'], $encoded);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://mikro-api.example.test/Api/APIMethods/StokListesiV2'
+            && $request->method() === 'POST'
+            && $request['StokKod'] === 'STOK-002'
+            && $request['Size'] === '1');
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('stock.availability')['runtime_enabled']);
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
     }
 
     public function test_operation_schemas_drop_unknown_fields_and_re_sanitize_last_good_snapshots(): void

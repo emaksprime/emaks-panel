@@ -27,11 +27,11 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame(9, $summary['direct_endpoint_count']);
         $this->assertSame(21, $summary['fixed_query_count']);
         $this->assertSame(13, $summary['contract_blocked_count']);
-        $this->assertSame(1, $summary['server_verified_read_count']);
-        $this->assertSame(29, $summary['server_unverified_count']);
-        $this->assertSame(1, $summary['runtime_eligible_read_count']);
-        $this->assertSame(22, $summary['response_schema_verified_count']);
-        $this->assertSame(10, $summary['response_schema_missing_count']);
+        $this->assertSame(2, $summary['server_verified_read_count']);
+        $this->assertSame(28, $summary['server_unverified_count']);
+        $this->assertSame(2, $summary['runtime_eligible_read_count']);
+        $this->assertSame(23, $summary['response_schema_verified_count']);
+        $this->assertSame(9, $summary['response_schema_missing_count']);
         $this->assertSame(21, $summary['parity_status_counts']['VERIFIED_SOURCE']);
         $this->assertSame(8, $summary['parity_status_counts']['PENDING_SOURCE']);
         $this->assertSame(1, $summary['parity_status_counts']['NOT_APPLICABLE_SYSTEM']);
@@ -79,6 +79,9 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame('order.list', $registry->read('order.list')['fixed_query_id']);
         $this->assertSame('DOCUMENTED_SERVER_UNVERIFIED', $registry->read('customer.list')['evidence_status']);
         $this->assertFalse($registry->read('customer.list')['runtime_eligible']);
+        $this->assertSame('OFFICIAL_AND_SERVER_VERIFIED', $registry->read('stock.list')['evidence_status']);
+        $this->assertTrue($registry->read('stock.list')['runtime_eligible']);
+        $this->assertFalse($registry->read('stock.list')['runtime_enabled']);
 
         $queries = app(MikroFixedQueryCatalog::class);
         $definition = $queries->definition('invoice.list');
@@ -194,6 +197,18 @@ class MikroOperationRegistryTest extends TestCase
         } catch (DomainException $exception) {
             $this->assertSame(MikroOperationRegistry::BLOCKED_SERVER_CANARY, $exception->getMessage());
         }
+
+        $stock = $registry->assertReadAllowed('stock.list', [
+            'enabled' => true,
+            'read_sync_enabled' => false,
+            'operation_controls' => [
+                'stock.list' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+            ],
+        ]);
+        $this->assertTrue($stock['runtime_enabled']);
+        $this->assertSame('mikro', $stock['source_mode']);
+        $this->assertFalse($registry->read('stock.availability')['runtime_enabled']);
+        $this->assertFalse($registry->read('serial.lookup')['runtime_enabled']);
     }
 
     public function test_write_gate_requires_master_operation_approval_and_idempotency(): void

@@ -47,6 +47,21 @@ const stockItems = [
     freshness_at: '2026-08-14T06:00:00+03:00',
     selection_token: 'motor-token',
   },
+  {
+    item_code: 'EMK-IDENTITY-003',
+    item_name: 'Mikro Kimlik Parçası',
+    unit_code: 'ADET',
+    warehouse_code: null,
+    on_hand: null,
+    reserved: null,
+    available: null,
+    serial_tracking_required: false,
+    serials: [],
+    source: 'mikro',
+    source_label: 'Mikro API',
+    freshness_at: '2026-08-14T12:00:00+03:00',
+    selection_token: 'identity-only-token',
+  },
 ]
 
 const previewResponse = (payload) => {
@@ -359,6 +374,29 @@ const inspectViewport = async (browser, name, viewport) => {
   await dialog.getByRole('button', { name: 'Link oluştur', exact: true }).dblclick()
   await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 1)
   assert(await output(page, 'payment-order-create-count') === '1', `${name}: mount double-click emitted duplicate command`)
+  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
+
+  dialog = await openPaymentModal(page)
+  await dialog.getByLabel('Tahsilat amacı').selectOption('part_charge')
+  await dialog.getByRole('button', { name: 'EMAKS Prime', exact: true }).click()
+  const identitySearch = dialog.getByLabel('Mikro stok parçası ara')
+  const previewCountBeforeIdentitySelection = counters.preview
+  await identitySearch.fill('IDENTITY')
+  const identityOnly = dialog.getByTestId('mikro-part-search-results').getByRole('button', { name: /EMK-IDENTITY-003/ })
+  await identityOnly.waitFor({ state: 'visible' })
+  const identityText = await text(identityOnly)
+  assert(identityText.includes('Mikro API'), `${name}: identity-only result omits Mikro source`)
+  assert(identityText.includes('Güncellik:'), `${name}: identity-only result omits freshness`)
+  assert(identityText.includes('Stok miktarı henüz doğrulanmadı.'), `${name}: identity-only result omits availability blocker`)
+  assert(!identityText.includes('Depo:'), `${name}: identity-only result invents warehouse`)
+  assert(!identityText.includes('Eldeki:'), `${name}: identity-only result invents on-hand quantity`)
+  assert(!identityText.includes('Rezerve:'), `${name}: identity-only result invents reserved quantity`)
+  assert(!identityText.includes('Kullanılabilir:'), `${name}: identity-only result invents available quantity`)
+  assert(!identityText.includes('Seri takibi:'), `${name}: identity-only result invents serial state`)
+  await identityOnly.click()
+  assert(await dialog.getByText('Stok uygunluğu doğrulanmadan ödeme ve sipariş hazırlığı başlatılamaz.', { exact: true }).count() === 1, `${name}: identity-only selection is not blocked`)
+  await page.waitForTimeout(450)
+  assert(counters.preview === previewCountBeforeIdentitySelection, `${name}: identity-only selection triggered payment/order preview`)
   await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
 
   const chooseEmaksPart = async () => {

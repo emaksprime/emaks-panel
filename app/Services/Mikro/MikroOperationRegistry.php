@@ -134,12 +134,17 @@ class MikroOperationRegistry
     /** @return array<string, mixed> */
     public function assertReadAllowed(string $operationKey, array $settings): array
     {
-        $operation = $this->applyControl($this->read($operationKey), (array) ($settings['operation_controls'][$operationKey] ?? []));
+        $control = (array) ($settings['operation_controls'][$operationKey] ?? []);
+        $operation = $this->applyControl($this->read($operationKey), $control);
         $isHealthCheck = $operationKey === 'health.check';
+        $explicitOnDemandRead = array_key_exists('runtime_enabled', $control)
+            && (bool) $control['runtime_enabled'];
         if (! $isHealthCheck && ! (bool) ($settings['enabled'] ?? false)) {
             throw new DomainException('MIKRO_DISABLED');
         }
-        if (! $isHealthCheck && ! (bool) ($settings['read_sync_enabled'] ?? false)) {
+        if (! $isHealthCheck
+            && ! (bool) ($settings['read_sync_enabled'] ?? false)
+            && ! $explicitOnDemandRead) {
             throw new DomainException('MIKRO_READ_SYNC_DISABLED');
         }
         if (($operation['response_schema_status'] ?? null) !== MikroResponseSchemaCatalog::VERIFIED) {
@@ -486,6 +491,9 @@ class MikroOperationRegistry
             'business_parity_source' => $evidence['business_parity_source'],
             'evidence_hash' => $evidence['evidence_hash'],
             'api_key_field' => $evidence['api_key_field'],
+            'contract_version' => $evidence['contract_version'] ?? null,
+            'response_schema_fingerprint' => $evidence['response_schema_fingerprint'] ?? null,
+            'not_found_schema_fingerprint' => $evidence['not_found_schema_fingerprint'] ?? null,
         ];
     }
 

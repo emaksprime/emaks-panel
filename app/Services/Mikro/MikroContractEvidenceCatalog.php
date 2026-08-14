@@ -88,8 +88,19 @@ final class MikroContractEvidenceCatalog
             'method' => 'POST',
             'path' => '/Api/APIMethods/StokListesiV2',
             'request' => ['IlkTarih', 'Index', 'Mikro', 'Mikro.ApiKey', 'Mikro.CalismaYili', 'Mikro.FirmaKodu', 'Mikro.KullaniciKodu', 'Mikro.Sifre', 'Size', 'SonTarih', 'Sort', 'StokKod', 'TarihTipi'],
-            'response' => ['UNSPECIFIED_IN_SOURCE'],
-            'evidence_hash' => '2c34696ea1d0e33cc74089f63d789b4b3a49f8e31b999be1f9620d4a9615f5c3',
+            'response' => ['result', 'result[].Data', 'result[].Data.StokListesi', 'result[].ErrorMessage', 'result[].IsError', 'result[].StatusCode'],
+            'status' => 'OFFICIAL_AND_SERVER_VERIFIED',
+            'canary' => 'PASS_3_BOUNDED_HTTP_200_STABLE_WRAPPER_2026-08-14',
+            'runtime_enabled' => false,
+            'contract_version' => MikroResponseSchemaCatalog::STOCK_LIST_CONTRACT_VERSION,
+            'response_schema_fingerprint' => MikroResponseSchemaCatalog::STOCK_LIST_RESPONSE_SCHEMA_FINGERPRINT,
+            'not_found_schema_fingerprint' => MikroResponseSchemaCatalog::STOCK_LIST_NOT_FOUND_FINGERPRINT,
+            'installed_evidence' => [
+                'type' => 'installed_server_structural_probe',
+                'uri' => 'evidence://MikroStockContractDiscovery/20260814T120225Z',
+                'sha256' => 'df832a6ade1c421c7decd0aa69ede26ba0abcfd1f5c0cc3f9178d3e24c0fdf6c',
+            ],
+            'evidence_hash' => 'df832a6ade1c421c7decd0aa69ede26ba0abcfd1f5c0cc3f9178d3e24c0fdf6c',
         ],
         'invoice.pdf' => [
             'page' => 'https://apidocs.mikro.com.tr/apis/e-fatura-islemleri/paths/~1api~1apimethods~1faturapdfv2/post.md',
@@ -215,6 +226,9 @@ final class MikroContractEvidenceCatalog
         if ($entry['local_item'] !== null) {
             $sources[] = self::localPostmanSource();
         }
+        if (is_array($entry['installed_evidence'] ?? null)) {
+            $sources[] = $entry['installed_evidence'];
+        }
         $status = $entry['status'] ?? 'DOCUMENTED_SERVER_UNVERIFIED';
 
         return self::descriptor([
@@ -239,6 +253,10 @@ final class MikroContractEvidenceCatalog
             'evidence_hash' => $entry['evidence_hash'],
             'api_key_field' => $entry['api_key_field'] ?? 'ApiKey',
             'blocker' => $status === 'OFFICIAL_AND_SERVER_VERIFIED' ? null : 'Authenticated installed-server canary is pending Panel credentials.',
+            'contract_version' => $entry['contract_version'] ?? null,
+            'response_schema_fingerprint' => $entry['response_schema_fingerprint'] ?? null,
+            'not_found_schema_fingerprint' => $entry['not_found_schema_fingerprint'] ?? null,
+            'runtime_enabled' => (bool) ($entry['runtime_enabled'] ?? ($status === 'OFFICIAL_AND_SERVER_VERIFIED')),
         ]);
     }
 
@@ -372,7 +390,7 @@ final class MikroContractEvidenceCatalog
 
         return [
             ...$values,
-            'runtime_enabled' => (bool) $values['runtime_eligible'],
+            'runtime_enabled' => (bool) ($values['runtime_enabled'] ?? $values['runtime_eligible']),
             'source_document' => $sources[0]['uri'] ?? null,
             'official_doc_reference' => $values['official_api_page'],
             'official_method' => $values['exact_http_method'],
@@ -389,6 +407,9 @@ final class MikroContractEvidenceCatalog
             'official_changelog_reference' => null,
             'depot_source_file' => $values['depot_source_file'] ?? null,
             'depot_method' => $values['depot_method'] ?? null,
+            'contract_version' => $values['contract_version'] ?? null,
+            'response_schema_fingerprint' => $values['response_schema_fingerprint'] ?? null,
+            'not_found_schema_fingerprint' => $values['not_found_schema_fingerprint'] ?? null,
         ];
     }
 

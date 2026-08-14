@@ -61,6 +61,13 @@ type PaymentOrderPartSearchResponse = {
   items?: ServiceRequestMikroPartSearchItem[]
 }
 
+const hasVerifiedStockAvailability = (item: ServiceRequestMikroPartSearchItem | null): boolean => Boolean(
+  item
+  && typeof item.on_hand === 'number'
+  && typeof item.reserved === 'number'
+  && typeof item.available === 'number',
+)
+
 type AssignmentEarningDraft = {
   laborAmount: string
   routeFeeAmount: string
@@ -2376,6 +2383,7 @@ export function ServiceRequestDetails({
       && (
         (orderPartSupplier === 'emaks_prime'
           && orderSelectedPart !== null
+          && hasVerifiedStockAvailability(orderSelectedPart)
           && (!orderSelectedPart.serial_tracking_required || orderSelectedPartSerial !== ''))
         || (orderPartSupplier === 'technician' && orderTechnicianPartName.trim() !== '')
       )
@@ -4924,10 +4932,19 @@ errors.lastName = 'Soyad alanı zorunludur.'
                           className={`grid gap-1 rounded-md border p-3 text-left text-xs transition ${orderSelectedPart?.selection_token === item.selection_token ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-300'}`}
                         >
                           <span className="font-semibold text-slate-950">{item.item_code} · {item.item_name}</span>
-                          <span className="text-slate-600">Birim: {item.unit_code} · Depo: {item.warehouse_code ?? '-'}</span>
-                          <span className="text-slate-600">Eldeki: {item.on_hand ?? '-'} · Rezerve: {item.reserved ?? '-'} · Kullanılabilir: {item.available ?? '-'}</span>
+                          {item.unit_code ? <span className="text-slate-600">Birim: {item.unit_code}</span> : null}
+                          {hasVerifiedStockAvailability(item) ? (
+                            <>
+                              {item.warehouse_code ? <span className="text-slate-600">Depo: {item.warehouse_code}</span> : null}
+                              <span className="text-slate-600">Eldeki: {item.on_hand} · Rezerve: {item.reserved} · Kullanılabilir: {item.available}</span>
+                            </>
+                          ) : (
+                            <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-900">
+                              Stok miktarı henüz doğrulanmadı. Parça kimliği Mikro API’den bulundu; stok uygunluğu ayrıca kontrol edilecek.
+                            </span>
+                          )}
                           <span className="flex flex-wrap items-center gap-2 text-slate-600">
-                            Seri takibi: {item.serial_tracking_required ? 'Var' : 'Yok'}
+                            {hasVerifiedStockAvailability(item) ? <span>Seri takibi: {item.serial_tracking_required ? 'Var' : 'Yok'}</span> : null}
                             <Badge variant="outline">{item.source_label}</Badge>
                             <span>Güncellik: {dateTimeOrEmpty(item.freshness_at, '-')}</span>
                           </span>
@@ -4938,6 +4955,9 @@ errors.lastName = 'Soyad alanı zorunludur.'
                   {orderSelectedPart ? (
                     <div data-testid="selected-payment-part" className="grid gap-2 rounded-md border border-blue-200 bg-white p-3 text-xs text-slate-700">
                       <p className="font-semibold text-slate-950">Seçilen parça: {orderSelectedPart.item_code} · {orderSelectedPart.item_name}</p>
+                      {!hasVerifiedStockAvailability(orderSelectedPart) ? (
+                        <p className="font-semibold text-amber-800">Stok uygunluğu doğrulanmadan ödeme ve sipariş hazırlığı başlatılamaz.</p>
+                      ) : null}
                       <label className="grid gap-1 font-semibold">
                         3. Adet
                         <Input type="number" min="0.001" step="1" value={orderPartQuantity} onChange={(event) => setOrderPartQuantity(event.target.value)} />
