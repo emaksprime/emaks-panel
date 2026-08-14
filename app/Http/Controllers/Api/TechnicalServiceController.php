@@ -1203,7 +1203,7 @@ class TechnicalServiceController extends Controller
         TechnicalServicePaymentOrderContextService $orderContexts,
     ): JsonResponse {
         $validated = $request->validate([
-            'query' => ['required', 'string', 'min:2', 'max:120'],
+            'query' => ['required', 'string', 'min:2', 'max:60'],
         ]);
 
         return response()->json([
@@ -1478,6 +1478,21 @@ class TechnicalServiceController extends Controller
             }
 
             $preparedProjection = $orderContexts->contextProjection($preparedContext['context']);
+            if (data_get($preparedProjection, 'readiness.ready') === false) {
+                return response()->json([
+                    'ok' => true,
+                    'message' => (string) (data_get($preparedProjection, 'readiness.blockers.0')
+                        ?? 'Parça hazırlığı taslak olarak kaydedildi; ödeme ve sipariş hazırlığı henüz tamamlanamaz.'),
+                    'payment' => null,
+                    'order_context' => $preparedProjection,
+                    'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+                    'external_execution' => [
+                        'payment_provider' => 0,
+                        'mikro_write' => 0,
+                        'hepsijet' => 0,
+                    ],
+                ], $preparedContext['created'] ? 201 : 200);
+            }
             if (($preparedProjection['payment_link_required'] ?? true) === false) {
                 $context = $orderContexts->finalizeWithoutPayment($preparedContext['context'], $actor);
 

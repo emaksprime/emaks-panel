@@ -18,6 +18,10 @@ final class MikroResponseSchemaCatalog
 
     public const STOCK_LIST_NOT_FOUND_FINGERPRINT = 'fac4b5dd5e7d78308a38f3d7b12a2f9a50e58324c6bf45b8e100180f90f84bad';
 
+    public const STOCK_SEARCH_CONTRACT_VERSION = 'technical-service-part-search-v1';
+
+    public const STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT = '163a6d6ad41ab836835badc50dfeb2c56cceb289a2ca949b773f47ca68a82064';
+
     /** @var array<string, array<int, string>> */
     private const VERIFIED_FIELDS = [
         'health.check' => ['service_status'],
@@ -93,6 +97,35 @@ final class MikroResponseSchemaCatalog
             ];
         }
 
+        if ($operationKey === 'stock.search') {
+            return [
+                'operation_key' => $operationKey,
+                'schema_status' => self::VERIFIED,
+                'normalizer_id' => self::STOCK_SEARCH_CONTRACT_VERSION,
+                'contract_version' => self::STOCK_SEARCH_CONTRACT_VERSION,
+                'response_schema_fingerprint' => self::STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT,
+                'allowed_top_level_fields' => ['result'],
+                'allowed_record_fields' => [
+                    'item_code',
+                    'item_name',
+                    'item_short_name',
+                    'unit_code',
+                    'stock_type',
+                    'detail_tracking_type',
+                    'cancelled',
+                    'hidden',
+                ],
+                'required_record_fields' => ['item_code', 'item_name', 'stock_type', 'detail_tracking_type', 'cancelled', 'hidden'],
+                'nullable_record_fields' => ['item_short_name', 'unit_code'],
+                'normalized_fields' => ['item_code', 'item_name', 'item_short_name', 'unit_code', 'stock_type', 'detail_tracking_type', 'cancelled', 'hidden'],
+                'field_mapping' => [],
+                'nested_mapping' => [],
+                'sensitive_fields' => ['api_key', 'apikey', 'password', 'sifre', 'token', 'authorization'],
+                'snapshot_allowed' => true,
+                'blocker' => null,
+            ];
+        }
+
         $fields = self::VERIFIED_FIELDS[$operationKey] ?? null;
         if (is_array($fields)) {
             return [
@@ -141,6 +174,9 @@ final class MikroResponseSchemaCatalog
         if ($operationKey === 'stock.list') {
             return $this->normalizeStockList($rows, $schema);
         }
+        if ($operationKey === 'stock.search') {
+            return $this->normalizeStockSearch($rows);
+        }
 
         $allowed = array_flip($schema['allowed_record_fields']);
         $normalized = [];
@@ -181,6 +217,9 @@ final class MikroResponseSchemaCatalog
 
         if ($operationKey === 'stock.list') {
             return $this->sanitizeStockListSnapshot($data);
+        }
+        if ($operationKey === 'stock.search') {
+            return $this->normalizeStockSearch($data);
         }
 
         return $this->normalize($operationKey, $data);
@@ -285,5 +324,58 @@ final class MikroResponseSchemaCatalog
         }
 
         return $sanitized;
+    }
+
+    /** @param array<int, array<string, mixed>> $rows @return array<int, array<string, mixed>> */
+    private function normalizeStockSearch(array $rows): array
+    {
+        $normalized = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)
+                || ! is_string($row['item_code'] ?? null)
+                || trim($row['item_code']) === ''
+                || ! is_string($row['item_name'] ?? null)
+                || trim($row['item_name']) === '') {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            foreach (['item_short_name', 'unit_code'] as $field) {
+                if (array_key_exists($field, $row) && ! is_string($row[$field]) && $row[$field] !== null) {
+                    throw new DomainException('MIKRO_INVALID_RESPONSE');
+                }
+            }
+            foreach (['stock_type', 'detail_tracking_type'] as $field) {
+                if (! array_key_exists($field, $row)
+                    || filter_var($row[$field], FILTER_VALIDATE_INT) === false) {
+                    throw new DomainException('MIKRO_INVALID_RESPONSE');
+                }
+            }
+
+            foreach (['cancelled', 'hidden'] as $field) {
+                if (! array_key_exists($field, $row)
+                    || (! is_bool($row[$field]) && filter_var($row[$field], FILTER_VALIDATE_INT) === false)) {
+                    throw new DomainException('MIKRO_INVALID_RESPONSE');
+                }
+            }
+
+            $cancelled = (int) $row['cancelled'];
+            $hidden = (int) $row['hidden'];
+            if (! in_array($cancelled, [0, 1], true) || ! in_array($hidden, [0, 1], true)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $normalized[] = [
+                'item_code' => trim($row['item_code']),
+                'item_name' => trim($row['item_name']),
+                'item_short_name' => filled($row['item_short_name'] ?? null) ? trim((string) $row['item_short_name']) : null,
+                'unit_code' => filled($row['unit_code'] ?? null) ? trim((string) $row['unit_code']) : null,
+                'stock_type' => (int) $row['stock_type'],
+                'detail_tracking_type' => (int) $row['detail_tracking_type'],
+                'cancelled' => (bool) $cancelled,
+                'hidden' => (bool) $hidden,
+            ];
+        }
+
+        return $normalized;
     }
 }

@@ -1656,22 +1656,68 @@ function Harness() {
             const taxMode = desiredSeries === 'Q'
               ? 'none'
               : purpose === 'mount_collection' ? 'standard_from_mikro_service_item' : supplier === 'emaks_prime' ? 'standard_from_mikro' : null
-            const amount = Number(payload.amount ?? payload.service_amount ?? 0)
-            const orderLineTotal = commercialMode === 'free' && deliveryMode === 'shipment' ? 0 : amount
+            const stockByToken = new Map([
+              ['tkn-token', { item_code: 'TKN000009', item_name: 'DDL 720 DIŞ DOKUMATİK', item_short_name: 'DIŞ DOKUMATİK', unit_code: 'ADET', serial_tracking_state: 'not_required' }],
+              ['part-two-token', { item_code: 'TKN000010', item_name: 'DDL 720 İç Göbek', item_short_name: 'İç Göbek', unit_code: 'ADET', serial_tracking_state: 'not_required' }],
+              ['serial-part-token', { item_code: 'TKN000011', item_name: 'Seri Takipli Motor', item_short_name: null, unit_code: 'ADET', serial_tracking_state: 'required' }],
+            ])
+            const inputLines = Array.isArray(orderInput.lines) ? orderInput.lines : []
+            const partLines = supplier === 'emaks_prime'
+              ? inputLines.map((line, index) => {
+                  const stock = stockByToken.get(String(line.stock_selection_token ?? '')) ?? {
+                    item_code: `UNKNOWN-${index + 1}`,
+                    item_name: 'Doğrulanmamış satır',
+                    item_short_name: null,
+                    unit_code: 'ADET',
+                    serial_tracking_state: 'unverified',
+                  }
+                  const quantity = Number(line.quantity ?? 0)
+                  const unitPrice = commercialMode === 'free' && deliveryMode === 'shipment' ? 0 : Number(line.unit_price ?? 0)
+                  const lineTotal = Math.round(quantity * unitPrice * 100) / 100
+
+                  return {
+                    id: null,
+                    line_key: stock.item_code,
+                    position: index + 1,
+                    selection_token: String(line.stock_selection_token ?? ''),
+                    ...stock,
+                    item_kind: 'part' as const,
+                    classification_source: 'mikro_stock_type',
+                    classification_contract_version: 'technical-service-part-classification-v1',
+                    quantity,
+                    unit_price: unitPrice,
+                    unit_price_label: `${unitPrice.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`,
+                    line_total: lineTotal,
+                    line_total_label: `${lineTotal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`,
+                    currency: payload.currency ?? 'TRY',
+                    warehouse_code: null,
+                    stock_source: 'mikro',
+                    stock_source_label: 'Mikro API',
+                    stock_freshness_at: '2026-08-14T15:00:00+03:00',
+                    availability_verified: false,
+                    serial_tracking_required: stock.serial_tracking_state === 'required',
+                    selected_part_serial: null,
+                  }
+                })
+              : []
+            const requestedAmount = Number(payload.amount ?? payload.service_amount ?? 0)
+            const orderLineTotal = supplier === 'emaks_prime'
+              ? Math.round(partLines.reduce((total, line) => total + Number(line.line_total ?? 0), 0) * 100) / 100
+              : commercialMode === 'free' && deliveryMode === 'shipment' ? 0 : requestedAmount
+            const amount = supplier === 'emaks_prime' ? orderLineTotal : requestedAmount
             const collectionAmount = collectionRequired ? amount : 0
-            const paymentStatus = collectionRequired ? (paymentLinkRequired ? 'paid' : 'pending') : 'not_required'
-            const stateValue = paymentLinkRequired
+            const readinessBlocked = purpose === 'part_charge' && supplier === 'emaks_prime'
+            const paymentStatus = collectionRequired ? (paymentLinkRequired && !readinessBlocked ? 'paid' : 'pending') : 'not_required'
+            const stateValue = readinessBlocked
+              ? 'draft'
+              : paymentLinkRequired
               ? 'paid_waiting_mikro_write'
               : paymentStatus === 'not_required' ? 'ready_without_collection' : 'manual_collection_pending'
-            const stateLabel = paymentLinkRequired
+            const stateLabel = readinessBlocked
+              ? 'Parça taslağı; stok uygunluğu bekleniyor'
+              : paymentLinkRequired
               ? (supplier === 'technician' ? 'Ödeme alındı; Mikro siparişi gerekmiyor' : 'Ödeme alındı; Mikro yazımı bekliyor')
               : paymentStatus === 'not_required' ? 'Tahsilat gerekmiyor' : 'Ödeme bekleniyor'
-            const itemName = supplier === 'technician'
-              ? orderInput.technician_part_name ?? 'Usta parçası'
-              : orderInput.stock_selection_token === 'motor-token' ? 'Akıllı Kilit Motor Modülü' : 'Gateway'
-            const itemCode = supplier === 'technician'
-              ? orderInput.technician_part_code ?? null
-              : orderInput.stock_selection_token === 'motor-token' ? 'EMK-MOTOR-002' : 'EMK-GW-001'
             const manualBilling = orderInput.billing
             const billing = orderInput.billing_source === 'manual_billing_draft' && manualBilling
               ? {
@@ -1715,9 +1761,47 @@ function Harness() {
               city: sameAsBilling ? billing.city : request.technicianProfile?.city,
               district: sameAsBilling ? billing.district : request.technicianProfile?.district,
             } : null
+            const contextLines = supplier === 'emaks_prime'
+              ? partLines
+              : supplier === 'technician'
+                ? [{
+                    id: null,
+                    line_key: orderInput.technician_part_code ?? orderInput.technician_part_name ?? 'technician-part',
+                    position: 1,
+                    item_code: orderInput.technician_part_code ?? null,
+                    item_name: orderInput.technician_part_name ?? 'Usta parçası',
+                    item_short_name: null,
+                    item_kind: 'part' as const,
+                    classification_source: 'technician_declaration',
+                    classification_contract_version: 'technical-service-part-classification-v1',
+                    quantity: Number(orderInput.quantity ?? 1),
+                    unit_code: 'ADET',
+                    unit_price: amount,
+                    unit_price_label: `${amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`,
+                    line_total: amount,
+                    line_total_label: `${amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`,
+                    currency: payload.currency ?? 'TRY',
+                    warehouse_code: null,
+                    stock_source: 'technician_declaration',
+                    stock_source_label: 'Usta beyanı',
+                    stock_freshness_at: '2026-08-14T15:00:00+03:00',
+                    availability_verified: false,
+                    serial_tracking_state: 'not_required' as const,
+                    serial_tracking_required: false,
+                    selected_part_serial: null,
+                  }]
+                : []
+            const firstPart = contextLines[0] ?? null
+            const totalQuantity = contextLines.reduce((total, line) => total + Number(line.quantity ?? 0), 0)
+            const money = (value: number) => `${value.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL`
+            const descriptionLines = contextLines.map((line, index) => [
+              `${index + 1}. ${line.quantity} ${line.unit_code ?? 'ADET'} · ${line.item_code ?? '-'} · ${line.item_name}`,
+              `   BİRİM TUTAR: ${money(Number(line.unit_price ?? 0))}`,
+              `   SATIR TOPLAMI: ${money(Number(line.line_total ?? 0))}`,
+            ].join('\n')).join('\n\n')
             const context: ServiceRequestPaymentOrderContext = {
               id: 9800 + state.paymentCreateCount,
-              payment_id: paymentLinkRequired ? 9900 + state.paymentCreateCount : null,
+              payment_id: paymentLinkRequired && !readinessBlocked ? 9900 + state.paymentCreateCount : null,
               request_id: request.id,
               root_request_id: request.id,
               srv_request_id: null,
@@ -1741,17 +1825,11 @@ function Harness() {
               part_supplier_label: supplier === 'technician' ? 'Usta' : supplier === 'emaks_prime' ? 'EMAKS Prime' : null,
               collection_allocation: supplier === 'technician' ? 'pay_technician' : supplier === 'emaks_prime' ? 'retain_company' : null,
               collection_allocation_label: supplier === 'technician' ? 'Ustaya hakediş olarak eklenecek' : supplier === 'emaks_prime' ? 'Şirkette bırakılacak' : null,
-              part: purpose === 'part_charge' ? {
-                item_code: itemCode,
-                item_name: itemName,
-                quantity: orderInput.quantity ?? 1,
-                unit_code: 'ADET',
-                warehouse_code: supplier === 'emaks_prime' ? 'MERKEZ' : null,
-                stock_source: supplier === 'emaks_prime' ? 'mikro' : 'technician_declaration',
-                stock_source_label: supplier === 'emaks_prime' ? 'Mikro API' : 'Usta beyanı',
-                serial_tracking_required: orderInput.stock_selection_token === 'motor-token',
-                selected_part_serial: orderInput.selected_part_serial ?? null,
-              } : null,
+              part: purpose === 'part_charge' ? firstPart : null,
+              lines: purpose === 'part_charge' ? contextLines : [],
+              line_count: purpose === 'part_charge' ? contextLines.length : 0,
+              total_quantity: purpose === 'part_charge' ? totalQuantity : 0,
+              total_quantity_label: String(totalQuantity),
               commercial_mode: commercialMode,
               commercial_mode_label: commercialMode === 'free' ? 'Ücretsiz' : commercialMode === 'paid' ? 'Ücretli' : null,
               delivery_mode: deliveryMode,
@@ -1761,41 +1839,56 @@ function Harness() {
               payment_collection_mode: paymentLinkRequired ? 'payment_link' : collectionRequired ? 'manual' : 'none',
               payment_status: paymentStatus,
               payment_status_label: paymentStatus === 'paid' ? 'Ödeme alındı' : paymentStatus === 'pending' ? 'Ödeme bekleniyor' : paymentStatus === 'not_required' ? 'Tahsilat gerekmiyor' : 'İptal',
-              payment_status_source: paymentLinkRequired ? 'provider' : 'system',
-              payment_status_source_label: paymentLinkRequired ? 'Ödeme sağlayıcısı' : 'Sistem',
+              payment_status_source: paymentLinkRequired && !readinessBlocked ? 'provider' : 'system',
+              payment_status_source_label: paymentLinkRequired && !readinessBlocked ? 'Ödeme sağlayıcısı' : 'Sistem',
               payment_link_required: paymentLinkRequired,
               collection_required: collectionRequired,
-              order_line_unit_price: orderLineTotal,
-              order_line_unit_price_label: `${orderLineTotal.toLocaleString('tr-TR')},00 TL`,
+              order_line_unit_price: contextLines.length === 1 ? Number(contextLines[0]?.unit_price ?? orderLineTotal) : 0,
+              order_line_unit_price_label: money(contextLines.length === 1 ? Number(contextLines[0]?.unit_price ?? orderLineTotal) : 0),
               order_line_total: orderLineTotal,
-              order_line_total_label: `${orderLineTotal.toLocaleString('tr-TR')},00 TL`,
+              order_line_total_label: money(orderLineTotal),
+              order_reference_total: orderLineTotal,
+              order_reference_total_label: money(orderLineTotal),
               collection_amount: collectionAmount,
-              collection_amount_label: `${collectionAmount.toLocaleString('tr-TR')},00 TL`,
+              collection_amount_label: money(collectionAmount),
               future_order_trigger: paymentLinkRequired ? 'payment_paid' : deliveryMode === 'hand_delivery' && commercialMode === 'paid' ? 'delivery_recorded' : 'ops_approved',
               finance_review_required: false,
               related_product_serial: request.serialNumber,
               charged_amount: amount,
-              charged_amount_label: `${amount.toLocaleString('tr-TR')},00 TL`,
+              charged_amount_label: money(amount),
               currency: payload.currency ?? 'TRY',
               shipment_required: shipmentRequired,
               future_carrier_state: shipmentRequired ? 'waiting_future_integration' : 'not_required',
               future_carrier_label: shipmentRequired ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak' : 'Sevkiyat yok',
+              readiness: readinessBlocked ? {
+                ready: false,
+                order_ready: false,
+                payment_ready: false,
+                blocker_codes: ['stock_availability_unverified'],
+                blockers: ['Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.'],
+              } : {
+                ready: true,
+                order_ready: true,
+                payment_ready: true,
+                blocker_codes: [],
+                blockers: [],
+              },
               description2_preview: purpose === 'mount_collection'
                 ? `MRN/SRV: ${request.mrn}\nHİZMET: MONTAJ\nSERİ NO: ${request.serialNumber}\nSEVKİYAT: YOK`
-                : `${shipmentRequired && !sameAsBilling ? 'SEVK ADRESİ FARKLIDIR.\n' : ''}MRN/SRV: ${request.mrn}\nİLGİLİ ÜRÜN SERİ NO: ${request.serialNumber}\nPARÇA: ${itemCode ?? ''} - ${itemName}`,
-              description2_version: 1,
+                : `${shipmentRequired && !sameAsBilling ? 'SEVK ADRESİ FARKLIDIR.\n' : ''}MRN/SRV: ${request.mrn}\nİLGİLİ ÜRÜN SERİ NO: ${request.serialNumber}\n\nPARÇALAR:\n${descriptionLines}\n\nPARÇA KALEMİ: ${contextLines.length}\nTOPLAM ADET: ${totalQuantity}\nSİPARİŞ/REFERANS TOPLAMI: ${money(orderLineTotal)}\nTAHSİLAT TOPLAMI: ${money(collectionAmount)}`,
+              description2_version: purpose === 'part_charge' ? 2 : 1,
               context_hash: orderInput.expected_context_hash ?? 'f'.repeat(64),
               revision: orderInput.expected_revision ?? 1,
               mikro_write_execution_count: 0,
               carrier_execution_count: 0,
             }
-            const paidPayment: ServiceRequestExtraMountPayment | null = paymentLinkRequired ? {
+            const paidPayment: ServiceRequestExtraMountPayment | null = paymentLinkRequired && !readinessBlocked ? {
               id: 9900 + state.paymentCreateCount,
               request_id: request.id,
               status: 'paid',
               status_label: 'Ödendi',
               amount,
-              amount_label: `${amount.toLocaleString('tr-TR')},00 TL`,
+              amount_label: money(amount),
               currency: payload.currency ?? 'TRY',
               provider: 'fake',
               provider_mode: 'local',

@@ -154,6 +154,11 @@ class MikroApiClient
         ]);
     }
 
+    public function searchStocks(string $query): array
+    {
+        return $this->fixed('stock.search', ['search' => $query]);
+    }
+
     public function stockAvailability(string $stockCode): array
     {
         return $this->fixed('stock.availability', ['stock_code' => $stockCode]);

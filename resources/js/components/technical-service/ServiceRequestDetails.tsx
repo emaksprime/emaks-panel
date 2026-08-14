@@ -50,6 +50,12 @@ type ShippingPartyDraft = {
   postalCode: string
 }
 
+type PaymentOrderPartLineDraft = {
+  item: ServiceRequestMikroPartSearchItem
+  quantity: string
+  unitPrice: string
+}
+
 type PaymentOrderContextPreviewResponse = {
   order_context?: ServiceRequestPaymentOrderContext | null
 }
@@ -60,13 +66,6 @@ type PaymentOrderPartSearchResponse = {
   freshness_at?: string | null
   items?: ServiceRequestMikroPartSearchItem[]
 }
-
-const hasVerifiedStockAvailability = (item: ServiceRequestMikroPartSearchItem | null): boolean => Boolean(
-  item
-  && typeof item.on_hand === 'number'
-  && typeof item.reserved === 'number'
-  && typeof item.available === 'number',
-)
 
 type AssignmentEarningDraft = {
   laborAmount: string
@@ -1941,9 +1940,8 @@ export function ServiceRequestDetails({
   const [orderPartSearchItems, setOrderPartSearchItems] = useState<ServiceRequestMikroPartSearchItem[]>([])
   const [orderPartSearchLoading, setOrderPartSearchLoading] = useState(false)
   const [orderPartSearchError, setOrderPartSearchError] = useState<string | null>(null)
-  const [orderSelectedPart, setOrderSelectedPart] = useState<ServiceRequestMikroPartSearchItem | null>(null)
+  const [orderPartLines, setOrderPartLines] = useState<PaymentOrderPartLineDraft[]>([])
   const [orderPartQuantity, setOrderPartQuantity] = useState('1')
-  const [orderSelectedPartSerial, setOrderSelectedPartSerial] = useState('')
   const [orderTechnicianPartCode, setOrderTechnicianPartCode] = useState('')
   const [orderTechnicianPartName, setOrderTechnicianPartName] = useState('')
   const [orderContextPreview, setOrderContextPreview] = useState<ServiceRequestPaymentOrderContext | null>(null)
@@ -2286,7 +2284,21 @@ export function ServiceRequestDetails({
     ? latestPendingMountPayment.amount
     : null
   const existingPendingPaymentAmountInput = numericInputValue(existingPendingPaymentAmount)
-  const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+  const orderPartPricesForcedZero = orderCommercialMode === 'free' && orderDeliveryMode === 'shipment'
+  const orderPartGrandTotal = useMemo(() => roundTwo(orderPartLines.reduce((total, line) => {
+    const quantity = parseNumericInput(line.quantity)
+    const unitPrice = orderPartPricesForcedZero ? 0 : parseNumericInput(line.unitPrice)
+
+    if (quantity === null || unitPrice === null || quantity <= 0 || unitPrice < 0) {
+      return total
+    }
+
+    return total + roundTwo(quantity * unitPrice)
+  }, 0)), [orderPartLines, orderPartPricesForcedZero])
+  const usesEmaksPartLines = extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+  const extraPaymentAmount = usesEmaksPartLines
+    ? orderPartGrandTotal
+    : parseNumericInput(routeFeeExtraPaymentInput)
   const usesPaymentOrderContext = extraPaymentPurpose === 'mount_collection' || extraPaymentPurpose === 'part_charge'
   const paymentOrderContextInput = useMemo<NonNullable<ServiceRequestExtraMountPaymentPayload['order_context']>>(() => ({
     billing_source: orderBillingSource,
@@ -2334,9 +2346,15 @@ export function ServiceRequestDetails({
         }
       : undefined,
     part_supplier: extraPaymentPurpose === 'part_charge' ? orderPartSupplier : null,
-    stock_selection_token: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
-      ? orderSelectedPart?.selection_token ?? null
-      : null,
+    lines: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? orderPartLines.map((line) => ({
+          stock_selection_token: line.item.selection_token,
+          quantity: parseNumericInput(line.quantity) ?? 0,
+          unit_price: orderPartPricesForcedZero ? 0 : parseNumericInput(line.unitPrice) ?? 0,
+          selected_part_serial: null,
+        }))
+      : undefined,
+    stock_selection_token: null,
     technician_part_code: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'technician'
       ? orderTechnicianPartCode.trim() || null
       : null,
@@ -2344,9 +2362,7 @@ export function ServiceRequestDetails({
       ? orderTechnicianPartName.trim() || null
       : null,
     quantity: extraPaymentPurpose === 'part_charge' ? parseNumericInput(orderPartQuantity) : null,
-    selected_part_serial: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
-      ? orderSelectedPartSerial || null
-      : null,
+    selected_part_serial: null,
     part_request_id: extraPaymentPurpose === 'part_charge' ? request.activePartRequest?.id ?? null : null,
   }), [
     extraPaymentPurpose,
@@ -2355,10 +2371,10 @@ export function ServiceRequestDetails({
     orderCommercialMode,
     orderDeliveryMode,
     orderDeliveryTarget,
+    orderPartLines,
+    orderPartPricesForcedZero,
     orderPartQuantity,
     orderPartSupplier,
-    orderSelectedPart,
-    orderSelectedPartSerial,
     orderShippingDraft,
     orderShippingSameAsBilling,
     orderTechnicianPartCode,
@@ -2375,17 +2391,27 @@ export function ServiceRequestDetails({
         orderBillingDraft.city,
         orderBillingDraft.district,
       ].every((value) => value.trim() !== '')
+  const orderPartLinesReady = orderPartLines.length > 0
+    && orderPartLines.length <= 20
+    && orderPartLines.every((line) => {
+      const quantity = parseNumericInput(line.quantity)
+      const unitPrice = orderPartPricesForcedZero ? 0 : parseNumericInput(line.unitPrice)
+
+      return quantity !== null
+        && quantity > 0
+        && unitPrice !== null
+        && unitPrice >= 0
+        && (orderCommercialMode !== 'paid' || unitPrice > 0)
+    })
   const orderPartReady = extraPaymentPurpose !== 'part_charge'
     || (
       request.serialNumber.trim() !== ''
-      && parseNumericInput(orderPartQuantity) !== null
-      && Number(parseNumericInput(orderPartQuantity)) > 0
       && (
-        (orderPartSupplier === 'emaks_prime'
-          && orderSelectedPart !== null
-          && hasVerifiedStockAvailability(orderSelectedPart)
-          && (!orderSelectedPart.serial_tracking_required || orderSelectedPartSerial !== ''))
-        || (orderPartSupplier === 'technician' && orderTechnicianPartName.trim() !== '')
+        (orderPartSupplier === 'emaks_prime' && orderPartLinesReady)
+        || (orderPartSupplier === 'technician'
+          && orderTechnicianPartName.trim() !== ''
+          && parseNumericInput(orderPartQuantity) !== null
+          && Number(parseNumericInput(orderPartQuantity)) > 0)
       )
     )
   const orderShippingReady = extraPaymentPurpose !== 'part_charge'
@@ -2403,7 +2429,7 @@ export function ServiceRequestDetails({
   const canPreviewPaymentOrderContext = Boolean(
     usesPaymentOrderContext
     && extraPaymentAmount !== null
-    && (extraPaymentAmount > 0 || (extraPaymentPurpose === 'part_charge' && orderCommercialMode === 'free' && orderDeliveryMode === 'shipment'))
+    && (extraPaymentAmount > 0 || (usesEmaksPartLines && orderCommercialMode === 'free'))
     && orderBillingReady
     && orderPartReady
     && orderShippingReady,
@@ -2456,13 +2482,81 @@ export function ServiceRequestDetails({
             setOrderPartSearchLoading(false)
           }
         })
-    }, 300)
+    }, 400)
 
     return () => {
       window.clearTimeout(timer)
       controller.abort()
     }
   }, [extraPaymentPurpose, orderPartSearch, orderPartSupplier, request.id, routeFeeEditorMode, routeFeeEditorOpen])
+
+  useEffect(() => {
+    if (!routeFeeEditorOpen
+      || routeFeeEditorMode !== 'payment_link'
+      || extraPaymentPurpose !== 'part_charge'
+      || orderPartSupplier !== 'emaks_prime'
+      || orderPartLines.length > 0
+      || latestPartOrderContext?.payment_id != null
+      || Number(latestPartOrderContext?.request_id) !== Number(request.id)) {
+      return
+    }
+
+    const restoredLines = (latestPartOrderContext?.lines ?? [])
+      .filter((line) => line.item_kind === 'part' && typeof line.selection_token === 'string' && line.selection_token !== '')
+      .map((line): PaymentOrderPartLineDraft => ({
+        item: {
+          item_code: String(line.item_code ?? ''),
+          item_name: String(line.item_name ?? ''),
+          item_short_name: line.item_short_name ?? null,
+          item_kind: 'part',
+          item_kind_label: 'Yedek parça',
+          classification_source: String(line.classification_source ?? 'no_canonical_evidence'),
+          classification_contract_version: String(line.classification_contract_version ?? ''),
+          selectable: true,
+          selection_blocker: null,
+          unit_code: line.unit_code ?? null,
+          warehouse_code: null,
+          on_hand: null,
+          reserved: null,
+          available: null,
+          availability_verified: line.availability_verified === true,
+          serial_tracking_state: line.serial_tracking_state === 'required' || line.serial_tracking_state === 'not_required'
+            ? line.serial_tracking_state
+            : 'unverified',
+          serial_tracking_required: line.serial_tracking_state === 'required',
+          serials: [],
+          source: String(line.stock_source ?? 'mikro'),
+          source_label: String(line.stock_source_label ?? 'Mikro API'),
+          freshness_at: line.stock_freshness_at ?? null,
+          mikro_contract_fingerprint: null,
+          selection_token: String(line.selection_token),
+        },
+        quantity: numericInputValue(line.quantity),
+        unitPrice: numericInputValue(line.unit_price),
+      }))
+
+    if (restoredLines.length === 0) {
+      return
+    }
+
+    if (latestPartOrderContext?.commercial_mode === 'free' || latestPartOrderContext?.commercial_mode === 'paid') {
+      setOrderCommercialMode(latestPartOrderContext.commercial_mode)
+    }
+
+    if (latestPartOrderContext?.delivery_mode === 'hand_delivery' || latestPartOrderContext?.delivery_mode === 'shipment') {
+      setOrderDeliveryMode(latestPartOrderContext.delivery_mode)
+    }
+
+    setOrderPartLines(restoredLines)
+  }, [
+    extraPaymentPurpose,
+    latestPartOrderContext,
+    orderPartLines.length,
+    orderPartSupplier,
+    request.id,
+    routeFeeEditorMode,
+    routeFeeEditorOpen,
+  ])
 
   useEffect(() => {
     if (!routeFeeEditorOpen || routeFeeEditorMode !== 'payment_link' || !canPreviewPaymentOrderContext || extraPaymentAmount === null) {
@@ -2545,15 +2639,19 @@ export function ServiceRequestDetails({
   const paymentLinkActionLabel = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
   const paymentLinkModalTitle = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
   const paymentLinkSubmitLabel = extraPaymentCreateLoading
-    ? (activeOrderContextPreview?.payment_link_required === false ? 'Kaydediliyor...' : 'Ödeme bağlantısı hazırlanıyor...')
-    : activeOrderContextPreview?.payment_link_required === false
+    ? (activeOrderContextPreview?.payment_link_required === false || activeOrderContextPreview?.readiness?.ready === false ? 'Kaydediliyor...' : 'Ödeme bağlantısı hazırlanıyor...')
+    : activeOrderContextPreview?.readiness?.ready === false
+      ? 'Parça taslağını kaydet'
+      : activeOrderContextPreview?.payment_link_required === false
       ? 'Parça bağlamını kaydet'
       : freshPaymentActionRequired ? (paymentRetry?.action_label ?? 'Yeni ödeme bağlantısı oluştur') : 'Link oluştur'
-  const paymentLinkAmountSourceLabel = routeFeeExtraPaymentInput.trim() === ''
-    ? 'Tutar kaynağı: Manuel giriş gerekli'
-    : existingPendingPaymentAmount !== null && routeFeeExtraPaymentInput === existingPendingPaymentAmountInput
-      ? 'Tutar kaynağı: Mevcut ödeme kaydı'
-      : 'Tutar kaynağı: Operasyon manuel girişi'
+  const paymentLinkAmountSourceLabel = usesEmaksPartLines
+    ? 'Tutar kaynağı: Parça satırlarının sunucu tarafından doğrulanan toplamı'
+    : routeFeeExtraPaymentInput.trim() === ''
+      ? 'Tutar kaynağı: Manuel giriş gerekli'
+      : existingPendingPaymentAmount !== null && routeFeeExtraPaymentInput === existingPendingPaymentAmountInput
+        ? 'Tutar kaynağı: Mevcut ödeme kaydı'
+        : 'Tutar kaynağı: Operasyon manuel girişi'
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
   const customerChargeTotalAmount = roundTwo(customerServiceChargeAmount + customerPartChargeAmount)
@@ -3355,9 +3453,8 @@ export function ServiceRequestDetails({
     setOrderPartSearchItems([])
     setOrderPartSearchLoading(false)
     setOrderPartSearchError(null)
-    setOrderSelectedPart(null)
+    setOrderPartLines([])
     setOrderPartQuantity('1')
-    setOrderSelectedPartSerial('')
     setOrderTechnicianPartCode('')
     setOrderTechnicianPartName('')
     setOrderContextPreview(null)
@@ -3474,7 +3571,6 @@ export function ServiceRequestDetails({
     const allowsZeroAmount = extraPaymentPurpose === 'part_charge'
       && orderPartSupplier === 'emaks_prime'
       && orderCommercialMode === 'free'
-      && orderDeliveryMode === 'shipment'
 
     if (extraPaymentAmount === null || extraPaymentAmount < 0 || (!allowsZeroAmount && extraPaymentAmount <= 0)) {
       setRouteFeeEditorOpen(true)
@@ -3575,7 +3671,9 @@ errors.lastName = 'Soyad alanı zorunludur.'
       setPaymentLinkCopyMessage(null)
       setPaymentLinkManualCopyValue(null)
       setPaymentLinkCopyTarget(null)
-      setRouteFeeEditorMessage(activeOrderContextPreview?.payment_link_required === false
+      setRouteFeeEditorMessage(activeOrderContextPreview?.readiness?.ready === false
+        ? 'Parça taslağı kaydedildi; stok uygunluğu doğrulanana kadar ödeme ve sipariş hazırlığı kapalıdır.'
+        : activeOrderContextPreview?.payment_link_required === false
         ? 'Parça ticari ve teslim bağlamı kaydedildi.'
         : 'Ödeme linki oluşturuldu.')
     } catch {
@@ -4893,7 +4991,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
               {orderPartSupplier === 'emaks_prime' ? (
                 <div className="grid gap-3">
                   <label className="grid gap-1 text-xs font-semibold text-slate-700">
-                    2. Mikro stoktan parça seçimi
+                    2. Mikro stoktan parça ara
                     <div className="relative">
                       <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
                       <Input
@@ -4903,13 +5001,11 @@ errors.lastName = 'Soyad alanı zorunludur.'
 
                           setOrderPartSearch(query)
                           setOrderPartSearchItems([])
-                          setOrderSelectedPart(null)
-                          setOrderSelectedPartSerial('')
                           setOrderPartSearchLoading(false)
                           setOrderPartSearchError(query.trim().length === 1 ? 'Parça araması için en az 2 karakter girin.' : null)
                         }}
                         className="pl-10"
-                        placeholder="Stok kodu veya parça adı"
+                        placeholder="Stok kodu veya stok adı"
                         aria-label="Mikro stok parçası ara"
                       />
                     </div>
@@ -4922,63 +5018,128 @@ errors.lastName = 'Soyad alanı zorunludur.'
                   {orderPartSearchItems.length > 0 ? (
                     <div className="grid max-h-64 gap-2 overflow-y-auto pr-1" data-testid="mikro-part-search-results">
                       {orderPartSearchItems.map((item) => (
-                        <button
+                        <div
                           key={item.selection_token}
-                          type="button"
-                          onClick={() => {
-                            setOrderSelectedPart(item)
-                            setOrderSelectedPartSerial('')
-                          }}
-                          className={`grid gap-1 rounded-md border p-3 text-left text-xs transition ${orderSelectedPart?.selection_token === item.selection_token ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-300'}`}
+                          className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 text-left text-xs"
                         >
-                          <span className="font-semibold text-slate-950">{item.item_code} · {item.item_name}</span>
-                          {item.unit_code ? <span className="text-slate-600">Birim: {item.unit_code}</span> : null}
-                          {hasVerifiedStockAvailability(item) ? (
-                            <>
-                              {item.warehouse_code ? <span className="text-slate-600">Depo: {item.warehouse_code}</span> : null}
-                              <span className="text-slate-600">Eldeki: {item.on_hand} · Rezerve: {item.reserved} · Kullanılabilir: {item.available}</span>
-                            </>
-                          ) : (
-                            <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-900">
-                              Stok miktarı henüz doğrulanmadı. Parça kimliği Mikro API’den bulundu; stok uygunluğu ayrıca kontrol edilecek.
-                            </span>
-                          )}
-                          <span className="flex flex-wrap items-center gap-2 text-slate-600">
-                            {hasVerifiedStockAvailability(item) ? <span>Seri takibi: {item.serial_tracking_required ? 'Var' : 'Yok'}</span> : null}
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="break-words font-semibold text-slate-950">{item.item_code} · {item.item_name}</p>
+                              {item.item_short_name ? <p className="mt-0.5 text-slate-600">Kısa ad: {item.item_short_name}</p> : null}
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={item.selectable ? 'outline' : 'secondary'}
+                              disabled={!item.selectable}
+                              onClick={() => {
+                                setOrderPartLines((current) => {
+                                  const existingIndex = current.findIndex((line) => line.item.item_code === item.item_code)
+
+                                  if (existingIndex >= 0) {
+                                    return current.map((line, index) => index === existingIndex
+                                      ? { ...line, item, quantity: numericInputValue((parseNumericInput(line.quantity) ?? 0) + 1) }
+                                      : line)
+                                  }
+
+                                  if (current.length >= 20) {
+                                    setOrderPartSearchError('En fazla 20 farklı parça kalemi seçilebilir.')
+
+                                    return current
+                                  }
+
+                                  return [...current, { item, quantity: '1', unitPrice: orderPartPricesForcedZero ? '0' : '' }]
+                                })
+                              }}
+                            >
+                              Ekle
+                            </Button>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-slate-600">
+                            {item.unit_code ? <span>Birim: {item.unit_code}</span> : null}
+                            <Badge variant="outline">{item.item_kind_label}</Badge>
                             <Badge variant="outline">{item.source_label}</Badge>
                             <span>Güncellik: {dateTimeOrEmpty(item.freshness_at, '-')}</span>
-                          </span>
-                        </button>
+                            {item.serial_tracking_state === 'required' ? <span>Seri takipli</span> : null}
+                            {item.serial_tracking_state === 'not_required' ? <span>Seri takibi yok</span> : null}
+                          </div>
+                          {item.selection_blocker ? <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 font-medium text-amber-900">{item.selection_blocker}</p> : null}
+                        </div>
                       ))}
                     </div>
                   ) : null}
-                  {orderSelectedPart ? (
-                    <div data-testid="selected-payment-part" className="grid gap-2 rounded-md border border-blue-200 bg-white p-3 text-xs text-slate-700">
-                      <p className="font-semibold text-slate-950">Seçilen parça: {orderSelectedPart.item_code} · {orderSelectedPart.item_name}</p>
-                      {!hasVerifiedStockAvailability(orderSelectedPart) ? (
-                        <p className="font-semibold text-amber-800">Stok uygunluğu doğrulanmadan ödeme ve sipariş hazırlığı başlatılamaz.</p>
-                      ) : null}
-                      <label className="grid gap-1 font-semibold">
-                        3. Adet
-                        <Input type="number" min="0.001" step="1" value={orderPartQuantity} onChange={(event) => setOrderPartQuantity(event.target.value)} />
-                      </label>
-                      {orderSelectedPart.serial_tracking_required ? (
-                        <label className="grid gap-1 font-semibold">
-                          4. Parça seri numarası
-                          {(orderSelectedPart.serials ?? []).length > 0 ? (
-                            <select
-                              value={orderSelectedPartSerial}
-                              onChange={(event) => setOrderSelectedPartSerial(event.target.value)}
-                              className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                            >
-                              <option value="">Seri seçin</option>
-                              {(orderSelectedPart.serials ?? []).map((serial) => <option key={serial} value={serial}>{serial}</option>)}
-                            </select>
-                          ) : (
-                            <Input value={orderSelectedPartSerial} onChange={(event) => setOrderSelectedPartSerial(event.target.value)} placeholder="Mikro'da doğrulanacak seri numarası" />
-                          )}
-                        </label>
-                      ) : null}
+                  {orderPartLines.length > 0 ? (
+                    <div data-testid="selected-payment-parts" className="grid gap-3 rounded-md border border-blue-200 bg-blue-50/40 p-3 text-xs text-slate-700">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-950">Seçilen parçalar ({orderPartLines.length})</p>
+                        <p className="font-semibold text-slate-950">Genel toplam: {formatMoneyValue(orderPartGrandTotal)}</p>
+                      </div>
+                      <div className="grid gap-2">
+                        {orderPartLines.map((line) => {
+                          const quantity = parseNumericInput(line.quantity) ?? 0
+                          const unitPrice = orderPartPricesForcedZero ? 0 : parseNumericInput(line.unitPrice) ?? 0
+                          const lineTotal = roundTwo(Math.max(0, quantity) * Math.max(0, unitPrice))
+
+                          return (
+                            <div key={line.item.item_code} data-testid="selected-payment-part-line" className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,2fr)_minmax(7rem,0.7fr)_minmax(8rem,1fr)_minmax(8rem,1fr)_auto] sm:items-end">
+                              <div className="min-w-0">
+                                <p className="break-words font-semibold text-slate-950">{line.item.item_code} · {line.item.item_name}</p>
+                                <p className="mt-1 text-slate-500">{line.item.unit_code ?? 'Birim doğrulanmadı'} · {line.item.source_label}</p>
+                              </div>
+                              <label className="grid gap-1 font-semibold">
+                                Adet
+                                <Input
+                                  type="number"
+                                  min="0.001"
+                                  step="0.001"
+                                  value={line.quantity}
+                                  onChange={(event) => setOrderPartLines((current) => current.map((candidate) => candidate.item.item_code === line.item.item_code
+                                    ? { ...candidate, quantity: event.target.value }
+                                    : candidate))}
+                                />
+                              </label>
+                              <label className="grid gap-1 font-semibold">
+                                {orderCommercialMode === 'free' && orderDeliveryMode === 'hand_delivery' ? 'Referans birim fiyatı' : 'Birim fiyat'}
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={orderPartPricesForcedZero ? '0' : line.unitPrice}
+                                  readOnly={orderPartPricesForcedZero}
+                                  onChange={(event) => setOrderPartLines((current) => current.map((candidate) => candidate.item.item_code === line.item.item_code
+                                    ? { ...candidate, unitPrice: event.target.value }
+                                    : candidate))}
+                                />
+                              </label>
+                              <div className="grid min-h-10 content-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <span className="font-medium text-slate-500">Satır toplamı</span>
+                                <strong className="text-sm text-slate-950">{formatMoneyValue(lineTotal)}</strong>
+                              </div>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                title={`${line.item.item_name} satırını sil`}
+                                aria-label={`${line.item.item_name} satırını sil`}
+                                onClick={() => setOrderPartLines((current) => current.filter((candidate) => candidate.item.item_code !== line.item.item_code))}
+                              >
+                                <X className="size-4" />
+                              </Button>
+                              {line.item.serial_tracking_state === 'required' ? (
+                                <p className="font-semibold text-amber-800 sm:col-span-5">Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.</p>
+                              ) : null}
+                              {line.item.serial_tracking_state === 'unverified' ? (
+                                <p className="font-semibold text-amber-800 sm:col-span-5">Parça seri takip kuralı doğrulanmadan ödeme ve sipariş hazırlığı tamamlanamaz.</p>
+                              ) : null}
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-2">
+                        <span>Sipariş / referans toplamı: <strong>{formatMoneyValue(orderPartGrandTotal)}</strong></span>
+                        <span>Tahsilat toplamı: <strong>{formatMoneyValue(orderCommercialMode === 'paid' ? orderPartGrandTotal : 0)}</strong></span>
+                      </div>
+                      <p className="font-semibold text-amber-800">Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.</p>
                     </div>
                   ) : null}
                 </div>
@@ -5158,11 +5319,15 @@ errors.lastName = 'Soyad alanı zorunludur.'
               type="number"
               inputMode="decimal"
               min="0"
-              step="1"
-              value={routeFeeExtraPaymentInput}
-              readOnly={extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime' && orderCommercialMode === 'free' && orderDeliveryMode === 'shipment'}
+              step="0.01"
+              value={usesEmaksPartLines ? numericInputValue(orderPartGrandTotal) : routeFeeExtraPaymentInput}
+              readOnly={usesEmaksPartLines}
               aria-invalid={paymentAmountError !== null}
               onChange={(event) => {
+                if (usesEmaksPartLines) {
+                  return
+                }
+
                 setRouteFeeExtraPaymentInput(event.target.value)
                 setPaymentAmountError(null)
               }}
@@ -5215,9 +5380,27 @@ errors.lastName = 'Soyad alanı zorunludur.'
                     {activeOrderContextPreview.shipment_required ? <span>{activeOrderContextPreview.future_carrier_label}</span> : null}
                     <span>Fatura müşterisi: <strong>{activeOrderContextPreview.billing?.name_or_title ?? '-'}</strong></span>
                     {activeOrderContextPreview.shipping ? <span>Teslim: <strong>{activeOrderContextPreview.shipping.recipient_name ?? activeOrderContextPreview.delivery_target_label ?? '-'}</strong></span> : null}
-                    {activeOrderContextPreview.part ? <span className="sm:col-span-2">Parça: <strong>{activeOrderContextPreview.part.item_code ? `${activeOrderContextPreview.part.item_code} · ` : ''}{activeOrderContextPreview.part.item_name}</strong></span> : null}
+                    {(activeOrderContextPreview.lines ?? []).length > 0 ? (
+                      <span className="sm:col-span-2">
+                        Parça kalemleri: <strong>{activeOrderContextPreview.line_count ?? activeOrderContextPreview.lines?.length}</strong>
+                        {' · '}Toplam adet: <strong>{activeOrderContextPreview.total_quantity_label ?? activeOrderContextPreview.total_quantity ?? '-'}</strong>
+                      </span>
+                    ) : activeOrderContextPreview.part ? <span className="sm:col-span-2">Parça: <strong>{activeOrderContextPreview.part.item_code ? `${activeOrderContextPreview.part.item_code} · ` : ''}{activeOrderContextPreview.part.item_name}</strong></span> : null}
                     {activeOrderContextPreview.collection_allocation_label ? <span className="sm:col-span-2">Tahsilat dağılımı: <strong>{activeOrderContextPreview.collection_allocation_label}</strong></span> : null}
                   </div>
+                  {(activeOrderContextPreview.lines ?? []).length > 0 ? (
+                    <div className="grid gap-2">
+                      {(activeOrderContextPreview.lines ?? []).map((line) => (
+                        <div key={String(line.line_key ?? line.item_code)} className="flex flex-wrap justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+                          <span><strong>{line.item_code}</strong> · {line.item_name} · {line.quantity} {line.unit_code ?? ''}</span>
+                          <span>{line.unit_price_label ?? formatMoneyValue(line.unit_price)} · <strong>{line.line_total_label ?? formatMoneyValue(line.line_total)}</strong></span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {(activeOrderContextPreview.readiness?.blockers ?? []).map((blocker) => (
+                    <p key={blocker} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 font-semibold text-amber-900">{blocker}</p>
+                  ))}
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-white">{activeOrderContextPreview.description2_preview}</pre>
                   <p className="font-medium">Yerel hazırlık revizyonu: {activeOrderContextPreview.revision} · Mikro yazımı 0 · Kargo sağlayıcı çağrısı 0</p>
                 </>
@@ -7426,9 +7609,11 @@ errors.lastName = 'Soyad alanı zorunludur.'
               <div data-testid="part-order-context-summary" className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <p className="font-semibold">Parça</p>
+                    <p className="font-semibold">Parçalar ({latestPartOrderContext.line_count ?? latestPartOrderContext.lines?.length ?? (latestPartOrderContext.part ? 1 : 0)})</p>
                     <p className="mt-1 text-xs text-violet-800">
-                      {latestPartOrderContext.part?.item_code ? `${latestPartOrderContext.part.item_code} · ` : ''}{latestPartOrderContext.part?.item_name ?? '-'}
+                      {(latestPartOrderContext.lines ?? []).length > 0
+                        ? (latestPartOrderContext.lines ?? []).map((line) => `${line.item_code ?? '-'} · ${line.item_name ?? '-'}`).join(' | ')
+                        : `${latestPartOrderContext.part?.item_code ? `${latestPartOrderContext.part.item_code} · ` : ''}${latestPartOrderContext.part?.item_name ?? '-'}`}
                     </p>
                   </div>
                   <Badge variant="outline">{latestPartOrderContext.payment_status_label ?? latestPartOrderContext.state_label ?? '-'}</Badge>
@@ -7444,6 +7629,19 @@ errors.lastName = 'Soyad alanı zorunludur.'
                   <span>Tutar: <strong>{latestPartOrderContext.collection_required ? latestPartOrderContext.collection_amount_label : latestPartOrderContext.order_line_total_label}</strong></span>
                   {latestPartOrderContext.payment_status_source_label ? <span>Kaynak: <strong>{latestPartOrderContext.payment_status_source_label}</strong></span> : null}
                 </div>
+                {(latestPartOrderContext.lines ?? []).length > 0 ? (
+                  <div className="grid gap-2">
+                    {(latestPartOrderContext.lines ?? []).map((line) => (
+                      <div key={String(line.line_key ?? line.item_code)} className="flex flex-wrap justify-between gap-2 rounded-md border border-violet-100 bg-white px-3 py-2 text-xs">
+                        <span><strong>{line.item_code}</strong> · {line.item_name} · {line.quantity} {line.unit_code ?? ''}</span>
+                        <span>{line.unit_price_label ?? formatMoneyValue(line.unit_price)} · <strong>{line.line_total_label ?? formatMoneyValue(line.line_total)}</strong></span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {(latestPartOrderContext.readiness?.blockers ?? []).map((blocker) => (
+                  <p key={blocker} className="font-semibold text-amber-800">{blocker}</p>
+                ))}
                 {latestPartOrderContext.delivery_mode === 'hand_delivery' && latestPartOrderContext.delivery_status !== 'delivered' ? (
                   <div className="flex flex-wrap justify-end">
                     <Button type="button" size="sm" variant="outline" disabled={orderContextStateUpdating} onClick={() => void handleOrderContextStateUpdate('record_delivery')}>
@@ -9458,7 +9656,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         return showFooterBar ? (
       <div
         data-testid="primary-modal-action-footer"
-        className="sticky bottom-0 z-10 -mx-2 mt-2 flex justify-end border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur"
+        className="sticky bottom-0 z-10 mt-2 flex justify-end border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur"
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
         <div className="grid w-full max-w-full grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:w-auto lg:flex lg:flex-wrap lg:items-center lg:justify-end">

@@ -8,6 +8,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Mikro\MikroApiClient;
+use App\Services\Mikro\MikroResponseSchemaCatalog;
 use App\Support\TechnicalServiceTurkeyLocations;
 use DomainException;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -20,6 +21,8 @@ use Throwable;
 class TechnicalServicePaymentOrderContextService
 {
     public const TABLE = 'technical_service_payment_order_contexts';
+
+    public const ITEM_TABLE = 'technical_service_payment_order_context_items';
 
     public const PURPOSE_MOUNT_COLLECTION = 'mount_collection';
 
@@ -51,6 +54,12 @@ class TechnicalServicePaymentOrderContextService
 
     private const DESCRIPTION2_VERSION = 1;
 
+    private const PART_DESCRIPTION2_VERSION = 2;
+
+    private const ITEM_CLASSIFICATION_VERSION = 'technical-service-part-classification-v1';
+
+    private const MAX_PART_LINES = 20;
+
     public function __construct(
         private readonly MikroApiClient $mikro,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
@@ -73,10 +82,10 @@ class TechnicalServicePaymentOrderContextService
      */
     public function searchParts(TechnicalServiceRequest $request, string $query): array
     {
-        $query = trim($query);
-        if (mb_strlen($query) < 2) {
+        $query = preg_replace('/\s+/u', ' ', trim($query)) ?? '';
+        if (mb_strlen($query) < 2 || mb_strlen($query) > 60 || preg_match('/[\x00-\x1F\x7F]/u', $query)) {
             throw ValidationException::withMessages([
-                'query' => 'Parça araması için en az 2 karakter girin.',
+                'query' => 'Parça araması 2-60 karakter olmalıdır.',
             ]);
         }
 
@@ -85,7 +94,7 @@ class TechnicalServicePaymentOrderContextService
         }
 
         try {
-            $result = $this->mikro->listStocks($query, size: 20);
+            $result = $this->mikro->searchStocks($query);
             if (($result['success'] ?? $result['ok'] ?? false) !== true) {
                 throw new DomainException((string) ($result['error_code'] ?? 'MIKRO_STOCK_READ_UNAVAILABLE'));
             }
@@ -104,24 +113,41 @@ class TechnicalServicePaymentOrderContextService
             $sourceLabel = (bool) ($result['stale'] ?? false)
                 ? 'Mikro API (güncel olmayan doğrulanmış kayıt)'
                 : 'Mikro API';
-            $rows = collect($result['data'] ?? $result['rows'] ?? $result['result'] ?? [])
+            $candidateRows = collect($result['data'] ?? $result['rows'] ?? $result['result'] ?? [])
                 ->filter(fn (mixed $row): bool => is_array($row))
-                ->take(20)
-                ->map(function (array $row) use ($request, $freshnessAt, $sourceLabel): array {
+                ->take(self::MAX_PART_LINES)
+                ->values();
+            $deviceCodes = $this->panelDeviceCodes($candidateRows
+                ->map(fn (array $row): string => trim((string) ($row['item_code'] ?? '')))
+                ->filter()
+                ->all());
+            $rows = $candidateRows
+                ->map(function (array $row) use ($request, $freshnessAt, $sourceLabel, $deviceCodes): array {
+                    $classification = $this->classifyStockItem($row, $deviceCodes);
+                    $detailTrackingType = filter_var($row['detail_tracking_type'] ?? null, FILTER_VALIDATE_INT);
+                    $serialTrackingState = match ($detailTrackingType) {
+                        0 => 'not_required',
+                        3 => 'required',
+                        default => 'unverified',
+                    };
                     $item = [
                         'item_code' => trim((string) ($row['item_code'] ?? '')),
                         'item_name' => trim((string) ($row['item_name'] ?? '')),
+                        'item_short_name' => filled($row['item_short_name'] ?? null) ? trim((string) $row['item_short_name']) : null,
                         'unit_code' => filled($row['unit_code'] ?? null) ? trim((string) $row['unit_code']) : null,
+                        ...$classification,
                         'warehouse_code' => null,
                         'on_hand' => null,
                         'reserved' => null,
                         'available' => null,
                         'availability_verified' => false,
-                        'serial_tracking_required' => false,
+                        'serial_tracking_state' => $serialTrackingState,
+                        'serial_tracking_required' => $serialTrackingState === 'required',
                         'serials' => [],
                         'source' => 'mikro',
                         'source_label' => $sourceLabel,
                         'freshness_at' => $freshnessAt,
+                        'mikro_contract_fingerprint' => MikroResponseSchemaCatalog::STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT,
                     ];
 
                     if ($item['item_code'] === '' || $item['item_name'] === '') {
@@ -554,6 +580,7 @@ class TechnicalServicePaymentOrderContextService
                 $idempotencyKey,
                 $actor,
             ));
+            $this->insertContextLines($id, $normalized['lines'] ?? [], $actor);
             $context = DB::table(self::TABLE)->where('id', $id)->first();
 
             $request->events()->create([
@@ -915,6 +942,7 @@ class TechnicalServicePaymentOrderContextService
         $partSupplier = null;
         $collectionAllocation = null;
         $part = null;
+        $lines = [];
         $commercialMode = self::COMMERCIAL_PAID;
         $deliveryMode = null;
         $deliveryStatus = 'pending';
@@ -949,8 +977,9 @@ class TechnicalServicePaymentOrderContextService
                         'order_context.delivery_mode' => 'Parçanın elden teslim veya sevk edileceğini seçin.',
                     ]);
                 }
-                $part = $this->selectedStockItem($request, $input);
-                $quantity = (float) ($part['quantity'] ?? 1);
+                $lines = $this->selectedStockItems($request, $input, $commercialMode, $deliveryMode, $currency);
+                $part = $lines[0] ?? null;
+                $quantity = array_sum(array_map(fn (array $line): float => (float) $line['quantity'], $lines));
                 $collectionAllocation = self::ALLOCATION_RETAIN_COMPANY;
                 if ($deliveryMode === self::DELIVERY_SHIPMENT) {
                     $shippingSameAsBilling = (bool) ($input['shipping_same_as_billing'] ?? false);
@@ -984,27 +1013,50 @@ class TechnicalServicePaymentOrderContextService
         $vatRate = $taxMode === 'none' ? 0.0 : null;
         $futureOrderTrigger = $decision['future_order_trigger'];
 
+        $providedAmountMinor = $this->decimalToScaledInteger(number_format($amount, 2, '.', ''), 2, 'amount', 0, 999999999999);
+        if ($partSupplier === self::SUPPLIER_TECHNICIAN && is_array($part)) {
+            $lines = [$this->technicianPartLine($part, $providedAmountMinor, $currency)];
+            $part = $lines[0];
+        }
+        $orderLineTotalMinor = $partSupplier === self::SUPPLIER_EMAKS
+            ? array_sum(array_column($lines, 'line_total_minor'))
+            : $providedAmountMinor;
+        if ($partSupplier === self::SUPPLIER_EMAKS && $providedAmountMinor !== $orderLineTotalMinor) {
+            throw ValidationException::withMessages([
+                'amount' => 'Parça toplamı değişti. Sunucu tarafından hesaplanan güncel toplamı kullanın.',
+            ]);
+        }
+
         if ($purpose === self::PURPOSE_MOUNT_COLLECTION || $partSupplier === self::SUPPLIER_TECHNICIAN || $collectionRequired) {
-            if ($amount <= 0) {
+            if (($partSupplier === self::SUPPLIER_EMAKS ? $orderLineTotalMinor : $providedAmountMinor) <= 0) {
                 throw ValidationException::withMessages(['amount' => 'Tahsilat tutarı 0 TL üzerinde olmalıdır.']);
             }
-        } elseif ($amount < 0) {
+        } elseif ($providedAmountMinor < 0) {
             throw ValidationException::withMessages(['amount' => 'Tutar negatif olamaz.']);
         }
 
-        if ($commercialMode === self::COMMERCIAL_FREE && $deliveryMode === self::DELIVERY_SHIPMENT && abs($amount) > 0.0001) {
+        if ($commercialMode === self::COMMERCIAL_FREE && $deliveryMode === self::DELIVERY_SHIPMENT && $providedAmountMinor !== 0) {
             throw ValidationException::withMessages([
                 'amount' => 'Ücretsiz sevkte sipariş ve tahsilat tutarı 0 TL olmalıdır.',
             ]);
         }
 
-        $orderLineTotal = $purpose === self::PURPOSE_PART_CHARGE && $partSupplier === self::SUPPLIER_EMAKS
-            ? ($commercialMode === self::COMMERCIAL_FREE && $deliveryMode === self::DELIVERY_SHIPMENT ? 0.0 : round($amount, 2))
-            : round($amount, 2);
-        $orderLineUnitPrice = $quantity > 0 ? round($orderLineTotal / $quantity, 2) : $orderLineTotal;
-        $collectionAmount = $collectionRequired ? round($amount, 2) : 0.0;
+        $orderLineTotal = $this->scaledIntegerToFloat($orderLineTotalMinor, 2);
+        $orderLineUnitPrice = count($lines) === 1 ? (float) ($lines[0]['unit_price'] ?? 0) : 0.0;
+        $collectionAmountMinor = $collectionRequired ? $orderLineTotalMinor : 0;
+        $collectionAmount = $this->scaledIntegerToFloat($collectionAmountMinor, 2);
         $paymentStatus = $collectionRequired ? self::PAYMENT_PENDING : self::PAYMENT_NOT_REQUIRED;
         $paymentStatusSource = 'system';
+        $descriptionVersion = $purpose === self::PURPOSE_PART_CHARGE
+            ? self::PART_DESCRIPTION2_VERSION
+            : self::DESCRIPTION2_VERSION;
+        $readiness = $this->partReadiness($partSupplier, $lines, $taxMode);
+        $lines = array_map(function (array $line): array {
+            unset($line['quantity_milli'], $line['unit_price_minor'], $line['line_total_minor']);
+
+            return $line;
+        }, $lines);
+        $part = $lines[0] ?? $part;
 
         foreach (['desired_mikro_series', 'tax_mode', 'payment_link_required'] as $serverOwnedField) {
             if (array_key_exists($serverOwnedField, $input)
@@ -1055,6 +1107,10 @@ class TechnicalServicePaymentOrderContextService
                 default => null,
             },
             'part' => $part,
+            'lines' => $lines,
+            'line_count' => count($lines),
+            'total_quantity' => array_sum(array_map(fn (array $line): float => (float) ($line['quantity'] ?? 0), $lines)),
+            'total_quantity_label' => $this->quantityLabel(array_sum(array_map(fn (array $line): float => (float) ($line['quantity'] ?? 0), $lines))),
             'commercial_mode' => $commercialMode,
             'commercial_mode_label' => $commercialMode === self::COMMERCIAL_FREE ? 'Ücretsiz' : 'Ücretli',
             'delivery_mode' => $deliveryMode,
@@ -1072,6 +1128,8 @@ class TechnicalServicePaymentOrderContextService
             'order_line_unit_price_label' => $this->moneyLabel($orderLineUnitPrice, $currency),
             'order_line_total' => $orderLineTotal,
             'order_line_total_label' => $this->moneyLabel($orderLineTotal, $currency),
+            'order_reference_total' => $orderLineTotal,
+            'order_reference_total_label' => $this->moneyLabel($orderLineTotal, $currency),
             'collection_amount' => $collectionAmount,
             'collection_amount_label' => $this->moneyLabel($collectionAmount, $currency),
             'future_order_trigger' => $futureOrderTrigger,
@@ -1085,9 +1143,10 @@ class TechnicalServicePaymentOrderContextService
             'future_carrier_label' => $shipmentRequired
                 ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak'
                 : 'Sevkiyat yok',
+            'readiness' => $readiness,
             'mikro_write_execution_count' => 0,
             'carrier_execution_count' => 0,
-            'description2_version' => self::DESCRIPTION2_VERSION,
+            'description2_version' => $descriptionVersion,
         ];
         $normalized['description2_preview'] = $this->renderDescription2($request, $normalized);
         $identity = [
@@ -1107,7 +1166,23 @@ class TechnicalServicePaymentOrderContextService
             'commercial_mode' => $commercialMode,
             'delivery_mode' => $deliveryMode,
             'collection_allocation' => $collectionAllocation,
-            'part' => $this->partIdentity($part),
+            'part' => $purpose === self::PURPOSE_PART_CHARGE ? null : $this->partIdentity($part),
+            'lines' => $purpose === self::PURPOSE_PART_CHARGE
+                ? collect($lines)
+                    ->sortBy('line_key')
+                    ->map(fn (array $line): array => [
+                        'item_code' => $line['item_code'],
+                        'item_kind' => $line['item_kind'],
+                        'quantity' => number_format((float) $line['quantity'], 3, '.', ''),
+                        'unit_price' => number_format((float) $line['unit_price'], 2, '.', ''),
+                        'line_total' => number_format((float) $line['line_total'], 2, '.', ''),
+                        'currency' => $line['currency'],
+                        'serial_tracking_state' => $line['serial_tracking_state'],
+                        'selected_part_serial' => $line['selected_part_serial'],
+                    ])
+                    ->values()
+                    ->all()
+                : null,
             'related_product_serial' => $normalized['related_product_serial'],
             'order_line_total' => number_format($orderLineTotal, 2, '.', ''),
             'collection_amount' => number_format($collectionAmount, 2, '.', ''),
@@ -1117,7 +1192,7 @@ class TechnicalServicePaymentOrderContextService
             'payment_status' => $paymentStatus,
             'future_order_trigger' => $futureOrderTrigger,
             'future_carrier_state' => $futureCarrierState,
-            'description2_version' => self::DESCRIPTION2_VERSION,
+            'description2_version' => $descriptionVersion,
         ];
         $normalized['context_hash'] = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
@@ -1250,114 +1325,171 @@ class TechnicalServicePaymentOrderContextService
         return [$target, $snapshot];
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
-    private function selectedStockItem(TechnicalServiceRequest $request, array $input): array
-    {
-        $token = trim((string) ($input['stock_selection_token'] ?? ''));
-        if ($token === '') {
+    /** @param array<string, mixed> $input @return array<int, array<string, mixed>> */
+    private function selectedStockItems(
+        TechnicalServiceRequest $request,
+        array $input,
+        string $commercialMode,
+        string $deliveryMode,
+        string $currency,
+    ): array {
+        $rawLines = is_array($input['lines'] ?? null) ? array_values($input['lines']) : [[
+            'stock_selection_token' => $input['stock_selection_token'] ?? null,
+            'quantity' => $input['quantity'] ?? null,
+            'unit_price' => $input['unit_price'] ?? null,
+            'selected_part_serial' => $input['selected_part_serial'] ?? null,
+        ]];
+        if ($rawLines === [] || count($rawLines) > self::MAX_PART_LINES) {
             throw ValidationException::withMessages([
-                'order_context.stock_selection_token' => 'EMAKS Prime parçası için Mikro stok listesinden bir parça seçin.',
-            ]);
-        }
-
-        try {
-            $decoded = json_decode(Crypt::decryptString($token), true, 512, JSON_THROW_ON_ERROR);
-        } catch (Throwable) {
-            throw ValidationException::withMessages([
-                'order_context.stock_selection_token' => 'Parça seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
-            ]);
-        }
-        if (! is_array($decoded) || (int) ($decoded['request_id'] ?? 0) !== (int) $request->id) {
-            throw ValidationException::withMessages([
-                'order_context.stock_selection_token' => 'Seçilen parça bu teknik servis talebine ait değildir.',
+                'order_context.lines' => 'En fazla 20 farklı parça kalemi seçilebilir.',
             ]);
         }
 
         $fixtureTransport = app()->environment('testing')
             && (bool) config('services.technical_service.payment_order_context_test_stock', false);
-        $source = trim((string) ($decoded['source'] ?? ''));
-        if (($source === 'test_fixture') !== $fixtureTransport) {
-            throw ValidationException::withMessages([
-                'order_context.stock_selection_token' => 'Gerçek Mikro stok seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
-            ]);
-        }
-        if (! $fixtureTransport && $source !== 'mikro') {
-            throw ValidationException::withMessages([
-                'order_context.stock_selection_token' => 'Gerçek Mikro stok seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
-            ]);
-        }
-
-        $quantity = is_numeric($input['quantity'] ?? null) ? round((float) $input['quantity'], 3) : 0.0;
-        if ($quantity <= 0) {
-            throw ValidationException::withMessages(['order_context.quantity' => 'Parça adedi 0 üzerinde olmalıdır.']);
-        }
-        $serialRequired = (bool) ($decoded['serial_tracking_required'] ?? false);
-        $selectedSerial = trim((string) ($input['selected_part_serial'] ?? ''));
-        $serials = collect(is_array($decoded['serials'] ?? null) ? $decoded['serials'] : [])
-            ->map(fn (mixed $serial): string => trim((string) $serial))
-            ->filter()
-            ->values();
-        if ($serialRequired && $selectedSerial === '') {
-            throw ValidationException::withMessages([
-                'order_context.selected_part_serial' => 'Seri takipli parça için doğrulanmış parça seri numarasını seçin.',
-            ]);
-        }
-
-        $onHand = $decoded['on_hand'] ?? null;
-        $reserved = $decoded['reserved'] ?? null;
-        $available = $decoded['available'] ?? null;
-        if ($fixtureTransport) {
-            if ($serialRequired && ! $serials->contains($selectedSerial)) {
+        $merged = [];
+        foreach ($rawLines as $index => $rawLine) {
+            if (! is_array($rawLine)) {
+                throw ValidationException::withMessages(['order_context.lines.'.($index).'' => 'Parça satırı geçersiz.']);
+            }
+            $token = trim((string) ($rawLine['stock_selection_token'] ?? ''));
+            if ($token === '') {
                 throw ValidationException::withMessages([
-                    'order_context.selected_part_serial' => 'Seri takipli parça için doğrulanmış parça seri numarasını seçin.',
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Mikro stok listesinden bir parça seçin.',
                 ]);
             }
-        } elseif (! (bool) ($decoded['availability_verified'] ?? false)) {
-            throw ValidationException::withMessages([
-                'order_context.stock_selection_token' => 'Stok miktarı henüz doğrulanmadı. Parça kimliği bulundu; stok uygunluğu doğrulanmadan ödeme ve sipariş hazırlığı başlatılamaz.',
-            ]);
-        } else {
-            $availability = $this->mikro->stockAvailability(trim((string) ($decoded['item_code'] ?? '')));
-            $availabilityRow = collect($availability['data'] ?? [])->first(fn (mixed $row): bool => is_array($row));
-            if (($availability['ok'] ?? false) !== true || ! is_array($availabilityRow)) {
+            try {
+                $decoded = json_decode(Crypt::decryptString($token), true, 512, JSON_THROW_ON_ERROR);
+            } catch (Throwable) {
                 throw ValidationException::withMessages([
-                    'order_context.stock_selection_token' => 'Mikro stok kullanılabilirliği doğrulanamadı. Parça seçimi tamamlanamadı.',
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Parça seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
                 ]);
             }
-            $onHand = round((float) ($availabilityRow['depot_1_quantity'] ?? 0) + (float) ($availabilityRow['depot_5_quantity'] ?? 0), 3);
-            $available = is_numeric($availabilityRow['available_quantity'] ?? null)
-                ? (float) $availabilityRow['available_quantity']
-                : null;
-            $reserved = $available !== null ? max(0, round($onHand - $available, 3)) : null;
+            if (! is_array($decoded) || (int) ($decoded['request_id'] ?? 0) !== (int) $request->id) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Seçilen parça bu teknik servis talebine ait değildir.',
+                ]);
+            }
 
-            if ($serialRequired) {
-                $serialResult = $this->mikro->serialLookup($selectedSerial);
-                $serialRow = collect($serialResult['data'] ?? [])->first(fn (mixed $row): bool => is_array($row));
-                if (($serialResult['ok'] ?? false) !== true
-                    || ! is_array($serialRow)
-                    || trim((string) ($serialRow['stock_code'] ?? '')) !== trim((string) ($decoded['item_code'] ?? ''))) {
+            $source = trim((string) ($decoded['source'] ?? ''));
+            if (($source === 'test_fixture') !== $fixtureTransport || (! $fixtureTransport && $source !== 'mikro')) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Gerçek Mikro stok seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
+                ]);
+            }
+            $itemKind = trim((string) ($decoded['item_kind'] ?? ($fixtureTransport ? 'part' : 'unknown')));
+            if ($itemKind !== 'part' || ($decoded['selectable'] ?? false) !== true) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.stock_selection_token' => (string) ($decoded['selection_blocker'] ?? 'Türü doğrulanmadan bu kayıt parça olarak seçilemez.'),
+                ]);
+            }
+
+            $itemCode = trim((string) ($decoded['item_code'] ?? ''));
+            $itemName = trim((string) ($decoded['item_name'] ?? ''));
+            if ($itemCode === '' || $itemName === '') {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Parça kimliği eksik. Stok aramasından tekrar seçin.',
+                ]);
+            }
+            $quantityMilli = $this->decimalToScaledInteger(
+                $rawLine['quantity'] ?? null,
+                3,
+                'order_context.lines.'.$index.'.quantity',
+                1,
+                1000000000,
+            );
+            $unitPriceMinor = $this->decimalToScaledInteger(
+                $rawLine['unit_price'] ?? 0,
+                2,
+                'order_context.lines.'.$index.'.unit_price',
+                0,
+                1000000000,
+            );
+            if ($commercialMode === self::COMMERCIAL_PAID && $unitPriceMinor <= 0) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.unit_price' => 'Ücretli parça için birim fiyat 0 TL üzerinde olmalıdır.',
+                ]);
+            }
+            if ($commercialMode === self::COMMERCIAL_FREE && $deliveryMode === self::DELIVERY_SHIPMENT) {
+                $unitPriceMinor = 0;
+            }
+            $lineTotalMinor = intdiv(($quantityMilli * $unitPriceMinor) + 500, 1000);
+            if ($lineTotalMinor > 999999999999) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.unit_price' => 'Parça satır toplamı desteklenen üst sınırı aşmamalıdır.',
+                ]);
+            }
+
+            $lineKey = hash('sha256', mb_strtoupper($itemCode, 'UTF-8'));
+            if (isset($merged[$lineKey])) {
+                if ($merged[$lineKey]['unit_price_minor'] !== $unitPriceMinor) {
                     throw ValidationException::withMessages([
-                        'order_context.selected_part_serial' => 'Parça seri numarası seçilen Mikro stok kartıyla doğrulanamadı.',
+                        'order_context.lines.'.$index.'.unit_price' => 'Aynı parça tek bir birim fiyatla gönderilmelidir.',
                     ]);
                 }
+                $merged[$lineKey]['quantity_milli'] += $quantityMilli;
+                if ($merged[$lineKey]['quantity_milli'] > 1000000000) {
+                    throw ValidationException::withMessages([
+                        'order_context.lines.'.$index.'.quantity' => 'Toplam parça adedi desteklenen üst sınırı aşmamalıdır.',
+                    ]);
+                }
+                $merged[$lineKey]['line_total_minor'] = intdiv(
+                    ($merged[$lineKey]['quantity_milli'] * $unitPriceMinor) + 500,
+                    1000,
+                );
+                if ($merged[$lineKey]['line_total_minor'] > 999999999999) {
+                    throw ValidationException::withMessages([
+                        'order_context.lines.'.$index.'.unit_price' => 'Parça satır toplamı desteklenen üst sınırı aşmamalıdır.',
+                    ]);
+                }
+                $merged[$lineKey]['quantity'] = $this->scaledIntegerToFloat($merged[$lineKey]['quantity_milli'], 3);
+                $merged[$lineKey]['line_total'] = $this->scaledIntegerToFloat($merged[$lineKey]['line_total_minor'], 2);
+
+                continue;
             }
+
+            $serialTrackingState = in_array((string) ($decoded['serial_tracking_state'] ?? ''), ['required', 'not_required'], true)
+                ? (string) $decoded['serial_tracking_state']
+                : 'unverified';
+            $selectedSerial = trim((string) ($rawLine['selected_part_serial'] ?? ''));
+            $merged[$lineKey] = [
+                'line_key' => $lineKey,
+                'item_code' => $itemCode,
+                'item_name' => $itemName,
+                'item_short_name' => $this->nullableText($decoded['item_short_name'] ?? null),
+                'item_kind' => 'part',
+                'classification_source' => (string) ($decoded['classification_source'] ?? 'no_canonical_evidence'),
+                'classification_contract_version' => (string) ($decoded['classification_contract_version'] ?? self::ITEM_CLASSIFICATION_VERSION),
+                'quantity_milli' => $quantityMilli,
+                'quantity' => $this->scaledIntegerToFloat($quantityMilli, 3),
+                'unit_code' => trim((string) ($decoded['unit_code'] ?? 'ADET')) ?: 'ADET',
+                'unit_price_minor' => $unitPriceMinor,
+                'unit_price' => $this->scaledIntegerToFloat($unitPriceMinor, 2),
+                'line_total_minor' => $lineTotalMinor,
+                'line_total' => $this->scaledIntegerToFloat($lineTotalMinor, 2),
+                'currency' => $currency,
+                'warehouse_code' => $this->nullableText($decoded['warehouse_code'] ?? null),
+                'stock_source' => $source,
+                'stock_source_label' => trim((string) ($decoded['source_label'] ?? '')),
+                'stock_freshness_at' => trim((string) ($decoded['freshness_at'] ?? '')),
+                'mikro_contract_fingerprint' => $this->nullableText($decoded['mikro_contract_fingerprint'] ?? null),
+                'availability_verified' => (bool) ($decoded['availability_verified'] ?? false),
+                'on_hand' => $decoded['on_hand'] ?? null,
+                'reserved' => $decoded['reserved'] ?? null,
+                'available' => $decoded['available'] ?? null,
+                'serial_tracking_state' => $serialTrackingState,
+                'serial_tracking_required' => $serialTrackingState === 'required',
+                'selected_part_serial' => $selectedSerial !== '' ? $selectedSerial : null,
+                'tax_mode_snapshot' => $commercialMode === self::COMMERCIAL_PAID && $deliveryMode === self::DELIVERY_SHIPMENT
+                    ? 'standard_from_mikro'
+                    : 'none',
+                'vat_rate_snapshot' => $commercialMode === self::COMMERCIAL_PAID && $deliveryMode === self::DELIVERY_SHIPMENT
+                    ? null
+                    : 0.0,
+            ];
         }
 
-        return [
-            'item_code' => trim((string) ($decoded['item_code'] ?? '')),
-            'item_name' => trim((string) ($decoded['item_name'] ?? '')),
-            'quantity' => $quantity,
-            'unit_code' => trim((string) ($decoded['unit_code'] ?? 'ADET')) ?: 'ADET',
-            'warehouse_code' => $this->nullableText($decoded['warehouse_code'] ?? null),
-            'stock_source' => $source,
-            'stock_source_label' => trim((string) ($decoded['source_label'] ?? '')),
-            'stock_freshness_at' => trim((string) ($decoded['freshness_at'] ?? '')),
-            'on_hand' => $onHand,
-            'reserved' => $reserved,
-            'available' => $available,
-            'serial_tracking_required' => $serialRequired,
-            'selected_part_serial' => $serialRequired ? $selectedSerial : null,
-        ];
+        return array_values($merged);
     }
 
     /** @param array<string, mixed> $input @return array<string, mixed> */
@@ -1372,8 +1504,13 @@ class TechnicalServicePaymentOrderContextService
         }
 
         return [
+            'line_key' => hash('sha256', mb_strtoupper($this->nullableText($input['technician_part_code'] ?? null) ?? $name, 'UTF-8')),
             'item_code' => $this->nullableText($input['technician_part_code'] ?? null),
             'item_name' => $name,
+            'item_short_name' => null,
+            'item_kind' => 'part',
+            'classification_source' => 'technician_declaration',
+            'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
             'quantity' => $quantity,
             'unit_code' => 'ADET',
             'warehouse_code' => null,
@@ -1383,8 +1520,64 @@ class TechnicalServicePaymentOrderContextService
             'on_hand' => null,
             'reserved' => null,
             'available' => null,
+            'availability_verified' => false,
+            'serial_tracking_state' => 'not_required',
             'serial_tracking_required' => false,
             'selected_part_serial' => null,
+        ];
+    }
+
+    /** @param array<string, mixed> $part @return array<string, mixed> */
+    private function technicianPartLine(array $part, int $totalMinor, string $currency): array
+    {
+        $quantityMilli = $this->decimalToScaledInteger($part['quantity'] ?? null, 3, 'order_context.quantity', 1, 1000000000);
+        $unitPriceMinor = intdiv(($totalMinor * 1000) + intdiv($quantityMilli, 2), $quantityMilli);
+
+        return [
+            ...$part,
+            'unit_price' => $this->scaledIntegerToFloat($unitPriceMinor, 2),
+            'line_total' => $this->scaledIntegerToFloat($totalMinor, 2),
+            'currency' => $currency,
+            'tax_mode_snapshot' => 'none',
+            'vat_rate_snapshot' => 0.0,
+        ];
+    }
+
+    /** @param array<int, array<string, mixed>> $lines @return array<string, mixed> */
+    private function partReadiness(?string $supplier, array $lines, string $taxMode): array
+    {
+        if ($supplier !== self::SUPPLIER_EMAKS) {
+            return [
+                'ready' => true,
+                'order_ready' => true,
+                'payment_ready' => true,
+                'blocker_codes' => [],
+                'blockers' => [],
+            ];
+        }
+
+        $blockers = [];
+        if (collect($lines)->contains(fn (array $line): bool => ! (bool) ($line['availability_verified'] ?? false))) {
+            $blockers['stock_availability_unverified'] = 'Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.';
+        }
+        if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? 'unverified') === 'unverified')) {
+            $blockers['serial_tracking_unverified'] = 'Parça seri takip kuralı doğrulanmadan ödeme ve sipariş hazırlığı tamamlanamaz.';
+        }
+        if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? null) === 'required'
+            && blank($line['selected_part_serial'] ?? null))) {
+            $blockers['part_serial_selection_unverified'] = 'Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.';
+        }
+        if ($taxMode === 'standard_from_mikro'
+            && collect($lines)->contains(fn (array $line): bool => ! is_numeric($line['vat_rate_snapshot'] ?? null))) {
+            $blockers['vat_unverified'] = 'KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.';
+        }
+
+        return [
+            'ready' => $blockers === [],
+            'order_ready' => $blockers === [],
+            'payment_ready' => $blockers === [],
+            'blocker_codes' => array_keys($blockers),
+            'blockers' => array_values($blockers),
         ];
     }
 
@@ -1399,7 +1592,8 @@ class TechnicalServicePaymentOrderContextService
     ): array {
         $billing = $normalized['billing'];
         $shipping = is_array($normalized['shipping']) ? $normalized['shipping'] : [];
-        $part = is_array($normalized['part']) ? $normalized['part'] : [];
+        $newLineAuthority = is_array($normalized['lines'] ?? null) && $normalized['lines'] !== [];
+        $part = ! $newLineAuthority && is_array($normalized['part']) ? $normalized['part'] : [];
 
         return [
             'technical_service_request_id' => $request->id,
@@ -1467,16 +1661,17 @@ class TechnicalServicePaymentOrderContextService
             'shipment_required' => $normalized['shipment_required'],
             'future_carrier_state' => $normalized['future_carrier_state'],
             'description2_preview' => $normalized['description2_preview'],
-            'description2_version' => self::DESCRIPTION2_VERSION,
+            'description2_version' => $normalized['description2_version'],
             'context_hash' => $normalized['context_hash'],
             'idempotency_key' => $idempotencyKey,
             'correlation_id' => (string) Str::uuid(),
             'revision' => $revision,
             'created_by' => $actor?->getAuthIdentifier(),
             'metadata' => json_encode([
-                'schema_version' => 1,
+                'schema_version' => $newLineAuthority ? 2 : 1,
                 'request_code' => $normalized['request_code'],
                 'root_mrn' => $normalized['root_mrn'],
+                'line_count' => count($normalized['lines'] ?? []),
                 'stock_snapshot' => $part === [] ? null : [
                     'on_hand' => $part['on_hand'] ?? null,
                     'reserved' => $part['reserved'] ?? null,
@@ -1493,22 +1688,132 @@ class TechnicalServicePaymentOrderContextService
         ];
     }
 
+    /** @param array<int, array<string, mixed>> $lines */
+    private function insertContextLines(int $contextId, array $lines, ?Authenticatable $actor): void
+    {
+        if ($lines === []) {
+            return;
+        }
+        $now = now();
+        DB::table(self::ITEM_TABLE)->insert(array_map(
+            fn (array $line, int $position): array => [
+                'context_id' => $contextId,
+                'line_key' => $line['line_key'],
+                'position' => $position + 1,
+                'item_code' => $line['item_code'],
+                'item_name_snapshot' => $line['item_name'],
+                'item_short_name_snapshot' => $line['item_short_name'] ?? null,
+                'item_kind' => $line['item_kind'],
+                'classification_source' => $line['classification_source'],
+                'classification_contract_version' => $line['classification_contract_version'],
+                'unit_code' => $line['unit_code'],
+                'quantity' => $line['quantity'],
+                'unit_price' => $line['unit_price'],
+                'line_total' => $line['line_total'],
+                'currency' => $line['currency'],
+                'serial_tracking_state' => $line['serial_tracking_state'],
+                'selected_part_serial' => $line['selected_part_serial'] ?? null,
+                'stock_source' => $line['stock_source'],
+                'stock_freshness_at' => filled($line['stock_freshness_at'] ?? null) ? $line['stock_freshness_at'] : null,
+                'mikro_contract_fingerprint' => $line['mikro_contract_fingerprint'] ?? null,
+                'availability_verified' => (bool) ($line['availability_verified'] ?? false),
+                'tax_mode_snapshot' => $line['tax_mode_snapshot'],
+                'vat_rate_snapshot' => $line['vat_rate_snapshot'],
+                'created_by' => $actor?->getAuthIdentifier(),
+                'updated_by' => $actor?->getAuthIdentifier(),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            $lines,
+            array_keys($lines),
+        ));
+    }
+
     private function writePaymentSnapshot(TechnicalServiceMountPayment $payment, object $context): void
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        $payload['order_context'] = $this->rowProjection($context);
+        $payload['order_context'] = $this->rowProjection($context, false);
         $payload['order_context_id'] = (int) $context->id;
         $payload['order_context_hash'] = (string) $context->context_hash;
         $payment->forceFill(['raw_payload' => $payload])->save();
     }
 
     /** @return array<string, mixed> */
-    private function rowProjection(object $row): array
+    private function rowProjection(object $row, bool $includeSelectionTokens = true): array
     {
         $metadata = is_string($row->metadata ?? null)
             ? json_decode((string) $row->metadata, true)
             : (is_array($row->metadata ?? null) ? $row->metadata : []);
         $stockSnapshot = is_array($metadata['stock_snapshot'] ?? null) ? $metadata['stock_snapshot'] : [];
+        $lines = DB::table(self::ITEM_TABLE)
+            ->where('context_id', (int) $row->id)
+            ->orderBy('position')
+            ->orderBy('id')
+            ->get()
+            ->map(function (object $line) use ($includeSelectionTokens, $row): array {
+                $projection = [
+                    'id' => (int) $line->id,
+                    'line_key' => (string) $line->line_key,
+                    'position' => (int) $line->position,
+                    'item_code' => (string) $line->item_code,
+                    'item_name' => (string) $line->item_name_snapshot,
+                    'item_short_name' => $line->item_short_name_snapshot,
+                    'item_kind' => (string) $line->item_kind,
+                    'classification_source' => (string) $line->classification_source,
+                    'classification_contract_version' => (string) $line->classification_contract_version,
+                    'unit_code' => $line->unit_code,
+                    'quantity' => (float) $line->quantity,
+                    'unit_price' => (float) $line->unit_price,
+                    'unit_price_label' => $this->moneyLabel((float) $line->unit_price, (string) $line->currency),
+                    'line_total' => (float) $line->line_total,
+                    'line_total_label' => $this->moneyLabel((float) $line->line_total, (string) $line->currency),
+                    'currency' => (string) $line->currency,
+                    'warehouse_code' => null,
+                    'stock_source' => (string) $line->stock_source,
+                    'stock_source_label' => (string) $line->stock_source === 'mikro' ? 'Mikro API' : 'Usta beyanı',
+                    'stock_freshness_at' => $line->stock_freshness_at,
+                    'mikro_contract_fingerprint' => $line->mikro_contract_fingerprint,
+                    'availability_verified' => (bool) $line->availability_verified,
+                    'on_hand' => null,
+                    'reserved' => null,
+                    'available' => null,
+                    'serial_tracking_state' => (string) $line->serial_tracking_state,
+                    'serial_tracking_required' => (string) $line->serial_tracking_state === 'required',
+                    'selected_part_serial' => $line->selected_part_serial,
+                    'tax_mode_snapshot' => (string) $line->tax_mode_snapshot,
+                    'vat_rate_snapshot' => is_numeric($line->vat_rate_snapshot) ? (float) $line->vat_rate_snapshot : null,
+                ];
+                if ($includeSelectionTokens && (string) $line->item_kind === 'part' && (string) $line->stock_source === 'mikro') {
+                    $projection['selection_token'] = $this->selectionTokenForSnapshot((int) $row->technical_service_request_id, [
+                        'item_code' => (string) $line->item_code,
+                        'item_name' => (string) $line->item_name_snapshot,
+                        'item_short_name' => $line->item_short_name_snapshot,
+                        'item_kind' => 'part',
+                        'item_kind_label' => 'Yedek parça',
+                        'classification_source' => (string) $line->classification_source,
+                        'classification_contract_version' => (string) $line->classification_contract_version,
+                        'selectable' => true,
+                        'selection_blocker' => null,
+                        'unit_code' => $line->unit_code,
+                        'warehouse_code' => null,
+                        'on_hand' => null,
+                        'reserved' => null,
+                        'available' => null,
+                        'availability_verified' => (bool) $line->availability_verified,
+                        'serial_tracking_state' => (string) $line->serial_tracking_state,
+                        'serial_tracking_required' => (string) $line->serial_tracking_state === 'required',
+                        'serials' => [],
+                        'source' => (string) $line->stock_source,
+                        'source_label' => (string) $line->stock_source === 'mikro' ? 'Mikro API' : 'Usta beyanı',
+                        'freshness_at' => $line->stock_freshness_at,
+                        'mikro_contract_fingerprint' => $line->mikro_contract_fingerprint,
+                    ]);
+                }
+
+                return $projection;
+            })
+            ->values()
+            ->all();
         $billing = [
             'source' => (string) $row->billing_source,
             'billing_type' => $row->billing_type ?: 'individual',
@@ -1536,12 +1841,23 @@ class TechnicalServicePaymentOrderContextService
                 'postal_code' => $row->shipping_postal_code,
             ]
             : null;
-        $part = filled($row->item_name_snapshot)
+        $hasLineAuthority = $lines !== [];
+        $legacyPart = filled($row->item_name_snapshot)
             ? [
+                'line_key' => hash('sha256', mb_strtoupper((string) ($row->item_code ?: $row->item_name_snapshot), 'UTF-8')),
                 'item_code' => $row->item_code,
                 'item_name' => $row->item_name_snapshot,
+                'item_short_name' => null,
+                'item_kind' => 'part',
+                'classification_source' => 'legacy_single_item_context',
+                'classification_contract_version' => 'legacy-v1',
                 'quantity' => (float) $row->quantity,
                 'unit_code' => $row->unit_code,
+                'unit_price' => (float) $row->order_line_unit_price,
+                'unit_price_label' => $this->moneyLabel((float) $row->order_line_unit_price, (string) $row->currency),
+                'line_total' => (float) $row->order_line_total,
+                'line_total_label' => $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
+                'currency' => (string) $row->currency,
                 'warehouse_code' => $row->warehouse_code,
                 'stock_source' => $row->stock_source,
                 'stock_source_label' => $stockSnapshot['source_label'] ?? null,
@@ -1549,10 +1865,28 @@ class TechnicalServicePaymentOrderContextService
                 'on_hand' => $stockSnapshot['on_hand'] ?? null,
                 'reserved' => $stockSnapshot['reserved'] ?? null,
                 'available' => $stockSnapshot['available'] ?? null,
+                'availability_verified' => $stockSnapshot !== [],
+                'serial_tracking_state' => (bool) $row->part_serial_tracking_required ? 'required' : 'not_required',
                 'serial_tracking_required' => (bool) $row->part_serial_tracking_required,
                 'selected_part_serial' => $row->selected_part_serial,
+                'tax_mode_snapshot' => (string) $row->tax_mode,
+                'vat_rate_snapshot' => is_numeric($row->vat_rate) ? (float) $row->vat_rate : null,
             ]
             : null;
+        if ($lines === [] && $legacyPart !== null) {
+            $lines = [$legacyPart];
+        }
+        $part = $lines[0] ?? null;
+        $readiness = $hasLineAuthority
+            ? $this->partReadiness((string) $row->part_supplier, $lines, (string) $row->tax_mode)
+            : [
+                'ready' => true,
+                'order_ready' => true,
+                'payment_ready' => true,
+                'blocker_codes' => [],
+                'blockers' => [],
+                'legacy_context' => true,
+            ];
 
         return [
             'id' => (int) $row->id,
@@ -1586,6 +1920,10 @@ class TechnicalServicePaymentOrderContextService
                 ? 'Şirkette bırakılacak'
                 : ((string) $row->collection_allocation === self::ALLOCATION_PAY_TECHNICIAN ? 'Ustaya hakediş olarak eklenecek' : null),
             'part' => $part,
+            'lines' => $lines,
+            'line_count' => count($lines),
+            'total_quantity' => array_sum(array_map(fn (array $line): float => (float) ($line['quantity'] ?? 0), $lines)),
+            'total_quantity_label' => $this->quantityLabel(array_sum(array_map(fn (array $line): float => (float) ($line['quantity'] ?? 0), $lines))),
             'commercial_mode' => $row->commercial_mode,
             'commercial_mode_label' => (string) $row->commercial_mode === self::COMMERCIAL_FREE ? 'Ücretsiz' : ((string) $row->commercial_mode === self::COMMERCIAL_PAID ? 'Ücretli' : null),
             'delivery_mode' => $row->delivery_mode,
@@ -1603,6 +1941,8 @@ class TechnicalServicePaymentOrderContextService
             'order_line_unit_price_label' => $this->moneyLabel((float) $row->order_line_unit_price, (string) $row->currency),
             'order_line_total' => (float) $row->order_line_total,
             'order_line_total_label' => $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
+            'order_reference_total' => (float) $row->order_line_total,
+            'order_reference_total_label' => $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
             'collection_amount' => (float) $row->collection_amount,
             'collection_amount_label' => $this->moneyLabel((float) $row->collection_amount, (string) $row->currency),
             'future_order_trigger' => $row->future_order_trigger,
@@ -1617,6 +1957,7 @@ class TechnicalServicePaymentOrderContextService
             'future_carrier_label' => (bool) $row->shipment_required
                 ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak'
                 : 'Sevkiyat yok',
+            'readiness' => $readiness,
             'description2_preview' => (string) $row->description2_preview,
             'description2_version' => (int) $row->description2_version,
             'context_hash' => (string) $row->context_hash,
@@ -1646,22 +1987,22 @@ class TechnicalServicePaymentOrderContextService
             ]);
         }
 
-        $part = $context['part'];
+        $partLines = is_array($context['lines'] ?? null) ? $context['lines'] : [];
         $shipping = $context['shipping'];
-        $itemIdentity = trim(implode(' - ', array_filter([
-            $part['item_code'] ?? null,
-            $part['item_name'] ?? null,
-        ], fn (mixed $value): bool => filled($value))));
         $lines = [];
         if ($context['shipment_required'] && ! $context['shipping_same_as_billing']) {
             $lines[] = 'SEVK ADRESİ FARKLIDIR.';
         }
         $lines[] = 'MRN/SRV: '.$requestCode;
         $lines[] = 'İLGİLİ ÜRÜN SERİ NO: '.$context['related_product_serial'];
-        $lines[] = 'PARÇA: '.$itemIdentity;
-        $lines[] = 'ADET: '.$this->quantityLabel((float) ($part['quantity'] ?? 0));
 
         if ($context['context_type'] === 'technician_supplied_part') {
+            $part = $partLines[0] ?? [];
+            $lines[] = 'PARÇA: '.trim(implode(' - ', array_filter([
+                $part['item_code'] ?? null,
+                $part['item_name'] ?? null,
+            ], fn (mixed $value): bool => filled($value))));
+            $lines[] = 'ADET: '.$this->quantityLabel((float) ($part['quantity'] ?? 0));
             $lines[] = 'TEDARİK: USTA';
             $lines[] = 'MİKRO PARÇA SİPARİŞİ: YOK';
             $lines[] = 'SEVKİYAT: YOK';
@@ -1670,26 +2011,32 @@ class TechnicalServicePaymentOrderContextService
             return implode("\n", $lines);
         }
 
+        $lines[] = '';
+        $lines[] = 'PARÇALAR:';
+        foreach ($partLines as $index => $partLine) {
+            $lines[] = ($index + 1).'. '.$this->quantityLabel((float) ($partLine['quantity'] ?? 0)).' '
+                .((string) ($partLine['unit_code'] ?? 'ADET')).' · '
+                .((string) ($partLine['item_code'] ?? '-')).' · '
+                .((string) ($partLine['item_name'] ?? '-'));
+            $lines[] = '   BİRİM TUTAR: '.$this->moneyLabel((float) ($partLine['unit_price'] ?? 0), (string) $context['currency']);
+            $lines[] = '   SATIR TOPLAMI: '.$this->moneyLabel((float) ($partLine['line_total'] ?? 0), (string) $context['currency']);
+            $lines[] = '';
+        }
+        $lines[] = 'PARÇA KALEMİ: '.count($partLines);
+        $lines[] = 'TOPLAM ADET: '.$this->quantityLabel((float) ($context['total_quantity'] ?? 0));
+        $lines[] = 'SİPARİŞ/REFERANS TOPLAMI: '.$context['order_reference_total_label'];
+        $lines[] = 'TAHSİLAT TOPLAMI: '.$context['collection_amount_label'];
         $lines[] = 'TİCARİ DURUM: '.($context['commercial_mode'] === self::COMMERCIAL_FREE ? 'ÜCRETSİZ' : 'ÜCRETLİ');
+        $lines[] = 'TESLİM: '.($context['delivery_mode'] === self::DELIVERY_HAND ? 'ELDEN' : 'SEVK');
+        $lines[] = 'HEDEF SERİ: '.($context['desired_mikro_series'] ?? '-');
+        $lines[] = 'KDV: '.($context['tax_mode'] === 'none' ? 'YOK' : 'MİKRO STOK KARTI');
         if ($context['delivery_mode'] === self::DELIVERY_HAND) {
-            $lines[] = 'TESLİM: ELDEN';
-            $lines[] = $context['commercial_mode'] === self::COMMERCIAL_FREE
-                ? 'SİPARİŞ SATIR DEĞERİ: '.$context['order_line_total_label']
-                : 'TUTAR: '.$context['collection_amount_label'];
-            $lines[] = 'KDV: YOK';
-            $lines[] = 'HEDEF SERİ: Q';
             $lines[] = $context['commercial_mode'] === self::COMMERCIAL_FREE
                 ? 'TAHSİLAT: GEREKMİYOR'
                 : 'ÖDEME DURUMU: '.mb_strtoupper($this->paymentStatusLabel((string) $context['payment_status']), 'UTF-8');
         } elseif ($context['shipment_required']) {
             if ($context['commercial_mode'] === self::COMMERCIAL_FREE) {
-                $lines[] = 'SİPARİŞ TUTARI: '.$context['order_line_total_label'];
-                $lines[] = 'KDV: YOK';
-                $lines[] = 'HEDEF SERİ: Q';
                 $lines[] = 'TAHSİLAT: GEREKMİYOR';
-            } else {
-                $lines[] = 'HEDEF SERİ: S';
-                $lines[] = 'KDV: MİKRO STOK KARTI';
             }
             if ($context['shipping_same_as_billing']) {
                 $lines[] = 'SEVK/FATURA: AYNI';
@@ -1716,12 +2063,20 @@ class TechnicalServicePaymentOrderContextService
             [
                 'item_code' => 'TS-PART-001',
                 'item_name' => 'Gateway',
+                'item_short_name' => null,
+                'item_kind' => 'part',
+                'item_kind_label' => 'Yedek parça',
+                'classification_source' => 'test_fixture',
+                'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
+                'selectable' => true,
+                'selection_blocker' => null,
                 'unit_code' => 'ADET',
                 'warehouse_code' => 'MERKEZ',
                 'on_hand' => 24.0,
                 'reserved' => 3.0,
                 'available' => 21.0,
                 'serial_tracking_required' => false,
+                'serial_tracking_state' => 'not_required',
                 'serials' => [],
                 'source' => 'test_fixture',
                 'source_label' => 'Test verisi',
@@ -1730,12 +2085,20 @@ class TechnicalServicePaymentOrderContextService
             [
                 'item_code' => 'TS-PART-002',
                 'item_name' => 'Akıllı Kilit Motor Modülü',
+                'item_short_name' => null,
+                'item_kind' => 'part',
+                'item_kind_label' => 'Yedek parça',
+                'classification_source' => 'test_fixture',
+                'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
+                'selectable' => true,
+                'selection_blocker' => null,
                 'unit_code' => 'ADET',
                 'warehouse_code' => 'MERKEZ',
                 'on_hand' => 6.0,
                 'reserved' => 1.0,
                 'available' => 5.0,
                 'serial_tracking_required' => true,
+                'serial_tracking_state' => 'required',
                 'serials' => ['TSP-2026-0001', 'TSP-2026-0002', 'TSP-2026-0003'],
                 'source' => 'test_fixture',
                 'source_label' => 'Test verisi',
@@ -1765,15 +2128,74 @@ class TechnicalServicePaymentOrderContextService
     /** @param array<string, mixed> $item @return array<string, mixed> */
     private function partSearchItem(TechnicalServiceRequest $request, array $item): array
     {
-        $tokenPayload = [
-            'schema_version' => 1,
-            'request_id' => (int) $request->id,
-            ...$item,
-        ];
-
         return [
             ...$item,
-            'selection_token' => Crypt::encryptString(json_encode($tokenPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)),
+            'selection_token' => $this->selectionTokenForSnapshot((int) $request->id, $item),
+        ];
+    }
+
+    /** @param array<string, mixed> $item */
+    private function selectionTokenForSnapshot(int $requestId, array $item): string
+    {
+        return Crypt::encryptString(json_encode([
+            'schema_version' => 1,
+            'request_id' => $requestId,
+            ...$item,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    /** @param array<int, string> $itemCodes @return array<string, true> */
+    private function panelDeviceCodes(array $itemCodes): array
+    {
+        $codes = collect($itemCodes)
+            ->map(fn (string $code): string => mb_strtoupper(trim($code), 'UTF-8'))
+            ->filter()
+            ->unique()
+            ->values();
+        if ($codes->isEmpty()) {
+            return [];
+        }
+
+        return DB::table('panel.support_activation_codes')
+            ->whereIn(DB::raw('UPPER(TRIM(stock_code))'), $codes->all())
+            ->pluck('stock_code')
+            ->mapWithKeys(fn (mixed $code): array => [mb_strtoupper(trim((string) $code), 'UTF-8') => true])
+            ->all();
+    }
+
+    /** @param array<string, mixed> $row @param array<string, true> $deviceCodes @return array<string, mixed> */
+    private function classifyStockItem(array $row, array $deviceCodes): array
+    {
+        $stockType = filter_var($row['stock_type'] ?? null, FILTER_VALIDATE_INT);
+        $itemCode = mb_strtoupper(trim((string) ($row['item_code'] ?? '')), 'UTF-8');
+        if ($stockType === 8) {
+            return [
+                'item_kind' => 'part',
+                'item_kind_label' => 'Yedek parça',
+                'classification_source' => 'mikro_stock_type',
+                'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
+                'selectable' => true,
+                'selection_blocker' => null,
+            ];
+        }
+        if (isset($deviceCodes[$itemCode])) {
+            return [
+                'item_kind' => 'device',
+                'item_kind_label' => 'Cihaz / ürün',
+                'classification_source' => 'panel_product_catalog',
+                'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
+                'selectable' => false,
+                'selection_blocker' => 'Bu stok cihaz ekleme akışına aittir; parça ödemesine eklenemez.',
+            ];
+        }
+
+        return [
+            'item_kind' => 'unknown',
+            'item_kind_label' => 'Stok türü doğrulanmadı',
+            'classification_source' => 'no_canonical_evidence',
+            'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
+            'selectable' => false,
+            'selection_blocker' => 'Türü doğrulanmadan bu kayıt parça olarak seçilemez.',
         ];
     }
 
@@ -2121,6 +2543,38 @@ class TechnicalServicePaymentOrderContextService
     private function quantityLabel(float $quantity): string
     {
         return rtrim(rtrim(number_format($quantity, 3, ',', '.'), '0'), ',');
+    }
+
+    private function decimalToScaledInteger(
+        mixed $value,
+        int $scale,
+        string $field,
+        int $minimum,
+        int $maximum,
+    ): int {
+        if (! is_scalar($value)) {
+            throw ValidationException::withMessages([$field => 'Geçerli bir sayısal değer girin.']);
+        }
+        $normalized = str_replace(',', '.', trim((string) $value));
+        if (! preg_match('/^\d+(?:\.\d{1,'.$scale.'})?$/', $normalized)) {
+            throw ValidationException::withMessages([$field => 'En fazla '.$scale.' ondalık basamak içeren pozitif bir değer girin.']);
+        }
+        [$whole, $fraction] = array_pad(explode('.', $normalized, 2), 2, '');
+        $fraction = str_pad($fraction, $scale, '0');
+        if (strlen($whole) > 12) {
+            throw ValidationException::withMessages([$field => 'Değer desteklenen üst sınırı aşmamalıdır.']);
+        }
+        $scaled = ((int) $whole * (10 ** $scale)) + (int) $fraction;
+        if ($scaled < $minimum || $scaled > $maximum) {
+            throw ValidationException::withMessages([$field => 'Değer desteklenen aralıkta olmalıdır.']);
+        }
+
+        return $scaled;
+    }
+
+    private function scaledIntegerToFloat(int $value, int $scale): float
+    {
+        return $value / (10 ** $scale);
     }
 
     private function moneyLabel(float $amount, string $currency): string

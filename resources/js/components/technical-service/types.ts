@@ -1220,24 +1220,47 @@ export type ServiceRequestOrderPartySnapshot = {
 export type ServiceRequestMikroPartSearchItem = {
   item_code: string
   item_name: string
-  unit_code: string
+  item_short_name?: string | null
+  item_kind: 'part' | 'device' | 'service' | 'unknown'
+  item_kind_label: string
+  classification_source: string
+  classification_contract_version: string
+  selectable: boolean
+  selection_blocker?: string | null
+  unit_code?: string | null
   warehouse_code?: string | null
   on_hand?: number | null
   reserved?: number | null
   available?: number | null
+  availability_verified?: boolean
+  serial_tracking_state: 'required' | 'not_required' | 'unverified'
   serial_tracking_required: boolean
   serials?: string[]
   source: string
   source_label: string
-  freshness_at: string
+  freshness_at?: string | null
+  mikro_contract_fingerprint?: string | null
   selection_token: string
 }
 
 export type ServiceRequestPaymentOrderPart = {
+  id?: number | string | null
+  selection_token?: string | null
+  line_key?: string | null
+  position?: number | null
   item_code?: string | null
   item_name?: string | null
+  item_short_name?: string | null
+  item_kind?: 'part' | 'device' | 'service' | 'unknown' | string | null
+  classification_source?: string | null
+  classification_contract_version?: string | null
   quantity?: number | null
   unit_code?: string | null
+  unit_price?: number | null
+  unit_price_label?: string | null
+  line_total?: number | null
+  line_total_label?: string | null
+  currency?: string | null
   warehouse_code?: string | null
   stock_source?: string | null
   stock_source_label?: string | null
@@ -1245,6 +1268,8 @@ export type ServiceRequestPaymentOrderPart = {
   on_hand?: number | null
   reserved?: number | null
   available?: number | null
+  availability_verified?: boolean
+  serial_tracking_state?: 'required' | 'not_required' | 'unverified' | string | null
   serial_tracking_required?: boolean
   selected_part_serial?: string | null
 }
@@ -1277,6 +1302,10 @@ export type ServiceRequestPaymentOrderContext = {
   collection_allocation?: 'retain_company' | 'pay_technician' | string | null
   collection_allocation_label?: string | null
   part?: ServiceRequestPaymentOrderPart | null
+  lines?: ServiceRequestPaymentOrderPart[]
+  line_count?: number | null
+  total_quantity?: number | null
+  total_quantity_label?: string | null
   commercial_mode?: 'free' | 'paid' | string | null
   commercial_mode_label?: string | null
   delivery_mode?: 'hand_delivery' | 'shipment' | string | null
@@ -1294,6 +1323,8 @@ export type ServiceRequestPaymentOrderContext = {
   order_line_unit_price_label?: string | null
   order_line_total?: number | null
   order_line_total_label?: string | null
+  order_reference_total?: number | null
+  order_reference_total_label?: string | null
   collection_amount?: number | null
   collection_amount_label?: string | null
   future_order_trigger?: string | null
@@ -1306,6 +1337,14 @@ export type ServiceRequestPaymentOrderContext = {
   shipment_required?: boolean
   future_carrier_state?: string | null
   future_carrier_label?: string | null
+  readiness?: {
+    ready?: boolean
+    order_ready?: boolean
+    payment_ready?: boolean
+    blocker_codes?: string[]
+    blockers?: string[]
+    legacy_context?: boolean
+  } | null
   description2_preview?: string | null
   description2_version?: number | null
   context_hash?: string | null
@@ -1705,6 +1744,12 @@ export type ServiceRequestExtraMountPaymentPayload = {
     delivery_target?: 'billing_address' | 'mrn_customer' | 'technician' | 'custom_recipient' | string | null
     shipping?: ServiceRequestOrderPartySnapshot
     part_supplier?: 'emaks_prime' | 'technician' | null
+    lines?: Array<{
+      stock_selection_token: string
+      quantity: number
+      unit_price: number
+      selected_part_serial?: string | null
+    }>
     stock_selection_token?: string | null
     technician_part_code?: string | null
     technician_part_name?: string | null

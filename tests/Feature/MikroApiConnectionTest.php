@@ -53,10 +53,10 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.health_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
-            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 32)
-            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 30)
+            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 33)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 31)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 2)
+            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 3)
             ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
@@ -726,6 +726,100 @@ class MikroApiConnectionTest extends TestCase
             && $request->method() === 'POST'
             && $request['StokKod'] === 'STOK-002'
             && $request['Size'] === '1');
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('stock.availability')['runtime_enabled']);
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
+    }
+
+    public function test_stock_search_schema_is_typed_and_drops_unknown_fields(): void
+    {
+        $schemas = app(MikroResponseSchemaCatalog::class);
+        $schema = $schemas->descriptor('stock.search');
+        $normalized = $schemas->normalize('stock.search', [[
+            'item_code' => 'TKN000009',
+            'item_name' => 'DDL 720 DIŞ DOKUMATİK',
+            'item_short_name' => null,
+            'unit_code' => 'ADET',
+            'stock_type' => 8,
+            'detail_tracking_type' => 0,
+            'cancelled' => 0,
+            'hidden' => 0,
+            'available' => 999,
+            'vat_rate' => 20,
+            'api_key' => 'DROP-ME',
+        ]]);
+
+        $this->assertSame(MikroResponseSchemaCatalog::VERIFIED, $schema['schema_status']);
+        $this->assertSame(MikroResponseSchemaCatalog::STOCK_SEARCH_CONTRACT_VERSION, $schema['contract_version']);
+        $this->assertSame(MikroResponseSchemaCatalog::STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT, $schema['response_schema_fingerprint']);
+        $this->assertSame([[
+            'item_code' => 'TKN000009',
+            'item_name' => 'DDL 720 DIŞ DOKUMATİK',
+            'item_short_name' => null,
+            'unit_code' => 'ADET',
+            'stock_type' => 8,
+            'detail_tracking_type' => 0,
+            'cancelled' => false,
+            'hidden' => false,
+        ]], $normalized);
+        $this->assertArrayNotHasKey('available', $normalized[0]);
+        $this->assertArrayNotHasKey('vat_rate', $normalized[0]);
+        $this->assertSame($normalized, $schemas->sanitizeSnapshot('stock.search', $normalized));
+        Http::assertNothingSent();
+    }
+
+    public function test_stock_search_uses_only_verified_fixed_query_and_performs_zero_write(): void
+    {
+        $secrets = $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => true,
+                    'write_enabled' => false,
+                    'operation_controls' => [
+                        'stock.search' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0);
+
+        Http::fake([
+            'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2' => $this->fixedQueryResponse([[
+                'item_code' => 'TKN000009',
+                'item_name' => 'DDL 720 DIŞ DOKUMATİK',
+                'item_short_name' => 'DDL720',
+                'unit_code' => 'ADET',
+                'stock_type' => 8,
+                'detail_tracking_type' => 0,
+                'cancelled' => 0,
+                'hidden' => 0,
+                'unexpected_secret' => 'DROP-ME',
+            ]]),
+        ]);
+
+        $result = app(MikroApiClient::class)->searchStocks('DIŞ DOKUMATİK');
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('TKN000009', $result['data'][0]['item_code']);
+        $this->assertSame(8, $result['data'][0]['stock_type']);
+        $this->assertArrayNotHasKey('unexpected_secret', $result['data'][0]);
+        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($secrets['api_key'], $encoded);
+        $this->assertStringNotContainsString($secrets['password'], $encoded);
+        Http::assertSentCount(1);
+        Http::assertSent(function (Request $request): bool {
+            $sql = (string) $request['SQLSorgu'];
+
+            return $request->url() === 'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2'
+                && $request->method() === 'POST'
+                && str_contains($sql, 'SELECT TOP (20)')
+                && str_contains($sql, "N'DIS DOKUMATIK'")
+                && str_contains($sql, 'FROM dbo.STOKLAR')
+                && ! str_contains($sql, '[[')
+                && ! preg_match('/\b(INSERT|UPDATE|DELETE|MERGE|EXEC)\b/i', $sql);
+        });
         $this->assertFalse(app(MikroOperationRegistry::class)->read('stock.availability')['runtime_enabled']);
         $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
     }

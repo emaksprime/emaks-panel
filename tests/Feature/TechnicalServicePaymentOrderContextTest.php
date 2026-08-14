@@ -212,8 +212,11 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'part_supplier' => 'emaks_prime',
             'commercial_mode' => 'paid',
             'delivery_mode' => 'shipment',
-            'stock_selection_token' => $gateway['selection_token'],
-            'quantity' => 1,
+            'lines' => [[
+                'stock_selection_token' => $gateway['selection_token'],
+                'quantity' => 1,
+                'unit_price' => 1000,
+            ]],
             'shipping_same_as_billing' => true,
         ], 1000, 'TRY');
         $tracked = $this->stockItem($request, 'Akıllı');
@@ -221,29 +224,32 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertFalse($nonSerial['part']['serial_tracking_required']);
         $this->assertNull($nonSerial['part']['selected_part_serial']);
 
-        try {
-            $this->service()->preview($request, 'part_charge', [
-                ...$this->billingInput(),
-                'part_supplier' => 'emaks_prime',
-                'commercial_mode' => 'paid',
-                'delivery_mode' => 'shipment',
+        $trackedDraft = $this->service()->preview($request, 'part_charge', [
+            ...$this->billingInput(),
+            'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
+            'lines' => [[
                 'stock_selection_token' => $tracked['selection_token'],
                 'quantity' => 1,
-                'shipping_same_as_billing' => true,
-            ], 1000, 'TRY');
-            $this->fail('Seri takipli parça seri seçimi olmadan kabul edildi.');
-        } catch (ValidationException $exception) {
-            $this->assertArrayHasKey('order_context.selected_part_serial', $exception->errors());
-        }
+                'unit_price' => 1000,
+            ]],
+            'shipping_same_as_billing' => true,
+        ], 1000, 'TRY');
+        $this->assertFalse($trackedDraft['readiness']['ready']);
+        $this->assertContains('part_serial_selection_unverified', $trackedDraft['readiness']['blocker_codes']);
 
         $serialPreview = $this->service()->preview($request, 'part_charge', [
             ...$this->billingInput(),
             'part_supplier' => 'emaks_prime',
             'commercial_mode' => 'paid',
             'delivery_mode' => 'shipment',
-            'stock_selection_token' => $tracked['selection_token'],
-            'quantity' => 1,
-            'selected_part_serial' => 'TSP-2026-0001',
+            'lines' => [[
+                'stock_selection_token' => $tracked['selection_token'],
+                'quantity' => 1,
+                'unit_price' => 1000,
+                'selected_part_serial' => 'TSP-2026-0001',
+            ]],
             'shipping_same_as_billing' => true,
         ], 1000, 'TRY');
         $this->assertSame('TSP-2026-0001', $serialPreview['part']['selected_part_serial']);
@@ -442,16 +448,9 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     public function test_paid_part_context_performs_zero_mikro_and_hepsijet_network(): void
     {
         [$request, $session] = $this->requestFixture();
-        $preview = $this->emaksPartPreview($request);
-        [, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, [
-            ...$this->billingInput(),
-            'part_supplier' => 'emaks_prime',
-            'commercial_mode' => 'paid',
-            'delivery_mode' => 'shipment',
-            'stock_selection_token' => $this->stockItem($request, 'Gateway')['selection_token'],
-            'quantity' => 1,
-            'shipping_same_as_billing' => true,
-        ], 1000);
+        $input = $this->emaksPartInput($request);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 1000, 'TRY');
+        [, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, $input, 1000);
         $this->observePaid($payment);
         $snapshot = data_get($payment->fresh()->raw_payload, 'order_context');
 
@@ -636,7 +635,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
-        $mikro->shouldReceive('listStocks')->once()->andReturn(['success' => false, 'error_code' => 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED']);
+        $mikro->shouldReceive('searchStocks')->once()->andReturn(['success' => false, 'error_code' => 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED']);
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
 
         try {
@@ -653,14 +652,17 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
-        $mikro->shouldReceive('listStocks')->once()->andReturn([
+        $mikro->shouldReceive('searchStocks')->once()->andReturn([
             'success' => true,
             'freshness_at' => '2026-08-14T12:00:00+03:00',
             'stale' => false,
             'data' => [[
                 'item_code' => 'GERCEK-001',
                 'item_name' => 'Gerçek Parça',
+                'item_short_name' => 'Parça',
                 'unit_code' => 'ADET',
+                'stock_type' => 8,
+                'detail_tracking_type' => 0,
             ]],
         ]);
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
@@ -668,6 +670,8 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
         $this->assertSame('Mikro API', $result['source_label']);
         $this->assertSame('GERCEK-001', $result['items'][0]['item_code']);
+        $this->assertSame('part', $result['items'][0]['item_kind']);
+        $this->assertTrue($result['items'][0]['selectable']);
         $this->assertSame('2026-08-14T12:00:00+03:00', $result['items'][0]['freshness_at']);
         $this->assertNull($result['items'][0]['warehouse_code']);
         $this->assertNull($result['items'][0]['on_hand']);
@@ -676,18 +680,21 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertFalse($result['items'][0]['availability_verified']);
     }
 
-    public function test_identity_only_part_selection_is_blocked_before_unverified_stock_availability(): void
+    public function test_identity_only_part_selection_creates_a_blocked_draft_before_stock_availability(): void
     {
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
-        $mikro->shouldReceive('listStocks')->once()->andReturn([
+        $mikro->shouldReceive('searchStocks')->once()->andReturn([
             'success' => true,
             'freshness_at' => '2026-08-14T12:00:00+03:00',
             'data' => [[
                 'item_code' => 'GERCEK-002',
                 'item_name' => 'Gerçek Kilit Gövdesi',
+                'item_short_name' => null,
                 'unit_code' => 'ADET',
+                'stock_type' => 8,
+                'detail_tracking_type' => 0,
             ]],
         ]);
         $mikro->shouldNotReceive('stockAvailability');
@@ -695,20 +702,22 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
         $stock = $service->searchParts($request, 'GERCEK-002')['items'][0];
 
-        try {
-            $service->preview($request, 'part_charge', [
-                ...$this->billingInput(),
-                'part_supplier' => 'emaks_prime',
-                'commercial_mode' => 'paid',
-                'delivery_mode' => 'shipment',
+        $preview = $service->preview($request, 'part_charge', [
+            ...$this->billingInput(),
+            'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
+            'lines' => [[
                 'stock_selection_token' => $stock['selection_token'],
                 'quantity' => 1,
-                'shipping_same_as_billing' => true,
-            ], 600, 'TRY');
-            $this->fail('Unverified stock availability must block order/payment preparation.');
-        } catch (ValidationException $exception) {
-            $this->assertStringContainsString('Stok miktarı henüz doğrulanmadı', $exception->errors()['order_context.stock_selection_token'][0]);
-        }
+                'unit_price' => 600,
+            ]],
+            'shipping_same_as_billing' => true,
+        ], 600, 'TRY');
+
+        $this->assertFalse($preview['readiness']['ready']);
+        $this->assertContains('stock_availability_unverified', $preview['readiness']['blocker_codes']);
+        $this->assertSame(600.0, $preview['order_reference_total']);
     }
 
     public function test_stock_list_does_not_expose_unverified_serial_tracking_state(): void
@@ -716,14 +725,16 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         [$request] = $this->requestFixture();
         config(['services.technical_service.payment_order_context_test_stock' => false]);
         $mikro = Mockery::mock(MikroApiClient::class);
-        $mikro->shouldReceive('listStocks')->once()->andReturn([
+        $mikro->shouldReceive('searchStocks')->once()->andReturn([
             'success' => true,
             'freshness_at' => '2026-08-14T12:00:00+03:00',
             'data' => [[
                 'item_code' => 'GERCEK-SERI-001',
                 'item_name' => 'Gerçek Parça',
+                'item_short_name' => null,
                 'unit_code' => 'ADET',
-                'serial_tracking_state' => 3,
+                'stock_type' => 8,
+                'detail_tracking_type' => 3,
             ]],
         ]);
         $mikro->shouldNotReceive('stockAvailability');
@@ -731,9 +742,315 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
         $stock = $service->searchParts($request, 'GERCEK-SERI-001')['items'][0];
 
-        $this->assertFalse($stock['serial_tracking_required']);
+        $this->assertTrue($stock['serial_tracking_required']);
+        $this->assertSame('required', $stock['serial_tracking_state']);
         $this->assertSame([], $stock['serials']);
         $this->assertFalse($stock['availability_verified']);
+    }
+
+    public function test_mikro_stock_type_eight_maps_to_part(): void
+    {
+        [$request] = $this->requestFixture();
+        $service = $this->serviceWithSearchRows([[
+            'item_code' => 'TKN000009',
+            'item_name' => 'DDL 720 DIŞ DOKUMATİK',
+            'item_short_name' => 'DIŞ DOKUMATİK',
+            'unit_code' => 'ADET',
+            'stock_type' => 8,
+            'detail_tracking_type' => 0,
+        ]]);
+
+        $item = $service->searchParts($request, 'DOKUMATİK')['items'][0];
+
+        $this->assertSame('part', $item['item_kind']);
+        $this->assertSame('mikro_stock_type', $item['classification_source']);
+        $this->assertTrue($item['selectable']);
+    }
+
+    public function test_canonical_product_catalog_maps_device_and_device_cannot_be_added_to_part_context(): void
+    {
+        [$request] = $this->requestFixture();
+        DB::table('panel.support_activation_codes')->insert([
+            'code' => 'DEVICE-PROOF-'.uniqid(),
+            'stock_code' => 'EP.BCK.003.0001.R001',
+            'stock_name' => 'Canonical cihaz',
+            'metadata' => '{}',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $service = $this->serviceWithSearchRows([[
+            'item_code' => 'EP.BCK.003.0001.R001',
+            'item_name' => 'Akıllı Kilit',
+            'item_short_name' => null,
+            'unit_code' => 'ADET',
+            'stock_type' => 0,
+            'detail_tracking_type' => 3,
+        ]]);
+        $item = $service->searchParts($request, 'EP.BCK.003.0001.R001')['items'][0];
+
+        $this->assertSame('device', $item['item_kind']);
+        $this->assertSame('panel_product_catalog', $item['classification_source']);
+        $this->assertFalse($item['selectable']);
+
+        try {
+            $service->preview($request, 'part_charge', $this->multiLineInput($request, [[
+                'stock_selection_token' => $item['selection_token'],
+                'quantity' => 1,
+                'unit_price' => 1000,
+            ]]), 1000, 'TRY');
+            $this->fail('Canonical device was accepted as a spare-part line.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('cihaz ekleme akışına', $exception->errors()['order_context.lines.0.stock_selection_token'][0]);
+        }
+    }
+
+    public function test_unknown_item_type_fails_closed_and_prefix_does_not_classify_item(): void
+    {
+        [$request] = $this->requestFixture();
+        $service = $this->serviceWithSearchRows([[
+            'item_code' => 'TKN-UNKNOWN-PART',
+            'item_name' => 'Yedek Parça Adı Gibi Görünen Kayıt',
+            'item_short_name' => 'Parça',
+            'unit_code' => 'ADET',
+            'stock_type' => 2,
+            'detail_tracking_type' => null,
+        ]]);
+        $item = $service->searchParts($request, 'TKN-UNKNOWN')['items'][0];
+
+        $this->assertSame('unknown', $item['item_kind']);
+        $this->assertSame('no_canonical_evidence', $item['classification_source']);
+        $this->assertFalse($item['selectable']);
+        $this->assertSame('unverified', $item['serial_tracking_state']);
+    }
+
+    public function test_part_search_classification_uses_one_catalog_query_for_twenty_rows(): void
+    {
+        [$request] = $this->requestFixture();
+        $rows = collect(range(1, 20))->map(fn (int $index): array => [
+            'item_code' => 'BULK-'.str_pad((string) $index, 3, '0', STR_PAD_LEFT),
+            'item_name' => 'Sınıflandırma adayı '.$index,
+            'item_short_name' => null,
+            'unit_code' => 'ADET',
+            'stock_type' => 2,
+            'detail_tracking_type' => 0,
+        ])->all();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $this->serviceWithSearchRows($rows)->searchParts($request, 'BULK');
+        $catalogQueries = collect(DB::getQueryLog())
+            ->filter(fn (array $query): bool => str_contains((string) ($query['query'] ?? ''), 'support_activation_codes'))
+            ->values();
+        DB::disableQueryLog();
+
+        $this->assertCount(20, $result['items']);
+        $this->assertCount(1, $catalogQueries);
+    }
+
+    public function test_new_context_supports_multiple_part_lines_and_server_calculated_totals(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $motor = $this->stockItem($request, 'Akıllı');
+        $input = $this->multiLineInput($request, [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 2, 'unit_price' => 500],
+            ['stock_selection_token' => $motor['selection_token'], 'quantity' => 1, 'unit_price' => 750],
+        ], ['delivery_mode' => 'hand_delivery', 'delivery_target' => 'mrn_customer']);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 1750, 'TRY');
+
+        $this->assertSame(2, $preview['line_count']);
+        $this->assertSame(3.0, $preview['total_quantity']);
+        $this->assertSame(1000.0, $preview['lines'][0]['line_total']);
+        $this->assertSame(750.0, $preview['lines'][1]['line_total']);
+        $this->assertSame(1750.0, $preview['order_reference_total']);
+        $this->assertSame(1750.0, $preview['collection_amount']);
+
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$input,
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 1750, 'TRY', $this->actor(), false);
+        $projection = $this->service()->latestPartContext($request);
+
+        $this->assertNotNull($projection);
+        $this->assertSame((int) $prepared['context']->id, $projection['id']);
+        $this->assertCount(2, $projection['lines']);
+        $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::ITEM_TABLE, 2);
+    }
+
+    public function test_same_item_addition_increments_quantity_without_duplicate_line(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $input = $this->multiLineInput($request, [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 1, 'unit_price' => 500],
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 2, 'unit_price' => 500],
+        ], ['delivery_mode' => 'hand_delivery', 'delivery_target' => 'mrn_customer']);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 1500, 'TRY');
+
+        $this->assertSame(1, $preview['line_count']);
+        $this->assertSame(3.0, $preview['lines'][0]['quantity']);
+        $this->assertSame(1500.0, $preview['lines'][0]['line_total']);
+    }
+
+    public function test_legacy_single_item_context_remains_readable(): void
+    {
+        [$request] = $this->requestFixture();
+        $input = $this->emaksPartInput($request, [
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ], 500);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 500, 'TRY');
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$input,
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 500, 'TRY', $this->actor(), false);
+
+        $legacyLine = $preview['lines'][0];
+        $this->convertPreparedContextToLegacy($prepared['context'], $legacyLine);
+
+        $projection = $this->service()->latestPartContext($request);
+
+        $this->assertNotNull($projection);
+        $this->assertCount(1, $projection['lines']);
+        $this->assertSame('legacy_single_item_context', $projection['lines'][0]['classification_source']);
+        $this->assertSame($legacyLine['item_code'], $projection['lines'][0]['item_code']);
+        $this->assertSame($legacyLine['item_name'], $projection['lines'][0]['item_name']);
+        $this->assertTrue($projection['readiness']['legacy_context']);
+        $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::ITEM_TABLE, 0);
+    }
+
+    public function test_historical_context_is_not_mutated_when_legacy_projection_is_read(): void
+    {
+        [$request] = $this->requestFixture();
+        $input = $this->emaksPartInput($request, [
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ], 500);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 500, 'TRY');
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$input,
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 500, 'TRY', $this->actor(), false);
+        $this->convertPreparedContextToLegacy($prepared['context'], $preview['lines'][0]);
+        $before = DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+            ->where('id', $prepared['context']->id)
+            ->first();
+
+        $this->service()->latestPartContext($request);
+
+        $after = DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+            ->where('id', $prepared['context']->id)
+            ->first();
+        $this->assertSame((array) $before, (array) $after);
+        $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::ITEM_TABLE, 0);
+    }
+
+    public function test_client_total_cannot_override_server_total(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $input = $this->multiLineInput($request, [[
+            'stock_selection_token' => $gateway['selection_token'],
+            'quantity' => 2,
+            'unit_price' => 500,
+        ]]);
+
+        $this->expectException(ValidationException::class);
+        $this->service()->preview($request, 'part_charge', $input, 999, 'TRY');
+    }
+
+    public function test_negative_price_and_zero_quantity_are_rejected(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+
+        foreach ([
+            ['quantity' => 1, 'unit_price' => -1],
+            ['quantity' => 0, 'unit_price' => 500],
+        ] as $invalidLine) {
+            try {
+                $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, [[
+                    'stock_selection_token' => $gateway['selection_token'],
+                    ...$invalidLine,
+                ]]), 0, 'TRY');
+                $this->fail('Invalid quantity/price was accepted.');
+            } catch (ValidationException $exception) {
+                $this->assertNotEmpty($exception->errors());
+            }
+        }
+    }
+
+    public function test_maximum_twenty_lines_is_enforced(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $lines = array_fill(0, 21, [
+            'stock_selection_token' => $gateway['selection_token'],
+            'quantity' => 1,
+            'unit_price' => 1,
+        ]);
+
+        $this->expectException(ValidationException::class);
+        $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, $lines), 21, 'TRY');
+    }
+
+    public function test_line_order_does_not_change_context_hash_but_line_change_does(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $motor = $this->stockItem($request, 'Akıllı');
+        $first = [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 2, 'unit_price' => 500],
+            ['stock_selection_token' => $motor['selection_token'], 'quantity' => 1, 'unit_price' => 750],
+        ];
+        $overrides = ['delivery_mode' => 'hand_delivery', 'delivery_target' => 'mrn_customer'];
+        $a = $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, $first, $overrides), 1750, 'TRY');
+        $b = $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, array_reverse($first), $overrides), 1750, 'TRY');
+        $changed = $first;
+        $changed[0]['quantity'] = 3;
+        $c = $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, $changed, $overrides), 2250, 'TRY');
+
+        $this->assertSame($a['context_hash'], $b['context_hash']);
+        $this->assertNotSame($a['context_hash'], $c['context_hash']);
+    }
+
+    public function test_free_shipment_forces_all_line_prices_to_zero(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $motor = $this->stockItem($request, 'Akıllı');
+        $preview = $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 2, 'unit_price' => 500],
+            ['stock_selection_token' => $motor['selection_token'], 'quantity' => 1, 'unit_price' => 750],
+        ], ['commercial_mode' => 'free', 'delivery_mode' => 'shipment']), 0, 'TRY');
+
+        $this->assertSame(0.0, $preview['order_reference_total']);
+        $this->assertSame(0.0, $preview['collection_amount']);
+        $this->assertSame([0.0, 0.0], array_column($preview['lines'], 'unit_price'));
+        $this->assertSame('Q', $preview['desired_mikro_series']);
+        $this->assertSame('none', $preview['tax_mode']);
+    }
+
+    public function test_description2_renders_all_part_lines_and_totals(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $motor = $this->stockItem($request, 'Akıllı');
+        $preview = $this->service()->preview($request, 'part_charge', $this->multiLineInput($request, [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 2, 'unit_price' => 500],
+            ['stock_selection_token' => $motor['selection_token'], 'quantity' => 1, 'unit_price' => 750],
+        ], ['delivery_mode' => 'hand_delivery', 'delivery_target' => 'mrn_customer']), 1750, 'TRY');
+
+        $this->assertStringContainsString('1. 2 ADET · TS-PART-001 · Gateway', $preview['description2_preview']);
+        $this->assertStringContainsString('2. 1 ADET · TS-PART-002 · Akıllı Kilit Motor Modülü', $preview['description2_preview']);
+        $this->assertStringContainsString('PARÇA KALEMİ: 2', $preview['description2_preview']);
+        $this->assertStringContainsString('SİPARİŞ/REFERANS TOPLAMI: 1.750,00 TL', $preview['description2_preview']);
+        $this->assertStringContainsString('TAHSİLAT TOPLAMI: 1.750,00 TL', $preview['description2_preview']);
+        $this->assertSame(1, substr_count($preview['description2_preview'], 'İLGİLİ ÜRÜN SERİ NO:'));
     }
 
     public function test_free_hand_delivery_resolves_q_and_zero_vat(): void
@@ -838,7 +1155,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
                 'commercial_mode' => 'paid',
                 'delivery_mode' => 'hand_delivery',
                 'delivery_target' => 'mrn_customer',
-            ]),
+            ], 600),
             'expected_context_hash' => $preview['context_hash'],
             'expected_revision' => $preview['revision'],
         ], 600, 'TRY', $this->actor(), false);
@@ -856,7 +1173,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'commercial_mode' => 'free',
             'delivery_mode' => 'hand_delivery',
             'delivery_target' => 'mrn_customer',
-        ]);
+        ], 600);
         $partPreview = $this->service()->preview($request, 'part_charge', $partInput, 600, 'TRY');
         $partContext = $this->service()->prepare($request, 'part_charge', [
             ...$partInput,
@@ -885,7 +1202,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'commercial_mode' => 'paid',
             'delivery_mode' => 'hand_delivery',
             'delivery_target' => 'technician',
-        ]);
+        ], 600);
         $preview = $this->service()->preview($request->fresh(), 'part_charge', $input, 600, 'TRY');
         $prepared = $this->service()->prepare($request->fresh(), 'part_charge', [
             ...$input,
@@ -912,7 +1229,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'commercial_mode' => 'paid',
             'delivery_mode' => 'hand_delivery',
             'delivery_target' => 'technician',
-        ]);
+        ], 600);
         $preview = $this->service()->preview($request->fresh(), 'part_charge', $input, 600, 'TRY');
         $prepared = $this->service()->prepare($request->fresh(), 'part_charge', [
             ...$input,
@@ -1048,11 +1365,11 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     /** @param array<string, mixed> $overrides @return array<string, mixed> */
     private function emaksPartPreview(TechnicalServiceRequest $request, array $overrides = [], float $amount = 1000): array
     {
-        return $this->service()->preview($request, 'part_charge', $this->emaksPartInput($request, $overrides), $amount, 'TRY');
+        return $this->service()->preview($request, 'part_charge', $this->emaksPartInput($request, $overrides, $amount), $amount, 'TRY');
     }
 
     /** @param array<string, mixed> $overrides @return array<string, mixed> */
-    private function emaksPartInput(TechnicalServiceRequest $request, array $overrides = []): array
+    private function emaksPartInput(TechnicalServiceRequest $request, array $overrides = [], float $amount = 1000): array
     {
         $stock = $this->stockItem($request, 'Gateway');
 
@@ -1061,8 +1378,11 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'part_supplier' => 'emaks_prime',
             'commercial_mode' => 'paid',
             'delivery_mode' => 'shipment',
-            'stock_selection_token' => $stock['selection_token'],
-            'quantity' => 1,
+            'lines' => [[
+                'stock_selection_token' => $stock['selection_token'],
+                'quantity' => 1,
+                'unit_price' => $amount,
+            ]],
             'shipping_same_as_billing' => true,
         ], $overrides);
     }
@@ -1075,6 +1395,63 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertNotEmpty($result['items']);
 
         return $result['items'][0];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $lines
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function multiLineInput(TechnicalServiceRequest $request, array $lines, array $overrides = []): array
+    {
+        return array_replace([
+            ...$this->billingInput(),
+            'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
+            'lines' => $lines,
+            'shipping_same_as_billing' => true,
+        ], $overrides);
+    }
+
+    /** @param array<string, mixed> $line */
+    private function convertPreparedContextToLegacy(object $context, array $line): void
+    {
+        DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+            ->where('id', $context->id)
+            ->update([
+                'item_code' => $line['item_code'],
+                'item_name_snapshot' => $line['item_name'],
+                'quantity' => $line['quantity'],
+                'unit_code' => $line['unit_code'],
+                'stock_source' => $line['stock_source'],
+                'stock_freshness_at' => $line['stock_freshness_at'],
+                'part_serial_tracking_required' => $line['serial_tracking_required'],
+                'selected_part_serial' => $line['selected_part_serial'],
+                'order_line_unit_price' => $line['unit_price'],
+                'order_line_total' => $line['line_total'],
+            ]);
+        DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->delete();
+    }
+
+    /** @param array<int, array<string, mixed>> $rows */
+    private function serviceWithSearchRows(array $rows): TechnicalServicePaymentOrderContextService
+    {
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $mikro = Mockery::mock(MikroApiClient::class);
+        $mikro->shouldReceive('searchStocks')->once()->andReturn([
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
+            'stale' => false,
+            'data' => $rows,
+        ]);
+
+        return new TechnicalServicePaymentOrderContextService(
+            $mikro,
+            app(TechnicalServiceAssignmentSettlementService::class),
+        );
     }
 
     /** @return array{0:object,1:TechnicalServiceMountPayment} */

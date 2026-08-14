@@ -11,25 +11,25 @@ class MikroFixedQueryCatalogTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_catalog_preserves_the_twenty_one_runtime_queries_and_adds_eight_isolated_parity_queries(): void
+    public function test_catalog_preserves_runtime_queries_and_adds_bounded_stock_search(): void
     {
         $catalog = app(MikroFixedQueryCatalog::class);
 
-        $this->assertCount(29, $catalog->queryIds());
+        $this->assertCount(30, $catalog->queryIds());
         $this->assertSame([
             'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.availability', 'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.availability', 'stock.search', 'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines',
             'return.list', 'return.detail', 'exchange.status', 'replacement.serial.lookup',
-        ], array_slice($catalog->queryIds(), 0, 21));
+        ], array_slice($catalog->queryIds(), 0, 22));
         $this->assertSame([
             'parity.customer.discovery.v2', 'parity.customer.detail.v2',
             'parity.stock.discovery.v1', 'parity.stock.detail.v1',
             'parity.serial.discovery.v1', 'parity.serial.detail.v1',
             'parity.order.discovery.v1', 'parity.order.detail.v1',
-        ], array_slice($catalog->queryIds(), 21));
+        ], array_slice($catalog->queryIds(), 22));
 
         foreach ($catalog->queryIds() as $queryId) {
             $definition = $catalog->definition($queryId);
@@ -41,6 +41,55 @@ class MikroFixedQueryCatalogTest extends TestCase
                 $this->assertMatchesRegularExpression('/^https:\/\/www\.mikroelterminali\.com\/databasehelp17\//', $evidence['uri']);
                 $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $evidence['sha256']);
             }
+        }
+    }
+
+    public function test_stock_search_is_immutable_bounded_and_turkish_normalized(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+        $definition = $catalog->definition('stock.search');
+        $sql = $catalog->render('stock.search', ['search' => 'DIŞ DOKUMATİK']);
+        $normalizedSql = $catalog->render('stock.search', ['search' => 'DIS DOKUMATIK']);
+
+        $this->assertSame('technical_service_part_search_v1', $definition['contract_id']);
+        $this->assertSame(['STOKLAR'], $definition['tables']);
+        $this->assertStringContainsString('SELECT TOP (20)', $sql);
+        $this->assertStringContainsString('sto.sto_kod', $sql);
+        $this->assertStringContainsString('sto.sto_isim', $sql);
+        $this->assertStringContainsString('sto.sto_kisa_ismi', $sql);
+        $this->assertStringContainsString('sto.sto_cins', $sql);
+        $this->assertStringContainsString('sto.sto_detay_takip', $sql);
+        $this->assertStringContainsString('ISNULL(sto.sto_iptal, 0) = 0', $sql);
+        $this->assertStringContainsString('ISNULL(sto.sto_hidden, 0) = 0', $sql);
+        $this->assertStringContainsString("N'DIS DOKUMATIK'", $sql);
+        $this->assertSame($sql, $normalizedSql);
+        $this->assertStringNotContainsString('[[', $sql);
+    }
+
+    public function test_stock_search_rejects_query_fragments_and_extra_parameters(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+
+        foreach ([
+            ['', ['search' => 'A']],
+            ['', ['search' => "PARCA'; DROP TABLE STOKLAR"]],
+            ['', ['search' => 'PARCA -- test']],
+            ['', ['search' => 'PARCA /* test */']],
+            ['', ['search' => 'PARCA', 'sql' => 'SELECT * FROM STOKLAR']],
+        ] as [, $parameters]) {
+            try {
+                $catalog->render('stock.search', $parameters);
+                $this->fail('Unsafe stock search input must be rejected.');
+            } catch (DomainException $exception) {
+                $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
+            }
+        }
+
+        try {
+            $catalog->n8nTemplate('stock.search');
+            $this->fail('Technical-service stock search must not gain an n8n template path.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
         }
     }
 

@@ -7,6 +7,12 @@ use DomainException;
 
 class MikroFixedQueryCatalog
 {
+    private const NORMALIZED_STOCK_CODE = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(LTRIM(RTRIM(sto.sto_kod))), N'İ', N'I'), N'Ş', N'S'), N'Ğ', N'G'), N'Ü', N'U'), N'Ö', N'O'), N'Ç', N'C')";
+
+    private const NORMALIZED_STOCK_NAME = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(LTRIM(RTRIM(sto.sto_isim))), N'İ', N'I'), N'Ş', N'S'), N'Ğ', N'G'), N'Ü', N'U'), N'Ö', N'O'), N'Ç', N'C')";
+
+    private const NORMALIZED_STOCK_SHORT_NAME = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(LTRIM(RTRIM(sto.sto_kisa_ismi))), N'İ', N'I'), N'Ş', N'S'), N'Ğ', N'G'), N'Ü', N'U'), N'Ö', N'O'), N'Ç', N'C')";
+
     /** @var array<string, array{uri:string,sha256:string}> */
     private const TABLE_EVIDENCE = [
         'CARI_HESAPLAR' => [
@@ -73,6 +79,12 @@ class MikroFixedQueryCatalog
             'warehouse_context' => [1, 5],
             'depot_source_file' => 'database/seeders/PanelKnownWorkflowDataSourcesSeeder.php',
             'depot_source_id' => 'stock_warehouse',
+        ],
+        'stock.search' => [
+            'sql' => "SELECT TOP (20) LTRIM(RTRIM(sto.sto_kod)) AS item_code, LTRIM(RTRIM(sto.sto_isim)) AS item_name, NULLIF(LTRIM(RTRIM(sto.sto_kisa_ismi)), N'') AS item_short_name, NULLIF(LTRIM(RTRIM(sto.sto_birim1_ad)), N'') AS unit_code, CAST(sto.sto_cins AS int) AS stock_type, CAST(sto.sto_detay_takip AS int) AS detail_tracking_type, CAST(ISNULL(sto.sto_iptal, 0) AS int) AS cancelled, CAST(ISNULL(sto.sto_hidden, 0) AS int) AS hidden FROM dbo.STOKLAR AS sto WITH (NOLOCK) WHERE ISNULL(sto.sto_iptal, 0) = 0 AND ISNULL(sto.sto_hidden, 0) = 0 AND (".self::NORMALIZED_STOCK_CODE." LIKE N'%' + [[search]] + N'%' ESCAPE N'~' OR ".self::NORMALIZED_STOCK_NAME." LIKE N'%' + [[search]] + N'%' ESCAPE N'~' OR ".self::NORMALIZED_STOCK_SHORT_NAME." LIKE N'%' + [[search]] + N'%' ESCAPE N'~') ORDER BY CASE WHEN ".self::NORMALIZED_STOCK_CODE.' = [[search]] THEN 0 WHEN '.self::NORMALIZED_STOCK_CODE." LIKE [[search]] + N'%' ESCAPE N'~' THEN 1 WHEN ".self::NORMALIZED_STOCK_NAME.' = [[search]] THEN 2 WHEN '.self::NORMALIZED_STOCK_NAME." LIKE [[search]] + N'%' ESCAPE N'~' THEN 3 WHEN ".self::NORMALIZED_STOCK_SHORT_NAME." LIKE [[search]] + N'%' ESCAPE N'~' THEN 4 ELSE 5 END, LTRIM(RTRIM(sto.sto_kod)) ASC",
+            'parameters' => ['search' => 'search'],
+            'tables' => ['STOKLAR'],
+            'contract_id' => 'technical_service_part_search_v1',
         ],
         'stock.movement.list' => [
             'sql' => 'SELECT TOP ([[limit]]) sth.sth_Guid AS movement_guid, sth.sth_tarih AS movement_date, sth.sth_stok_kod AS stock_code, sth.sth_cari_kodu AS customer_code, sth.sth_tip AS movement_type, sth.sth_normal_iade AS is_return, sth.sth_miktar AS quantity, sth.sth_evrakno_seri AS document_series, sth.sth_evrakno_sira AS document_number FROM dbo.STOK_HAREKETLERI AS sth WITH (NOLOCK) WHERE LTRIM(RTRIM(sth.sth_stok_kod)) = [[stock_code]] AND CAST(sth.sth_tarih AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY sth.sth_tarih DESC, sth.sth_Guid DESC',
@@ -296,6 +308,7 @@ class MikroFixedQueryCatalog
             'date' => $this->quotedDate($value),
             'code' => $this->quotedRestrictedString($value, 80),
             'serial' => $this->quotedRestrictedString($value, 120),
+            'search' => $this->quotedSearch($value),
             'limit' => (string) $this->boundedInteger($value, 1, 500),
             'warehouse' => (string) $this->allowedPilotWarehouse($value),
             default => throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID'),
@@ -329,6 +342,35 @@ class MikroFixedQueryCatalog
         if ($value === '' || mb_strlen($value) > $maxLength || ! preg_match('/^[\pL\pN._\/-]+$/u', $value)) {
             throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID');
         }
+
+        return "N'".$value."'";
+    }
+
+    private function quotedSearch(mixed $value): string
+    {
+        $value = trim((string) $value);
+        if (class_exists(\Normalizer::class)) {
+            $value = \Normalizer::normalize($value, \Normalizer::FORM_C) ?: $value;
+        }
+        $value = preg_replace('/\s+/u', ' ', $value) ?? '';
+        if (mb_strlen($value) < 2
+            || mb_strlen($value) > 60
+            || preg_match('/[\x00-\x1F\x7F]/u', $value)
+            || str_contains($value, ';')
+            || str_contains($value, '--')
+            || str_contains($value, '/*')
+            || str_contains($value, '*/')) {
+            throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID');
+        }
+
+        $value = strtr($value, [
+            'İ' => 'I', 'I' => 'I', 'ı' => 'I', 'i' => 'I',
+            'Ş' => 'S', 'ş' => 'S', 'Ğ' => 'G', 'ğ' => 'G',
+            'Ü' => 'U', 'ü' => 'U', 'Ö' => 'O', 'ö' => 'O',
+            'Ç' => 'C', 'ç' => 'C',
+        ]);
+        $value = mb_strtoupper($value, 'UTF-8');
+        $value = str_replace(['~', '%', '_', "'"], ['~~', '~%', '~_', "''"], $value);
 
         return "N'".$value."'";
     }

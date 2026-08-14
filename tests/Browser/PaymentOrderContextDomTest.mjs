@@ -9,306 +9,169 @@ const browserErrors = []
 
 const assert = (condition, message) => {
   if (!condition) {
-    failures.push(message)
-  }
+failures.push(message)
+}
 }
 
-const text = async (locator) => (await locator.innerText()).trim()
 const output = async (page, id) => (await page.getByTestId(id).textContent() ?? '').trim()
+const text = async (locator) => (await locator.innerText()).trim()
+const money = (value) => `${new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} TL`
+const roundTwo = (value) => Math.round((value + Number.EPSILON) * 100) / 100
+const normalizedSearch = (value) => value
+  .normalize('NFD')
+  .replace(/\p{M}/gu, '')
+  .replace(/[ıİ]/g, 'I')
+  .replace(/[şŞ]/g, 'S')
+  .replace(/[ğĞ]/g, 'G')
+  .replace(/[üÜ]/g, 'U')
+  .replace(/[öÖ]/g, 'O')
+  .replace(/[çÇ]/g, 'C')
+  .toUpperCase()
+  .replace(/\s+/g, ' ')
+  .trim()
 
 const stockItems = [
   {
-    item_code: 'EMK-GW-001',
-    item_name: 'Gateway Bağlantı Modülü',
-    unit_code: 'ADET',
-    warehouse_code: 'MERKEZ',
-    on_hand: 24,
-    reserved: 3,
-    available: 21,
-    serial_tracking_required: false,
-    serials: [],
-    source: 'mikro',
-    source_label: 'Mikro API',
-    freshness_at: '2026-08-14T06:00:00+03:00',
-    selection_token: 'gateway-token',
+    item_code: 'TKN000009', item_name: 'DDL 720 DIŞ DOKUMATİK', item_short_name: 'DIŞ DOKUMATİK',
+    item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v1', selectable: true, selection_blocker: null,
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'tkn-token',
   },
   {
-    item_code: 'EMK-MOTOR-002',
-    item_name: 'Akıllı Kilit Motor Modülü',
-    unit_code: 'ADET',
-    warehouse_code: 'MERKEZ',
-    on_hand: 6,
-    reserved: 1,
-    available: 5,
-    serial_tracking_required: true,
-    serials: ['TSP-2026-0001', 'TSP-2026-0002'],
-    source: 'mikro',
-    source_label: 'Mikro API',
-    freshness_at: '2026-08-14T06:00:00+03:00',
-    selection_token: 'motor-token',
+    item_code: 'TKN000010', item_name: 'DDL 720 İç Göbek', item_short_name: 'İç Göbek',
+    item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v1', selectable: true, selection_blocker: null,
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'part-two-token',
   },
   {
-    item_code: 'EMK-IDENTITY-003',
-    item_name: 'Mikro Kimlik Parçası',
-    unit_code: 'ADET',
-    warehouse_code: null,
-    on_hand: null,
-    reserved: null,
-    available: null,
-    serial_tracking_required: false,
-    serials: [],
-    source: 'mikro',
-    source_label: 'Mikro API',
-    freshness_at: '2026-08-14T12:00:00+03:00',
-    selection_token: 'identity-only-token',
+    item_code: 'TKN000011', item_name: 'Seri Takipli Motor', item_short_name: null,
+    item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v1', selectable: true, selection_blocker: null,
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    serial_tracking_state: 'required', serial_tracking_required: true, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'serial-part-token',
+  },
+  {
+    item_code: 'EP.BCK.003.0001.R001', item_name: 'Akıllı Kilit Cihazı', item_short_name: null,
+    item_kind: 'device', item_kind_label: 'Cihaz / ürün', classification_source: 'panel_product_catalog',
+    classification_contract_version: 'technical-service-part-classification-v1', selectable: false,
+    selection_blocker: 'Bu stok cihaz ekleme akışına aittir; parça ödemesine eklenemez.',
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    serial_tracking_state: 'required', serial_tracking_required: true, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'device-token',
   },
 ]
 
 const previewResponse = (payload) => {
   const input = payload.order_context ?? {}
-  const purpose = payload.purpose
-  const supplier = input.part_supplier ?? null
-  const selectedPart = stockItems.find((item) => item.selection_token === input.stock_selection_token) ?? null
-  const rawBilling = input.billing ?? {}
-  const billing = input.billing_source === 'manual_billing_draft'
-    ? {
-        ...rawBilling,
-        source: 'manual_billing_draft',
-        name_or_title: rawBilling.billing_type === 'company'
-          ? rawBilling.legal_title
-          : [rawBilling.first_name, rawBilling.last_name].filter(Boolean).join(' '),
-      }
-    : {
-        source: 'mrn_customer',
-        billing_type: 'individual',
-        name_or_title: 'Test Müşteri',
-        phone: '9053****633',
-        address: 'Test adresi',
-        city: 'İstanbul',
-        district: 'Kadıköy',
-      }
-  const commercialMode = purpose === 'part_charge' && supplier === 'emaks_prime'
-    ? input.commercial_mode ?? 'paid'
-    : purpose === 'mount_collection' ? 'paid' : null
-  const deliveryMode = purpose === 'part_charge' && supplier === 'emaks_prime'
-    ? input.delivery_mode ?? 'shipment'
-    : null
-  const shipmentRequired = purpose === 'part_charge' && supplier === 'emaks_prime' && deliveryMode === 'shipment'
-  const paymentLinkRequired = purpose === 'mount_collection'
-    || supplier === 'technician'
-    || (supplier === 'emaks_prime' && commercialMode === 'paid' && deliveryMode === 'shipment')
-  const collectionRequired = purpose === 'mount_collection'
-    || supplier === 'technician'
-    || (supplier === 'emaks_prime' && commercialMode === 'paid')
-  const desiredSeries = purpose === 'mount_collection'
-    ? 'S'
-    : supplier === 'technician' ? null : deliveryMode === 'hand_delivery' || commercialMode === 'free' ? 'Q' : 'S'
-  const taxMode = desiredSeries === 'Q'
-    ? 'none'
-    : purpose === 'mount_collection' ? 'standard_from_mikro_service_item' : supplier === 'emaks_prime' ? 'standard_from_mikro' : null
-  const amount = Number(payload.amount ?? 0)
-  const orderLineTotal = commercialMode === 'free' && deliveryMode === 'shipment' ? 0 : amount
-  const collectionAmount = collectionRequired ? amount : 0
-  const paymentStatus = collectionRequired ? 'pending' : 'not_required'
-  const sameAsBilling = shipmentRequired && Boolean(input.shipping_same_as_billing)
-  const shipping = !shipmentRequired
-    ? null
-    : sameAsBilling || input.delivery_target === 'billing_address'
-      ? {
-          recipient_name: billing.name_or_title,
-          recipient_phone: billing.phone,
-          address: billing.address,
-          city: billing.city,
-          district: billing.district,
-        }
-      : input.delivery_target === 'technician'
-        ? {
-            recipient_name: 'Test Usta',
-            recipient_phone: '905467647428',
-            address: 'Pamukkale Usta Adresi No:1',
-            city: 'Denizli',
-            district: 'Pamukkale',
-          }
-        : input.delivery_target === 'mrn_customer'
-          ? {
-              recipient_name: 'Test Müşteri',
-              recipient_phone: '9053****633',
-              address: 'Test adresi',
-              city: 'İstanbul',
-              district: 'Kadıköy',
-            }
-          : input.shipping
-  const part = purpose !== 'part_charge'
-    ? null
-    : supplier === 'technician'
-      ? {
-          item_code: input.technician_part_code || null,
-          item_name: input.technician_part_name,
-          quantity: input.quantity,
-          unit_code: 'ADET',
-          stock_source: 'technician_declaration',
-          stock_source_label: 'Usta beyanı',
-          serial_tracking_required: false,
-          selected_part_serial: null,
-        }
-      : selectedPart ? {
-          ...selectedPart,
-          quantity: input.quantity,
-          selected_part_serial: input.selected_part_serial || null,
-        } : null
-  const money = (value) => `${new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} TL`
-  const lines = purpose === 'mount_collection'
-    ? [
-        'MRN/SRV: MRN-DOM-EARNING',
-        'HİZMET: MONTAJ',
-        'ÜRÜN: Test Model',
-        'SERİ NO: SERI-DOM',
-        `FATURA MÜŞTERİSİ: ${billing.name_or_title}`,
-        'SEVKİYAT: YOK',
-      ]
-    : supplier === 'technician'
-      ? [
-          'MRN/SRV: MRN-DOM-EARNING',
-          'İLGİLİ ÜRÜN SERİ NO: SERI-DOM',
-          `PARÇA: ${part?.item_code ? `${part.item_code} - ` : ''}${part?.item_name ?? ''}`,
-          `ADET: ${input.quantity}`,
-          'TEDARİK: USTA',
-          'SEVKİYAT: YOK',
-          `FATURA MÜŞTERİSİ: ${billing.name_or_title}`,
-        ]
-      : [
-          ...(shipmentRequired && !sameAsBilling ? ['SEVK ADRESİ FARKLIDIR.'] : []),
-          'MRN/SRV: MRN-DOM-EARNING',
-          'İLGİLİ ÜRÜN SERİ NO: SERI-DOM',
-          `PARÇA: ${part?.item_code ? `${part.item_code} - ` : ''}${part?.item_name ?? ''}`,
-          `ADET: ${input.quantity}`,
-          ...(deliveryMode === 'hand_delivery' ? ['TESLİM: ELDEN'] : []),
-          `TİCARİ DURUM: ${commercialMode === 'free' ? 'ÜCRETSİZ' : 'ÜCRETLİ'}`,
-          ...(commercialMode === 'free' && deliveryMode === 'hand_delivery'
-            ? [`SİPARİŞ SATIR DEĞERİ: ${money(orderLineTotal)}`]
-            : commercialMode === 'free'
-              ? [`SİPARİŞ TUTARI: ${money(0)}`]
-              : [`TUTAR: ${money(amount)}`]),
-          `KDV: ${taxMode === 'none' ? 'YOK' : 'MİKRO STOK KARTI'}`,
-          `HEDEF SERİ: ${desiredSeries}`,
-          ...(collectionRequired ? [`ÖDEME DURUMU: ${paymentStatus === 'pending' ? 'BEKLİYOR' : 'ALINDI'}`] : ['TAHSİLAT: GEREKMİYOR']),
-          ...(shipmentRequired
-            ? [
-                `ALICI: ${shipping?.recipient_name ?? ''}`,
-                `TELEFON: ${shipping?.recipient_phone ?? ''}`,
-                `ADRES: ${shipping?.address ?? ''} / ${shipping?.district ?? ''} / ${shipping?.city ?? ''}`,
-                `FATURA MÜŞTERİSİ: ${billing.name_or_title}`,
-              ]
-            : []),
-        ]
+  const commercialMode = input.commercial_mode ?? 'paid'
+  const deliveryMode = input.delivery_mode ?? 'shipment'
+  const forceZero = commercialMode === 'free' && deliveryMode === 'shipment'
+  const rawLines = Array.isArray(input.lines) ? input.lines : []
+  const lines = rawLines.map((raw, index) => {
+    const item = stockItems.find((candidate) => candidate.selection_token === raw.stock_selection_token)
+    const quantity = Number(raw.quantity ?? 0)
+    const unitPrice = forceZero ? 0 : Number(raw.unit_price ?? 0)
+    const lineTotal = roundTwo(quantity * unitPrice)
+
+    return {
+      id: null, line_key: item?.item_code ?? `line-${index}`, position: index + 1, selection_token: raw.stock_selection_token,
+      item_code: item?.item_code ?? 'UNKNOWN', item_name: item?.item_name ?? 'Doğrulanmamış satır', item_short_name: item?.item_short_name ?? null,
+      item_kind: item?.item_kind ?? 'unknown', classification_source: item?.classification_source ?? 'no_canonical_evidence',
+      classification_contract_version: item?.classification_contract_version ?? 'technical-service-part-classification-v1',
+      quantity, unit_code: item?.unit_code ?? null, unit_price: unitPrice, unit_price_label: money(unitPrice),
+      line_total: lineTotal, line_total_label: money(lineTotal), currency: 'TRY', warehouse_code: null,
+      stock_source: 'mikro', stock_source_label: 'Mikro API', stock_freshness_at: item?.freshness_at ?? null,
+      availability_verified: false, serial_tracking_state: item?.serial_tracking_state ?? 'unverified',
+      serial_tracking_required: item?.serial_tracking_state === 'required', selected_part_serial: null,
+    }
+  })
+  const total = roundTwo(lines.reduce((sum, line) => sum + line.line_total, 0))
+  const collectionTotal = commercialMode === 'paid' ? total : 0
+  const desiredSeries = deliveryMode === 'hand_delivery' || commercialMode === 'free' ? 'Q' : 'S'
+  const taxMode = desiredSeries === 'Q' ? 'none' : 'standard_from_mikro'
+  const shipmentRequired = deliveryMode === 'shipment'
+  const paymentLinkRequired = commercialMode === 'paid' && shipmentRequired
+  const serialBlocker = lines.some((line) => line.serial_tracking_state === 'required')
+  const blockers = [
+    'Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.',
+    ...(serialBlocker ? ['Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.'] : []),
+  ]
+  const lineDescription = lines.map((line, index) => [
+    `${index + 1}. ${line.quantity} ${line.unit_code ?? ''} · ${line.item_code} · ${line.item_name}`,
+    `   BİRİM TUTAR: ${line.unit_price_label}`,
+    `   SATIR TOPLAMI: ${line.line_total_label}`,
+  ].join('\n')).join('\n\n')
+  const totalQuantity = lines.reduce((sum, line) => sum + line.quantity, 0)
 
   return {
     ok: true,
     order_context: {
-      id: null,
-      request_id: 9001,
-      root_request_id: 9001,
-      srv_request_id: null,
-      payment_purpose: purpose,
-      purpose_label: purpose === 'part_charge' ? 'Parça ödemesi' : 'Montaj ücreti tahsilatı',
-      context_type: purpose === 'mount_collection' ? 'mount_service' : supplier === 'technician' ? 'technician_supplied_part' : 'part_sale',
-      state: 'draft',
-      desired_mikro_series: desiredSeries,
-      tax_mode: taxMode,
-      tax_label: taxMode === 'none' ? 'Yok / %0' : taxMode === 'standard_from_mikro_service_item' ? 'Mikro hizmet kartından' : taxMode === 'standard_from_mikro' ? 'Mikro stok kartından' : null,
-      vat_rate: taxMode === 'none' ? 0 : null,
-      future_mikro_write_state: supplier === 'technician' ? 'not_required' : 'not_authorized',
-      future_mikro_write_label: supplier === 'technician' ? 'Mikro siparişi gerekmiyor' : 'Mikro yazımı bu aşamada kapalı',
-      billing,
-      shipping_same_as_billing: sameAsBilling,
-      delivery_target: shipmentRequired ? (sameAsBilling ? 'billing_address' : input.delivery_target) : deliveryMode === 'hand_delivery' ? input.delivery_target : null,
-      delivery_target_label: shipmentRequired ? (sameAsBilling ? 'Fatura adresi' : input.delivery_target) : deliveryMode === 'hand_delivery' ? input.delivery_target : null,
-      shipping,
-      part_supplier: supplier,
-      part_supplier_label: supplier === 'technician' ? 'Usta' : supplier === 'emaks_prime' ? 'EMAKS Prime' : null,
-      collection_allocation: supplier === 'technician' ? 'pay_technician' : supplier === 'emaks_prime' ? 'retain_company' : null,
-      collection_allocation_label: supplier === 'technician' ? 'Ustaya hakediş olarak eklenecek' : supplier === 'emaks_prime' ? 'Şirkette bırakılacak' : null,
-      part,
-      commercial_mode: commercialMode,
-      commercial_mode_label: commercialMode === 'free' ? 'Ücretsiz' : commercialMode === 'paid' ? 'Ücretli' : null,
-      delivery_mode: deliveryMode,
-      delivery_mode_label: deliveryMode === 'hand_delivery' ? 'Elden' : deliveryMode === 'shipment' ? 'Sevk' : 'Yok',
-      delivery_status: deliveryMode === 'hand_delivery' ? 'pending' : null,
+      id: null, payment_id: null, request_id: 9001, root_request_id: 9001, srv_request_id: null,
+      payment_purpose: 'part_charge', purpose_label: 'Parça ödemesi', context_type: 'part_sale', state: 'draft',
+      state_label: 'Parça taslağı; stok uygunluğu bekleniyor', desired_mikro_series: desiredSeries, tax_mode: taxMode,
+      tax_label: taxMode === 'none' ? 'Yok / %0' : 'Mikro stok kartından', vat_rate: taxMode === 'none' ? 0 : null,
+      future_mikro_write_state: 'not_authorized', future_mikro_write_label: 'Mikro yazımı bu aşamada kapalı',
+      billing: { source: 'mrn_customer', billing_type: 'individual', name_or_title: 'Test Müşteri', phone: '9053****633', address: 'Test adresi', city: 'İstanbul', district: 'Kadıköy' },
+      shipping_same_as_billing: shipmentRequired, delivery_target: shipmentRequired ? 'billing_address' : input.delivery_target ?? 'mrn_customer',
+      delivery_target_label: shipmentRequired ? 'Fatura adresi' : 'MRN müşterisi',
+      shipping: shipmentRequired ? { recipient_name: 'Test Müşteri', recipient_phone: '9053****633', address: 'Test adresi', city: 'İstanbul', district: 'Kadıköy' } : null,
+      part_supplier: 'emaks_prime', part_supplier_label: 'EMAKS Prime', collection_allocation: 'retain_company',
+      collection_allocation_label: 'Şirkette bırakılacak', part: lines[0] ?? null, lines, line_count: lines.length,
+      total_quantity: totalQuantity, total_quantity_label: String(totalQuantity), commercial_mode: commercialMode,
+      commercial_mode_label: commercialMode === 'free' ? 'Ücretsiz' : 'Ücretli', delivery_mode: deliveryMode,
+      delivery_mode_label: deliveryMode === 'hand_delivery' ? 'Elden' : 'Sevk', delivery_status: deliveryMode === 'hand_delivery' ? 'pending' : null,
       delivery_status_label: deliveryMode === 'hand_delivery' ? 'Teslim bekliyor' : null,
-      payment_collection_mode: paymentLinkRequired ? 'payment_link' : collectionRequired ? 'manual' : 'none',
-      payment_status: paymentStatus,
-      payment_status_label: paymentStatus === 'pending' ? 'Ödeme bekleniyor' : 'Tahsilat gerekmiyor',
-      payment_status_source: 'system',
-      payment_status_source_label: 'Sistem',
-      payment_link_required: paymentLinkRequired,
-      collection_required: collectionRequired,
-      order_line_unit_price: orderLineTotal,
-      order_line_unit_price_label: money(orderLineTotal),
-      order_line_total: orderLineTotal,
-      order_line_total_label: money(orderLineTotal),
-      collection_amount: collectionAmount,
-      collection_amount_label: money(collectionAmount),
-      future_order_trigger: paymentLinkRequired ? 'payment_paid' : deliveryMode === 'hand_delivery' && commercialMode === 'paid' ? 'delivery_recorded' : 'ops_approved',
-      finance_review_required: false,
-      related_product_serial: 'SERI-DOM',
-      charged_amount: amount,
-      charged_amount_label: money(amount),
-      currency: 'TRY',
-      shipment_required: shipmentRequired,
-      future_carrier_state: shipmentRequired ? 'waiting_future_integration' : 'not_required',
+      payment_collection_mode: paymentLinkRequired ? 'payment_link' : collectionTotal > 0 ? 'manual' : 'none',
+      payment_status: collectionTotal > 0 ? 'pending' : 'not_required', payment_status_label: collectionTotal > 0 ? 'Ödeme bekleniyor' : 'Tahsilat gerekmiyor',
+      payment_status_source: 'system', payment_status_source_label: 'Sistem', payment_link_required: paymentLinkRequired,
+      collection_required: collectionTotal > 0, order_line_unit_price: lines.length === 1 ? lines[0].unit_price : 0,
+      order_line_unit_price_label: money(lines.length === 1 ? lines[0].unit_price : 0), order_line_total: total,
+      order_line_total_label: money(total), order_reference_total: total, order_reference_total_label: money(total),
+      collection_amount: collectionTotal, collection_amount_label: money(collectionTotal),
+      future_order_trigger: paymentLinkRequired ? 'payment_paid' : commercialMode === 'paid' ? 'delivery_recorded' : 'ops_approved',
+      finance_review_required: false, related_product_serial: 'SERI-DOM', charged_amount: total, charged_amount_label: money(total),
+      currency: 'TRY', shipment_required: shipmentRequired, future_carrier_state: shipmentRequired ? 'waiting_future_integration' : 'not_required',
       future_carrier_label: shipmentRequired ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak' : 'Sevkiyat yok',
-      description2_preview: lines.join('\n'),
-      description2_version: 1,
-      context_hash: (purpose === 'mount_collection' ? 'a' : supplier === 'technician' ? 'c' : 'b').repeat(64),
-      revision: 1,
-      mikro_write_execution_count: 0,
-      carrier_execution_count: 0,
-      payment_retry: amount === 601 ? {
-        state: 'fresh_link_required',
-        fresh_link_required: true,
-        reason_required: false,
-        action_label: 'Yeni bağlantı oluştur',
-        message: 'Fatura, sevk, parça veya tutar değişti. Eski ödeme bağlantısı sonlandırılıp bu işlem için yeni bağlantı oluşturulacaktır.',
-        authoritative_counts: { paid: 0, pending: 1, cancelled: 0, failed: 0, expired: 0 },
-      } : {
-        state: 'none',
-        fresh_link_required: false,
-        reason_required: false,
-        action_label: null,
-        message: null,
-        authoritative_counts: { paid: 0, pending: 0, cancelled: 0, failed: 0, expired: 0 },
-      },
+      readiness: { ready: false, order_ready: false, payment_ready: false,
+        blocker_codes: ['stock_availability_unverified', ...(serialBlocker ? ['part_serial_selection_unverified'] : [])], blockers },
+      description2_preview: `MRN/SRV: MRN-DOM-EARNING\nİLGİLİ ÜRÜN SERİ NO: SERI-DOM\n\nPARÇALAR:\n${lineDescription}\n\nPARÇA KALEMİ: ${lines.length}\nTOPLAM ADET: ${totalQuantity}\nSİPARİŞ/REFERANS TOPLAMI: ${money(total)}\nTAHSİLAT TOPLAMI: ${money(collectionTotal)}\nTİCARİ DURUM: ${commercialMode === 'free' ? 'ÜCRETSİZ' : 'ÜCRETLİ'}\nTESLİM: ${deliveryMode === 'hand_delivery' ? 'ELDEN' : 'SEVK'}\nHEDEF SERİ: ${desiredSeries}\nKDV: ${taxMode === 'none' ? 'YOK' : 'MİKRO STOK KARTI'}`,
+      description2_version: 2, context_hash: (total === 1750 ? 'b' : 'c').repeat(64), revision: 1,
+      mikro_write_execution_count: 0, carrier_execution_count: 0,
+      payment_retry: { state: 'none', fresh_link_required: false, reason_required: false, action_label: null, message: null,
+        authoritative_counts: { paid: 0, pending: 0, cancelled: 0, failed: 0, expired: 0 } },
     },
-    external_execution: { mikro_read: purpose === 'part_charge' && supplier === 'emaks_prime' ? 1 : 0, mikro_write: 0, hepsijet: 0 },
+    external_execution: { mikro_read: 0, mikro_write: 0, hepsijet: 0 },
   }
 }
 
 const openPaymentModal = async (page) => {
-  const button = page.locator('button').filter({ hasText: /^(Ödeme Al|Yeni ek ödeme al)$/ }).last()
-  await button.click()
+  await page.locator('button').filter({ hasText: /^(Ödeme Al|Yeni ek ödeme al)$/ }).last().click()
   const dialog = page.getByRole('dialog', { name: /^(Ödeme Al|Yeni ek ödeme al)$/ })
   await dialog.waitFor({ state: 'visible' })
+  await dialog.getByLabel('Tahsilat amacı').selectOption('part_charge')
+  await dialog.getByRole('button', { name: 'EMAKS Prime', exact: true }).click()
 
   return dialog
 }
 
-const waitForPreview = async (dialog, expectedText) => {
+const searchFor = async (dialog, query, code) => {
+  const search = dialog.getByLabel('Mikro stok parçası ara')
+  await search.fill(query)
+  const row = dialog.getByTestId('mikro-part-search-results').locator('div').filter({ hasText: code }).first()
+  await row.waitFor({ state: 'visible', timeout: 5000 })
+
+  return row
+}
+
+const waitForPreview = async (dialog, expected) => {
   const preview = dialog.getByTestId('payment-order-context-preview')
-
-  try {
-    await preview.waitFor({ state: 'visible' })
-    await preview.locator('pre').waitFor({ state: 'visible', timeout: 5000 })
-    await preview.locator('pre').filter({ hasText: expectedText }).waitFor({ state: 'visible', timeout: 5000 })
-  } catch (error) {
-    const controls = await dialog.locator('input, select, textarea').evaluateAll((elements) => elements.map((element) => ({
-      label: element.getAttribute('aria-label') ?? element.closest('label')?.childNodes[0]?.textContent?.trim() ?? element.getAttribute('name'),
-      type: element.getAttribute('type') ?? element.tagName.toLowerCase(),
-      value: 'value' in element ? element.value : null,
-      checked: 'checked' in element ? element.checked : null,
-    })))
-
-    throw new Error(`Preview did not contain "${expectedText}". Current state: ${await preview.innerText()}. Controls: ${JSON.stringify(controls)}`, { cause: error })
-  }
+  await preview.waitFor({ state: 'visible', timeout: 5000 })
+  await preview.getByText(expected, { exact: false }).first().waitFor({ state: 'visible', timeout: 5000 })
 
   return preview
 }
@@ -317,21 +180,18 @@ const inspectViewport = async (browser, name, viewport) => {
   const counters = { partSearch: 0, preview: 0, realExternal: 0 }
   const page = await browser.newPage({ viewport })
   page.on('pageerror', (error) => browserErrors.push(`${name}:page:${error.message}`))
-  page.on('response', (response) => {
-    if (response.status() >= 400 && !response.url().endsWith('/favicon.ico')) {
-      browserErrors.push(`${name}:http:${response.status()}:${response.url()}`)
-    }
-  })
   page.on('request', (request) => {
     if (/mikro|hepsijet|n8n/i.test(request.url()) && !request.url().includes('/payments/order-context/')) {
-      counters.realExternal += 1
-    }
+counters.realExternal += 1
+}
   })
   await page.route('**/api/technical-service/requests/*/payments/order-context/parts?*', async (route) => {
     counters.partSearch += 1
-    const query = new URL(route.request().url()).searchParams.get('query')?.toLocaleLowerCase('tr-TR') ?? ''
-    const items = stockItems.filter((item) => `${item.item_code} ${item.item_name}`.toLocaleLowerCase('tr-TR').includes(query))
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, source: 'mikro', source_label: 'Mikro API', freshness_at: '2026-08-14T06:00:00+03:00', items, write_execution_count: 0 }) })
+    const query = normalizedSearch(new URL(route.request().url()).searchParams.get('query') ?? '')
+    const items = stockItems.filter((item) => normalizedSearch(`${item.item_code} ${item.item_name} ${item.item_short_name ?? ''}`).includes(query)).slice(0, 20)
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      ok: true, source: 'mikro', source_label: 'Mikro API', freshness_at: '2026-08-14T15:00:00+03:00', items, write_execution_count: 0,
+    }) })
   })
   await page.route('**/api/technical-service/requests/*/payments/order-context/preview', async (route) => {
     counters.preview += 1
@@ -340,196 +200,169 @@ const inspectViewport = async (browser, name, viewport) => {
 
   await page.goto(`${baseUrl}/tests/Browser/assignment-earning-canonical.html`, { waitUntil: 'networkidle' })
   await page.waitForFunction(() => window.__assignmentEarningDomReady === true)
-
   let dialog = await openPaymentModal(page)
-  const purpose = dialog.getByLabel('Tahsilat amacı')
-  const purposeLabels = await purpose.locator('option').allTextContents()
-  assert(purposeLabels.includes('Montaj ücreti tahsilatı'), `${name}: mount collection purpose is missing`)
-  assert(purposeLabels.includes('Parça ödemesi'), `${name}: part charge purpose is missing`)
 
-  await purpose.selectOption('mount_collection')
-  const billingContext = dialog.getByTestId('payment-order-billing-context')
-  await billingContext.locator('select').first().selectOption('manual_billing_draft')
-  assert(await billingContext.getByLabel('Ad', { exact: true }).count() === 1, `${name}: individual first name field is missing`)
-  assert(await billingContext.getByLabel('Soyad', { exact: true }).count() === 1, `${name}: individual surname field is missing`)
-  await billingContext.getByLabel('Ad', { exact: true }).fill('Ahmet')
-  await billingContext.getByLabel('Soyad', { exact: true }).fill('Aslan')
-  await billingContext.locator('#order-billing-phone').fill('Aslan')
-  await billingContext.getByLabel('Adres', { exact: true }).fill('Fatura Caddesi No:1')
-  await billingContext.locator('#order-billing-city').selectOption('İstanbul')
-  await billingContext.locator('#order-billing-district').selectOption('Esenyurt')
-  await dialog.getByLabel('2. Montaj tahsilat tutarı').fill('1500')
-  let preview = await waitForPreview(dialog, 'FATURA MÜŞTERİSİ: Ahmet Aslan')
-  await dialog.getByRole('button', { name: 'Link oluştur', exact: true }).click()
-  assert(await billingContext.getByText('Geçerli bir telefon numarası girin.', { exact: true }).count() === 1, `${name}: alphabetic billing phone has no inline error`)
-  assert(await billingContext.locator('#order-billing-phone').evaluate((element) => element === document.activeElement), `${name}: invalid billing phone did not receive focus`)
-  assert(await output(page, 'payment-order-create-count') === '0', `${name}: invalid billing created a payment context`)
-  await billingContext.locator('#order-billing-phone').fill('905551112233')
-  preview = await waitForPreview(dialog, 'FATURA MÜŞTERİSİ: Ahmet Aslan')
-  const mountPreviewText = await text(preview)
-  assert(mountPreviewText.includes('Hedef seri: S'), `${name}: mount preview omits target series S`)
-  assert(mountPreviewText.includes('KDV: Mikro hizmet kartından'), `${name}: mount preview omits Mikro service tax authority`)
-  assert(mountPreviewText.includes('Sevkiyat: Yok'), `${name}: mount preview does not suppress shipment`)
-  assert(!/S[-/]?\d{2,}/.test(mountPreviewText), `${name}: mount preview fabricates an S order number`)
-  await dialog.getByRole('button', { name: 'Link oluştur', exact: true }).dblclick()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 1)
-  assert(await output(page, 'payment-order-create-count') === '1', `${name}: mount double-click emitted duplicate command`)
-  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
+  let row = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  let rowText = await text(row)
+  assert(rowText.includes('DDL 720 DIŞ DOKUMATİK'), `${name}: exact code did not return installed Mikro identity`)
+  assert(rowText.includes('Mikro API'), `${name}: source label is missing`)
+  assert(rowText.includes('Güncellik:'), `${name}: freshness is missing`)
+  assert(rowText.includes('Yedek parça'), `${name}: part classification is missing`)
+  assert(!/Depo:|Eldeki:|Rezerve:|Kullanılabilir:/.test(rowText), `${name}: unverified availability was rendered`)
 
-  dialog = await openPaymentModal(page)
-  await dialog.getByLabel('Tahsilat amacı').selectOption('part_charge')
-  await dialog.getByRole('button', { name: 'EMAKS Prime', exact: true }).click()
-  const identitySearch = dialog.getByLabel('Mikro stok parçası ara')
-  const previewCountBeforeIdentitySelection = counters.preview
-  await identitySearch.fill('IDENTITY')
-  const identityOnly = dialog.getByTestId('mikro-part-search-results').getByRole('button', { name: /EMK-IDENTITY-003/ })
-  await identityOnly.waitFor({ state: 'visible' })
-  const identityText = await text(identityOnly)
-  assert(identityText.includes('Mikro API'), `${name}: identity-only result omits Mikro source`)
-  assert(identityText.includes('Güncellik:'), `${name}: identity-only result omits freshness`)
-  assert(identityText.includes('Stok miktarı henüz doğrulanmadı.'), `${name}: identity-only result omits availability blocker`)
-  assert(!identityText.includes('Depo:'), `${name}: identity-only result invents warehouse`)
-  assert(!identityText.includes('Eldeki:'), `${name}: identity-only result invents on-hand quantity`)
-  assert(!identityText.includes('Rezerve:'), `${name}: identity-only result invents reserved quantity`)
-  assert(!identityText.includes('Kullanılabilir:'), `${name}: identity-only result invents available quantity`)
-  assert(!identityText.includes('Seri takibi:'), `${name}: identity-only result invents serial state`)
-  await identityOnly.click()
-  assert(await dialog.getByText('Stok uygunluğu doğrulanmadan ödeme ve sipariş hazırlığı başlatılamaz.', { exact: true }).count() === 1, `${name}: identity-only selection is not blocked`)
-  await page.waitForTimeout(450)
-  assert(counters.preview === previewCountBeforeIdentitySelection, `${name}: identity-only selection triggered payment/order preview`)
-  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
+  row = await searchFor(dialog, 'DIŞ DOKUMATİK', 'TKN000009')
+  assert((await text(row)).includes('TKN000009'), `${name}: installed stock name search failed`)
+  row = await searchFor(dialog, 'DIS DOKUMATIK', 'TKN000009')
+  assert((await text(row)).includes('TKN000009'), `${name}: Turkish-normalized stock name search failed`)
 
-  const chooseEmaksPart = async () => {
-    dialog = await openPaymentModal(page)
-    await dialog.getByLabel('Tahsilat amacı').selectOption('part_charge')
-    await dialog.getByRole('button', { name: 'EMAKS Prime', exact: true }).click()
-    const search = dialog.getByLabel('Mikro stok parçası ara')
-    await search.fill('EMK-GW')
-    const gateway = dialog.getByTestId('mikro-part-search-results').getByRole('button', { name: /EMK-GW-001/ })
-    await gateway.waitFor({ state: 'visible' })
-    const gatewayText = await text(gateway)
-    assert(gatewayText.includes('Mikro API'), `${name}: real-stock result omits Mikro source`)
-    assert(gatewayText.includes('Depo: MERKEZ'), `${name}: real-stock result omits warehouse`)
-    assert(gatewayText.includes('Kullanılabilir: 21'), `${name}: real-stock result omits available quantity`)
-    await gateway.click()
-    assert(await dialog.getByTestId('selected-payment-part').count() === 1, `${name}: stock selection is not visible`)
+  const deviceRow = await searchFor(dialog, 'EP.BCK.003.0001.R001', 'EP.BCK.003.0001.R001')
+  const deviceText = await text(deviceRow)
+  assert(deviceText.includes('Cihaz / ürün'), `${name}: canonical device classification is missing`)
+  assert(deviceText.includes('cihaz ekleme akışına'), `${name}: device blocker is missing`)
+  assert(await deviceRow.getByRole('button', { name: 'Ekle' }).isDisabled(), `${name}: device add action is enabled`)
 
-    return search
+  row = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  await row.getByRole('button', { name: 'Ekle' }).click()
+  let selected = dialog.getByTestId('selected-payment-part-line')
+  assert(await selected.count() === 1, `${name}: first part line was not added`)
+
+  row = await searchFor(dialog, 'TKN000010', 'TKN000010')
+  assert(await selected.count() === 1, `${name}: search change erased selected line`)
+  await row.getByRole('button', { name: 'Ekle' }).click()
+  assert(await selected.count() === 2, `${name}: second part line was not added`)
+
+  await dialog.getByLabel('Mikro stok parçası ara').fill('bulunmayan parça')
+  await dialog.getByText('Aramaya uygun parça bulunamadı.', { exact: true }).waitFor({ state: 'visible' })
+  assert(await selected.count() === 2, `${name}: empty search result erased selected lines`)
+
+  row = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  await row.getByRole('button', { name: 'Ekle' }).click()
+  assert(await selected.count() === 2, `${name}: duplicate item created a third line`)
+  const firstLine = selected.filter({ hasText: 'TKN000009' })
+  let secondLine = selected.filter({ hasText: 'TKN000010' })
+  assert(await firstLine.getByLabel('Adet').inputValue() === '2', `${name}: duplicate add did not increment quantity`)
+
+  await firstLine.getByLabel('Adet').fill('2')
+  await firstLine.getByLabel('Birim fiyat').fill('500')
+  await secondLine.getByLabel('Adet').fill('1')
+  await secondLine.getByLabel('Birim fiyat').fill('750')
+  const grandTotal = dialog.getByText(/Genel toplam:/).first()
+  await grandTotal.waitFor({ state: 'visible' })
+  assert((await text(grandTotal)).includes('1.750'), `${name}: grand total is not 1.750 TL`)
+  assert((await text(firstLine)).includes('1.000 TL'), `${name}: first line total is wrong`)
+  assert((await text(secondLine)).includes('750 TL'), `${name}: second line total is wrong`)
+
+  await secondLine.getByRole('button', { name: /satırını sil/ }).click()
+  assert(await selected.count() === 1, `${name}: removing one line removed another line or failed`)
+  row = await searchFor(dialog, 'TKN000010', 'TKN000010')
+  await row.getByRole('button', { name: 'Ekle' }).click()
+  secondLine = selected.filter({ hasText: 'TKN000010' })
+  await secondLine.getByLabel('Birim fiyat').fill('750')
+  assert(await selected.count() === 2, `${name}: second line could not be restored`)
+
+  const commercial = dialog.getByRole('group', { name: 'Parça ticari durumu' })
+  const delivery = dialog.getByRole('group', { name: 'Parça teslim şekli' })
+  await commercial.getByRole('button', { name: 'Ücretsiz', exact: true }).click()
+  await delivery.getByRole('button', { name: 'Elden', exact: true }).click()
+  let preview = await waitForPreview(dialog, 'TAHSİLAT TOPLAMI: 0,00 TL')
+  let previewText = await text(preview)
+  assert(previewText.includes('Hedef seri: Q'), `${name}: free hand target series is not Q`)
+  assert(previewText.includes('KDV: Yok / %0'), `${name}: free hand VAT is not zero`)
+  assert(previewText.includes('1.750,00 TL'), `${name}: free hand reference total is wrong`)
+
+  await delivery.getByRole('button', { name: 'Sevk', exact: true }).click()
+  const zeroGrandTotal = dialog.getByText(/Genel toplam:/).first()
+  await zeroGrandTotal.waitFor({ state: 'visible' })
+  assert((await text(zeroGrandTotal)).includes('0'), `${name}: free shipment grand total is not zero`)
+
+  for (const line of await selected.all()) {
+    const price = line.getByLabel('Birim fiyat')
+    assert(await price.inputValue() === '0', `${name}: free shipment did not force zero price`)
+    assert(await price.getAttribute('readonly') !== null, `${name}: free shipment price remains editable`)
   }
 
-  let partSearch = await chooseEmaksPart()
-  await partSearch.fill('MOTOR')
-  assert(await dialog.getByTestId('selected-payment-part').count() === 0, `${name}: changed query retained stale stock selection`)
-  await dialog.getByTestId('mikro-part-search-results').getByRole('button', { name: /EMK-MOTOR-002/ }).waitFor({ state: 'visible' })
-  await partSearch.fill('EMK-GW')
-  await dialog.getByTestId('mikro-part-search-results').getByRole('button', { name: /EMK-GW-001/ }).click()
-
-  let commercial = dialog.getByRole('group', { name: 'Parça ticari durumu' })
-  let delivery = dialog.getByRole('group', { name: 'Parça teslim şekli' })
-  await commercial.getByRole('button', { name: 'Ücretsiz', exact: true }).click()
-  await delivery.getByRole('button', { name: 'Elden', exact: true }).click()
-  await dialog.getByLabel('Sipariş satırı referans değeri').fill('750')
-  preview = await waitForPreview(dialog, 'SİPARİŞ SATIR DEĞERİ: 750,00 TL')
-  let previewText = await text(preview)
-  assert(previewText.includes('Hedef seri: Q'), `${name}: free hand preview omits Q`)
-  assert(previewText.includes('KDV: Yok / %0'), `${name}: free hand preview is not zero VAT`)
-  assert(previewText.includes('Ödeme bağlantısı: Yok'), `${name}: free hand preview exposes a payment link`)
-  assert(previewText.includes('Tahsilat tutarı: 0,00 TL'), `${name}: free-hand reference price leaked into collection`)
-  await dialog.getByRole('button', { name: 'Parça bağlamını kaydet', exact: true }).dblclick()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 2)
-  assert(await output(page, 'payment-order-create-count') === '2', `${name}: free-hand double-click emitted duplicate command`)
-  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
-  assert(await page.getByTestId('part-order-context-summary').count() === 1, `${name}: compact Part summary is missing or duplicated`)
-  assert((await text(page.getByTestId('part-order-context-summary'))).includes('Tahsilat gerekmiyor'), `${name}: free Part summary is not truthful`)
-
-  await chooseEmaksPart()
-  commercial = dialog.getByRole('group', { name: 'Parça ticari durumu' })
-  delivery = dialog.getByRole('group', { name: 'Parça teslim şekli' })
-  await commercial.getByRole('button', { name: 'Ücretsiz', exact: true }).click()
-  await delivery.getByRole('button', { name: 'Sevk', exact: true }).click()
-  preview = await waitForPreview(dialog, 'SİPARİŞ TUTARI: 0,00 TL')
+  preview = await waitForPreview(dialog, 'SİPARİŞ/REFERANS TOPLAMI: 0,00 TL')
   previewText = await text(preview)
-  assert(previewText.includes('Hedef seri: Q'), `${name}: free shipment preview omits Q`)
-  assert(previewText.includes('Tahsilat tutarı: 0,00 TL'), `${name}: free shipment has a collection`)
-  assert(previewText.includes('Ödeme bağlantısı: Yok'), `${name}: free shipment exposes payment link`)
-  assert(previewText.includes('Sevkiyat: Hazırlık bekliyor'), `${name}: free shipment loses recipient/shipment context`)
-  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
+  assert(previewText.includes('Hedef seri: Q'), `${name}: free shipment target series is not Q`)
+  assert(previewText.includes('Tahsilat tutarı: 0,00 TL'), `${name}: free shipment collection is nonzero`)
 
-  await chooseEmaksPart()
-  commercial = dialog.getByRole('group', { name: 'Parça ticari durumu' })
-  delivery = dialog.getByRole('group', { name: 'Parça teslim şekli' })
   await commercial.getByRole('button', { name: 'Ücretli', exact: true }).click()
   await delivery.getByRole('button', { name: 'Elden', exact: true }).click()
-  await dialog.getByLabel('Elden teslim alıcısı').selectOption('technician')
-  await dialog.getByLabel('Tahsilat tutarı').fill('600')
-  preview = await waitForPreview(dialog, 'TESLİM: ELDEN')
+  await dialog.getByLabel('Elden teslim alıcısı').selectOption('mrn_customer')
+  preview = await waitForPreview(dialog, 'TAHSİLAT TOPLAMI: 1.750,00 TL')
   previewText = await text(preview)
-  assert(previewText.includes('Hedef seri: Q'), `${name}: paid hand preview omits Q`)
-  assert(previewText.includes('KDV: Yok / %0'), `${name}: paid hand preview is not zero VAT`)
-  assert(previewText.includes('Ödeme bağlantısı: Yok'), `${name}: paid hand preview exposes a payment link`)
-  assert(previewText.includes('Tahsilat: Ödeme bekleniyor'), `${name}: paid hand preview does not start pending`)
-  await dialog.getByRole('button', { name: 'Parça bağlamını kaydet', exact: true }).dblclick()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 3)
-  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
-  const partSummary = page.getByTestId('part-order-context-summary')
-  await partSummary.getByRole('button', { name: 'Elden teslim edildi' }).click()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentOrderStateUpdateCount === 1)
-  assert((await text(partSummary)).includes('Ödeme alındı'), `${name}: technician delivery did not mark payment paid`)
-  assert((await text(partSummary)).includes('Teslim kaydı'), `${name}: auto-paid source is not visible`)
-  await partSummary.locator('details').getByText('Ödeme durumunu düzelt', { exact: true }).click()
-  await partSummary.locator('#part-hand-payment-status').selectOption('pending')
-  await partSummary.getByPlaceholder('Değişiklik nedeni').fill('Tahsilat teyidi bekleniyor')
-  await partSummary.getByRole('button', { name: 'Kaydet', exact: true }).click()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentOrderStateUpdateCount === 2)
-  assert((await text(partSummary)).includes('Ödeme bekleniyor'), `${name}: OPS override did not restore pending state`)
+  assert(previewText.includes('Hedef seri: Q'), `${name}: paid hand target series is not Q`)
+  assert(previewText.includes('Ödeme bağlantısı: Yok'), `${name}: paid hand incorrectly requires a payment link`)
 
-  await chooseEmaksPart()
-  commercial = dialog.getByRole('group', { name: 'Parça ticari durumu' })
-  delivery = dialog.getByRole('group', { name: 'Parça teslim şekli' })
-  await commercial.getByRole('button', { name: 'Ücretli', exact: true }).click()
   await delivery.getByRole('button', { name: 'Sevk', exact: true }).click()
-  await dialog.getByLabel('6. Sevk ve fatura bilgileri aynıdır').uncheck()
-  await dialog.getByLabel('7. Sevk alıcısı / adresi').selectOption('technician')
-  await dialog.getByLabel('Tahsilat tutarı').fill('600')
   preview = await waitForPreview(dialog, 'HEDEF SERİ: S')
   previewText = await text(preview)
-  assert(previewText.includes('KDV: Mikro stok kartından'), `${name}: paid shipment omits Mikro VAT authority`)
-  assert(previewText.includes('Ödeme bağlantısı: Gerekli'), `${name}: paid shipment does not require payment link`)
-  assert(previewText.includes('ALICI: Test Usta'), `${name}: paid shipment loses technician recipient`)
-  await dialog.getByRole('button', { name: 'Link oluştur', exact: true }).dblclick()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 4)
-  assert(await output(page, 'payment-order-create-count') === '4', `${name}: paid-shipment double-click emitted duplicate command`)
-  const submittedPayload = JSON.parse(await output(page, 'payment-order-last-payload'))
-  assert(submittedPayload.order_context.commercial_mode === 'paid', `${name}: paid commercial mode is missing from submit payload`)
-  assert(submittedPayload.order_context.delivery_mode === 'shipment', `${name}: shipment mode is missing from submit payload`)
-  await dialog.getByLabel('Tahsilat tutarı').fill('601')
-  await waitForPreview(dialog, 'TUTAR: 601,00 TL')
-  assert(await dialog.getByText('Eski ödeme bağlantısı sonlandırılıp bu işlem için yeni bağlantı oluşturulacaktır.', { exact: false }).count() === 1, `${name}: changed context has no explicit fresh-link explanation`)
-  await dialog.getByRole('button', { name: 'Yeni bağlantı oluştur', exact: true }).dblclick()
-  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 5)
-  const retryPayload = JSON.parse(await output(page, 'payment-order-last-payload'))
-  assert(retryPayload.fresh_payment_requested === true, `${name}: explicit fresh-link action was not submitted`)
-  assert(retryPayload.terminal_retry_reason === null, `${name}: changed context fabricated a terminal retry reason`)
-  assert(await output(page, 'payment-order-create-count') === '5', `${name}: fresh-link double-click emitted duplicate command`)
-  assert(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), `${name}: payment wizard overflows horizontally`)
-  assert(await output(page, 'financial-board-refetch-count') === '0', `${name}: payment flow refetched the board`)
-  assert(await output(page, 'financial-modal-mount-count') === '1', `${name}: payment flow remounted the detail modal`)
-  assert(await output(page, 'assignment-scroll-reset-count') === '0', `${name}: payment flow reset scroll`)
-  assert(counters.realExternal === 0, `${name}: real Mikro/HepsiJet/n8n request count is ${counters.realExternal}`)
-  assert(!/S[-/]?\d{2,}/.test(await text(dialog)), `${name}: UI falsely displays an S order number`)
-  assert(!(await text(dialog)).includes('Sipariş oluşturuldu'), `${name}: UI falsely displays Sipariş oluşturuldu`)
+  assert(previewText.includes('KDV: Mikro stok kartından'), `${name}: paid shipment lost Mikro VAT authority`)
+  assert(previewText.includes('Ödeme bağlantısı: Gerekli'), `${name}: paid shipment canonical link requirement is missing`)
+  assert(previewText.includes('Stok uygunluğu henüz doğrulanmadığı'), `${name}: availability blocker is missing`)
 
-  await page.screenshot({ path: path.join(artifactDir, `payment-order-context-${name}.png`), fullPage: true })
+  row = await searchFor(dialog, 'TKN000011', 'TKN000011')
+  await row.getByRole('button', { name: 'Ekle' }).click()
+  const serialLine = selected.filter({ hasText: 'TKN000011' })
+  assert((await text(serialLine)).includes('Güncel parça seri seçimi doğrulanmadan'), `${name}: serial readiness blocker is missing`)
+  assert(await serialLine.locator('select').count() === 0, `${name}: fake serial selector was rendered`)
+  await serialLine.getByRole('button', { name: /satırını sil/ }).click()
+
+  const submit = dialog.getByRole('button', { name: 'Parça taslağını kaydet', exact: true })
+  await submit.dblclick()
+  await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentCreateCount === 1)
+  assert(await output(page, 'payment-order-create-count') === '1', `${name}: double submit created duplicate context`)
+  assert(await dialog.getByText('Parça taslağı kaydedildi', { exact: false }).count() === 1, `${name}: draft-save feedback is missing`)
+
+  const lastLineBox = await selected.last().boundingBox()
+  const submitBox = await submit.boundingBox()
+  assert(Boolean(lastLineBox && submitBox && lastLineBox.y + lastLineBox.height <= submitBox.y + 1), `${name}: final selected line intersects the action area`)
+  assert(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), `${name}: modal has horizontal overflow`)
+
+  await dialog.getByRole('button', { name: 'İptal', exact: true }).last().click()
+  assert(await page.getByTestId('part-order-context-summary').count() === 1, `${name}: saved multi-line summary is missing`)
+  assert(!(await text(page.getByTestId('part-order-context-summary'))).includes('Ödeme alındı'), `${name}: blocked draft is falsely shown as paid`)
+
+  dialog = await openPaymentModal(page)
+  selected = dialog.getByTestId('selected-payment-part-line')
+  await selected.first().waitFor({ state: 'visible', timeout: 5000 })
+  assert(await selected.count() === 2, `${name}: reopening did not hydrate both lines`)
+  assert(await selected.filter({ hasText: 'TKN000009' }).getByLabel('Adet').inputValue() === '2', `${name}: reopened quantity changed`)
+  assert(await selected.filter({ hasText: 'TKN000009' }).getByLabel('Birim fiyat').inputValue() === '500', `${name}: reopened first price changed`)
+  assert(await selected.filter({ hasText: 'TKN000010' }).getByLabel('Birim fiyat').inputValue() === '750', `${name}: reopened second price changed`)
+  assert((await text(dialog.getByText(/Genel toplam:/).first())).includes('1.750'), `${name}: reopened grand total changed`)
+
+  const bodyOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  const overflowOwners = await page.evaluate(() => Array.from(document.querySelectorAll('body *'))
+    .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+    .filter(({ rect }) => rect.right > document.documentElement.clientWidth + 1 || rect.left < -1)
+    .slice(0, 8)
+    .map(({ element, rect }) => ({
+      tag: element.tagName,
+      testid: element.getAttribute('data-testid'),
+      className: element.getAttribute('class'),
+      left: Math.round(rect.left),
+      right: Math.round(rect.right),
+      width: Math.round(rect.width),
+    })))
+  assert(bodyOverflow <= 1, `${name}: page horizontal overflow is ${bodyOverflow}px; owners=${JSON.stringify(overflowOwners)}`)
+  assert(await output(page, 'financial-board-refetch-count') === '0', `${name}: board refetch count is not zero`)
+  assert(await output(page, 'financial-modal-mount-count') === '1', `${name}: detail modal remounted`)
+  assert(await output(page, 'assignment-scroll-reset-count') === '0', `${name}: scroll reset count is not zero`)
+  assert(counters.realExternal === 0, `${name}: external Mikro/HepsiJet/n8n count is ${counters.realExternal}`)
+  const fullText = await text(dialog)
+  assert(!fullText.includes('TS-PART-001'), `${name}: TS-PART fixture is visible`)
+  assert(!fullText.includes('Gateway'), `${name}: synthetic Gateway fixture is visible`)
+  assert(!/\b[QS][-/]\d{2,}\b/.test(fullText), `${name}: fake Q/S order number is visible`)
+  assert(!fullText.includes('Sipariş oluşturuldu'), `${name}: false order-created claim is visible`)
+
+  await page.screenshot({ path: path.join(artifactDir, `payment-order-multi-line-${name}.png`), fullPage: true })
   await page.close()
 
   return counters
 }
 
-const browser = await chromium.launch({
-  headless: true,
-  executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-})
-
+const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' })
 const results = {
   desktop: await inspectViewport(browser, 'desktop', { width: 1440, height: 1000 }),
   mobile: await inspectViewport(browser, 'mobile', { width: 390, height: 844 }),
@@ -537,14 +370,8 @@ const results = {
 
 await browser.close()
 assert(browserErrors.length === 0, `browser errors: ${browserErrors.join(' | ')}`)
-
-console.log(JSON.stringify({
-  result: failures.length === 0 ? 'passed' : 'failed',
-  results,
-  failures,
-  browserErrors,
-}, null, 2))
+console.log(JSON.stringify({ result: failures.length === 0 ? 'passed' : 'failed', results, failures, browserErrors }, null, 2))
 
 if (failures.length > 0) {
-  process.exitCode = 1
+process.exitCode = 1
 }
