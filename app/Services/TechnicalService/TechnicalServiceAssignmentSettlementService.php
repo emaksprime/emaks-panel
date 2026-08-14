@@ -44,6 +44,8 @@ class TechnicalServiceAssignmentSettlementService
 
     private const PURPOSE_ROUTE_FEE = 'route_fee';
 
+    private const PURPOSE_PART_CHARGE = 'part_charge';
+
     private const PAYER_STATE_COMPANY_PAYS_TECHNICIAN = 'company_collected_company_pays_technician';
 
     private ?bool $allocationSchemaAvailableCache = null;
@@ -780,6 +782,162 @@ class TechnicalServiceAssignmentSettlementService
         });
     }
 
+    public function applyPreparedPartSupplierAllocation(
+        TechnicalServiceRequest $request,
+        TechnicalServiceMountPayment $payment,
+        Authenticatable $actor,
+    ): array {
+        if (! $this->allocationSchemaAvailable()) {
+            throw ValidationException::withMessages([
+                'order_context' => 'Usta parça hakedişi için canonical allocation tablosu hazır değil.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($request, $payment, $actor): array {
+            $lockedRequest = TechnicalServiceRequest::query()->whereKey($request->id)->lockForUpdate()->firstOrFail();
+            $lockedPayment = TechnicalServiceMountPayment::query()->whereKey($payment->id)->lockForUpdate()->firstOrFail();
+            $payload = is_array($lockedPayment->raw_payload) ? $lockedPayment->raw_payload : [];
+            $orderContext = is_array($payload['order_context'] ?? null) ? $payload['order_context'] : [];
+            if ($lockedPayment->status !== TechnicalServiceMountPayment::STATUS_PAID
+                || $this->paymentPurpose($lockedPayment) !== self::PURPOSE_PART_CHARGE
+                || ($orderContext['part_supplier'] ?? null) !== 'technician'
+                || ($orderContext['collection_allocation'] ?? null) !== self::DECISION_PAY_TECHNICIAN
+                || (int) ($orderContext['request_id'] ?? 0) !== (int) $lockedRequest->id) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Usta parça tahsilatı canonical sipariş hazırlığıyla eşleşmiyor.',
+                ]);
+            }
+
+            $existing = DB::table(self::ALLOCATION_TABLE)
+                ->where('technical_service_mount_payment_id', $lockedPayment->id)
+                ->where('status', self::ALLOCATION_STATUS_ACTIVE)
+                ->lockForUpdate()
+                ->first();
+            if ($existing) {
+                if ((int) $existing->technical_service_request_id === (int) $lockedRequest->id
+                    && (string) $existing->decision === self::DECISION_PAY_TECHNICIAN
+                    && (string) $existing->payment_purpose === self::PURPOSE_PART_CHARGE) {
+                    return ['status' => 'duplicate_noop', 'allocation_id' => (int) $existing->id];
+                }
+
+                throw ValidationException::withMessages([
+                    'order_context' => 'Bu parça tahsilatı için farklı bir canonical allocation zaten var.',
+                ]);
+            }
+
+            $settlement = TechnicalServiceSettlement::query()
+                ->where('technical_service_request_id', $lockedRequest->id)
+                ->lockForUpdate()
+                ->first();
+            $context = $this->allocationContext($lockedRequest, $settlement, true);
+            if (! $settlement instanceof TechnicalServiceSettlement || ! ($context['ready'] ?? false)) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Ustanın sağladığı parça tahsilatı için aktif atama ve hakediş kaydı gereklidir.',
+                ]);
+            }
+
+            $eligibleMinor = $this->minorUnits($lockedPayment->amount);
+            if ($eligibleMinor <= 0 || strtoupper((string) $lockedPayment->currency) !== 'TRY') {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Usta parça tahsilat tutarı canonical TRY tutarı olmalıdır.',
+                ]);
+            }
+
+            $line = new TechnicalServiceEarningPayment;
+            $line->forceFill([
+                'technical_service_settlement_id' => $settlement->id,
+                'technical_service_request_id' => $lockedRequest->id,
+                'technical_service_assignment_offer_id' => $context['assignment_id'],
+                'technical_service_technician_id' => $context['technician_id'],
+                'b2b_partner_id' => $settlement->b2b_partner_id,
+                'currency' => $lockedPayment->currency ?: 'TRY',
+                'payment_type' => self::SETTLEMENT_LINE_TYPE_COMPANY_PAYMENT,
+                'amount' => $this->fromMinorUnits($eligibleMinor),
+                'status' => TechnicalServiceEarningPayment::STATUS_PENDING,
+                'paid_at' => null,
+                'paid_by' => null,
+                'paid_by_name' => null,
+                'reason' => 'Ustanın sağladığı parça tahsilatı',
+                'reference' => 'CUSTOMER-PAYMENT-'.$lockedPayment->id,
+                'metadata' => [
+                    'source' => 'paid_technician_supplied_part_allocation',
+                    'payment_id' => (int) $lockedPayment->id,
+                    'payment_purpose' => self::PURPOSE_PART_CHARGE,
+                    'payment_purpose_label' => 'Ustanın sağladığı parça',
+                    'allocation_source' => 'technician_supplied_part',
+                    'order_context_id' => $orderContext['id'] ?? null,
+                    'context_hash' => $orderContext['context_hash'] ?? null,
+                    'status' => 'payable',
+                ],
+            ])->save();
+
+            $idempotencyKey = hash('sha256', implode('|', [
+                'technical-service-technician-part-allocation-v1',
+                $lockedPayment->id,
+                $orderContext['context_hash'] ?? '',
+                $context['assignment_id'],
+                $context['technician_id'],
+                $eligibleMinor,
+            ]));
+            $allocationId = DB::table(self::ALLOCATION_TABLE)->insertGetId([
+                'technical_service_mount_payment_id' => $lockedPayment->id,
+                'technical_service_settlement_id' => $settlement->id,
+                'technical_service_request_id' => $lockedRequest->id,
+                'root_request_id' => $lockedRequest->parent_request_id ?: $lockedRequest->id,
+                'current_srv_id' => $lockedRequest->parent_request_id !== null || filled($lockedRequest->service_code)
+                    ? $lockedRequest->id
+                    : null,
+                'technical_service_assignment_offer_id' => $context['assignment_id'],
+                'technical_service_technician_id' => $context['technician_id'],
+                'payment_purpose' => self::PURPOSE_PART_CHARGE,
+                'currency' => $lockedPayment->currency ?: 'TRY',
+                'source_paid_amount' => $this->fromMinorUnits($eligibleMinor),
+                'covered_amount' => 0,
+                'eligible_amount' => $this->fromMinorUnits($eligibleMinor),
+                'decision' => self::DECISION_PAY_TECHNICIAN,
+                'decision_note' => 'Parçayı aktif usta sağladı.',
+                'decided_by' => $actor->getAuthIdentifier(),
+                'decided_by_name' => $this->actorName($actor),
+                'decided_at' => now(),
+                'settlement_line_id' => $line->id,
+                'reversal_of_id' => null,
+                'status' => self::ALLOCATION_STATUS_ACTIVE,
+                'idempotency_key' => $idempotencyKey,
+                'revision' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $lineMetadata = is_array($line->metadata) ? $line->metadata : [];
+            $lineMetadata['allocation_id'] = $allocationId;
+            $line->forceFill(['metadata' => $lineMetadata])->save();
+
+            $lockedRequest->events()->create([
+                'event_type' => 'company_payment_allocation_decided',
+                'title' => 'Ustanın sağladığı parça tahsilatı hakedişe eklendi',
+                'note' => 'Parça ödemesi mevcut aktif ustaya bir kez bağlandı; Mikro siparişi ve sevkiyat gerekmiyor.',
+                'from_status' => $lockedRequest->workflow_status,
+                'to_status' => $lockedRequest->workflow_status,
+                'author_user_id' => $actor->getAuthIdentifier(),
+                'metadata' => [
+                    'allocation_id' => $allocationId,
+                    'payment_id' => (int) $lockedPayment->id,
+                    'payment_purpose' => self::PURPOSE_PART_CHARGE,
+                    'decision' => self::DECISION_PAY_TECHNICIAN,
+                    'eligible_amount' => $this->fromMinorUnits($eligibleMinor),
+                    'assignment_id' => $context['assignment_id'],
+                    'technician_id' => $context['technician_id'],
+                    'order_context_id' => $orderContext['id'] ?? null,
+                    'context_hash' => $orderContext['context_hash'] ?? null,
+                    'correlation_id' => $idempotencyKey,
+                    'source' => 'payment_order_context',
+                ],
+            ]);
+            $this->refreshSettlementForRequest($lockedRequest);
+
+            return ['status' => 'decided', 'allocation_id' => $allocationId];
+        });
+    }
+
     public function refreshSettlementForRequest(TechnicalServiceRequest $request): ?TechnicalServiceSettlement
     {
         $settlement = TechnicalServiceSettlement::query()
@@ -1112,8 +1270,12 @@ class TechnicalServiceAssignmentSettlementService
 
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $purpose = $this->paymentPurpose($payment);
-        if (! in_array($purpose, [self::PURPOSE_EXTRA_SERVICE, self::PURPOSE_ROUTE_FEE], true)
-            || is_numeric($payload['part_request_id'] ?? null)
+        $orderContext = is_array($payload['order_context'] ?? null) ? $payload['order_context'] : [];
+        $technicianPartPayment = $purpose === self::PURPOSE_PART_CHARGE
+            && ($orderContext['part_supplier'] ?? null) === 'technician'
+            && ($orderContext['collection_allocation'] ?? null) === self::DECISION_PAY_TECHNICIAN;
+        if ((! in_array($purpose, [self::PURPOSE_EXTRA_SERVICE, self::PURPOSE_ROUTE_FEE], true) && ! $technicianPartPayment)
+            || (is_numeric($payload['part_request_id'] ?? null) && ! $technicianPartPayment)
             || is_array($payload['canonical_payment_duplicate'] ?? null)
             || (bool) ($payload['metadata_only'] ?? false)
             || str_contains(strtolower((string) ($payload['source'] ?? '')), 'metadata')
@@ -1151,6 +1313,7 @@ class TechnicalServiceAssignmentSettlementService
         return match ($purpose) {
             self::PURPOSE_EXTRA_SERVICE => 'Ek servis',
             self::PURPOSE_ROUTE_FEE => 'Yol ücreti',
+            self::PURPOSE_PART_CHARGE => 'Ustanın sağladığı parça',
             default => 'Belirsiz tahsilat',
         };
     }

@@ -3247,8 +3247,10 @@ class TechnicalServiceWorkflowService
     private function isCustomerChargePayment(TechnicalServiceMountPayment $payment): bool
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $purpose = strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')));
 
-        return ($payload['source'] ?? null) === 'operation_customer_charge';
+        return ($payload['source'] ?? null) === 'operation_customer_charge'
+            || $purpose === TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE;
     }
 
     /**
@@ -3266,7 +3268,7 @@ class TechnicalServiceWorkflowService
         $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
         $paymentUrl = trim((string) ($payment->payment_url ?? ''));
         $isExtraPayment = $source === 'operation_extra_mount_fee'
-            || in_array($purpose, ['mount_extra', 'manual_mount_payment', 'multi_product_mount', 'route_fee', 'montage_difference', 'multi_product', 'manual_extra'], true);
+            || in_array($purpose, ['mount_extra', 'manual_mount_payment', 'multi_product_mount', 'route_fee', 'route_difference', 'montage_difference', 'multi_product', 'manual_extra', 'general_extra'], true);
 
         return array_merge([
             'id' => $payment->id,
@@ -3309,6 +3311,7 @@ class TechnicalServiceWorkflowService
             'reason' => $payload['reason'] ?? null,
             'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
             'is_extra_payment' => $isExtraPayment,
+            'order_context' => is_array($payload['order_context'] ?? null) ? $payload['order_context'] : null,
             'readonly' => in_array($payment->status, [
                 TechnicalServiceMountPayment::STATUS_PAID,
                 TechnicalServiceMountPayment::STATUS_CANCELLED,
@@ -4351,9 +4354,11 @@ class TechnicalServiceWorkflowService
     {
         return match ($purpose) {
             'mount_payment', 'public_mount_payment' => 'Montaj tahsilatı',
-            'manual_mount_payment', 'mount_extra', 'manual_extra' => 'Ek montaj tahsilatı',
-            'service_payment' => 'Ek servis tahsilatı',
-            'route_fee' => 'Yol ücreti tahsilatı',
+            'manual_mount_payment', 'mount_extra', 'manual_extra', 'general_extra' => 'Ek montaj tahsilatı',
+            'service_payment', 'extra_service' => 'Ek servis tahsilatı',
+            'route_fee', 'route_difference' => 'Yol ücreti tahsilatı',
+            'mount_collection' => 'Montaj ücreti tahsilatı',
+            'part_charge' => 'Parça ödemesi',
             default => 'Müşteri ödemesi',
         };
     }
@@ -4455,9 +4460,9 @@ class TechnicalServiceWorkflowService
                 $purpose = strtolower(trim((string) ($row['purpose'] ?? '')));
                 $amount = $this->minorUnits($row['amount'] ?? 0);
                 $bucket = match (true) {
-                    $purpose === 'service_payment' => 'extra',
-                    $purpose === 'route_fee' => 'route',
-                    $purpose === 'part_payment' => 'part',
+                    in_array($purpose, ['service_payment', 'extra_service'], true) => 'extra',
+                    in_array($purpose, ['route_fee', 'route_difference'], true) => 'route',
+                    in_array($purpose, ['part_payment', 'part_charge'], true) => 'part',
                     (bool) ($row['is_extra_payment'] ?? false) => 'extra',
                     in_array($purpose, [
                         'mount_payment',
@@ -4467,6 +4472,7 @@ class TechnicalServiceWorkflowService
                         'montage_difference',
                         'multi_product',
                         'public_mount_payment',
+                        'mount_collection',
                     ], true) => 'mount',
                     default => $purpose === '' && ! $isServiceVisit ? 'mount' : 'unclassified',
                 };
@@ -4966,8 +4972,10 @@ class TechnicalServiceWorkflowService
         return $this->sortedUniquePayments($payments)
             ->filter(function (TechnicalServiceMountPayment $payment): bool {
                 $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+                $purpose = strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')));
 
-                return ($payload['source'] ?? null) === 'operation_customer_charge';
+                return ($payload['source'] ?? null) === 'operation_customer_charge'
+                    || $purpose === TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE;
             })
             ->values();
     }
@@ -5045,9 +5053,9 @@ class TechnicalServiceWorkflowService
 
         if ($serviceAmount <= 0 && $partAmount <= 0) {
             match ($purpose) {
-                'part_payment' => $partAmount = $amount,
-                'service_payment' => $extraAmount = $amount,
-                'route_fee' => $routeAmount = $amount,
+                'part_payment', 'part_charge' => $partAmount = $amount,
+                'service_payment', 'extra_service' => $extraAmount = $amount,
+                'route_fee', 'route_difference' => $routeAmount = $amount,
                 default => $unclassifiedAmount = $amount,
             };
         } elseif (round($serviceAmount + $partAmount + $extraAmount + $routeAmount, 2) < round($amount, 2)) {
@@ -5165,6 +5173,7 @@ class TechnicalServiceWorkflowService
             'cancellation_reason' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancellation_reason'] ?? null),
             'purpose' => $payload['purpose'] ?? $payload['charge_type'] ?? null,
             'purpose_label' => $this->customerChargePurposeLabel((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')),
+            'order_context' => is_array($payload['order_context'] ?? null) ? $payload['order_context'] : null,
             'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
             'message_template' => $messageTemplate,
             'message_text' => $messageText,
@@ -5526,8 +5535,8 @@ class TechnicalServiceWorkflowService
     private function customerChargePurposeLabel(string $purpose): string
     {
         return match ($purpose) {
-            'service_payment' => 'Servis ücreti',
-            'part_payment' => 'Parça ücreti',
+            'service_payment', 'extra_service' => 'Servis ücreti',
+            'part_payment', 'part_charge' => 'Parça ödemesi',
             'service_and_part_payment' => 'Servis ve parça ücreti',
             default => 'Servis / parça ödemesi',
         };

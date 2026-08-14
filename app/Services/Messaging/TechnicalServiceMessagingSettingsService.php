@@ -2429,6 +2429,38 @@ class TechnicalServiceMessagingSettingsService
             'part_request_id' => $partRequestId,
             'selected_serial_ids' => $selectedSerialIds,
         ];
+        $orderContext = is_array($payload['order_context'] ?? null) ? $payload['order_context'] : null;
+        if ($source === 'operation_order_context_payment') {
+            if (! is_array($orderContext)
+                || ! is_numeric($orderContext['id'] ?? null)
+                || ! is_string($orderContext['context_hash'] ?? null)
+                || ! preg_match('/^[a-f0-9]{64}$/', (string) $orderContext['context_hash'])
+                || (int) ($orderContext['request_id'] ?? 0) !== (int) $requestId
+                || (string) ($orderContext['payment_purpose'] ?? '') !== (string) ($payload['purpose'] ?? '')) {
+                throw new ConflictHttpException('CONTRACT_FIELD_UNAVAILABLE: Payment order context canonical identity doğrulanamadı.');
+            }
+            $identity['root_request_id'] = is_numeric($orderContext['root_request_id'] ?? null)
+                ? (int) $orderContext['root_request_id']
+                : null;
+            $identity['srv_request_id'] = is_numeric($orderContext['srv_request_id'] ?? null)
+                ? (int) $orderContext['srv_request_id']
+                : null;
+            $identity['order_context_id'] = (int) $orderContext['id'];
+            $identity['context_hash'] = (string) $orderContext['context_hash'];
+            $identity['item_code'] = is_scalar(data_get($orderContext, 'part.item_code'))
+                ? trim((string) data_get($orderContext, 'part.item_code')) ?: null
+                : null;
+            $identity['related_product_serial'] = is_scalar($orderContext['related_product_serial'] ?? null)
+                ? trim((string) $orderContext['related_product_serial']) ?: null
+                : null;
+            $identity['selected_part_serial'] = is_scalar(data_get($orderContext, 'part.selected_part_serial'))
+                ? trim((string) data_get($orderContext, 'part.selected_part_serial')) ?: null
+                : null;
+            $identity['amount'] = $this->scopedLocalUatAmountMinorUnits($payment);
+            $identity['currency'] = $this->scopedLocalUatCurrency($payment);
+            $identity['provider_family'] = strtolower(trim((string) $payment->provider));
+            $identity['provider_mode'] = strtolower(trim((string) ($payload['provider_mode'] ?? $payload['provider_environment'] ?? '')));
+        }
         $identityHash = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 
         return [
@@ -2493,16 +2525,21 @@ class TechnicalServiceMessagingSettingsService
                 : throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Public mount payment purpose code-owned allowlist içinde değil.'),
             'operation_extra_mount_fee' => match ($value) {
                 'multi_product', 'multi_product_mount' => 'multi_product_mount',
-                'route_fee' => 'route_fee',
+                'route_fee', 'route_difference' => 'route_fee',
                 'montage_difference' => 'montage_difference',
-                'manual_extra', 'mount_extra', 'manual_mount_payment' => 'extra_mount_fee',
+                'manual_extra', 'mount_extra', 'manual_mount_payment', 'general_extra' => 'extra_mount_fee',
                 default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Extra mount payment purpose code-owned allowlist içinde değil.'),
             },
             'operation_customer_charge' => match ($value) {
                 'part_payment' => 'part_payment',
                 'service_and_part_payment' => 'service_and_part_payment',
-                'service_payment' => 'customer_charge',
+                'service_payment', 'extra_service' => 'customer_charge',
                 default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Customer charge purpose code-owned allowlist içinde değil.'),
+            },
+            'operation_order_context_payment' => match ($value) {
+                'mount_collection' => 'mount_collection',
+                'part_charge' => 'part_charge',
+                default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Order context payment purpose code-owned allowlist içinde değil.'),
             },
             default => throw new ConflictHttpException('scoped_uat_payment_purpose_invalid: Payment purpose code-owned allowlist içinde değil.'),
         };

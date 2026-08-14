@@ -43,6 +43,7 @@ use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
+use App\Services\TechnicalService\TechnicalServicePaymentOrderContextService;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
@@ -1159,11 +1160,59 @@ class TechnicalServiceController extends Controller
         ]));
     }
 
+    public function paymentOrderContextPreview(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePaymentOrderContextService $orderContexts,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'purpose' => ['required', 'string', 'in:mount_collection,part_charge'],
+            'amount' => ['required', 'numeric', 'gt:0'],
+            'currency' => ['nullable', 'string', 'size:3'],
+            'order_context' => ['required', 'array'],
+        ]);
+        $this->assertStrictPaymentDecimalInputs($request, ['amount']);
+
+        return response()->json([
+            'ok' => true,
+            'payment_purposes' => $orderContexts->paymentPurposes(),
+            'order_context' => $orderContexts->preview(
+                $technicalServiceRequest,
+                (string) $validated['purpose'],
+                $validated['order_context'],
+                (float) $validated['amount'],
+                strtoupper((string) ($validated['currency'] ?? 'TRY')),
+            ),
+            'external_execution' => [
+                'mikro_read' => app()->environment(['local', 'testing']) ? 0 : null,
+                'mikro_write' => 0,
+                'hepsijet' => 0,
+            ],
+        ]);
+    }
+
+    public function searchPaymentOrderContextParts(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePaymentOrderContextService $orderContexts,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'query' => ['required', 'string', 'min:2', 'max:120'],
+        ]);
+
+        return response()->json([
+            'ok' => true,
+            ...$orderContexts->searchParts($technicalServiceRequest, (string) $validated['query']),
+            'write_execution_count' => 0,
+        ]);
+    }
+
     public function createExtraMountFeePayment(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
-        PaymentProviderManager $paymentProviderManager
+        PaymentProviderManager $paymentProviderManager,
+        TechnicalServicePaymentOrderContextService $orderContexts,
     ): JsonResponse {
         $validated = $request->validate([
             'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
@@ -1174,10 +1223,11 @@ class TechnicalServiceController extends Controller
             'service_amount' => ['nullable', 'numeric', 'min:0'],
             'part_amount' => ['nullable', 'numeric', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
-            'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra,service_payment,part_payment,service_and_part_payment'],
-            'purpose' => ['required', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
-            'charge_type' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
+            'reason' => ['nullable', 'string', 'in:route_fee,route_difference,montage_difference,multi_product,manual_extra,general_extra,service_payment,extra_service,part_payment,part_charge,service_and_part_payment,mount_collection'],
+            'purpose' => ['required', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra,general_extra,extra_service,route_difference,mount_collection,part_charge'],
+            'charge_type' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra,general_extra,extra_service,route_difference,mount_collection,part_charge'],
             'part_request_id' => ['nullable', 'integer', 'exists:technical_service_part_requests,id'],
+            'order_context' => ['nullable', 'array'],
             'note' => ['nullable', 'string', 'max:2000'],
             'message_template' => ['nullable', 'string', 'max:4000'],
             'terminal_retry_reason' => ['nullable', 'string', 'min:3', 'max:500'],
@@ -1224,7 +1274,17 @@ class TechnicalServiceController extends Controller
         $currency = strtoupper($validated['currency'] ?? 'TRY');
         $purpose = (string) $validated['purpose'];
         $chargeType = (string) ($validated['charge_type'] ?? $purpose);
-        $isCustomerCharge = in_array($purpose, ['service_payment', 'part_payment', 'service_and_part_payment'], true);
+        $isOrderContextPurpose = in_array($purpose, [
+            TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION,
+            TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE,
+        ], true);
+        $isCustomerCharge = in_array($purpose, [
+            'service_payment',
+            'extra_service',
+            'part_payment',
+            'service_and_part_payment',
+            TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE,
+        ], true);
         $partRequestId = isset($validated['part_request_id']) ? (int) $validated['part_request_id'] : null;
         if (in_array($purpose, ['part_payment', 'service_and_part_payment'], true)) {
             $partRequestOwned = $partRequestId !== null && TechnicalServicePartRequest::query()
@@ -1237,7 +1297,12 @@ class TechnicalServiceController extends Controller
                 ]);
             }
         }
-        $technicianRequired = ! $isCustomerCharge && ! in_array($purpose, ['mount_extra', 'manual_mount_payment'], true);
+        $technicianRequired = ! $isCustomerCharge && ! in_array($purpose, [
+            'mount_extra',
+            'manual_mount_payment',
+            'general_extra',
+            TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION,
+        ], true);
         if ($technicianRequired && ! isset($validated['technician_id'])) {
             throw ValidationException::withMessages([
                 'technician_id' => 'Ek montaj ödeme linki için usta seçimi zorunludur.',
@@ -1250,9 +1315,19 @@ class TechnicalServiceController extends Controller
         $partAmountMinor = isset($validated['part_amount'])
             ? $this->strictPaymentMinorUnits((string) $validated['part_amount'])
             : 0;
-        $totalAmountMinor = $isCustomerCharge
+        $usesComponentAmounts = in_array($purpose, [
+            'service_payment',
+            'extra_service',
+            'part_payment',
+            'service_and_part_payment',
+        ], true);
+        $totalAmountMinor = $usesComponentAmounts
             ? $serviceAmountMinor + $partAmountMinor
             : (isset($validated['amount']) ? $this->strictPaymentMinorUnits((string) $validated['amount']) : 0);
+        if ($purpose === TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE) {
+            $partAmountMinor = $totalAmountMinor;
+            $serviceAmountMinor = 0;
+        }
         $serviceAmount = $this->minorUnitsToDecimal($serviceAmountMinor);
         $partAmount = $this->minorUnitsToDecimal($partAmountMinor);
         $totalAmount = $this->minorUnitsToDecimal($totalAmountMinor);
@@ -1265,13 +1340,49 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $preparedContext = null;
+        if ($isOrderContextPurpose) {
+            $actor = $request->user();
+            abort_unless($actor instanceof User, 401);
+            $preparedContext = $orderContexts->prepare(
+                $technicalServiceRequest,
+                $purpose,
+                is_array($validated['order_context'] ?? null) ? $validated['order_context'] : [],
+                (float) $totalAmount,
+                $currency,
+                $actor,
+                filled($validated['terminal_retry_reason'] ?? null),
+            );
+            if ($preparedContext['payment'] instanceof TechnicalServiceMountPayment) {
+                $existingPayment = $preparedContext['payment'];
+                $outcome = $existingPayment->status === TechnicalServiceMountPayment::STATUS_PAID
+                    ? PaymentProviderManager::CREATE_OUTCOME_ALREADY_PAID
+                    : PaymentProviderManager::CREATE_OUTCOME_REUSED_PENDING;
+
+                return response()->json([
+                    'ok' => true,
+                    'message' => $existingPayment->status === TechnicalServiceMountPayment::STATUS_PAID
+                        ? 'Bu ödeme yükümlülüğü daha önce tamamlandı.'
+                        : 'Aynı fatura, sevk, parça ve tutar için ödeme linki zaten var.',
+                    'payment' => $this->mountPaymentResponse($existingPayment->refresh(), [
+                        'amount_source' => 'payment_order_context',
+                        'reused' => true,
+                        'create_outcome' => $outcome,
+                    ]),
+                    'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+                ]);
+            }
+        }
+
         if ($paymentProviderManager->providerName() !== 'fake') {
             $paymentProviderSettings->assertCompanyRecipientAddressReady();
         }
         $companyRecipient = $paymentProviderSettings->companyRecipientForPayment();
         $customerServiceAddress = trim((string) ($technicalServiceRequest->location_formatted_address ?: $technicalServiceRequest->service_address));
 
-        $source = $isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee';
+        $source = $isOrderContextPurpose
+            ? 'operation_order_context_payment'
+            : ($isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee');
         $selectedSerialIds = $validSerialIds->sort()->values()->all();
         $paymentPayload = [
             'source' => $source,
@@ -1301,7 +1412,7 @@ class TechnicalServiceController extends Controller
             'purpose' => $purpose,
             'charge_type' => $chargeType,
             'part_request_id' => $partRequestId,
-            'amount_source' => $isCustomerCharge ? 'manual_customer_charge' : 'manual_ops_amount',
+            'amount_source' => $isOrderContextPurpose ? 'payment_order_context' : ($isCustomerCharge ? 'manual_customer_charge' : 'manual_ops_amount'),
             'service_amount' => $serviceAmount,
             'part_amount' => $partAmount,
             'total_amount' => $totalAmount,
@@ -1328,12 +1439,25 @@ class TechnicalServiceController extends Controller
             'currency' => $currency,
             'raw_payload' => $paymentPayload,
         ]);
+        $contextId = $preparedContext ? (int) $preparedContext['context']->id : null;
+        if ($preparedContext) {
+            $payment = $orderContexts->attachPayment($preparedContext['context'], $payment);
+        }
         $createOutcome = PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING;
         try {
             $createResult = $paymentProviderManager->createPayment($payment);
             $createOutcome = $paymentProviderManager->createOutcome($createResult);
-            $payment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
+            $canonicalPayment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
+            if ($contextId !== null && (int) $canonicalPayment->id !== (int) $payment->id) {
+                $orderContexts->releaseFailedPayment($contextId, $payment);
+                $context = DB::table(TechnicalServicePaymentOrderContextService::TABLE)->where('id', $contextId)->firstOrFail();
+                $canonicalPayment = $orderContexts->attachPayment($context, $canonicalPayment);
+            }
+            $payment = $canonicalPayment;
         } catch (Throwable $exception) {
+            if ($contextId !== null) {
+                $orderContexts->releaseFailedPayment($contextId, $payment);
+            }
             $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
 
             throw ValidationException::withMessages([
@@ -1414,6 +1538,10 @@ class TechnicalServiceController extends Controller
                 'currency' => $payment->currency,
                 'source' => $source,
                 'selected_serial_ids' => $selectedSerialIds,
+                'order_context_id' => $contextId,
+                'order_context_hash' => $preparedContext ? (string) $preparedContext['context']->context_hash : null,
+                'mikro_write_execution_count' => 0,
+                'carrier_execution_count' => 0,
             ],
         ]);
 
@@ -1686,7 +1814,8 @@ class TechnicalServiceController extends Controller
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServiceMountPayment $payment,
-        PaymentProviderManager $paymentProviderManager
+        PaymentProviderManager $paymentProviderManager,
+        TechnicalServicePaymentOrderContextService $orderContexts,
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
 
@@ -1736,6 +1865,7 @@ class TechnicalServiceController extends Controller
                 'payment' => 'PAYMENT_CANCEL_STATE_CONFLICT: Ödeme provider işlemi sırasında terminal duruma geçti; iptal uygulanmadı.',
             ]);
         }
+        $orderContexts->markCancelled($payment);
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
         $remainingMountPayments = TechnicalServiceMountPayment::query()
@@ -1887,6 +2017,7 @@ class TechnicalServiceController extends Controller
             'source' => $payload['source'] ?? null,
             'purpose' => $purpose !== '' ? $purpose : null,
             'purpose_label' => $this->paymentPurposeLabel($purpose),
+            'order_context' => is_array($payload['order_context'] ?? null) ? $payload['order_context'] : null,
             'reason' => $payload['reason'] ?? null,
             'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
             'paid_at' => $payment->paid_at?->toISOString(),
@@ -1914,12 +2045,13 @@ class TechnicalServiceController extends Controller
     private function paymentPurposeLabel(string $purpose): string
     {
         return match ($purpose) {
-            'service_payment' => 'Ek servis',
-            'part_payment' => 'Parça ücreti',
+            'service_payment', 'extra_service' => 'Ek servis',
+            'part_payment', 'part_charge' => 'Parça ödemesi',
             'service_and_part_payment' => 'Servis + parça ücreti',
-            'route_fee' => 'Yol ücreti',
+            'route_fee', 'route_difference' => 'Yol farkı',
+            'mount_collection' => 'Montaj ücreti tahsilatı',
             'multi_product', 'multi_product_mount' => 'Çoklu ürün montaj ödemesi',
-            'manual_mount_payment', 'mount_extra', 'manual_extra' => 'Genel ek tahsilat',
+            'manual_mount_payment', 'mount_extra', 'manual_extra', 'general_extra' => 'Genel ek tahsilat',
             default => 'Ek ödeme',
         };
     }
@@ -3583,12 +3715,14 @@ class TechnicalServiceController extends Controller
     {
         return match (strtolower(trim($value))) {
             'multi_product', 'multi_product_mount' => 'multi_product_mount',
-            'manual_extra', 'mount_extra', 'manual_mount_payment' => 'extra_mount_fee',
-            'route_fee' => 'route_fee',
+            'manual_extra', 'mount_extra', 'manual_mount_payment', 'general_extra' => 'extra_mount_fee',
+            'route_fee', 'route_difference' => 'route_fee',
             'montage_difference' => 'montage_difference',
-            'service_payment' => 'service_payment',
+            'service_payment', 'extra_service' => 'service_payment',
             'part_payment' => 'part_payment',
             'service_and_part_payment' => 'service_and_part_payment',
+            'mount_collection' => 'mount_collection',
+            'part_charge' => 'part_charge',
             default => throw ValidationException::withMessages([
                 'purpose' => 'Desteklenmeyen ödeme amacı.',
             ]),

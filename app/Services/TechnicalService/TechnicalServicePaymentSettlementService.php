@@ -20,6 +20,7 @@ class TechnicalServicePaymentSettlementService
     public function __construct(
         private readonly TechnicalServiceMessagingSettingsService $messagingSettings,
         private readonly TechnicalServicePaymentReceiptNotificationService $receiptNotificationService,
+        private readonly TechnicalServicePaymentOrderContextService $orderContexts,
     ) {}
 
     /**
@@ -246,6 +247,7 @@ class TechnicalServicePaymentSettlementService
                 );
             }
 
+            $this->orderContexts->markPaidWithinTransaction($payment);
             $this->receiptNotificationService->persistPaidReceiptIntentWithinTransaction($payment);
 
             return $payment;
@@ -314,7 +316,9 @@ class TechnicalServicePaymentSettlementService
             'raw_payload' => $rawPayload,
         ])->save();
 
-        $isCustomerCharge = ($rawPayload['source'] ?? null) === 'operation_customer_charge';
+        $paymentPurpose = strtolower(trim((string) ($rawPayload['purpose'] ?? $rawPayload['charge_type'] ?? '')));
+        $isCustomerCharge = ($rawPayload['source'] ?? null) === 'operation_customer_charge'
+            || $paymentPurpose === TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE;
         $session = $payment->session;
 
         if (! $isCustomerCharge && $session instanceof TechnicalServiceMountSession) {
@@ -326,6 +330,7 @@ class TechnicalServicePaymentSettlementService
         }
 
         $this->applyRequestPaymentApproval($payment);
+        $this->orderContexts->markPaidWithinTransaction($payment);
         $this->receiptNotificationService->persistPaidReceiptIntentWithinTransaction($payment);
 
         return $payment->fresh();
@@ -334,7 +339,9 @@ class TechnicalServicePaymentSettlementService
     private function applyRequestPaymentApproval(TechnicalServiceMountPayment $payment): void
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        if (($payload['source'] ?? null) === 'operation_customer_charge') {
+        $purpose = strtolower(trim((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')));
+        if (($payload['source'] ?? null) === 'operation_customer_charge'
+            || $purpose === TechnicalServicePaymentOrderContextService::PURPOSE_PART_CHARGE) {
             $this->applyCustomerChargeApproval($payment, $payload);
 
             return;

@@ -228,6 +228,12 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('requests/{technicalServiceRequest}/payments/mount-extra-payment', [TechnicalServiceController::class, 'createExtraMountFeePayment'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.mount-extra-payment');
+        Route::post('requests/{technicalServiceRequest}/payments/order-context/preview', [TechnicalServiceController::class, 'paymentOrderContextPreview'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.payments.order-context.preview');
+        Route::get('requests/{technicalServiceRequest}/payments/order-context/parts', [TechnicalServiceController::class, 'searchPaymentOrderContextParts'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.payments.order-context.parts');
         Route::get('requests/{technicalServiceRequest}/payments/{payment}/status', [TechnicalServiceController::class, 'mountPaymentStatus'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.status');

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import type { ServiceRequestAssignmentDraft } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import { TechnicalServiceKanbanCard } from '../../resources/js/components/technical-service/TechnicalServiceKanbanCard'
-import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionPayload, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestFinanceCollection, ServiceRequestFinancePayout, ServiceRequestFinanceSummary, ServiceRequestPaymentEarningImpact, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
+import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionPayload, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinanceCollection, ServiceRequestFinancePayout, ServiceRequestFinanceSummary, ServiceRequestPaymentEarningImpact, ServiceRequestPaymentOrderContext, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
 import '../../resources/css/app.css'
 
 type HarnessState = {
@@ -18,6 +18,7 @@ type HarnessState = {
   allocationSubmitCount: number
   boardRefetchCount: number
   modalMountCount: number
+  paymentCreateCount: number
   failNextSave: boolean
   lastSavePayload: {
     labor_amount: number
@@ -30,6 +31,7 @@ type HarnessState = {
   lastCompanyPaymentDecision: 'pay_technician' | 'retain_company' | null
   lastCompanyPaymentDecisionPayload: ServiceRequestCompanyPaymentDecisionSubmit[] | null
   lastAssignmentDraft: ServiceRequestAssignmentDraft | null
+  lastPaymentCreatePayload: (ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) | null
 }
 
 declare global {
@@ -1091,6 +1093,7 @@ const state: HarnessState = {
   allocationSubmitCount: 0,
   boardRefetchCount: 0,
   modalMountCount: 0,
+  paymentCreateCount: 0,
   failNextSave: false,
   lastSavePayload: null,
   lastSavedSnapshot: null,
@@ -1098,6 +1101,7 @@ const state: HarnessState = {
   lastCompanyPaymentDecision: null,
   lastCompanyPaymentDecisionPayload: null,
   lastAssignmentDraft: null,
+  lastPaymentCreatePayload: null,
 }
 
 window.__assignmentEarningDomState = state
@@ -1186,7 +1190,10 @@ function Harness() {
   const [lastSendRevision, setLastSendRevision] = useState('')
   const [lastSendPayload, setLastSendPayload] = useState<ServiceRequestTechnicianEarningMessagePayload | null>(null)
   const [failNextSave, setFailNextSave] = useState(false)
+  const [paymentCreateCount, setPaymentCreateCount] = useState(0)
+  const [lastPaymentCreatePayload, setLastPaymentCreatePayload] = useState<HarnessState['lastPaymentCreatePayload']>(null)
   const saveLock = useRef(false)
+  const paymentCreateLock = useRef(false)
   const assignmentPopupOpenRef = useRef(false)
   const assignmentReasonRef = useRef<HTMLTextAreaElement | null>(null)
   const assignmentConfirmInFlightRef = useRef(false)
@@ -1359,6 +1366,8 @@ function Harness() {
       <output data-testid="company-payment-decision-last-payload" className="sr-only">{JSON.stringify(lastAllocationPayload)}</output>
       <output data-testid="financial-board-refetch-count" className="sr-only">{state.boardRefetchCount}</output>
       <output data-testid="financial-modal-mount-count" className="sr-only">{modalMountId}</output>
+      <output data-testid="payment-order-create-count" className="sr-only">{paymentCreateCount}</output>
+      <output data-testid="payment-order-last-payload" className="sr-only">{JSON.stringify(lastPaymentCreatePayload)}</output>
       <section className="grid max-w-md gap-4 p-4" aria-label="Board technician location fixtures">
         <div data-testid="assignment-dynamic-board-card">
           <TechnicalServiceKanbanCard request={request} onClick={() => undefined} />
@@ -1605,6 +1614,132 @@ function Harness() {
             earning_snapshot: snapshot,
             message_preview: messagePreview,
             request: nextRequest,
+          }
+        }}
+        onExtraMountPaymentCreate={async (payload) => {
+          if (paymentCreateLock.current) {
+            return
+          }
+
+          paymentCreateLock.current = true
+          state.paymentCreateCount += 1
+          state.lastPaymentCreatePayload = payload
+          setPaymentCreateCount(state.paymentCreateCount)
+          setLastPaymentCreatePayload(payload)
+
+          try {
+            await new Promise((resolve) => window.setTimeout(resolve, 50))
+            const purpose = payload.purpose === 'part_charge' ? 'part_charge' : 'mount_collection'
+            const orderInput = payload.order_context ?? {}
+            const supplier = orderInput.part_supplier ?? null
+            const shipmentRequired = purpose === 'part_charge' && supplier === 'emaks_prime'
+            const sameAsBilling = shipmentRequired && Boolean(orderInput.shipping_same_as_billing)
+            const itemName = supplier === 'technician'
+              ? orderInput.technician_part_name ?? 'Usta parçası'
+              : orderInput.stock_selection_token === 'motor-token' ? 'Akıllı Kilit Motor Modülü' : 'Gateway'
+            const itemCode = supplier === 'technician'
+              ? orderInput.technician_part_code ?? null
+              : orderInput.stock_selection_token === 'motor-token' ? 'TS-PART-002' : 'TS-PART-001'
+            const context: ServiceRequestPaymentOrderContext = {
+              id: 9800 + state.paymentCreateCount,
+              payment_id: 9900 + state.paymentCreateCount,
+              request_id: request.id,
+              root_request_id: request.id,
+              srv_request_id: null,
+              payment_purpose: purpose,
+              purpose_label: purpose === 'part_charge' ? 'Parça ödemesi' : 'Montaj ücreti tahsilatı',
+              context_type: purpose === 'mount_collection' ? 'mount_service' : supplier === 'technician' ? 'technician_supplied_part' : 'part_sale',
+              state: 'paid_waiting_mikro_write',
+              state_label: supplier === 'technician' ? 'Ödeme alındı; Mikro siparişi gerekmiyor' : 'Ödeme alındı; Mikro yazımı bekliyor',
+              desired_mikro_series: supplier === 'technician' ? null : 'S',
+              future_mikro_write_state: supplier === 'technician' ? 'not_required' : 'not_authorized',
+              future_mikro_write_label: supplier === 'technician' ? 'Mikro siparişi gerekmiyor' : 'Mikro yazımı bu aşamada kapalı',
+              billing: {
+                source: 'mrn_customer',
+                name_or_title: request.customer,
+                phone: request.phone,
+                address: request.address,
+                city: request.city,
+                district: request.district,
+              },
+              shipping_same_as_billing: sameAsBilling,
+              delivery_target: shipmentRequired ? (sameAsBilling ? 'billing_address' : orderInput.delivery_target ?? null) : null,
+              shipping: shipmentRequired ? {
+                recipient_name: sameAsBilling ? request.customer : request.technician,
+                recipient_phone: sameAsBilling ? request.phone : request.technicianPhone,
+                address: sameAsBilling ? request.address : request.technicianProfile?.address,
+                city: sameAsBilling ? request.city : request.technicianProfile?.city,
+                district: sameAsBilling ? request.district : request.technicianProfile?.district,
+              } : null,
+              part_supplier: supplier,
+              part_supplier_label: supplier === 'technician' ? 'Usta' : supplier === 'emaks_prime' ? 'EMAKS Prime' : null,
+              collection_allocation: supplier === 'technician' ? 'pay_technician' : supplier === 'emaks_prime' ? 'retain_company' : null,
+              collection_allocation_label: supplier === 'technician' ? 'Ustaya hakediş olarak eklenecek' : supplier === 'emaks_prime' ? 'Şirkette bırakılacak' : null,
+              part: purpose === 'part_charge' ? {
+                item_code: itemCode,
+                item_name: itemName,
+                quantity: orderInput.quantity ?? 1,
+                unit_code: 'ADET',
+                warehouse_code: supplier === 'emaks_prime' ? 'MERKEZ' : null,
+                stock_source: supplier === 'emaks_prime' ? 'test_fixture' : 'technician_declaration',
+                stock_source_label: supplier === 'emaks_prime' ? 'Test verisi' : 'Usta beyanı',
+                serial_tracking_required: orderInput.stock_selection_token === 'motor-token',
+                selected_part_serial: orderInput.selected_part_serial ?? null,
+              } : null,
+              related_product_serial: request.serialNumber,
+              charged_amount: Number(payload.amount ?? payload.service_amount ?? 0),
+              charged_amount_label: `${Number(payload.amount ?? payload.service_amount ?? 0).toLocaleString('tr-TR')},00 TL`,
+              currency: payload.currency ?? 'TRY',
+              shipment_required: shipmentRequired,
+              future_carrier_state: shipmentRequired ? 'waiting_future_integration' : 'not_required',
+              future_carrier_label: shipmentRequired ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak' : 'Sevkiyat yok',
+              description2_preview: purpose === 'mount_collection'
+                ? `MRN/SRV: ${request.mrn}\nHİZMET: MONTAJ\nSERİ NO: ${request.serialNumber}\nSEVKİYAT: YOK`
+                : `${shipmentRequired && !sameAsBilling ? 'SEVK ADRESİ FARKLIDIR.\n' : ''}MRN/SRV: ${request.mrn}\nİLGİLİ ÜRÜN SERİ NO: ${request.serialNumber}\nPARÇA: ${itemCode ?? ''} - ${itemName}`,
+              description2_version: 1,
+              context_hash: orderInput.expected_context_hash ?? 'f'.repeat(64),
+              revision: orderInput.expected_revision ?? 1,
+              mikro_write_execution_count: 0,
+              carrier_execution_count: 0,
+            }
+            const paidPayment: ServiceRequestExtraMountPayment = {
+              id: 9900 + state.paymentCreateCount,
+              request_id: request.id,
+              status: 'paid',
+              status_label: 'Ödendi',
+              amount: Number(payload.amount ?? payload.service_amount ?? 0),
+              amount_label: `${Number(payload.amount ?? payload.service_amount ?? 0).toLocaleString('tr-TR')},00 TL`,
+              currency: payload.currency ?? 'TRY',
+              provider: 'fake',
+              provider_mode: 'local',
+              purpose,
+              source: 'operation_order_context_payment',
+              readonly: true,
+              paid_at: '2026-08-14T06:30:00+03:00',
+              order_context: context,
+            }
+            setRequest((current) => ({
+              ...current,
+              saleAndPayment: {
+                ...current.saleAndPayment,
+                history_loaded: true,
+                mount_payments: {
+                  rows: [paidPayment],
+                  paid_rows: [paidPayment],
+                  pending_rows: [],
+                  cancelled_rows: [],
+                  latest: paidPayment,
+                  latest_paid: paidPayment,
+                  paid_total_amount: paidPayment.amount ?? 0,
+                  paid_total_amount_label: paidPayment.amount_label,
+                  has_paid: true,
+                  has_pending: false,
+                  has_cancelled: false,
+                },
+              },
+            }))
+          } finally {
+            paymentCreateLock.current = false
           }
         }}
         onCompanyPaymentDecisionApprove={async (decisions) => {

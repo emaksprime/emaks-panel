@@ -156,6 +156,7 @@ const inspectViewport = async (browser, name, viewport) => {
   const reassignmentOpenStartedAt = performance.now()
   await page.getByRole('button', { name: 'Atamayı Güncelle', exact: true }).first().click()
   await page.getByTestId('assignment-final-popup').waitFor({ state: 'visible' })
+  const reassignmentOpenMs = Math.round(performance.now() - reassignmentOpenStartedAt)
   const reassignmentMapLink = page.getByTestId('assignment-preview-map-link')
   assert(await reassignmentMapLink.count() === 1, `${name}: assignment preview map link is missing`)
   assert((await reassignmentMapLink.getAttribute('href')) === 'https://www.google.com/maps/search/?api=1&query=37.8980452%2C29.1855785', `${name}: assignment preview map link is not canonical`)
@@ -164,7 +165,6 @@ const inspectViewport = async (browser, name, viewport) => {
     path: path.join(artifactDir, `assignment-maps-preview-${name}.png`),
     fullPage: true,
   })
-  const reassignmentOpenMs = Math.round(performance.now() - reassignmentOpenStartedAt)
   assert(reassignmentOpenMs <= 500, `${name}: reassignment popup render took ${reassignmentOpenMs} ms`)
   await page.getByTestId('assignment-final-popup-confirm').click()
   assert(await page.getByTestId('assignment-reason-error').textContent() === 'Yeniden atama nedeni yazınız.', `${name}: reassignment inline reason validation is missing`)

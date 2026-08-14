@@ -1194,6 +1194,94 @@ export type ServiceRequestPaymentStatus = {
   message?: string | null
 }
 
+export type ServiceRequestOrderPartySnapshot = {
+  source?: string | null
+  customer_code?: string | null
+  name_or_title?: string | null
+  phone?: string | null
+  email?: string | null
+  tax_identity?: string | null
+  tax_office?: string | null
+  address?: string | null
+  city?: string | null
+  district?: string | null
+  postal_code?: string | null
+  recipient_name?: string | null
+  recipient_phone?: string | null
+}
+
+export type ServiceRequestMikroPartSearchItem = {
+  item_code: string
+  item_name: string
+  unit_code: string
+  warehouse_code?: string | null
+  on_hand?: number | null
+  reserved?: number | null
+  available?: number | null
+  serial_tracking_required: boolean
+  serials?: string[]
+  source: string
+  source_label: string
+  freshness_at: string
+  selection_token: string
+}
+
+export type ServiceRequestPaymentOrderPart = {
+  item_code?: string | null
+  item_name?: string | null
+  quantity?: number | null
+  unit_code?: string | null
+  warehouse_code?: string | null
+  stock_source?: string | null
+  stock_source_label?: string | null
+  stock_freshness_at?: string | null
+  on_hand?: number | null
+  reserved?: number | null
+  available?: number | null
+  serial_tracking_required?: boolean
+  selected_part_serial?: string | null
+}
+
+export type ServiceRequestPaymentOrderContext = {
+  id?: number | string | null
+  payment_id?: number | string | null
+  request_id?: number | string | null
+  root_request_id?: number | string | null
+  srv_request_id?: number | string | null
+  part_request_id?: number | string | null
+  payment_purpose?: 'mount_collection' | 'part_charge' | string | null
+  purpose_label?: string | null
+  context_type?: 'mount_service' | 'part_sale' | 'technician_supplied_part' | string | null
+  state?: string | null
+  state_label?: string | null
+  desired_mikro_series?: string | null
+  future_mikro_write_state?: string | null
+  future_mikro_write_label?: string | null
+  billing?: ServiceRequestOrderPartySnapshot | null
+  shipping_same_as_billing?: boolean
+  delivery_target?: 'billing_address' | 'mrn_customer' | 'technician' | 'custom_recipient' | string | null
+  delivery_target_label?: string | null
+  shipping?: ServiceRequestOrderPartySnapshot | null
+  part_supplier?: 'emaks_prime' | 'technician' | string | null
+  part_supplier_label?: string | null
+  collection_allocation?: 'retain_company' | 'pay_technician' | string | null
+  collection_allocation_label?: string | null
+  part?: ServiceRequestPaymentOrderPart | null
+  related_product_serial?: string | null
+  charged_amount?: number | null
+  charged_amount_label?: string | null
+  currency?: string | null
+  shipment_required?: boolean
+  future_carrier_state?: string | null
+  future_carrier_label?: string | null
+  description2_preview?: string | null
+  description2_version?: number | null
+  context_hash?: string | null
+  revision?: number | null
+  mikro_write_execution_count?: number | null
+  carrier_execution_count?: number | null
+}
+
 export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext & {
   id?: number | string | null
   request_id?: number | string | null
@@ -1263,6 +1351,7 @@ export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext &
   message_send_count?: number | null
   last_message_sent_at?: string | null
   selected_serial_ids?: Array<number | string>
+  order_context?: ServiceRequestPaymentOrderContext | null
 }
 
 export type ServiceRequestMountPaymentSummary = {
@@ -1551,11 +1640,28 @@ export type ServiceRequestExtraMountPaymentPayload = {
   amount?: number | null
   service_amount?: number | null
   part_amount?: number | null
+  part_request_id?: number | string | null
   currency?: string
-  reason?: 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra' | 'service_payment' | 'part_payment' | 'service_and_part_payment'
-  purpose?: 'mount_extra' | 'multi_product_mount' | 'manual_mount_payment' | 'service_payment' | 'part_payment' | 'service_and_part_payment' | 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra'
+  reason?: 'route_fee' | 'route_difference' | 'montage_difference' | 'multi_product' | 'manual_extra' | 'general_extra' | 'service_payment' | 'extra_service' | 'part_payment' | 'part_charge' | 'service_and_part_payment' | 'mount_collection'
+  purpose?: 'mount_extra' | 'multi_product_mount' | 'manual_mount_payment' | 'service_payment' | 'part_payment' | 'service_and_part_payment' | 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra' | 'general_extra' | 'extra_service' | 'route_difference' | 'mount_collection' | 'part_charge'
   note?: string | null
   message_template?: string | null
+  order_context?: {
+    expected_context_hash?: string | null
+    expected_revision?: number | null
+    billing_source?: 'mrn_customer' | 'manual_billing_draft' | string
+    billing?: ServiceRequestOrderPartySnapshot
+    shipping_same_as_billing?: boolean
+    delivery_target?: 'billing_address' | 'mrn_customer' | 'technician' | 'custom_recipient' | string | null
+    shipping?: ServiceRequestOrderPartySnapshot
+    part_supplier?: 'emaks_prime' | 'technician' | null
+    stock_selection_token?: string | null
+    technician_part_code?: string | null
+    technician_part_name?: string | null
+    quantity?: number | null
+    selected_part_serial?: string | null
+    part_request_id?: number | string | null
+  } | null
 }
 
 export type ServiceRequestTechnicianEarningMessagePayload = {

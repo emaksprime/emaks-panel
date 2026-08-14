@@ -1,14 +1,15 @@
 import { CheckCircle2, ChevronDown, Eye, Pencil, Search, Wrench, X, XCircle } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode, Ref } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { apiRequest } from '@/lib/api'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinancePaymentRecord, ServiceRequestFinancialScopeKey, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessageDispatch, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinancePaymentRecord, ServiceRequestFinancialScopeKey, ServiceRequestInvoiceSerial, ServiceRequestMikroPartSearchItem, ServiceRequestPaymentOrderContext, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessageDispatch, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import type { ServiceRequestCanonicalEarningSnapshot } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
 
@@ -22,6 +23,38 @@ type PaymentLinkSendTarget = PendingPaymentLinkActionPayment & {
 }
 
 type ExtraPaymentPurpose = NonNullable<ServiceRequestExtraMountPaymentPayload['purpose']>
+
+type OrderPartyDraft = {
+  nameOrTitle: string
+  phone: string
+  email: string
+  taxIdentity: string
+  taxOffice: string
+  address: string
+  city: string
+  district: string
+  postalCode: string
+}
+
+type ShippingPartyDraft = {
+  recipientName: string
+  recipientPhone: string
+  address: string
+  city: string
+  district: string
+  postalCode: string
+}
+
+type PaymentOrderContextPreviewResponse = {
+  order_context?: ServiceRequestPaymentOrderContext | null
+}
+
+type PaymentOrderPartSearchResponse = {
+  source?: string | null
+  source_label?: string | null
+  freshness_at?: string | null
+  items?: ServiceRequestMikroPartSearchItem[]
+}
 
 type AssignmentEarningDraft = {
   laborAmount: string
@@ -606,11 +639,38 @@ const canonicalExtraPaymentPurpose = (value: string | null | undefined): string 
     case 'manual_extra':
     case 'mount_extra':
     case 'manual_mount_payment':
+    case 'general_extra':
       return 'extra_mount_fee'
     case 'service_payment':
+    case 'extra_service':
       return 'customer_charge'
+    case 'route_fee':
+    case 'route_difference':
+      return 'route_fee'
     default:
       return value ?? ''
+  }
+}
+
+const paymentReasonForPurpose = (value: ExtraPaymentPurpose): NonNullable<ServiceRequestExtraMountPaymentPayload['reason']> => {
+  switch (value) {
+    case 'route_fee':
+    case 'route_difference':
+    case 'montage_difference':
+    case 'multi_product':
+    case 'manual_extra':
+    case 'general_extra':
+    case 'service_payment':
+    case 'extra_service':
+    case 'part_payment':
+    case 'part_charge':
+    case 'service_and_part_payment':
+    case 'mount_collection':
+      return value
+    case 'multi_product_mount':
+      return 'multi_product'
+    default:
+      return 'general_extra'
   }
 }
 
@@ -1849,7 +1909,32 @@ export function ServiceRequestDetails({
   const [paymentHistoryLoading, setPaymentHistoryLoading] = useState(false)
   const [paymentHistoryError, setPaymentHistoryError] = useState<string | null>(null)
   const [routeFeeEditorMode, setRouteFeeEditorMode] = useState<'route_fee' | 'payment_link'>('route_fee')
-  const [extraPaymentPurpose, setExtraPaymentPurpose] = useState<ExtraPaymentPurpose>('manual_mount_payment')
+  const [extraPaymentPurpose, setExtraPaymentPurpose] = useState<ExtraPaymentPurpose>('general_extra')
+  const [orderBillingSource, setOrderBillingSource] = useState<'mrn_customer' | 'manual_billing_draft'>('mrn_customer')
+  const [orderBillingDraft, setOrderBillingDraft] = useState<OrderPartyDraft>({
+    nameOrTitle: '', phone: '', email: '', taxIdentity: '', taxOffice: '', address: '', city: '', district: '', postalCode: '',
+  })
+  const [orderShippingSameAsBilling, setOrderShippingSameAsBilling] = useState(true)
+  const [orderDeliveryTarget, setOrderDeliveryTarget] = useState<'billing_address' | 'mrn_customer' | 'technician' | 'custom_recipient'>('billing_address')
+  const [orderShippingDraft, setOrderShippingDraft] = useState<ShippingPartyDraft>({
+    recipientName: '', recipientPhone: '', address: '', city: '', district: '', postalCode: '',
+  })
+  const [orderPartSupplier, setOrderPartSupplier] = useState<'emaks_prime' | 'technician' | null>(null)
+  const [orderPartSearch, setOrderPartSearch] = useState('')
+  const [orderPartSearchItems, setOrderPartSearchItems] = useState<ServiceRequestMikroPartSearchItem[]>([])
+  const [orderPartSearchLoading, setOrderPartSearchLoading] = useState(false)
+  const [orderPartSearchError, setOrderPartSearchError] = useState<string | null>(null)
+  const [orderSelectedPart, setOrderSelectedPart] = useState<ServiceRequestMikroPartSearchItem | null>(null)
+  const [orderPartQuantity, setOrderPartQuantity] = useState('1')
+  const [orderSelectedPartSerial, setOrderSelectedPartSerial] = useState('')
+  const [orderTechnicianPartCode, setOrderTechnicianPartCode] = useState('')
+  const [orderTechnicianPartName, setOrderTechnicianPartName] = useState('')
+  const [orderContextPreview, setOrderContextPreview] = useState<ServiceRequestPaymentOrderContext | null>(null)
+  const [orderContextPreviewInputKey, setOrderContextPreviewInputKey] = useState<string | null>(null)
+  const [orderContextPreviewLoading, setOrderContextPreviewLoading] = useState(false)
+  const [orderContextPreviewLoadingInputKey, setOrderContextPreviewLoadingInputKey] = useState<string | null>(null)
+  const [orderContextPreviewError, setOrderContextPreviewError] = useState<string | null>(null)
+  const [orderContextPreviewErrorInputKey, setOrderContextPreviewErrorInputKey] = useState<string | null>(null)
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
@@ -2137,7 +2222,6 @@ export function ServiceRequestDetails({
   const paymentHistoryRecords = [...mountPaymentRecords, ...(customerChargeSummary?.rows ?? [])]
     .filter((payment, index, rows) => rows.findIndex((candidate) => String(candidate.id) === String(payment.id)) === index)
     .sort((left, right) => Number(right.id ?? 0) - Number(left.id ?? 0))
-  const hasCanonicalAllocatedPayment = paymentHistoryRecords.some((payment) => payment.component_split_persisted === true)
   const paidMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'paid')
   const pendingMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'pending')
   const cancelledMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'cancelled')
@@ -2183,6 +2267,221 @@ export function ServiceRequestDetails({
     : null
   const existingPendingPaymentAmountInput = numericInputValue(existingPendingPaymentAmount)
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+  const usesPaymentOrderContext = extraPaymentPurpose === 'mount_collection' || extraPaymentPurpose === 'part_charge'
+  const paymentOrderContextInput = useMemo<NonNullable<ServiceRequestExtraMountPaymentPayload['order_context']>>(() => ({
+    billing_source: orderBillingSource,
+    billing: orderBillingSource === 'manual_billing_draft'
+      ? {
+          name_or_title: orderBillingDraft.nameOrTitle,
+          phone: orderBillingDraft.phone,
+          email: orderBillingDraft.email || null,
+          tax_identity: orderBillingDraft.taxIdentity || null,
+          tax_office: orderBillingDraft.taxOffice || null,
+          address: orderBillingDraft.address,
+          city: orderBillingDraft.city,
+          district: orderBillingDraft.district,
+          postal_code: orderBillingDraft.postalCode || null,
+        }
+      : undefined,
+    shipping_same_as_billing: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? orderShippingSameAsBilling
+      : false,
+    delivery_target: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? (orderShippingSameAsBilling ? 'billing_address' : orderDeliveryTarget)
+      : null,
+    shipping: extraPaymentPurpose === 'part_charge'
+      && orderPartSupplier === 'emaks_prime'
+      && !orderShippingSameAsBilling
+      && orderDeliveryTarget === 'custom_recipient'
+      ? {
+          recipient_name: orderShippingDraft.recipientName,
+          recipient_phone: orderShippingDraft.recipientPhone,
+          address: orderShippingDraft.address,
+          city: orderShippingDraft.city,
+          district: orderShippingDraft.district,
+          postal_code: orderShippingDraft.postalCode || null,
+        }
+      : undefined,
+    part_supplier: extraPaymentPurpose === 'part_charge' ? orderPartSupplier : null,
+    stock_selection_token: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? orderSelectedPart?.selection_token ?? null
+      : null,
+    technician_part_code: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'technician'
+      ? orderTechnicianPartCode.trim() || null
+      : null,
+    technician_part_name: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'technician'
+      ? orderTechnicianPartName.trim() || null
+      : null,
+    quantity: extraPaymentPurpose === 'part_charge' ? parseNumericInput(orderPartQuantity) : null,
+    selected_part_serial: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? orderSelectedPartSerial || null
+      : null,
+    part_request_id: extraPaymentPurpose === 'part_charge' ? request.activePartRequest?.id ?? null : null,
+  }), [
+    extraPaymentPurpose,
+    orderBillingDraft,
+    orderBillingSource,
+    orderDeliveryTarget,
+    orderPartQuantity,
+    orderPartSupplier,
+    orderSelectedPart,
+    orderSelectedPartSerial,
+    orderShippingDraft,
+    orderShippingSameAsBilling,
+    orderTechnicianPartCode,
+    orderTechnicianPartName,
+    request.activePartRequest?.id,
+  ])
+  const orderBillingReady = orderBillingSource === 'mrn_customer'
+    ? [request.customer, request.phone, request.address, request.city, request.district].every((value) => String(value ?? '').trim() !== '')
+    : [
+        orderBillingDraft.nameOrTitle,
+        orderBillingDraft.phone,
+        orderBillingDraft.address,
+        orderBillingDraft.city,
+        orderBillingDraft.district,
+      ].every((value) => value.trim() !== '')
+  const orderPartReady = extraPaymentPurpose !== 'part_charge'
+    || (
+      request.serialNumber.trim() !== ''
+      && parseNumericInput(orderPartQuantity) !== null
+      && Number(parseNumericInput(orderPartQuantity)) > 0
+      && (
+        (orderPartSupplier === 'emaks_prime'
+          && orderSelectedPart !== null
+          && (!orderSelectedPart.serial_tracking_required || orderSelectedPartSerial !== ''))
+        || (orderPartSupplier === 'technician' && orderTechnicianPartName.trim() !== '')
+      )
+    )
+  const orderShippingReady = extraPaymentPurpose !== 'part_charge'
+    || orderPartSupplier !== 'emaks_prime'
+    || orderShippingSameAsBilling
+    || orderDeliveryTarget !== 'custom_recipient'
+    || [
+      orderShippingDraft.recipientName,
+      orderShippingDraft.recipientPhone,
+      orderShippingDraft.address,
+      orderShippingDraft.city,
+      orderShippingDraft.district,
+    ].every((value) => value.trim() !== '')
+  const canPreviewPaymentOrderContext = Boolean(
+    usesPaymentOrderContext
+    && extraPaymentAmount !== null
+    && extraPaymentAmount > 0
+    && orderBillingReady
+    && orderPartReady
+    && orderShippingReady,
+  )
+  const paymentOrderContextInputKey = JSON.stringify({
+    requestId: request.id,
+    purpose: extraPaymentPurpose,
+    amount: extraPaymentAmount,
+    context: paymentOrderContextInput,
+  })
+  const activeOrderContextPreview = orderContextPreviewInputKey === paymentOrderContextInputKey ? orderContextPreview : null
+  const activeOrderContextPreviewError = orderContextPreviewErrorInputKey === paymentOrderContextInputKey ? orderContextPreviewError : null
+  const activeOrderContextPreviewLoading = orderContextPreviewLoading
+    && orderContextPreviewLoadingInputKey === paymentOrderContextInputKey
+
+  useEffect(() => {
+    if (!routeFeeEditorOpen
+      || routeFeeEditorMode !== 'payment_link'
+      || extraPaymentPurpose !== 'part_charge'
+      || orderPartSupplier !== 'emaks_prime') {
+      return undefined
+    }
+
+    const query = orderPartSearch.trim()
+
+    if (query.length < 2) {
+      return undefined
+    }
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setOrderPartSearchLoading(true)
+      setOrderPartSearchError(null)
+      void apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/parts?query=${encodeURIComponent(query)}`, {
+        signal: controller.signal,
+      })
+        .then((response: PaymentOrderPartSearchResponse) => {
+          setOrderPartSearchItems(Array.isArray(response.items) ? response.items : [])
+        })
+        .catch((caught: unknown) => {
+          if (caught instanceof Error && caught.name === 'AbortError') {
+            return
+          }
+
+          setOrderPartSearchItems([])
+          setOrderPartSearchError(caught instanceof Error ? caught.message : 'Mikro stok bilgisi şu anda alınamıyor. Parça seçimi tamamlanamadı.')
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setOrderPartSearchLoading(false)
+          }
+        })
+    }, 300)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [extraPaymentPurpose, orderPartSearch, orderPartSupplier, request.id, routeFeeEditorMode, routeFeeEditorOpen])
+
+  useEffect(() => {
+    if (!routeFeeEditorOpen || routeFeeEditorMode !== 'payment_link' || !canPreviewPaymentOrderContext || extraPaymentAmount === null) {
+      return undefined
+    }
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setOrderContextPreviewLoading(true)
+      setOrderContextPreviewLoadingInputKey(paymentOrderContextInputKey)
+      setOrderContextPreviewError(null)
+      setOrderContextPreviewErrorInputKey(null)
+      void apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/preview`, {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({
+          purpose: extraPaymentPurpose,
+          amount: extraPaymentAmount.toFixed(2),
+          currency: 'TRY',
+          order_context: paymentOrderContextInput,
+        }),
+      })
+        .then((response: PaymentOrderContextPreviewResponse) => {
+          setOrderContextPreview(response.order_context ?? null)
+          setOrderContextPreviewInputKey(paymentOrderContextInputKey)
+        })
+        .catch((caught: unknown) => {
+          if (caught instanceof Error && caught.name === 'AbortError') {
+            return
+          }
+
+          setOrderContextPreviewError(caught instanceof Error ? caught.message : 'Sipariş hazırlığı önizlenemedi.')
+          setOrderContextPreviewErrorInputKey(paymentOrderContextInputKey)
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setOrderContextPreviewLoading(false)
+          }
+        })
+    }, 350)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [
+    canPreviewPaymentOrderContext,
+    extraPaymentAmount,
+    extraPaymentPurpose,
+    paymentOrderContextInputKey,
+    paymentOrderContextInput,
+    request.id,
+    routeFeeEditorMode,
+    routeFeeEditorOpen,
+  ])
   const paymentSelectedSerialIds = invoiceSerials?.selected_serials
     ?.map((serial) => serial.id)
     .filter((id): id is number | string => id !== null && id !== undefined) ?? []
@@ -2191,6 +2490,9 @@ export function ServiceRequestDetails({
     && canonicalExtraPaymentPurpose(payment.purpose ?? payment.reason) === canonicalExtraPaymentPurpose(extraPaymentPurpose)
     && roundTwo(Number(payment.amount ?? 0)) === roundTwo(extraPaymentAmount)
     && paymentSerialIdentity(payment.selected_serial_ids) === paymentSerialIdentity(paymentSelectedSerialIds)
+    && (!usesPaymentOrderContext
+      || !activeOrderContextPreview?.context_hash
+      || payment.order_context?.context_hash === activeOrderContextPreview.context_hash)
   )
   const pendingOnlinePaymentLink = pendingMountPaymentRecords.length > 0
   const paidOnlinePaymentLink = paidMountPaymentRecords.length > 0
@@ -2236,6 +2538,8 @@ export function ServiceRequestDetails({
   )
   const canSubmitPaymentLink = Boolean(
     onExtraMountPaymentCreate
+    && (!usesPaymentOrderContext || Boolean(activeOrderContextPreview?.context_hash && activeOrderContextPreview.revision))
+    && !activeOrderContextPreviewLoading
     && (!terminalPaymentRetryRequired || terminalPaymentRetryReason.trim().length >= 3)
   )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
@@ -2983,7 +3287,28 @@ export function ServiceRequestDetails({
     const note = activeRouteQuote?.manual_note ?? ''
 
     setRouteFeeEditorMode('payment_link')
-    setExtraPaymentPurpose('manual_mount_payment')
+    setExtraPaymentPurpose('general_extra')
+    setOrderBillingSource('mrn_customer')
+    setOrderBillingDraft({ nameOrTitle: '', phone: '', email: '', taxIdentity: '', taxOffice: '', address: '', city: '', district: '', postalCode: '' })
+    setOrderShippingSameAsBilling(true)
+    setOrderDeliveryTarget('billing_address')
+    setOrderShippingDraft({ recipientName: '', recipientPhone: '', address: '', city: '', district: '', postalCode: '' })
+    setOrderPartSupplier(null)
+    setOrderPartSearch('')
+    setOrderPartSearchItems([])
+    setOrderPartSearchLoading(false)
+    setOrderPartSearchError(null)
+    setOrderSelectedPart(null)
+    setOrderPartQuantity('1')
+    setOrderSelectedPartSerial('')
+    setOrderTechnicianPartCode('')
+    setOrderTechnicianPartName('')
+    setOrderContextPreview(null)
+    setOrderContextPreviewInputKey(null)
+    setOrderContextPreviewLoading(false)
+    setOrderContextPreviewLoadingInputKey(null)
+    setOrderContextPreviewError(null)
+    setOrderContextPreviewErrorInputKey(null)
     setRouteFeeOneWayKmInput(oneWay)
     setRouteFeeRoundTripKmInput(roundTrip)
     setRouteFeeThresholdKmInput(threshold)
@@ -3107,7 +3432,15 @@ export function ServiceRequestDetails({
     const paymentPurpose: ExtraPaymentPurpose = routeFeeEditorMode === 'payment_link'
       ? extraPaymentPurpose
       : 'route_fee'
-    const isServicePayment = paymentPurpose === 'service_payment'
+    const isServicePayment = paymentPurpose === 'service_payment' || paymentPurpose === 'extra_service'
+
+    if ((paymentPurpose === 'mount_collection' || paymentPurpose === 'part_charge')
+      && (!activeOrderContextPreview?.context_hash || !activeOrderContextPreview.revision)) {
+      setOrderContextPreviewError('Fatura, sevk ve parça bağlamı doğrulanmadan ödeme linki oluşturulamaz.')
+      setOrderContextPreviewErrorInputKey(paymentOrderContextInputKey)
+
+      return
+    }
 
     const payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null } = {
       route_quote_id: activeRouteQuote?.id ?? null,
@@ -3117,11 +3450,17 @@ export function ServiceRequestDetails({
       service_amount: isServicePayment ? extraPaymentAmount : null,
       part_amount: isServicePayment ? 0 : null,
       currency: 'TRY',
-      reason: paymentPurpose === 'route_fee'
-        ? 'route_fee'
-        : paymentPurpose === 'service_payment' ? 'service_payment' : 'manual_extra',
+      reason: paymentReasonForPurpose(paymentPurpose),
       purpose: paymentPurpose,
+      part_request_id: paymentPurpose === 'part_charge' ? request.activePartRequest?.id ?? null : null,
       note: routeFeeNote.trim() || null,
+      order_context: paymentPurpose === 'mount_collection' || paymentPurpose === 'part_charge'
+        ? {
+            ...paymentOrderContextInput,
+            expected_context_hash: activeOrderContextPreview?.context_hash ?? null,
+            expected_revision: activeOrderContextPreview?.revision ?? null,
+          }
+        : null,
       terminal_retry_reason: terminalPaymentRetryRequired ? terminalPaymentRetryReason.trim() : null,
     }
 
@@ -4284,6 +4623,7 @@ export function ServiceRequestDetails({
                     <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
                     <Badge variant="outline">Bekliyor</Badge>
                   </div>
+                  {renderPaymentBusinessContext(payment)}
                   {paymentLinkCopyUrl(payment) ? <p className="break-all text-amber-900">{paymentLinkCopyUrl(payment)}</p> : null}
                   {payment.payment_action_kind === 'open_provider_url' ? (
                     <p className="text-amber-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
@@ -4307,6 +4647,7 @@ export function ServiceRequestDetails({
                       <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
                       <Badge variant="secondary">İptal edildi</Badge>
                     </div>
+                    {renderPaymentBusinessContext(payment)}
                     {paymentLinkCopyUrl(payment) ? <p className="break-all text-slate-600">{paymentLinkCopyUrl(payment)}</p> : null}
                     {paymentLinkCopyUrl(payment) ? <p className="text-slate-500">İptal edilmiş link geçmiş kaydıdır; yeniden tahsilat için yeni link oluşturun.</p> : null}
                     {renderPaymentProviderReferences(payment)}
@@ -4318,40 +4659,269 @@ export function ServiceRequestDetails({
               </div>
             </details>
           ) : null}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="grid gap-1 text-xs font-semibold text-slate-600">
-              Tahsilat amacı
-              <select
-                value={extraPaymentPurpose}
-                onChange={(event) => setExtraPaymentPurpose(event.target.value as ExtraPaymentPurpose)}
-                className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                required
-              >
-                <option value="manual_mount_payment">{hasCanonicalAllocatedPayment ? 'Diğer ek tahsilat' : 'Genel ek tahsilat'}</option>
-                <option value="service_payment">Ek servis</option>
-                {selectedTechnician ? <option value="route_fee">Yol farkı</option> : null}
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs font-semibold text-slate-600">
-              {pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı'}
-              <Input
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="1"
-                value={routeFeeExtraPaymentInput}
-                aria-invalid={paymentAmountError !== null}
-                onChange={(event) => {
-                  setRouteFeeExtraPaymentInput(event.target.value)
-                  setPaymentAmountError(null)
-                }}
-              />
-              <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
-              {paymentAmountError ? <span className="font-semibold text-rose-700">{paymentAmountError}</span> : null}
-            </label>
-          </div>
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            Tahsilat amacı
+            <select
+              value={extraPaymentPurpose}
+              onChange={(event) => {
+                setExtraPaymentPurpose(event.target.value as ExtraPaymentPurpose)
+                setOrderContextPreview(null)
+                setOrderContextPreviewError(null)
+              }}
+              className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+              required
+            >
+              <option value="general_extra">Genel ek tahsilat</option>
+              <option value="extra_service">Ek servis</option>
+              {selectedTechnician ? <option value="route_difference">Yol farkı</option> : null}
+              <option value="mount_collection">Montaj ücreti tahsilatı</option>
+              <option value="part_charge">Parça ödemesi</option>
+            </select>
+          </label>
+
+          {extraPaymentPurpose === 'part_charge' ? (
+            <div data-testid="payment-order-part-context" className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-950">1. Parçayı kim sağlayacak?</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <Button
+                    type="button"
+                    variant={orderPartSupplier === 'emaks_prime' ? 'default' : 'outline'}
+                    onClick={() => {
+                      setOrderPartSupplier('emaks_prime')
+                      setOrderContextPreview(null)
+                    }}
+                  >
+                    EMAKS Prime
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={orderPartSupplier === 'technician' ? 'default' : 'outline'}
+                    onClick={() => {
+                      setOrderPartSupplier('technician')
+                      setOrderContextPreview(null)
+                    }}
+                  >
+                    Usta
+                  </Button>
+                </div>
+              </div>
+
+              {orderPartSupplier === 'emaks_prime' ? (
+                <div className="grid gap-3">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    2. Mikro stoktan parça seçimi
+                    <div className="relative">
+                      <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        value={orderPartSearch}
+                        onChange={(event) => {
+                          const query = event.target.value
+
+                          setOrderPartSearch(query)
+                          setOrderPartSearchItems([])
+                          setOrderPartSearchLoading(false)
+                          setOrderPartSearchError(query.trim().length === 1 ? 'Parça araması için en az 2 karakter girin.' : null)
+                        }}
+                        className="pl-10"
+                        placeholder="Stok kodu veya parça adı"
+                        aria-label="Mikro stok parçası ara"
+                      />
+                    </div>
+                  </label>
+                  {orderPartSearchLoading ? <p className="text-xs font-semibold text-blue-700">Stok bilgisi yükleniyor...</p> : null}
+                  {orderPartSearchError ? <p className="text-xs font-semibold text-rose-700">{orderPartSearchError}</p> : null}
+                  {orderPartSearch.trim().length >= 2 && !orderPartSearchLoading && !orderPartSearchError && orderPartSearchItems.length === 0 ? (
+                    <p className="text-xs text-slate-600">Aramaya uygun parça bulunamadı.</p>
+                  ) : null}
+                  {orderPartSearchItems.length > 0 ? (
+                    <div className="grid max-h-64 gap-2 overflow-y-auto pr-1" data-testid="mikro-part-search-results">
+                      {orderPartSearchItems.map((item) => (
+                        <button
+                          key={item.selection_token}
+                          type="button"
+                          onClick={() => {
+                            setOrderSelectedPart(item)
+                            setOrderSelectedPartSerial('')
+                          }}
+                          className={`grid gap-1 rounded-md border p-3 text-left text-xs transition ${orderSelectedPart?.selection_token === item.selection_token ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-300'}`}
+                        >
+                          <span className="font-semibold text-slate-950">{item.item_code} · {item.item_name}</span>
+                          <span className="text-slate-600">Birim: {item.unit_code} · Depo: {item.warehouse_code ?? '-'}</span>
+                          <span className="text-slate-600">Eldeki: {item.on_hand ?? '-'} · Rezerve: {item.reserved ?? '-'} · Kullanılabilir: {item.available ?? '-'}</span>
+                          <span className="flex flex-wrap items-center gap-2 text-slate-600">
+                            Seri takibi: {item.serial_tracking_required ? 'Var' : 'Yok'}
+                            <Badge variant="outline">{item.source_label}</Badge>
+                            <span>Güncellik: {dateTimeOrEmpty(item.freshness_at, '-')}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {orderSelectedPart ? (
+                    <div data-testid="selected-payment-part" className="grid gap-2 rounded-md border border-blue-200 bg-white p-3 text-xs text-slate-700">
+                      <p className="font-semibold text-slate-950">Seçilen parça: {orderSelectedPart.item_code} · {orderSelectedPart.item_name}</p>
+                      <label className="grid gap-1 font-semibold">
+                        3. Adet
+                        <Input type="number" min="0.001" step="1" value={orderPartQuantity} onChange={(event) => setOrderPartQuantity(event.target.value)} />
+                      </label>
+                      {orderSelectedPart.serial_tracking_required ? (
+                        <label className="grid gap-1 font-semibold">
+                          4. Parça seri numarası
+                          <select
+                            value={orderSelectedPartSerial}
+                            onChange={(event) => setOrderSelectedPartSerial(event.target.value)}
+                            className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                          >
+                            <option value="">Seri seçin</option>
+                            {(orderSelectedPart.serials ?? []).map((serial) => <option key={serial} value={serial}>{serial}</option>)}
+                          </select>
+                        </label>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {orderPartSupplier === 'technician' ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    2. Parça adı
+                    <Input value={orderTechnicianPartName} onChange={(event) => setOrderTechnicianPartName(event.target.value)} placeholder="Ustanın sağlayacağı parça" />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    Parça kodu
+                    <Input value={orderTechnicianPartCode} onChange={(event) => setOrderTechnicianPartCode(event.target.value)} placeholder="Varsa" />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    3. Adet
+                    <Input type="number" min="0.001" step="1" value={orderPartQuantity} onChange={(event) => setOrderPartQuantity(event.target.value)} />
+                  </label>
+                  <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                    Tahsilat mevcut allocation sahibi üzerinden ustaya hakediş olarak bir kez eklenecek. Mikro siparişi ve sevkiyat hazırlanmayacak.
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                <span className="font-semibold">Servis verilen ürün seri numarası:</span> {displayOrEmpty(request.serialNumber, '-')}
+              </div>
+            </div>
+          ) : null}
+
+          {usesPaymentOrderContext ? (
+            <div data-testid="payment-order-billing-context" className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3">
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">{extraPaymentPurpose === 'part_charge' ? '5.' : '1.'} Fatura müşterisi</p>
+                  <p className="mt-1 text-xs text-slate-500">Fatura kişisi sevk alıcısından ayrı tutulur.</p>
+                </div>
+                <select
+                  value={orderBillingSource}
+                  onChange={(event) => setOrderBillingSource(event.target.value as 'mrn_customer' | 'manual_billing_draft')}
+                  className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                >
+                  <option value="mrn_customer">Mevcut MRN müşterisi</option>
+                  <option value="manual_billing_draft">Manuel fatura taslağı</option>
+                </select>
+              </div>
+              {orderBillingSource === 'mrn_customer' ? (
+                <div className="grid gap-1 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 sm:grid-cols-2">
+                  <span>Ad/unvan: <strong>{displayOrEmpty(request.customer, '-')}</strong></span>
+                  <span>Telefon: <strong>{displayOrEmpty(request.phone, '-')}</strong></span>
+                  <span className="sm:col-span-2">Adres: <strong>{displayOrEmpty(request.address, '-')} · {displayOrEmpty(request.district, '-')} / {displayOrEmpty(request.city, '-')}</strong></span>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Ad / unvan<Input value={orderBillingDraft.nameOrTitle} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, nameOrTitle: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Telefon<Input value={orderBillingDraft.phone} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, phone: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">E-posta<Input type="email" value={orderBillingDraft.email} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, email: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">VKN / TCKN<Input value={orderBillingDraft.taxIdentity} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, taxIdentity: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Vergi dairesi<Input value={orderBillingDraft.taxOffice} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, taxOffice: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Posta kodu<Input value={orderBillingDraft.postalCode} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, postalCode: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700 sm:col-span-2">Adres<Input value={orderBillingDraft.address} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, address: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">İl<Input value={orderBillingDraft.city} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, city: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">İlçe<Input value={orderBillingDraft.district} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, district: event.target.value }))} /></label>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime' ? (
+            <div data-testid="payment-order-shipping-context" className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3">
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <input
+                  type="checkbox"
+                  checked={orderShippingSameAsBilling}
+                  onChange={(event) => {
+                    setOrderShippingSameAsBilling(event.target.checked)
+
+                    if (event.target.checked) {
+                      setOrderDeliveryTarget('billing_address')
+                    }
+                  }}
+                  className="size-4 rounded border-slate-300"
+                />
+                6. Sevk ve fatura bilgileri aynıdır
+              </label>
+              {!orderShippingSameAsBilling ? (
+                <div className="grid gap-3">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    7. Sevk alıcısı / adresi
+                    <select
+                      value={orderDeliveryTarget}
+                      onChange={(event) => setOrderDeliveryTarget(event.target.value as typeof orderDeliveryTarget)}
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    >
+                      <option value="mrn_customer">MRN müşterisine gönder</option>
+                      <option value="technician">Ustaya gönder</option>
+                      <option value="billing_address">Fatura adresine gönder</option>
+                      <option value="custom_recipient">Farklı kişi / adrese gönder</option>
+                    </select>
+                  </label>
+                  {orderDeliveryTarget === 'mrn_customer' ? (
+                    <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">{request.customer} · {request.phone}<br />{request.address} · {request.district} / {request.city}</p>
+                  ) : null}
+                  {orderDeliveryTarget === 'technician' ? (
+                    <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">{request.technician} · {request.technicianPhone ?? '-'}<br />{request.technicianProfile?.address ?? request.technicianProfile?.google_formatted_address ?? request.technicianProfile?.default_start_address ?? '-'} · {request.technicianProfile?.district ?? '-'} / {request.technicianProfile?.city ?? '-'}</p>
+                  ) : null}
+                  {orderDeliveryTarget === 'billing_address' ? <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">Sevk snapshotı fatura adresinden üretilecektir.</p> : null}
+                  {orderDeliveryTarget === 'custom_recipient' ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">Alıcı adı<Input value={orderShippingDraft.recipientName} onChange={(event) => setOrderShippingDraft((current) => ({ ...current, recipientName: event.target.value }))} /></label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">Telefon<Input value={orderShippingDraft.recipientPhone} onChange={(event) => setOrderShippingDraft((current) => ({ ...current, recipientPhone: event.target.value }))} /></label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700 sm:col-span-2">Adres<Input value={orderShippingDraft.address} onChange={(event) => setOrderShippingDraft((current) => ({ ...current, address: event.target.value }))} /></label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">İl<Input value={orderShippingDraft.city} onChange={(event) => setOrderShippingDraft((current) => ({ ...current, city: event.target.value }))} /></label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">İlçe<Input value={orderShippingDraft.district} onChange={(event) => setOrderShippingDraft((current) => ({ ...current, district: event.target.value }))} /></label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">Posta kodu<Input value={orderShippingDraft.postalCode} onChange={(event) => setOrderShippingDraft((current) => ({ ...current, postalCode: event.target.value }))} /></label>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            {usesPaymentOrderContext
+              ? (extraPaymentPurpose === 'part_charge' ? '8. Tahsilat tutarı' : '2. Montaj tahsilat tutarı')
+              : (pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı')}
+            <Input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="1"
+              value={routeFeeExtraPaymentInput}
+              aria-invalid={paymentAmountError !== null}
+              onChange={(event) => {
+                setRouteFeeExtraPaymentInput(event.target.value)
+                setPaymentAmountError(null)
+              }}
+            />
+            <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
+            {paymentAmountError ? <span className="font-semibold text-rose-700">{paymentAmountError}</span> : null}
+          </label>
           <label className="grid gap-2 text-sm font-medium text-slate-700">
-            Not
+            {extraPaymentPurpose === 'part_charge' ? '9. Not' : 'Not'}
             <textarea
               value={routeFeeNote}
               onChange={(event) => setRouteFeeNote(event.target.value)}
@@ -4359,6 +4929,35 @@ export function ServiceRequestDetails({
               placeholder="Ödeme linki için operasyon notu"
             />
           </label>
+          {usesPaymentOrderContext ? (
+            <div data-testid="payment-order-context-preview" className="grid gap-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold">{extraPaymentPurpose === 'part_charge' ? '10. Açıklama 2 önizlemesi' : 'Mikro hizmet siparişi hazırlığı'}</p>
+                {activeOrderContextPreview?.desired_mikro_series ? <Badge variant="outline">Hedef seri: {activeOrderContextPreview.desired_mikro_series}</Badge> : null}
+              </div>
+              {activeOrderContextPreviewLoading ? <p className="font-semibold">Canonical önizleme hazırlanıyor...</p> : null}
+              {activeOrderContextPreviewError ? <p className="font-semibold text-rose-700">{activeOrderContextPreviewError}</p> : null}
+              {!canPreviewPaymentOrderContext && !activeOrderContextPreviewError ? (
+                <p>Önizleme için zorunlu fatura, parça, sevk ve tutar alanlarını tamamlayın.</p>
+              ) : null}
+              {activeOrderContextPreview ? (
+                <>
+                  <div className="grid gap-1 rounded-md border border-blue-200 bg-white p-2 sm:grid-cols-2">
+                    <span>Mikro sipariş hazırlığı: <strong>Bekliyor</strong></span>
+                    <span>{activeOrderContextPreview.future_mikro_write_label ?? 'Mikro yazımı bu aşamada kapalı'}</span>
+                    <span>Sevkiyat: <strong>{activeOrderContextPreview.shipment_required ? 'Hazırlık bekliyor' : 'Yok'}</strong></span>
+                    {activeOrderContextPreview.shipment_required ? <span>{activeOrderContextPreview.future_carrier_label}</span> : null}
+                    <span>Fatura müşterisi: <strong>{activeOrderContextPreview.billing?.name_or_title ?? '-'}</strong></span>
+                    {activeOrderContextPreview.shipping ? <span>Teslim: <strong>{activeOrderContextPreview.shipping.recipient_name ?? activeOrderContextPreview.delivery_target_label ?? '-'}</strong></span> : null}
+                    {activeOrderContextPreview.part ? <span className="sm:col-span-2">Parça: <strong>{activeOrderContextPreview.part.item_code ? `${activeOrderContextPreview.part.item_code} · ` : ''}{activeOrderContextPreview.part.item_name}</strong></span> : null}
+                    {activeOrderContextPreview.collection_allocation_label ? <span className="sm:col-span-2">Tahsilat dağılımı: <strong>{activeOrderContextPreview.collection_allocation_label}</strong></span> : null}
+                  </div>
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-white">{activeOrderContextPreview.description2_preview}</pre>
+                  <p className="font-medium">Yerel hazırlık revizyonu: {activeOrderContextPreview.revision} · Mikro yazımı 0 · Kargo sağlayıcı çağrısı 0</p>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           {terminalPaymentRetryRequired ? (
             <label className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-950">
               Önceki ödeme bağlantısı iptal edildi. Yeni bir ödeme bağlantısı oluşturmak için yeniden deneme nedeni girin.
@@ -5149,12 +5748,14 @@ export function ServiceRequestDetails({
   }
 
   function renderPaymentBusinessContext(payment: ServiceRequestExtraMountPayment | null | undefined) {
+    const orderContext = payment?.order_context ?? null
     const hasBusinessContext = Boolean(
       payment?.purpose_label
       || payment?.scope_label
       || payment?.root_mrn
       || payment?.srv_request_code
-      || payment?.part_request_id,
+      || payment?.part_request_id
+      || orderContext,
     )
 
     if (!hasBusinessContext) {
@@ -5174,6 +5775,26 @@ export function ServiceRequestDetails({
             <span>Servis: <strong>{payment.service_component_amount_label ?? payment.service_amount_label ?? '0 TL'}</strong></span>
             <span>Parça: <strong>{payment.part_component_amount_label ?? payment.part_amount_label ?? '0 TL'}</strong></span>
             <span>Toplam: <strong>{payment.total_amount_label ?? payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</strong></span>
+          </div>
+        ) : null}
+        {orderContext ? (
+          <div data-testid="payment-order-context-summary" className="grid gap-1 border-t border-emerald-100 pt-2 sm:col-span-2 sm:grid-cols-2">
+            <span>Yerel hazırlık: <strong>{orderContext.state_label ?? orderContext.state ?? '-'}</strong></span>
+            {orderContext.desired_mikro_series ? <span>Hedef seri: <strong>{orderContext.desired_mikro_series}</strong></span> : null}
+            <span>Mikro: <strong>{orderContext.future_mikro_write_label ?? 'Yazım kapalı'}</strong></span>
+            <span>Sevkiyat: <strong>{orderContext.shipment_required ? orderContext.future_carrier_label ?? 'Hazırlık bekliyor' : 'Yok'}</strong></span>
+            <span>Fatura müşterisi: <strong>{orderContext.billing?.name_or_title ?? '-'}</strong></span>
+            {orderContext.shipping ? <span>Teslim: <strong>{orderContext.shipping.recipient_name ?? orderContext.delivery_target_label ?? '-'}</strong></span> : null}
+            {orderContext.part ? <span className="sm:col-span-2">Parça: <strong>{orderContext.part.item_code ? `${orderContext.part.item_code} · ` : ''}{orderContext.part.item_name}</strong></span> : null}
+            {orderContext.related_product_serial ? <span>İlgili ürün seri no: <strong>{orderContext.related_product_serial}</strong></span> : null}
+            {orderContext.part?.selected_part_serial ? <span>Parça seri no: <strong>{orderContext.part.selected_part_serial}</strong></span> : null}
+            {orderContext.collection_allocation_label ? <span className="sm:col-span-2">Tahsilat dağılımı: <strong>{orderContext.collection_allocation_label}</strong></span> : null}
+            {orderContext.description2_preview ? (
+              <details className="sm:col-span-2">
+                <summary className="cursor-pointer font-semibold">Açıklama 2 önizlemesi</summary>
+                <pre className="mt-2 whitespace-pre-wrap break-words rounded-md bg-white p-2 font-mono text-[11px] leading-relaxed">{orderContext.description2_preview}</pre>
+              </details>
+            ) : null}
           </div>
         ) : null}
       </div>
