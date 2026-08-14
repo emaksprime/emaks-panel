@@ -32,37 +32,71 @@ const normalizedSearch = (value) => value
 
 const stockItems = [
   {
-    item_code: 'TKN000009', item_name: 'DDL 720 DIŞ DOKUMATİK', item_short_name: 'DIŞ DOKUMATİK',
-    item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
-    classification_contract_version: 'technical-service-part-classification-v1', selectable: true, selection_blocker: null,
-    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
-    serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
-    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'tkn-token',
+    item_code: 'EE.BCK.STD.0010', item_name: 'PHILIPS SUNUM STANDI - D BOY', item_short_name: 'SUNUM STANDI',
+    item_kind: 'accessory', item_kind_label: 'Aksesuar / sunum ekipmanı', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v2', selectable: true, selection_blocker: null,
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: true,
+    physical_stock_state: 'positive', physical_stock_verified: true, physical_stock_total: '83.000000', physical_stock_total_label: '83',
+    physical_stock_warehouses: [{ warehouse_code: 1, physical_quantity: '83.000000' }, { warehouse_code: 5, physical_quantity: '0.000000' }],
+    physical_stock_contract_version: 'technical-service-part-physical-stock-v1', physical_stock_correlation_id: 'dom-accessory-0010',
+    stock_status_label: 'Stokta: 83 ADET', serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T17:45:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'stand-one-token',
   },
   {
-    item_code: 'TKN000010', item_name: 'DDL 720 İç Göbek', item_short_name: 'İç Göbek',
-    item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
-    classification_contract_version: 'technical-service-part-classification-v1', selectable: true, selection_blocker: null,
-    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
-    serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
-    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'part-two-token',
+    item_code: 'EE.BCK.STD.0011', item_name: 'PHILIPS SUNUM STANDI - Y BOY', item_short_name: 'SUNUM STANDI',
+    item_kind: 'accessory', item_kind_label: 'Aksesuar / sunum ekipmanı', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v2', selectable: true, selection_blocker: null,
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: true,
+    physical_stock_state: 'positive', physical_stock_verified: true, physical_stock_total: '4.000000', physical_stock_total_label: '4',
+    physical_stock_warehouses: [{ warehouse_code: 1, physical_quantity: '4.000000' }, { warehouse_code: 5, physical_quantity: '0.000000' }],
+    physical_stock_contract_version: 'technical-service-part-physical-stock-v1', physical_stock_correlation_id: 'dom-accessory-0011',
+    stock_status_label: 'Stokta: 4 ADET', serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T17:45:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'stand-two-token',
   },
   {
     item_code: 'TKN000011', item_name: 'Seri Takipli Motor', item_short_name: null,
     item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
-    classification_contract_version: 'technical-service-part-classification-v1', selectable: true, selection_blocker: null,
-    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    classification_contract_version: 'technical-service-part-classification-v2', selectable: true, selection_blocker: null,
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: true,
+    physical_stock_state: 'positive', physical_stock_verified: true, physical_stock_total: '2.000000', physical_stock_total_label: '2',
+    physical_stock_warehouses: [{ warehouse_code: 1, physical_quantity: '2.000000' }, { warehouse_code: 5, physical_quantity: '0.000000' }],
+    physical_stock_contract_version: 'technical-service-part-physical-stock-v1', physical_stock_correlation_id: 'dom-serial-0011',
+    stock_status_label: 'Stokta: 2 ADET',
     serial_tracking_state: 'required', serial_tracking_required: true, serials: [], source: 'mikro', source_label: 'Mikro API',
-    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'serial-part-token',
+    freshness_at: '2026-08-14T17:45:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'serial-part-token',
+  },
+  {
+    item_code: 'TKN000009', item_name: 'DDL 720 DIŞ DOKUMATİK', item_short_name: 'DIŞ DOKUMATİK',
+    item_kind: 'part', item_kind_label: 'Yedek parça', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v2', selectable: false, selection_blocker: 'Stokta yok',
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: true,
+    physical_stock_state: 'out_of_stock', physical_stock_verified: true, physical_stock_total: '0.000000', physical_stock_total_label: '0',
+    physical_stock_warehouses: [{ warehouse_code: 1, physical_quantity: '0.000000' }, { warehouse_code: 5, physical_quantity: '0.000000' }],
+    physical_stock_contract_version: 'technical-service-part-physical-stock-v1', physical_stock_correlation_id: 'dom-zero-0009',
+    stock_status_label: 'Stokta yok', serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: '2026-08-14T17:45:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'tkn-zero-token',
+  },
+  {
+    item_code: 'FAIL-001', item_name: 'Mikro Okuma Hatası Fikstürü', item_short_name: null,
+    item_kind: 'accessory', item_kind_label: 'Aksesuar / sunum ekipmanı', classification_source: 'mikro_stock_type',
+    classification_contract_version: 'technical-service-part-classification-v2', selectable: false, selection_blocker: 'Stok doğrulanamadı',
+    unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    physical_stock_state: 'unverified', physical_stock_verified: false, physical_stock_total: null, physical_stock_total_label: null,
+    physical_stock_warehouses: [], physical_stock_contract_version: 'technical-service-part-physical-stock-v1', physical_stock_correlation_id: null,
+    stock_status_label: 'Stok doğrulanamadı', serial_tracking_state: 'not_required', serial_tracking_required: false, serials: [], source: 'mikro', source_label: 'Mikro API',
+    freshness_at: null, mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'failure-token',
   },
   {
     item_code: 'EP.BCK.003.0001.R001', item_name: 'Akıllı Kilit Cihazı', item_short_name: null,
     item_kind: 'device', item_kind_label: 'Cihaz / ürün', classification_source: 'panel_product_catalog',
-    classification_contract_version: 'technical-service-part-classification-v1', selectable: false,
+    classification_contract_version: 'technical-service-part-classification-v2', selectable: false,
     selection_blocker: 'Bu stok cihaz ekleme akışına aittir; parça ödemesine eklenemez.',
     unit_code: 'ADET', warehouse_code: null, on_hand: null, reserved: null, available: null, availability_verified: false,
+    physical_stock_state: 'not_applicable', physical_stock_verified: false, physical_stock_total: null, physical_stock_total_label: null,
+    physical_stock_warehouses: [], physical_stock_contract_version: 'technical-service-part-physical-stock-v1', physical_stock_correlation_id: null,
+    stock_status_label: null,
     serial_tracking_state: 'required', serial_tracking_required: true, serials: [], source: 'mikro', source_label: 'Mikro API',
-    freshness_at: '2026-08-14T15:00:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'device-token',
+    freshness_at: '2026-08-14T17:45:00+03:00', mikro_contract_fingerprint: '1'.repeat(64), selection_token: 'device-token',
   },
 ]
 
@@ -82,11 +116,19 @@ const previewResponse = (payload) => {
       id: null, line_key: item?.item_code ?? `line-${index}`, position: index + 1, selection_token: raw.stock_selection_token,
       item_code: item?.item_code ?? 'UNKNOWN', item_name: item?.item_name ?? 'Doğrulanmamış satır', item_short_name: item?.item_short_name ?? null,
       item_kind: item?.item_kind ?? 'unknown', classification_source: item?.classification_source ?? 'no_canonical_evidence',
-      classification_contract_version: item?.classification_contract_version ?? 'technical-service-part-classification-v1',
+      classification_contract_version: item?.classification_contract_version ?? 'technical-service-part-classification-v2',
       quantity, unit_code: item?.unit_code ?? null, unit_price: unitPrice, unit_price_label: money(unitPrice),
       line_total: lineTotal, line_total_label: money(lineTotal), currency: 'TRY', warehouse_code: null,
       stock_source: 'mikro', stock_source_label: 'Mikro API', stock_freshness_at: item?.freshness_at ?? null,
-      availability_verified: false, serial_tracking_state: item?.serial_tracking_state ?? 'unverified',
+      availability_verified: item?.physical_stock_verified === true,
+      physical_stock_verified: item?.physical_stock_verified === true,
+      physical_stock_state: item?.physical_stock_state ?? 'unverified',
+      physical_stock_total: item?.physical_stock_total ?? null,
+      physical_stock_total_snapshot: item?.physical_stock_total ?? null,
+      physical_stock_total_label: item?.physical_stock_total_label ?? null,
+      physical_stock_contract_version: item?.physical_stock_contract_version ?? null,
+      stock_status_label: item?.stock_status_label ?? null,
+      serial_tracking_state: item?.serial_tracking_state ?? 'unverified',
       serial_tracking_required: item?.serial_tracking_state === 'required', selected_part_serial: null,
     }
   })
@@ -97,10 +139,19 @@ const previewResponse = (payload) => {
   const shipmentRequired = deliveryMode === 'shipment'
   const paymentLinkRequired = commercialMode === 'paid' && shipmentRequired
   const serialBlocker = lines.some((line) => line.serial_tracking_state === 'required')
+  const physicalStockBlocker = lines.some((line) => line.physical_stock_verified !== true)
+    ? 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.'
+    : lines.some((line) => Number(line.physical_stock_total_snapshot) <= 0)
+      ? 'Seçilen parçalardan en az biri stokta bulunmuyor.'
+      : null
+  const taxBlocker = taxMode === 'standard_from_mikro'
+    ? 'KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.'
+    : null
   const blockers = [
-    'Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.',
-    ...(serialBlocker ? ['Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.'] : []),
-  ]
+    physicalStockBlocker,
+    serialBlocker ? 'Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.' : null,
+    taxBlocker,
+  ].filter(Boolean)
   const lineDescription = lines.map((line, index) => [
     `${index + 1}. ${line.quantity} ${line.unit_code ?? ''} · ${line.item_code} · ${line.item_name}`,
     `   BİRİM TUTAR: ${line.unit_price_label}`,
@@ -137,8 +188,12 @@ const previewResponse = (payload) => {
       finance_review_required: false, related_product_serial: 'SERI-DOM', charged_amount: total, charged_amount_label: money(total),
       currency: 'TRY', shipment_required: shipmentRequired, future_carrier_state: shipmentRequired ? 'waiting_future_integration' : 'not_required',
       future_carrier_label: shipmentRequired ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak' : 'Sevkiyat yok',
-      readiness: { ready: false, order_ready: false, payment_ready: false,
-        blocker_codes: ['stock_availability_unverified', ...(serialBlocker ? ['part_serial_selection_unverified'] : [])], blockers },
+      readiness: { ready: blockers.length === 0, order_ready: blockers.length === 0, payment_ready: blockers.length === 0,
+        blocker_codes: [
+          ...(physicalStockBlocker ? ['physical_stock_unverified'] : []),
+          ...(serialBlocker ? ['part_serial_selection_unverified'] : []),
+          ...(taxBlocker ? ['vat_unverified'] : []),
+        ], blockers },
       description2_preview: `MRN/SRV: MRN-DOM-EARNING\nİLGİLİ ÜRÜN SERİ NO: SERI-DOM\n\nPARÇALAR:\n${lineDescription}\n\nPARÇA KALEMİ: ${lines.length}\nTOPLAM ADET: ${totalQuantity}\nSİPARİŞ/REFERANS TOPLAMI: ${money(total)}\nTAHSİLAT TOPLAMI: ${money(collectionTotal)}\nTİCARİ DURUM: ${commercialMode === 'free' ? 'ÜCRETSİZ' : 'ÜCRETLİ'}\nTESLİM: ${deliveryMode === 'hand_delivery' ? 'ELDEN' : 'SEVK'}\nHEDEF SERİ: ${desiredSeries}\nKDV: ${taxMode === 'none' ? 'YOK' : 'MİKRO STOK KARTI'}`,
       description2_version: 2, context_hash: (total === 1750 ? 'b' : 'c').repeat(64), revision: 1,
       mikro_write_execution_count: 0, carrier_execution_count: 0,
@@ -202,18 +257,30 @@ counters.realExternal += 1
   await page.waitForFunction(() => window.__assignmentEarningDomReady === true)
   let dialog = await openPaymentModal(page)
 
-  let row = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  let row = await searchFor(dialog, 'EE.BCK.STD.0010', 'EE.BCK.STD.0010')
   let rowText = await text(row)
-  assert(rowText.includes('DDL 720 DIŞ DOKUMATİK'), `${name}: exact code did not return installed Mikro identity`)
+  assert(rowText.includes('PHILIPS SUNUM STANDI'), `${name}: exact code did not return installed Mikro identity`)
   assert(rowText.includes('Mikro API'), `${name}: source label is missing`)
   assert(rowText.includes('Güncellik:'), `${name}: freshness is missing`)
-  assert(rowText.includes('Yedek parça'), `${name}: part classification is missing`)
-  assert(!/Depo:|Eldeki:|Rezerve:|Kullanılabilir:/.test(rowText), `${name}: unverified availability was rendered`)
+  assert(rowText.includes('Aksesuar / sunum ekipmanı'), `${name}: accessory classification is missing`)
+  assert(rowText.includes('Stokta: 83 ADET'), `${name}: positive physical stock is missing`)
+  assert(!(await row.getByRole('button', { name: 'Ekle' }).isDisabled()), `${name}: positive-stock accessory is blocked`)
+  assert(!/Depo:|Eldeki:|Rezerve:|Kullanılabilir:/.test(rowText), `${name}: reserved or available inventory was rendered`)
 
-  row = await searchFor(dialog, 'DIŞ DOKUMATİK', 'TKN000009')
-  assert((await text(row)).includes('TKN000009'), `${name}: installed stock name search failed`)
-  row = await searchFor(dialog, 'DIS DOKUMATIK', 'TKN000009')
-  assert((await text(row)).includes('TKN000009'), `${name}: Turkish-normalized stock name search failed`)
+  row = await searchFor(dialog, 'PHILIPS SUNUM STANDI', 'EE.BCK.STD.0010')
+  assert((await text(row)).includes('EE.BCK.STD.0010'), `${name}: installed stock name search failed`)
+  row = await searchFor(dialog, 'SUNUM STANDI', 'EE.BCK.STD.0010')
+  assert((await text(row)).includes('EE.BCK.STD.0010'), `${name}: normalized stock name search failed`)
+
+  const zeroStockRow = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  const zeroStockText = await text(zeroStockRow)
+  assert(zeroStockText.includes('Yedek parça'), `${name}: part classification is missing`)
+  assert(zeroStockText.includes('Stokta yok'), `${name}: zero physical stock label is missing`)
+  assert(await zeroStockRow.getByRole('button', { name: 'Ekle' }).isDisabled(), `${name}: zero-stock add action is enabled`)
+
+  const failedStockRow = await searchFor(dialog, 'FAIL-001', 'FAIL-001')
+  assert((await text(failedStockRow)).includes('Stok doğrulanamadı'), `${name}: failed physical stock label is missing`)
+  assert(await failedStockRow.getByRole('button', { name: 'Ekle' }).isDisabled(), `${name}: unverified-stock add action is enabled`)
 
   const deviceRow = await searchFor(dialog, 'EP.BCK.003.0001.R001', 'EP.BCK.003.0001.R001')
   const deviceText = await text(deviceRow)
@@ -221,13 +288,14 @@ counters.realExternal += 1
   assert(deviceText.includes('cihaz ekleme akışına'), `${name}: device blocker is missing`)
   assert(await deviceRow.getByRole('button', { name: 'Ekle' }).isDisabled(), `${name}: device add action is enabled`)
 
-  row = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  row = await searchFor(dialog, 'EE.BCK.STD.0010', 'EE.BCK.STD.0010')
   await row.getByRole('button', { name: 'Ekle' }).click()
   let selected = dialog.getByTestId('selected-payment-part-line')
   assert(await selected.count() === 1, `${name}: first part line was not added`)
 
-  row = await searchFor(dialog, 'TKN000010', 'TKN000010')
+  row = await searchFor(dialog, 'EE.BCK.STD.0011', 'EE.BCK.STD.0011')
   assert(await selected.count() === 1, `${name}: search change erased selected line`)
+  assert((await text(row)).includes('Stokta: 4 ADET'), `${name}: second accessory physical stock is missing`)
   await row.getByRole('button', { name: 'Ekle' }).click()
   assert(await selected.count() === 2, `${name}: second part line was not added`)
 
@@ -235,12 +303,16 @@ counters.realExternal += 1
   await dialog.getByText('Aramaya uygun parça bulunamadı.', { exact: true }).waitFor({ state: 'visible' })
   assert(await selected.count() === 2, `${name}: empty search result erased selected lines`)
 
-  row = await searchFor(dialog, 'TKN000009', 'TKN000009')
+  row = await searchFor(dialog, 'EE.BCK.STD.0010', 'EE.BCK.STD.0010')
   await row.getByRole('button', { name: 'Ekle' }).click()
   assert(await selected.count() === 2, `${name}: duplicate item created a third line`)
-  const firstLine = selected.filter({ hasText: 'TKN000009' })
-  let secondLine = selected.filter({ hasText: 'TKN000010' })
+  const firstLine = selected.filter({ hasText: 'EE.BCK.STD.0010' })
+  let secondLine = selected.filter({ hasText: 'EE.BCK.STD.0011' })
   assert(await firstLine.getByLabel('Adet').inputValue() === '2', `${name}: duplicate add did not increment quantity`)
+
+  await secondLine.getByLabel('Adet').fill('5')
+  assert((await text(secondLine)).includes('Stokta yalnız 4 ADET bulunuyor.'), `${name}: quantity-over-stock warning is missing`)
+  await secondLine.getByLabel('Adet').fill('1')
 
   await firstLine.getByLabel('Adet').fill('2')
   await firstLine.getByLabel('Birim fiyat').fill('500')
@@ -254,9 +326,9 @@ counters.realExternal += 1
 
   await secondLine.getByRole('button', { name: /satırını sil/ }).click()
   assert(await selected.count() === 1, `${name}: removing one line removed another line or failed`)
-  row = await searchFor(dialog, 'TKN000010', 'TKN000010')
+  row = await searchFor(dialog, 'EE.BCK.STD.0011', 'EE.BCK.STD.0011')
   await row.getByRole('button', { name: 'Ekle' }).click()
-  secondLine = selected.filter({ hasText: 'TKN000010' })
+  secondLine = selected.filter({ hasText: 'EE.BCK.STD.0011' })
   await secondLine.getByLabel('Birim fiyat').fill('750')
   assert(await selected.count() === 2, `${name}: second line could not be restored`)
 
@@ -299,7 +371,7 @@ counters.realExternal += 1
   previewText = await text(preview)
   assert(previewText.includes('KDV: Mikro stok kartından'), `${name}: paid shipment lost Mikro VAT authority`)
   assert(previewText.includes('Ödeme bağlantısı: Gerekli'), `${name}: paid shipment canonical link requirement is missing`)
-  assert(previewText.includes('Stok uygunluğu henüz doğrulanmadığı'), `${name}: availability blocker is missing`)
+  assert(previewText.includes('KDV bilgisi Mikro stok kartından doğrulanmadan'), `${name}: VAT readiness blocker is missing`)
 
   row = await searchFor(dialog, 'TKN000011', 'TKN000011')
   await row.getByRole('button', { name: 'Ekle' }).click()
@@ -327,9 +399,9 @@ counters.realExternal += 1
   selected = dialog.getByTestId('selected-payment-part-line')
   await selected.first().waitFor({ state: 'visible', timeout: 5000 })
   assert(await selected.count() === 2, `${name}: reopening did not hydrate both lines`)
-  assert(await selected.filter({ hasText: 'TKN000009' }).getByLabel('Adet').inputValue() === '2', `${name}: reopened quantity changed`)
-  assert(await selected.filter({ hasText: 'TKN000009' }).getByLabel('Birim fiyat').inputValue() === '500', `${name}: reopened first price changed`)
-  assert(await selected.filter({ hasText: 'TKN000010' }).getByLabel('Birim fiyat').inputValue() === '750', `${name}: reopened second price changed`)
+  assert(await selected.filter({ hasText: 'EE.BCK.STD.0010' }).getByLabel('Adet').inputValue() === '2', `${name}: reopened quantity changed`)
+  assert(await selected.filter({ hasText: 'EE.BCK.STD.0010' }).getByLabel('Birim fiyat').inputValue() === '500', `${name}: reopened first price changed`)
+  assert(await selected.filter({ hasText: 'EE.BCK.STD.0011' }).getByLabel('Birim fiyat').inputValue() === '750', `${name}: reopened second price changed`)
   assert((await text(dialog.getByText(/Genel toplam:/).first())).includes('1.750'), `${name}: reopened grand total changed`)
 
   const bodyOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)

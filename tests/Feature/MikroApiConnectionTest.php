@@ -53,10 +53,10 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.health_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
-            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 33)
-            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 31)
+            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 34)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 32)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 3)
+            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 4)
             ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
@@ -818,6 +818,87 @@ class MikroApiConnectionTest extends TestCase
                 && str_contains($sql, "N'DIS DOKUMATIK'")
                 && str_contains($sql, 'FROM dbo.STOKLAR')
                 && ! str_contains($sql, '[[')
+                && ! preg_match('/\b(INSERT|UPDATE|DELETE|MERGE|EXEC)\b/i', $sql);
+        });
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('stock.availability')['runtime_enabled']);
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
+    }
+
+    public function test_physical_stock_schema_preserves_decimal_and_drops_unavailable_fields(): void
+    {
+        $schemas = app(MikroResponseSchemaCatalog::class);
+        $schema = $schemas->descriptor('stock.physical_quantity');
+        $normalized = $schemas->normalize('stock.physical_quantity', [[
+            'item_code' => 'EE.BCK.STD.0010',
+            'unit_code' => 'ADET',
+            'warehouse_code' => 1,
+            'physical_quantity' => '83.125000',
+            'reserved' => 5,
+            'available' => 78.125,
+            'secret' => 'DROP-ME',
+        ], [
+            'item_code' => 'EE.BCK.STD.0010',
+            'unit_code' => 'ADET',
+            'warehouse_code' => 5,
+            'physical_quantity' => null,
+        ]]);
+
+        $this->assertSame(MikroResponseSchemaCatalog::VERIFIED, $schema['schema_status']);
+        $this->assertSame(MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION, $schema['contract_version']);
+        $this->assertSame('83.125000', $normalized[0]['physical_quantity']);
+        $this->assertNull($normalized[1]['physical_quantity']);
+        $this->assertArrayNotHasKey('reserved', $normalized[0]);
+        $this->assertArrayNotHasKey('available', $normalized[0]);
+        $this->assertArrayNotHasKey('secret', $normalized[0]);
+        $this->assertSame($normalized, $schemas->sanitizeSnapshot('stock.physical_quantity', $normalized));
+        Http::assertNothingSent();
+    }
+
+    public function test_physical_stock_runtime_read_is_one_bounded_typed_query_and_zero_write(): void
+    {
+        $secrets = $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                    'operation_controls' => [
+                        'stock.physical_quantity' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0);
+
+        Http::fake([
+            'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2' => $this->fixedQueryResponse([
+                ['item_code' => 'EE.BCK.STD.0010', 'unit_code' => 'ADET', 'warehouse_code' => 1, 'physical_quantity' => '83'],
+                ['item_code' => 'EE.BCK.STD.0010', 'unit_code' => 'ADET', 'warehouse_code' => 5, 'physical_quantity' => '0'],
+                ['item_code' => 'TKN000009', 'unit_code' => 'ADET', 'warehouse_code' => 1, 'physical_quantity' => '0'],
+                ['item_code' => 'TKN000009', 'unit_code' => 'ADET', 'warehouse_code' => 5, 'physical_quantity' => '0'],
+            ]),
+        ]);
+
+        $result = app(MikroApiClient::class)->physicalStockQuantities(['TKN000009', 'EE.BCK.STD.0010']);
+
+        $this->assertTrue($result['success']);
+        $this->assertCount(4, $result['data']);
+        $this->assertSame('83', $result['data'][0]['physical_quantity']);
+        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($secrets['api_key'], $encoded);
+        $this->assertStringNotContainsString($secrets['password'], $encoded);
+        Http::assertSentCount(1);
+        Http::assertSent(function (Request $request): bool {
+            $sql = (string) $request['SQLSorgu'];
+
+            return $request->url() === 'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2'
+                && str_contains($sql, "IN (N'EE.BCK.STD.0010', N'TKN000009')")
+                && str_contains($sql, 'fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE())')
+                && str_contains($sql, 'fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE())')
+                && ! str_contains(strtolower($sql), 'reserved')
+                && ! str_contains(strtolower($sql), 'available')
                 && ! preg_match('/\b(INSERT|UPDATE|DELETE|MERGE|EXEC)\b/i', $sql);
         });
         $this->assertFalse(app(MikroOperationRegistry::class)->read('stock.availability')['runtime_enabled']);

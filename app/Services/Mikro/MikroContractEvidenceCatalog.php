@@ -156,6 +156,7 @@ final class MikroContractEvidenceCatalog
         'customer.document.timeline' => '77d202731c594bb6a67d048bf670e8bca8789130b700ea4a6de061bca2894ccb',
         'stock.availability' => '245e65f2a3f3a0fd4f7664559e225609b79869944f5a38a09a7ecdf18d8fdfb1',
         'stock.search' => '3b509a481a593be9f6b63fda83c796ecf5fe35e44b1a79beba8224f09f2981e1',
+        'stock.physical_quantity' => '941539a9f84fcd69684f879fa725f54560f642309bfb260a64804aedc0777593',
         'stock.movement.list' => '7280b34fa4376964c60606c63b8101cbfcb136108895e443395f75016e0b40d3',
         'serial.lookup' => '53dbf0db942df656f470eff9c8a4b9d04dc384b5bde6d1268ec44ee6b344e9ea',
         'serial.history' => 'f7ea431026c2c8dce60ec0fe546704240d851a7f66d9ccf1f88f8ae98d63699b',
@@ -308,6 +309,49 @@ final class MikroContractEvidenceCatalog
                 'blocker' => null,
                 'contract_version' => MikroResponseSchemaCatalog::STOCK_SEARCH_CONTRACT_VERSION,
                 'response_schema_fingerprint' => MikroResponseSchemaCatalog::STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT,
+            ]);
+        }
+        if ($operationKey === 'stock.physical_quantity') {
+            $depotSourceFile = 'database/seeders/PanelKnownWorkflowDataSourcesSeeder.php';
+            $depotMethod = 'stock_warehouse';
+            $sources[] = [
+                'type' => 'depot_implementation',
+                'uri' => $depotSourceFile,
+                'source_id' => $depotMethod,
+                'sha256' => '245e65f2a3f3a0fd4f7664559e225609b79869944f5a38a09a7ecdf18d8fdfb1',
+            ];
+            $sources[] = [
+                'type' => 'installed_server_authenticated_canary',
+                'uri' => 'evidence://MikroAccessoryPhysicalStock/20260814T172833Z/physical-stock-authenticated-canary.json',
+                'sha256' => $evidenceHash,
+            ];
+
+            return self::descriptor([
+                'operation_key' => $operationKey,
+                'mode' => 'READ',
+                'adapter_type' => 'FIXED_QUERY',
+                'contract_status' => 'DOCUMENTED',
+                'evidence_status' => 'OFFICIAL_AND_SERVER_VERIFIED',
+                'runtime_eligible' => true,
+                'runtime_enabled' => false,
+                'installed_server_canary' => 'PASS_AUTHENTICATED_TYPED_PHYSICAL_STOCK_2026_08_14',
+                'official_api_page' => self::SQL_PAGE,
+                'official_postman_item' => null,
+                'local_postman_item' => 'Listeler / SqlVeriOkuV2',
+                'exact_http_method' => 'POST',
+                'exact_path' => '/Api/apiMethods/SqlVeriOkuV2',
+                'exact_path_casing' => 'SERVER_VERIFIED=/Api/apiMethods/SqlVeriOkuV2',
+                'request_root_keys' => ['Mikro', 'Mikro.ApiKey', 'Mikro.CalismaYili', 'Mikro.FirmaKodu', 'Mikro.KullaniciKodu', 'Mikro.Sifre', 'SQLSorgu'],
+                'response_root_keys' => ['result', 'result[].Data[].SQLResult1', 'result[].IsError', 'result[].StatusCode'],
+                'source_documents' => $sources,
+                'source_item_category' => 'SqlVeriOkuV2 / technical_service_part_physical_stock_v1',
+                'evidence_hash' => $evidenceHash,
+                'api_key_field' => 'ApiKey',
+                'blocker' => null,
+                'depot_source_file' => $depotSourceFile,
+                'depot_method' => $depotMethod,
+                'contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+                'response_schema_fingerprint' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT,
             ]);
         }
         $depotSourceFile = null;
@@ -481,7 +525,7 @@ final class MikroContractEvidenceCatalog
         }
 
         if ($adapterType === 'FIXED_QUERY') {
-            if ($operationKey === 'stock.availability') {
+            if (in_array($operationKey, ['stock.availability', 'stock.physical_quantity'], true)) {
                 return [
                     'status' => 'VERIFIED_SOURCE',
                     'source_type' => 'DEPOT_FIXED_QUERY_AND_V17_TABLE_CONTRACT',

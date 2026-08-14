@@ -19,20 +19,20 @@ class MikroOperationRegistryTest extends TestCase
         $summary = $registry->summary();
 
         $this->assertSame('active', $summary['status']);
-        $this->assertSame(33, $summary['read_count']);
-        $this->assertSame(31, $summary['implemented_read_count']);
+        $this->assertSame(34, $summary['read_count']);
+        $this->assertSame(32, $summary['implemented_read_count']);
         $this->assertSame(1, $summary['enabled_read_count']);
         $this->assertSame(11, $summary['write_count']);
         $this->assertSame(0, $summary['enabled_write_count']);
         $this->assertSame(9, $summary['direct_endpoint_count']);
-        $this->assertSame(22, $summary['fixed_query_count']);
+        $this->assertSame(23, $summary['fixed_query_count']);
         $this->assertSame(13, $summary['contract_blocked_count']);
-        $this->assertSame(3, $summary['server_verified_read_count']);
+        $this->assertSame(4, $summary['server_verified_read_count']);
         $this->assertSame(28, $summary['server_unverified_count']);
-        $this->assertSame(3, $summary['runtime_eligible_read_count']);
-        $this->assertSame(24, $summary['response_schema_verified_count']);
+        $this->assertSame(4, $summary['runtime_eligible_read_count']);
+        $this->assertSame(25, $summary['response_schema_verified_count']);
         $this->assertSame(9, $summary['response_schema_missing_count']);
-        $this->assertSame(22, $summary['parity_status_counts']['VERIFIED_SOURCE']);
+        $this->assertSame(23, $summary['parity_status_counts']['VERIFIED_SOURCE']);
         $this->assertSame(8, $summary['parity_status_counts']['PENDING_SOURCE']);
         $this->assertSame(1, $summary['parity_status_counts']['NOT_APPLICABLE_SYSTEM']);
         $this->assertSame(11, $summary['parity_status_counts']['WRITE_REQUIRES_READBACK_CONTRACT']);
@@ -44,7 +44,7 @@ class MikroOperationRegistryTest extends TestCase
         foreach ([
             'health.check', 'user.parameters', 'user.list',
             'customer.list', 'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.list', 'stock.availability', 'stock.search', 'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.list', 'stock.availability', 'stock.search', 'stock.physical_quantity', 'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines', 'invoice.pdf',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines', 'dispatch.pdf',
@@ -86,6 +86,10 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame('stock.search', $registry->read('stock.search')['fixed_query_id']);
         $this->assertTrue($registry->read('stock.search')['runtime_eligible']);
         $this->assertFalse($registry->read('stock.search')['runtime_enabled']);
+        $this->assertSame('OFFICIAL_AND_SERVER_VERIFIED', $registry->read('stock.physical_quantity')['evidence_status']);
+        $this->assertSame('stock.physical_quantity', $registry->read('stock.physical_quantity')['fixed_query_id']);
+        $this->assertTrue($registry->read('stock.physical_quantity')['runtime_eligible']);
+        $this->assertFalse($registry->read('stock.physical_quantity')['runtime_enabled']);
 
         $queries = app(MikroFixedQueryCatalog::class);
         $definition = $queries->definition('invoice.list');
@@ -147,7 +151,7 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame('customer.detail', $customer['fixed_query_id']);
         $this->assertSame('FIXED_QUERY', $customer['adapter_type']);
 
-        foreach (['stock.availability', 'stock.search', 'serial.lookup', 'order.detail'] as $operationKey) {
+        foreach (['stock.availability', 'stock.search', 'stock.physical_quantity', 'serial.lookup', 'order.detail'] as $operationKey) {
             $operation = $registry->assertCanaryAllowed($operationKey, $context);
             $this->assertSame($operationKey, $operation['canonical_operation_key']);
             $this->assertSame($operationKey, $operation['fixed_query_id']);

@@ -50,8 +50,23 @@ type ShippingPartyDraft = {
   postalCode: string
 }
 
+type PhysicalStockPartSearchItem = Omit<ServiceRequestMikroPartSearchItem, 'item_kind'> & {
+  item_kind: 'part' | 'accessory' | 'device' | 'service' | 'unknown'
+  physical_stock_state?: 'positive' | 'out_of_stock' | 'unverified' | 'not_applicable'
+  physical_stock_verified?: boolean
+  physical_stock_total?: number | string | null
+  physical_stock_total_label?: string | null
+  physical_stock_warehouses?: Array<{
+    warehouse_code: number
+    physical_quantity: number | string
+  }>
+  physical_stock_contract_version?: string | null
+  physical_stock_correlation_id?: string | null
+  stock_status_label?: string | null
+}
+
 type PaymentOrderPartLineDraft = {
-  item: ServiceRequestMikroPartSearchItem
+  item: PhysicalStockPartSearchItem
   quantity: string
   unitPrice: string
 }
@@ -64,7 +79,7 @@ type PaymentOrderPartSearchResponse = {
   source?: string | null
   source_label?: string | null
   freshness_at?: string | null
-  items?: ServiceRequestMikroPartSearchItem[]
+  items?: PhysicalStockPartSearchItem[]
 }
 
 type AssignmentEarningDraft = {
@@ -636,6 +651,16 @@ const parseNumericInput = (value: string): number | null => {
   const parsed = Number(normalized)
 
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+const verifiedPhysicalStockTotal = (item: PhysicalStockPartSearchItem): number | null => {
+  if (item.physical_stock_verified !== true) {
+    return null
+  }
+
+  const total = Number(item.physical_stock_total)
+
+  return Number.isFinite(total) ? total : null
 }
 
 const createPaymentLinkSendRequestId = (): string => {
@@ -1937,7 +1962,7 @@ export function ServiceRequestDetails({
   const [orderCommercialMode, setOrderCommercialMode] = useState<'free' | 'paid'>('paid')
   const [orderDeliveryMode, setOrderDeliveryMode] = useState<'hand_delivery' | 'shipment'>('shipment')
   const [orderPartSearch, setOrderPartSearch] = useState('')
-  const [orderPartSearchItems, setOrderPartSearchItems] = useState<ServiceRequestMikroPartSearchItem[]>([])
+  const [orderPartSearchItems, setOrderPartSearchItems] = useState<PhysicalStockPartSearchItem[]>([])
   const [orderPartSearchLoading, setOrderPartSearchLoading] = useState(false)
   const [orderPartSearchError, setOrderPartSearchError] = useState<string | null>(null)
   const [orderPartLines, setOrderPartLines] = useState<PaymentOrderPartLineDraft[]>([])
@@ -2396,9 +2421,13 @@ export function ServiceRequestDetails({
     && orderPartLines.every((line) => {
       const quantity = parseNumericInput(line.quantity)
       const unitPrice = orderPartPricesForcedZero ? 0 : parseNumericInput(line.unitPrice)
+      const physicalStockTotal = verifiedPhysicalStockTotal(line.item)
 
       return quantity !== null
         && quantity > 0
+        && physicalStockTotal !== null
+        && physicalStockTotal > 0
+        && quantity <= physicalStockTotal
         && unitPrice !== null
         && unitPrice >= 0
         && (orderCommercialMode !== 'paid' || unitPrice > 0)
@@ -2502,24 +2531,43 @@ export function ServiceRequestDetails({
     }
 
     const restoredLines = (latestPartOrderContext?.lines ?? [])
-      .filter((line) => line.item_kind === 'part' && typeof line.selection_token === 'string' && line.selection_token !== '')
-      .map((line): PaymentOrderPartLineDraft => ({
-        item: {
+      .filter((line) => (line.item_kind === 'part' || line.item_kind === 'accessory')
+        && typeof line.selection_token === 'string'
+        && line.selection_token !== '')
+      .map((line): PaymentOrderPartLineDraft => {
+        const stockLine = line as typeof line & {
+          physical_stock_verified?: boolean
+          physical_stock_state?: PhysicalStockPartSearchItem['physical_stock_state']
+          physical_stock_total?: number | string | null
+          physical_stock_total_label?: string | null
+          physical_stock_contract_version?: string | null
+          stock_status_label?: string | null
+        }
+        const itemKind = line.item_kind === 'accessory' ? 'accessory' : 'part'
+
+        return {
+          item: {
           item_code: String(line.item_code ?? ''),
           item_name: String(line.item_name ?? ''),
           item_short_name: line.item_short_name ?? null,
-          item_kind: 'part',
-          item_kind_label: 'Yedek parça',
+          item_kind: itemKind,
+          item_kind_label: itemKind === 'accessory' ? 'Aksesuar / sunum ekipmanı' : 'Yedek parça',
           classification_source: String(line.classification_source ?? 'no_canonical_evidence'),
           classification_contract_version: String(line.classification_contract_version ?? ''),
-          selectable: true,
-          selection_blocker: null,
+          selectable: stockLine.physical_stock_verified === true && Number(stockLine.physical_stock_total) > 0,
+          selection_blocker: stockLine.physical_stock_verified === true ? null : 'Stok yeniden doğrulanmalı',
           unit_code: line.unit_code ?? null,
           warehouse_code: null,
           on_hand: null,
           reserved: null,
           available: null,
           availability_verified: line.availability_verified === true,
+          physical_stock_verified: stockLine.physical_stock_verified === true,
+          physical_stock_state: stockLine.physical_stock_state ?? 'unverified',
+          physical_stock_total: stockLine.physical_stock_total ?? null,
+          physical_stock_total_label: stockLine.physical_stock_total_label ?? null,
+          physical_stock_contract_version: stockLine.physical_stock_contract_version ?? null,
+          stock_status_label: stockLine.stock_status_label ?? 'Stok yeniden doğrulanmalı',
           serial_tracking_state: line.serial_tracking_state === 'required' || line.serial_tracking_state === 'not_required'
             ? line.serial_tracking_state
             : 'unverified',
@@ -2530,10 +2578,11 @@ export function ServiceRequestDetails({
           freshness_at: line.stock_freshness_at ?? null,
           mikro_contract_fingerprint: null,
           selection_token: String(line.selection_token),
-        },
-        quantity: numericInputValue(line.quantity),
-        unitPrice: numericInputValue(line.unit_price),
-      }))
+          },
+          quantity: numericInputValue(line.quantity),
+          unitPrice: numericInputValue(line.unit_price),
+        }
+      })
 
     if (restoredLines.length === 0) {
       return
@@ -5010,7 +5059,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                       />
                     </div>
                   </label>
-                  {orderPartSearchLoading ? <p className="text-xs font-semibold text-blue-700">Stok bilgisi yükleniyor...</p> : null}
+                  {orderPartSearchLoading ? <p className="text-xs font-semibold text-blue-700">Stok kontrol ediliyor...</p> : null}
                   {orderPartSearchError ? <p className="text-xs font-semibold text-rose-700">{orderPartSearchError}</p> : null}
                   {orderPartSearch.trim().length >= 2 && !orderPartSearchLoading && !orderPartSearchError && orderPartSearchItems.length === 0 ? (
                     <p className="text-xs text-slate-600">Aramaya uygun parça bulunamadı.</p>
@@ -5033,17 +5082,39 @@ errors.lastName = 'Soyad alanı zorunludur.'
                               variant={item.selectable ? 'outline' : 'secondary'}
                               disabled={!item.selectable}
                               onClick={() => {
+                                const physicalStockTotal = verifiedPhysicalStockTotal(item)
+
+                                if (physicalStockTotal === null || physicalStockTotal <= 0) {
+                                  setOrderPartSearchError(physicalStockTotal === null ? 'Stok doğrulanamadı' : 'Stokta yok')
+
+                                  return
+                                }
+
                                 setOrderPartLines((current) => {
                                   const existingIndex = current.findIndex((line) => line.item.item_code === item.item_code)
 
                                   if (existingIndex >= 0) {
+                                    const nextQuantity = (parseNumericInput(current[existingIndex].quantity) ?? 0) + 1
+
+                                    if (nextQuantity > physicalStockTotal) {
+                                      setOrderPartSearchError(`Stokta yalnız ${item.physical_stock_total_label ?? physicalStockTotal} ${item.unit_code ?? 'ADET'} bulunuyor.`)
+
+                                      return current
+                                    }
+
                                     return current.map((line, index) => index === existingIndex
-                                      ? { ...line, item, quantity: numericInputValue((parseNumericInput(line.quantity) ?? 0) + 1) }
+                                      ? { ...line, item, quantity: numericInputValue(nextQuantity) }
                                       : line)
                                   }
 
                                   if (current.length >= 20) {
                                     setOrderPartSearchError('En fazla 20 farklı parça kalemi seçilebilir.')
+
+                                    return current
+                                  }
+
+                                  if (1 > physicalStockTotal) {
+                                    setOrderPartSearchError(`Stokta yalnız ${item.physical_stock_total_label ?? physicalStockTotal} ${item.unit_code ?? 'ADET'} bulunuyor.`)
 
                                     return current
                                   }
@@ -5063,7 +5134,12 @@ errors.lastName = 'Soyad alanı zorunludur.'
                             {item.serial_tracking_state === 'required' ? <span>Seri takipli</span> : null}
                             {item.serial_tracking_state === 'not_required' ? <span>Seri takibi yok</span> : null}
                           </div>
-                          {item.selection_blocker ? <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 font-medium text-amber-900">{item.selection_blocker}</p> : null}
+                          {item.stock_status_label ? (
+                            <p className={item.physical_stock_state === 'positive' ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>
+                              {item.stock_status_label}
+                            </p>
+                          ) : null}
+                          {item.selection_blocker && item.selection_blocker !== item.stock_status_label ? <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 font-medium text-amber-900">{item.selection_blocker}</p> : null}
                         </div>
                       ))}
                     </div>
@@ -5079,12 +5155,17 @@ errors.lastName = 'Soyad alanı zorunludur.'
                           const quantity = parseNumericInput(line.quantity) ?? 0
                           const unitPrice = orderPartPricesForcedZero ? 0 : parseNumericInput(line.unitPrice) ?? 0
                           const lineTotal = roundTwo(Math.max(0, quantity) * Math.max(0, unitPrice))
+                          const physicalStockTotal = verifiedPhysicalStockTotal(line.item)
+                          const physicalStockExceeded = physicalStockTotal !== null && quantity > physicalStockTotal
 
                           return (
                             <div key={line.item.item_code} data-testid="selected-payment-part-line" className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,2fr)_minmax(7rem,0.7fr)_minmax(8rem,1fr)_minmax(8rem,1fr)_auto] sm:items-end">
                               <div className="min-w-0">
                                 <p className="break-words font-semibold text-slate-950">{line.item.item_code} · {line.item.item_name}</p>
                                 <p className="mt-1 text-slate-500">{line.item.unit_code ?? 'Birim doğrulanmadı'} · {line.item.source_label}</p>
+                                <p className={physicalStockTotal !== null && physicalStockTotal > 0 ? 'mt-1 font-semibold text-emerald-700' : 'mt-1 font-semibold text-amber-800'}>
+                                  {line.item.stock_status_label ?? 'Stok yeniden doğrulanmalı'}
+                                </p>
                               </div>
                               <label className="grid gap-1 font-semibold">
                                 Adet
@@ -5092,6 +5173,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                                   type="number"
                                   min="0.001"
                                   step="0.001"
+                                  max={physicalStockTotal ?? undefined}
                                   value={line.quantity}
                                   onChange={(event) => setOrderPartLines((current) => current.map((candidate) => candidate.item.item_code === line.item.item_code
                                     ? { ...candidate, quantity: event.target.value }
@@ -5131,6 +5213,12 @@ errors.lastName = 'Soyad alanı zorunludur.'
                               {line.item.serial_tracking_state === 'unverified' ? (
                                 <p className="font-semibold text-amber-800 sm:col-span-5">Parça seri takip kuralı doğrulanmadan ödeme ve sipariş hazırlığı tamamlanamaz.</p>
                               ) : null}
+                              {physicalStockExceeded ? (
+                                <p className="font-semibold text-rose-700 sm:col-span-5">Stokta yalnız {line.item.physical_stock_total_label ?? physicalStockTotal} {line.item.unit_code ?? 'ADET'} bulunuyor.</p>
+                              ) : null}
+                              {physicalStockTotal === null ? (
+                                <p className="font-semibold text-amber-800 sm:col-span-5">Stok yeniden doğrulanmalı</p>
+                              ) : null}
                             </div>
                           )
                         })}
@@ -5139,7 +5227,9 @@ errors.lastName = 'Soyad alanı zorunludur.'
                         <span>Sipariş / referans toplamı: <strong>{formatMoneyValue(orderPartGrandTotal)}</strong></span>
                         <span>Tahsilat toplamı: <strong>{formatMoneyValue(orderCommercialMode === 'paid' ? orderPartGrandTotal : 0)}</strong></span>
                       </div>
-                      <p className="font-semibold text-amber-800">Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.</p>
+                      {orderPartLines.some((line) => verifiedPhysicalStockTotal(line.item) === null) ? (
+                        <p className="font-semibold text-amber-800">Mikro stok bilgisi doğrulanmadan ödeme veya sipariş hazırlığı tamamlanamaz.</p>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

@@ -22,6 +22,10 @@ final class MikroResponseSchemaCatalog
 
     public const STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT = '163a6d6ad41ab836835badc50dfeb2c56cceb289a2ca949b773f47ca68a82064';
 
+    public const PHYSICAL_STOCK_CONTRACT_VERSION = 'technical-service-part-physical-stock-v1';
+
+    public const PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT = '1e5bf09b70fb8eef4447fdb81724c6658f2c86e110d3dfcbf8ec7d583fadb83c';
+
     /** @var array<string, array<int, string>> */
     private const VERIFIED_FIELDS = [
         'health.check' => ['service_status'],
@@ -126,6 +130,26 @@ final class MikroResponseSchemaCatalog
             ];
         }
 
+        if ($operationKey === 'stock.physical_quantity') {
+            return [
+                'operation_key' => $operationKey,
+                'schema_status' => self::VERIFIED,
+                'normalizer_id' => self::PHYSICAL_STOCK_CONTRACT_VERSION,
+                'contract_version' => self::PHYSICAL_STOCK_CONTRACT_VERSION,
+                'response_schema_fingerprint' => self::PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT,
+                'allowed_top_level_fields' => ['result'],
+                'allowed_record_fields' => ['item_code', 'unit_code', 'warehouse_code', 'physical_quantity'],
+                'required_record_fields' => ['item_code', 'warehouse_code', 'physical_quantity'],
+                'nullable_record_fields' => ['unit_code', 'physical_quantity'],
+                'normalized_fields' => ['item_code', 'unit_code', 'warehouse_code', 'physical_quantity'],
+                'field_mapping' => [],
+                'nested_mapping' => [],
+                'sensitive_fields' => ['api_key', 'apikey', 'password', 'sifre', 'token', 'authorization'],
+                'snapshot_allowed' => true,
+                'blocker' => null,
+            ];
+        }
+
         $fields = self::VERIFIED_FIELDS[$operationKey] ?? null;
         if (is_array($fields)) {
             return [
@@ -177,6 +201,9 @@ final class MikroResponseSchemaCatalog
         if ($operationKey === 'stock.search') {
             return $this->normalizeStockSearch($rows);
         }
+        if ($operationKey === 'stock.physical_quantity') {
+            return $this->normalizePhysicalStock($rows);
+        }
 
         $allowed = array_flip($schema['allowed_record_fields']);
         $normalized = [];
@@ -220,6 +247,9 @@ final class MikroResponseSchemaCatalog
         }
         if ($operationKey === 'stock.search') {
             return $this->normalizeStockSearch($data);
+        }
+        if ($operationKey === 'stock.physical_quantity') {
+            return $this->normalizePhysicalStock($data);
         }
 
         return $this->normalize($operationKey, $data);
@@ -373,6 +403,49 @@ final class MikroResponseSchemaCatalog
                 'detail_tracking_type' => (int) $row['detail_tracking_type'],
                 'cancelled' => (bool) $cancelled,
                 'hidden' => (bool) $hidden,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    /** @param array<int, array<string, mixed>> $rows @return array<int, array<string, mixed>> */
+    private function normalizePhysicalStock(array $rows): array
+    {
+        $normalized = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)
+                || ! is_string($row['item_code'] ?? null)
+                || trim($row['item_code']) === ''
+                || ! array_key_exists('warehouse_code', $row)
+                || filter_var($row['warehouse_code'], FILTER_VALIDATE_INT) === false
+                || ! array_key_exists('physical_quantity', $row)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            $warehouseCode = (int) $row['warehouse_code'];
+            if (! in_array($warehouseCode, [1, 5], true)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            if (array_key_exists('unit_code', $row)
+                && ! is_string($row['unit_code'])
+                && $row['unit_code'] !== null) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $quantity = $row['physical_quantity'];
+            if ($quantity !== null) {
+                if (! is_scalar($quantity)
+                    || ! preg_match('/^-?\d+(?:\.\d{1,6})?$/', trim((string) $quantity))) {
+                    throw new DomainException('MIKRO_INVALID_RESPONSE');
+                }
+                $quantity = trim((string) $quantity);
+            }
+
+            $normalized[] = [
+                'item_code' => trim($row['item_code']),
+                'unit_code' => filled($row['unit_code'] ?? null) ? trim((string) $row['unit_code']) : null,
+                'warehouse_code' => $warehouseCode,
+                'physical_quantity' => $quantity,
             ];
         }
 

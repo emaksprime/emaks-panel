@@ -86,6 +86,15 @@ class MikroFixedQueryCatalog
             'tables' => ['STOKLAR'],
             'contract_id' => 'technical_service_part_search_v1',
         ],
+        'stock.physical_quantity' => [
+            'sql' => "SELECT LTRIM(RTRIM(sto.sto_kod)) AS item_code, NULLIF(LTRIM(RTRIM(sto.sto_birim1_ad)), N'') AS unit_code, dep.warehouse_code AS warehouse_code, CAST(CASE dep.warehouse_code WHEN 1 THEN dbo.fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE()) WHEN 5 THEN dbo.fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE()) END AS decimal(18,6)) AS physical_quantity FROM dbo.STOKLAR AS sto WITH (NOLOCK) CROSS JOIN (VALUES (1), (5)) AS dep(warehouse_code) WHERE ISNULL(sto.sto_iptal, 0) = 0 AND ISNULL(sto.sto_hidden, 0) = 0 AND LTRIM(RTRIM(sto.sto_kod)) IN ([[item_codes]]) ORDER BY LTRIM(RTRIM(sto.sto_kod)) ASC, dep.warehouse_code ASC",
+            'parameters' => ['item_codes' => 'code_list'],
+            'tables' => ['STOKLAR'],
+            'warehouse_context' => [1, 5],
+            'depot_source_file' => 'database/seeders/PanelKnownWorkflowDataSourcesSeeder.php',
+            'depot_source_id' => 'stock_warehouse',
+            'contract_id' => 'technical_service_part_physical_stock_v1',
+        ],
         'stock.movement.list' => [
             'sql' => 'SELECT TOP ([[limit]]) sth.sth_Guid AS movement_guid, sth.sth_tarih AS movement_date, sth.sth_stok_kod AS stock_code, sth.sth_cari_kodu AS customer_code, sth.sth_tip AS movement_type, sth.sth_normal_iade AS is_return, sth.sth_miktar AS quantity, sth.sth_evrakno_seri AS document_series, sth.sth_evrakno_sira AS document_number FROM dbo.STOK_HAREKETLERI AS sth WITH (NOLOCK) WHERE LTRIM(RTRIM(sth.sth_stok_kod)) = [[stock_code]] AND CAST(sth.sth_tarih AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY sth.sth_tarih DESC, sth.sth_Guid DESC',
             'parameters' => ['stock_code' => 'code', 'date_from' => 'date', 'date_to' => 'date', 'limit' => 'limit'],
@@ -309,6 +318,7 @@ class MikroFixedQueryCatalog
             'code' => $this->quotedRestrictedString($value, 80),
             'serial' => $this->quotedRestrictedString($value, 120),
             'search' => $this->quotedSearch($value),
+            'code_list' => $this->quotedCodeList($value),
             'limit' => (string) $this->boundedInteger($value, 1, 500),
             'warehouse' => (string) $this->allowedPilotWarehouse($value),
             default => throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID'),
@@ -344,6 +354,29 @@ class MikroFixedQueryCatalog
         }
 
         return "N'".$value."'";
+    }
+
+    private function quotedCodeList(mixed $value): string
+    {
+        if (! is_array($value) || $value === [] || count($value) > 20) {
+            throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID');
+        }
+
+        $codes = [];
+        foreach ($value as $code) {
+            if (! is_scalar($code)) {
+                throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID');
+            }
+            $normalized = mb_strtoupper(trim((string) $code), 'UTF-8');
+            $codes[$normalized] = $this->quotedRestrictedString($normalized, 80);
+        }
+        if ($codes === [] || count($codes) > 20) {
+            throw new DomainException('MIKRO_QUERY_PARAMETER_INVALID');
+        }
+
+        ksort($codes, SORT_STRING);
+
+        return implode(', ', array_values($codes));
     }
 
     private function quotedSearch(mixed $value): string

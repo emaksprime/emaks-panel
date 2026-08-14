@@ -15,21 +15,21 @@ class MikroFixedQueryCatalogTest extends TestCase
     {
         $catalog = app(MikroFixedQueryCatalog::class);
 
-        $this->assertCount(30, $catalog->queryIds());
+        $this->assertCount(31, $catalog->queryIds());
         $this->assertSame([
             'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.availability', 'stock.search', 'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.availability', 'stock.search', 'stock.physical_quantity', 'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines',
             'return.list', 'return.detail', 'exchange.status', 'replacement.serial.lookup',
-        ], array_slice($catalog->queryIds(), 0, 22));
+        ], array_slice($catalog->queryIds(), 0, 23));
         $this->assertSame([
             'parity.customer.discovery.v2', 'parity.customer.detail.v2',
             'parity.stock.discovery.v1', 'parity.stock.detail.v1',
             'parity.serial.discovery.v1', 'parity.serial.detail.v1',
             'parity.order.discovery.v1', 'parity.order.detail.v1',
-        ], array_slice($catalog->queryIds(), 22));
+        ], array_slice($catalog->queryIds(), 23));
 
         foreach ($catalog->queryIds() as $queryId) {
             $definition = $catalog->definition($queryId);
@@ -88,6 +88,38 @@ class MikroFixedQueryCatalogTest extends TestCase
         try {
             $catalog->n8nTemplate('stock.search');
             $this->fail('Technical-service stock search must not gain an n8n template path.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
+        }
+    }
+
+    public function test_physical_stock_query_is_fixed_bounded_and_uses_only_warehouses_one_and_five(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+        $definition = $catalog->definition('stock.physical_quantity');
+        $sql = $catalog->render('stock.physical_quantity', [
+            'item_codes' => ['TKN000009', 'EE.BCK.STD.0010'],
+        ]);
+
+        $this->assertSame('technical_service_part_physical_stock_v1', $definition['contract_id']);
+        $this->assertSame([1, 5], $definition['warehouse_context']);
+        $this->assertStringContainsString('dbo.fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE())', $sql);
+        $this->assertStringContainsString('dbo.fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE())', $sql);
+        $this->assertStringContainsString("IN (N'EE.BCK.STD.0010', N'TKN000009')", $sql);
+        $this->assertStringNotContainsString('reserved', strtolower($sql));
+        $this->assertStringNotContainsString('available', strtolower($sql));
+        $this->assertStringNotContainsString('[[', $sql);
+
+        try {
+            $catalog->render('stock.physical_quantity', ['item_codes' => array_fill(0, 21, 'OVER-LIMIT')]);
+            $this->fail('Physical-stock batch limit must fail closed.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
+        }
+
+        try {
+            $catalog->n8nTemplate('stock.physical_quantity');
+            $this->fail('Physical stock must not gain an n8n path.');
         } catch (DomainException $exception) {
             $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
         }

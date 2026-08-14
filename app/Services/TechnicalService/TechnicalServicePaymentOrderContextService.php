@@ -12,6 +12,7 @@ use App\Services\Mikro\MikroResponseSchemaCatalog;
 use App\Support\TechnicalServiceTurkeyLocations;
 use DomainException;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -56,9 +57,15 @@ class TechnicalServicePaymentOrderContextService
 
     private const PART_DESCRIPTION2_VERSION = 2;
 
-    private const ITEM_CLASSIFICATION_VERSION = 'technical-service-part-classification-v1';
+    private const ITEM_CLASSIFICATION_VERSION = 'technical-service-part-classification-v2';
 
     private const MAX_PART_LINES = 20;
+
+    private const PHYSICAL_STOCK_CACHE_SECONDS = 30;
+
+    private const PHYSICAL_STOCK_SCALE = 6;
+
+    private const PHYSICAL_STOCK_WAREHOUSES = [1, 5];
 
     public function __construct(
         private readonly MikroApiClient $mikro,
@@ -121,8 +128,8 @@ class TechnicalServicePaymentOrderContextService
                 ->map(fn (array $row): string => trim((string) ($row['item_code'] ?? '')))
                 ->filter()
                 ->all());
-            $rows = $candidateRows
-                ->map(function (array $row) use ($request, $freshnessAt, $sourceLabel, $deviceCodes): array {
+            $classifiedRows = $candidateRows
+                ->map(function (array $row) use ($freshnessAt, $sourceLabel, $deviceCodes): array {
                     $classification = $this->classifyStockItem($row, $deviceCodes);
                     $detailTrackingType = filter_var($row['detail_tracking_type'] ?? null, FILTER_VALIDATE_INT);
                     $serialTrackingState = match ($detailTrackingType) {
@@ -141,6 +148,14 @@ class TechnicalServicePaymentOrderContextService
                         'reserved' => null,
                         'available' => null,
                         'availability_verified' => false,
+                        'physical_stock_state' => $classification['selectable'] ? 'unverified' : 'not_applicable',
+                        'physical_stock_verified' => false,
+                        'physical_stock_total' => null,
+                        'physical_stock_total_label' => null,
+                        'physical_stock_warehouses' => [],
+                        'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+                        'physical_stock_correlation_id' => null,
+                        'stock_status_label' => $classification['selectable'] ? 'Stok doğrulanamadı' : null,
                         'serial_tracking_state' => $serialTrackingState,
                         'serial_tracking_required' => $serialTrackingState === 'required',
                         'serials' => [],
@@ -154,8 +169,19 @@ class TechnicalServicePaymentOrderContextService
                         throw new DomainException('MIKRO_STOCK_SELECTION_SCHEMA_INCOMPLETE');
                     }
 
-                    return $this->partSearchItem($request, $item);
+                    return $item;
                 })
+                ->values();
+
+            $stockByCode = $this->physicalStockByItemCodes($classifiedRows
+                ->filter(fn (array $item): bool => (bool) ($item['selectable'] ?? false))
+                ->pluck('item_code')
+                ->all());
+            $rows = $classifiedRows
+                ->map(fn (array $item): array => $this->partSearchItem(
+                    $request,
+                    $this->applyPhysicalStockProjection($item, $stockByCode),
+                ))
                 ->values();
         } catch (DomainException $exception) {
             report($exception);
@@ -441,7 +467,7 @@ class TechnicalServicePaymentOrderContextService
         ?string $providerFamily = null,
         ?string $providerMode = null,
     ): array {
-        $normalized = $this->normalize($request, $purpose, $input, $amount, $currency);
+        $normalized = $this->normalize($request, $purpose, $input, $amount, $currency, true);
         $expectedHash = trim((string) ($input['expected_context_hash'] ?? ''));
         $expectedRevision = (int) ($input['expected_revision'] ?? 0);
         if ($expectedHash === '' || ! hash_equals($normalized['context_hash'], $expectedHash)) {
@@ -780,6 +806,8 @@ class TechnicalServicePaymentOrderContextService
     /** @return array<string, mixed> */
     public function finalizeWithoutPayment(object $context, ?Authenticatable $actor): array
     {
+        $this->revalidateStoredContextStock($context);
+
         return DB::transaction(function () use ($context, $actor): array {
             $locked = DB::table(self::TABLE)->where('id', (int) $context->id)->lockForUpdate()->first();
             if (! $locked) {
@@ -926,6 +954,7 @@ class TechnicalServicePaymentOrderContextService
         array $input,
         float $amount,
         string $currency,
+        bool $revalidatePhysicalStock = false,
     ): array {
         if (! in_array($purpose, [self::PURPOSE_MOUNT_COLLECTION, self::PURPOSE_PART_CHARGE], true)) {
             throw ValidationException::withMessages(['purpose' => 'Sipariş hazırlığı bu tahsilat amacı için kullanılamaz.']);
@@ -978,6 +1007,9 @@ class TechnicalServicePaymentOrderContextService
                     ]);
                 }
                 $lines = $this->selectedStockItems($request, $input, $commercialMode, $deliveryMode, $currency);
+                if ($revalidatePhysicalStock) {
+                    $lines = $this->revalidatePhysicalStockLines($lines);
+                }
                 $part = $lines[0] ?? null;
                 $quantity = array_sum(array_map(fn (array $line): float => (float) $line['quantity'], $lines));
                 $collectionAllocation = self::ALLOCATION_RETAIN_COMPANY;
@@ -1052,7 +1084,7 @@ class TechnicalServicePaymentOrderContextService
             : self::DESCRIPTION2_VERSION;
         $readiness = $this->partReadiness($partSupplier, $lines, $taxMode);
         $lines = array_map(function (array $line): array {
-            unset($line['quantity_milli'], $line['unit_price_minor'], $line['line_total_minor']);
+            unset($line['quantity_milli'], $line['unit_price_minor'], $line['line_total_minor'], $line['physical_stock_total_micros']);
 
             return $line;
         }, $lines);
@@ -1378,9 +1410,22 @@ class TechnicalServicePaymentOrderContextService
                 ]);
             }
             $itemKind = trim((string) ($decoded['item_kind'] ?? ($fixtureTransport ? 'part' : 'unknown')));
-            if ($itemKind !== 'part' || ($decoded['selectable'] ?? false) !== true) {
+            if (! in_array($itemKind, ['part', 'accessory'], true) || ($decoded['selectable'] ?? false) !== true) {
                 throw ValidationException::withMessages([
                     'order_context.lines.'.$index.'.stock_selection_token' => (string) ($decoded['selection_blocker'] ?? 'Türü doğrulanmadan bu kayıt parça olarak seçilemez.'),
+                ]);
+            }
+
+            $physicalStockVerified = ($decoded['physical_stock_verified'] ?? $decoded['availability_verified'] ?? false) === true;
+            $physicalStockMicros = $this->signedDecimalToScaledInteger($decoded['physical_stock_total'] ?? null);
+            if (! $physicalStockVerified || $physicalStockMicros === null) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.',
+                ]);
+            }
+            if ($physicalStockMicros <= 0) {
+                throw ValidationException::withMessages([
+                    'order_context.lines.'.$index.'.stock_selection_token' => 'Stokta yok',
                 ]);
             }
 
@@ -1428,6 +1473,14 @@ class TechnicalServicePaymentOrderContextService
                     ]);
                 }
                 $merged[$lineKey]['quantity_milli'] += $quantityMilli;
+                $merged[$lineKey]['physical_stock_total_micros'] = min(
+                    $merged[$lineKey]['physical_stock_total_micros'],
+                    $physicalStockMicros,
+                );
+                $merged[$lineKey]['physical_stock_total_snapshot'] = $this->scaledIntegerToFloat(
+                    $merged[$lineKey]['physical_stock_total_micros'],
+                    self::PHYSICAL_STOCK_SCALE,
+                );
                 if ($merged[$lineKey]['quantity_milli'] > 1000000000) {
                     throw ValidationException::withMessages([
                         'order_context.lines.'.$index.'.quantity' => 'Toplam parça adedi desteklenen üst sınırı aşmamalıdır.',
@@ -1457,7 +1510,7 @@ class TechnicalServicePaymentOrderContextService
                 'item_code' => $itemCode,
                 'item_name' => $itemName,
                 'item_short_name' => $this->nullableText($decoded['item_short_name'] ?? null),
-                'item_kind' => 'part',
+                'item_kind' => $itemKind,
                 'classification_source' => (string) ($decoded['classification_source'] ?? 'no_canonical_evidence'),
                 'classification_contract_version' => (string) ($decoded['classification_contract_version'] ?? self::ITEM_CLASSIFICATION_VERSION),
                 'quantity_milli' => $quantityMilli,
@@ -1473,7 +1526,13 @@ class TechnicalServicePaymentOrderContextService
                 'stock_source_label' => trim((string) ($decoded['source_label'] ?? '')),
                 'stock_freshness_at' => trim((string) ($decoded['freshness_at'] ?? '')),
                 'mikro_contract_fingerprint' => $this->nullableText($decoded['mikro_contract_fingerprint'] ?? null),
-                'availability_verified' => (bool) ($decoded['availability_verified'] ?? false),
+                'availability_verified' => $physicalStockVerified,
+                'physical_stock_verified' => $physicalStockVerified,
+                'physical_stock_state' => 'positive',
+                'physical_stock_total_micros' => $physicalStockMicros,
+                'physical_stock_total_snapshot' => $this->scaledIntegerToFloat($physicalStockMicros, self::PHYSICAL_STOCK_SCALE),
+                'physical_stock_contract_version' => (string) ($decoded['physical_stock_contract_version'] ?? MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION),
+                'physical_stock_correlation_id' => $this->nullableText($decoded['physical_stock_correlation_id'] ?? null),
                 'on_hand' => $decoded['on_hand'] ?? null,
                 'reserved' => $decoded['reserved'] ?? null,
                 'available' => $decoded['available'] ?? null,
@@ -1487,6 +1546,14 @@ class TechnicalServicePaymentOrderContextService
                     ? null
                     : 0.0,
             ];
+        }
+
+        foreach ($merged as $line) {
+            if (($line['quantity_milli'] * (10 ** (self::PHYSICAL_STOCK_SCALE - 3))) > $line['physical_stock_total_micros']) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'Stokta yalnız '.$this->quantityLabel((float) $line['physical_stock_total_snapshot']).' '.$line['unit_code'].' bulunuyor.',
+                ]);
+            }
         }
 
         return array_values($merged);
@@ -1557,8 +1624,17 @@ class TechnicalServicePaymentOrderContextService
         }
 
         $blockers = [];
-        if (collect($lines)->contains(fn (array $line): bool => ! (bool) ($line['availability_verified'] ?? false))) {
-            $blockers['stock_availability_unverified'] = 'Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.';
+        if (collect($lines)->contains(fn (array $line): bool => ! (bool) ($line['physical_stock_verified'] ?? $line['availability_verified'] ?? false))) {
+            $blockers['physical_stock_unverified'] = 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.';
+        }
+        if (collect($lines)->contains(fn (array $line): bool => (bool) ($line['physical_stock_verified'] ?? $line['availability_verified'] ?? false)
+            && is_numeric($line['physical_stock_total_snapshot'] ?? null)
+            && (float) $line['physical_stock_total_snapshot'] <= 0)) {
+            $blockers['physical_stock_empty'] = 'Seçilen parçalardan en az biri stokta bulunmuyor.';
+        }
+        if (collect($lines)->contains(fn (array $line): bool => is_numeric($line['physical_stock_total_snapshot'] ?? null)
+            && (float) ($line['quantity'] ?? 0) > (float) $line['physical_stock_total_snapshot'])) {
+            $blockers['physical_stock_quantity_exceeded'] = 'Seçilen parça adedi doğrulanmış fiziksel stok miktarını aşıyor.';
         }
         if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? 'unverified') === 'unverified')) {
             $blockers['serial_tracking_unverified'] = 'Parça seri takip kuralı doğrulanmadan ödeme ve sipariş hazırlığı tamamlanamaz.';
@@ -1717,6 +1793,7 @@ class TechnicalServicePaymentOrderContextService
                 'stock_freshness_at' => filled($line['stock_freshness_at'] ?? null) ? $line['stock_freshness_at'] : null,
                 'mikro_contract_fingerprint' => $line['mikro_contract_fingerprint'] ?? null,
                 'availability_verified' => (bool) ($line['availability_verified'] ?? false),
+                'physical_stock_total_snapshot' => $line['physical_stock_total_snapshot'] ?? null,
                 'tax_mode_snapshot' => $line['tax_mode_snapshot'],
                 'vat_rate_snapshot' => $line['vat_rate_snapshot'],
                 'created_by' => $actor?->getAuthIdentifier(),
@@ -1774,6 +1851,26 @@ class TechnicalServicePaymentOrderContextService
                     'stock_freshness_at' => $line->stock_freshness_at,
                     'mikro_contract_fingerprint' => $line->mikro_contract_fingerprint,
                     'availability_verified' => (bool) $line->availability_verified,
+                    'physical_stock_verified' => (bool) $line->availability_verified
+                        && is_numeric($line->physical_stock_total_snapshot ?? null),
+                    'physical_stock_state' => ! is_numeric($line->physical_stock_total_snapshot ?? null)
+                        ? 'unverified'
+                        : ((float) $line->physical_stock_total_snapshot > 0 ? 'positive' : 'out_of_stock'),
+                    'physical_stock_total' => is_numeric($line->physical_stock_total_snapshot ?? null)
+                        ? (float) $line->physical_stock_total_snapshot
+                        : null,
+                    'physical_stock_total_snapshot' => is_numeric($line->physical_stock_total_snapshot ?? null)
+                        ? (float) $line->physical_stock_total_snapshot
+                        : null,
+                    'physical_stock_total_label' => is_numeric($line->physical_stock_total_snapshot ?? null)
+                        ? $this->quantityLabel((float) $line->physical_stock_total_snapshot)
+                        : null,
+                    'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+                    'stock_status_label' => ! is_numeric($line->physical_stock_total_snapshot ?? null)
+                        ? 'Stok yeniden doğrulanmalı'
+                        : ((float) $line->physical_stock_total_snapshot > 0
+                            ? 'Stokta: '.$this->quantityLabel((float) $line->physical_stock_total_snapshot).' '.((string) ($line->unit_code ?: 'ADET'))
+                            : 'Stokta yok'),
                     'on_hand' => null,
                     'reserved' => null,
                     'available' => null,
@@ -1783,23 +1880,40 @@ class TechnicalServicePaymentOrderContextService
                     'tax_mode_snapshot' => (string) $line->tax_mode_snapshot,
                     'vat_rate_snapshot' => is_numeric($line->vat_rate_snapshot) ? (float) $line->vat_rate_snapshot : null,
                 ];
-                if ($includeSelectionTokens && (string) $line->item_kind === 'part' && (string) $line->stock_source === 'mikro') {
+                if ($includeSelectionTokens
+                    && in_array((string) $line->item_kind, ['part', 'accessory'], true)
+                    && (string) $line->stock_source === 'mikro') {
+                    $physicalStockTotal = is_numeric($line->physical_stock_total_snapshot ?? null)
+                        ? (float) $line->physical_stock_total_snapshot
+                        : null;
+                    $physicalStockVerified = (bool) $line->availability_verified && $physicalStockTotal !== null;
                     $projection['selection_token'] = $this->selectionTokenForSnapshot((int) $row->technical_service_request_id, [
                         'item_code' => (string) $line->item_code,
                         'item_name' => (string) $line->item_name_snapshot,
                         'item_short_name' => $line->item_short_name_snapshot,
-                        'item_kind' => 'part',
-                        'item_kind_label' => 'Yedek parça',
+                        'item_kind' => (string) $line->item_kind,
+                        'item_kind_label' => (string) $line->item_kind === 'accessory' ? 'Aksesuar / sunum ekipmanı' : 'Yedek parça',
                         'classification_source' => (string) $line->classification_source,
                         'classification_contract_version' => (string) $line->classification_contract_version,
-                        'selectable' => true,
-                        'selection_blocker' => null,
+                        'selectable' => $physicalStockVerified && $physicalStockTotal > 0,
+                        'selection_blocker' => ! $physicalStockVerified ? 'Stok yeniden doğrulanmalı' : ($physicalStockTotal > 0 ? null : 'Stokta yok'),
                         'unit_code' => $line->unit_code,
                         'warehouse_code' => null,
                         'on_hand' => null,
                         'reserved' => null,
                         'available' => null,
                         'availability_verified' => (bool) $line->availability_verified,
+                        'physical_stock_verified' => $physicalStockVerified,
+                        'physical_stock_state' => ! $physicalStockVerified ? 'unverified' : ($physicalStockTotal > 0 ? 'positive' : 'out_of_stock'),
+                        'physical_stock_total' => $physicalStockTotal,
+                        'physical_stock_total_label' => $physicalStockTotal !== null ? $this->quantityLabel($physicalStockTotal) : null,
+                        'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+                        'physical_stock_correlation_id' => null,
+                        'stock_status_label' => ! $physicalStockVerified
+                            ? 'Stok yeniden doğrulanmalı'
+                            : ($physicalStockTotal > 0
+                                ? 'Stokta: '.$this->quantityLabel($physicalStockTotal).' '.((string) ($line->unit_code ?: 'ADET'))
+                                : 'Stokta yok'),
                         'serial_tracking_state' => (string) $line->serial_tracking_state,
                         'serial_tracking_required' => (string) $line->serial_tracking_state === 'required',
                         'serials' => [],
@@ -2075,6 +2189,18 @@ class TechnicalServicePaymentOrderContextService
                 'on_hand' => 24.0,
                 'reserved' => 3.0,
                 'available' => 21.0,
+                'availability_verified' => true,
+                'physical_stock_state' => 'positive',
+                'physical_stock_verified' => true,
+                'physical_stock_total' => 24.0,
+                'physical_stock_total_label' => '24',
+                'physical_stock_warehouses' => [
+                    ['warehouse_code' => 1, 'physical_quantity' => 20.0],
+                    ['warehouse_code' => 5, 'physical_quantity' => 4.0],
+                ],
+                'physical_stock_contract_version' => 'test-fixture-v1',
+                'physical_stock_correlation_id' => null,
+                'stock_status_label' => 'Stokta: 24 ADET',
                 'serial_tracking_required' => false,
                 'serial_tracking_state' => 'not_required',
                 'serials' => [],
@@ -2097,6 +2223,18 @@ class TechnicalServicePaymentOrderContextService
                 'on_hand' => 6.0,
                 'reserved' => 1.0,
                 'available' => 5.0,
+                'availability_verified' => true,
+                'physical_stock_state' => 'positive',
+                'physical_stock_verified' => true,
+                'physical_stock_total' => 6.0,
+                'physical_stock_total_label' => '6',
+                'physical_stock_warehouses' => [
+                    ['warehouse_code' => 1, 'physical_quantity' => 5.0],
+                    ['warehouse_code' => 5, 'physical_quantity' => 1.0],
+                ],
+                'physical_stock_contract_version' => 'test-fixture-v1',
+                'physical_stock_correlation_id' => null,
+                'stock_status_label' => 'Stokta: 6 ADET',
                 'serial_tracking_required' => true,
                 'serial_tracking_state' => 'required',
                 'serials' => ['TSP-2026-0001', 'TSP-2026-0002', 'TSP-2026-0003'],
@@ -2178,6 +2316,16 @@ class TechnicalServicePaymentOrderContextService
                 'selection_blocker' => null,
             ];
         }
+        if ($stockType === 6) {
+            return [
+                'item_kind' => 'accessory',
+                'item_kind_label' => 'Aksesuar / sunum ekipmanı',
+                'classification_source' => 'mikro_stock_type',
+                'classification_contract_version' => self::ITEM_CLASSIFICATION_VERSION,
+                'selectable' => true,
+                'selection_blocker' => null,
+            ];
+        }
         if (isset($deviceCodes[$itemCode])) {
             return [
                 'item_kind' => 'device',
@@ -2197,6 +2345,249 @@ class TechnicalServicePaymentOrderContextService
             'selectable' => false,
             'selection_blocker' => 'Türü doğrulanmadan bu kayıt parça olarak seçilemez.',
         ];
+    }
+
+    /** @param array<string, mixed> $item @param array<string, array<string, mixed>> $stockByCode @return array<string, mixed> */
+    private function applyPhysicalStockProjection(array $item, array $stockByCode): array
+    {
+        if (($item['selectable'] ?? false) !== true) {
+            return $item;
+        }
+
+        $key = mb_strtoupper(trim((string) ($item['item_code'] ?? '')), 'UTF-8');
+        $stock = $stockByCode[$key] ?? $this->unverifiedPhysicalStock($key);
+        $verified = ($stock['physical_stock_verified'] ?? false) === true;
+        $total = $stock['physical_stock_total'] ?? null;
+        $positive = $verified && is_numeric($total) && (float) $total > 0;
+
+        return [
+            ...$item,
+            'unit_code' => filled($item['unit_code'] ?? null) ? $item['unit_code'] : ($stock['unit_code'] ?? null),
+            'availability_verified' => $verified,
+            'physical_stock_state' => (string) ($stock['physical_stock_state'] ?? 'unverified'),
+            'physical_stock_verified' => $verified,
+            'physical_stock_total' => $total,
+            'physical_stock_total_label' => $stock['physical_stock_total_label'] ?? null,
+            'physical_stock_warehouses' => $stock['physical_stock_warehouses'] ?? [],
+            'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+            'physical_stock_correlation_id' => $stock['physical_stock_correlation_id'] ?? null,
+            'stock_status_label' => $positive
+                ? 'Stokta: '.($stock['physical_stock_total_label'] ?? $total).' '.((string) ($item['unit_code'] ?: $stock['unit_code'] ?: 'ADET'))
+                : ($verified ? 'Stokta yok' : 'Stok doğrulanamadı'),
+            'selectable' => $positive,
+            'selection_blocker' => $positive ? null : ($verified ? 'Stokta yok' : 'Stok doğrulanamadı'),
+            'freshness_at' => $stock['freshness_at'] ?? $item['freshness_at'],
+            'mikro_contract_fingerprint' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT,
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $itemCodes
+     * @return array<string, array<string, mixed>>
+     */
+    private function physicalStockByItemCodes(array $itemCodes, bool $strict = false, bool $useCache = true): array
+    {
+        $codes = collect($itemCodes)
+            ->map(fn (mixed $code): string => mb_strtoupper(trim((string) $code), 'UTF-8'))
+            ->filter()
+            ->unique()
+            ->sort()
+            ->values();
+        if ($codes->isEmpty()) {
+            return [];
+        }
+        if ($codes->count() > self::MAX_PART_LINES) {
+            throw new DomainException('MIKRO_PHYSICAL_STOCK_BATCH_LIMIT_EXCEEDED');
+        }
+
+        $unverified = $codes
+            ->mapWithKeys(fn (string $code): array => [$code => $this->unverifiedPhysicalStock($code)])
+            ->all();
+        $cacheKey = 'technical-service:physical-stock:'
+            .MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION.':'
+            .hash('sha256', json_encode($codes->all(), JSON_THROW_ON_ERROR));
+
+        if ($useCache) {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached)) {
+                $cachedKeys = array_keys($cached);
+                sort($cachedKeys, SORT_STRING);
+                if ($cachedKeys === $codes->all()) {
+                    return $codes
+                        ->mapWithKeys(fn (string $code): array => [$code => $cached[$code]])
+                        ->all();
+                }
+            }
+        }
+
+        try {
+            $result = $this->mikro->physicalStockQuantities($codes->all());
+            if (($result['success'] ?? false) !== true
+                || ($result['stale'] ?? false) === true
+                || ($result['fallback_used'] ?? false) === true) {
+                throw new DomainException((string) ($result['error_code'] ?? 'MIKRO_PHYSICAL_STOCK_UNAVAILABLE'));
+            }
+
+            $expected = array_fill_keys($codes->all(), true);
+            $grouped = [];
+            foreach (($result['data'] ?? []) as $row) {
+                if (! is_array($row)) {
+                    throw new DomainException('MIKRO_PHYSICAL_STOCK_SCHEMA_INCOMPLETE');
+                }
+                $itemCode = mb_strtoupper(trim((string) ($row['item_code'] ?? '')), 'UTF-8');
+                $warehouseCode = filter_var($row['warehouse_code'] ?? null, FILTER_VALIDATE_INT);
+                if (! isset($expected[$itemCode]) || ! in_array($warehouseCode, self::PHYSICAL_STOCK_WAREHOUSES, true)) {
+                    throw new DomainException('MIKRO_PHYSICAL_STOCK_SCHEMA_INCOMPLETE');
+                }
+                if (isset($grouped[$itemCode][$warehouseCode])) {
+                    throw new DomainException('MIKRO_PHYSICAL_STOCK_DUPLICATE_WAREHOUSE');
+                }
+                $grouped[$itemCode][$warehouseCode] = [
+                    'physical_stock_micros' => $this->signedDecimalToScaledInteger($row['physical_quantity'] ?? null),
+                    'unit_code' => $this->nullableText($row['unit_code'] ?? null),
+                ];
+            }
+
+            $resolved = [];
+            foreach ($codes as $code) {
+                $warehouseRows = $grouped[$code] ?? [];
+                ksort($warehouseRows, SORT_NUMERIC);
+                if (array_keys($warehouseRows) !== self::PHYSICAL_STOCK_WAREHOUSES
+                    || collect($warehouseRows)->contains(fn (array $row): bool => $row['physical_stock_micros'] === null)) {
+                    throw new DomainException('MIKRO_PHYSICAL_STOCK_SCHEMA_INCOMPLETE');
+                }
+                $totalMicros = array_sum(array_column($warehouseRows, 'physical_stock_micros'));
+                $total = $this->scaledIntegerToDecimalString($totalMicros, self::PHYSICAL_STOCK_SCALE);
+                $unitCodes = collect($warehouseRows)->pluck('unit_code')->filter()->unique()->values();
+                if ($unitCodes->count() > 1) {
+                    throw new DomainException('MIKRO_PHYSICAL_STOCK_UNIT_MISMATCH');
+                }
+                $resolved[$code] = [
+                    'item_code' => $code,
+                    'unit_code' => $unitCodes->first(),
+                    'physical_stock_state' => $totalMicros > 0 ? 'positive' : 'out_of_stock',
+                    'physical_stock_verified' => true,
+                    'physical_stock_total' => $total,
+                    'physical_stock_total_micros' => $totalMicros,
+                    'physical_stock_total_label' => $this->quantityLabel((float) $total),
+                    'physical_stock_warehouses' => collect(self::PHYSICAL_STOCK_WAREHOUSES)
+                        ->map(fn (int $warehouse): array => [
+                            'warehouse_code' => $warehouse,
+                            'physical_quantity' => $this->scaledIntegerToDecimalString(
+                                (int) $warehouseRows[$warehouse]['physical_stock_micros'],
+                                self::PHYSICAL_STOCK_SCALE,
+                            ),
+                        ])
+                        ->all(),
+                    'source' => 'mikro_api',
+                    'freshness_at' => (string) ($result['freshness_at'] ?? now()->toISOString()),
+                    'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+                    'physical_stock_correlation_id' => $this->nullableText($result['correlation_id'] ?? null),
+                ];
+            }
+
+            if ($useCache) {
+                Cache::put($cacheKey, $resolved, self::PHYSICAL_STOCK_CACHE_SECONDS);
+            }
+
+            return $resolved;
+        } catch (Throwable $exception) {
+            report($exception);
+            if ($strict) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.',
+                ]);
+            }
+
+            return $unverified;
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function unverifiedPhysicalStock(string $itemCode): array
+    {
+        return [
+            'item_code' => $itemCode,
+            'unit_code' => null,
+            'physical_stock_state' => 'unverified',
+            'physical_stock_verified' => false,
+            'physical_stock_total' => null,
+            'physical_stock_total_micros' => null,
+            'physical_stock_total_label' => null,
+            'physical_stock_warehouses' => [],
+            'source' => 'mikro_api',
+            'freshness_at' => null,
+            'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+            'physical_stock_correlation_id' => null,
+        ];
+    }
+
+    /** @param array<int, array<string, mixed>> $lines @return array<int, array<string, mixed>> */
+    private function revalidatePhysicalStockLines(array $lines): array
+    {
+        if ($lines === [] || (app()->environment('testing')
+            && (bool) config('services.technical_service.payment_order_context_test_stock', false))) {
+            return $lines;
+        }
+
+        $stockByCode = $this->physicalStockByItemCodes(
+            array_column($lines, 'item_code'),
+            true,
+            false,
+        );
+
+        return array_map(function (array $line) use ($stockByCode): array {
+            $code = mb_strtoupper(trim((string) ($line['item_code'] ?? '')), 'UTF-8');
+            $stock = $stockByCode[$code] ?? null;
+            if (! is_array($stock) || ($stock['physical_stock_verified'] ?? false) !== true) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.',
+                ]);
+            }
+            $stockMicros = (int) $stock['physical_stock_total_micros'];
+            if ($stockMicros <= 0) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => $code.' için stok bulunmuyor. İşlem tamamlanamaz.',
+                ]);
+            }
+            $quantityMilli = $this->decimalToScaledInteger(
+                $line['quantity'] ?? null,
+                3,
+                'order_context.lines',
+                1,
+                1000000000,
+            );
+            if (($quantityMilli * (10 ** (self::PHYSICAL_STOCK_SCALE - 3))) > $stockMicros) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => $code.' için talep edilen miktar stoktan fazla. Stok: '
+                        .$stock['physical_stock_total_label'].' · Talep: '.$this->quantityLabel((float) $line['quantity']),
+                ]);
+            }
+
+            return [
+                ...$line,
+                'availability_verified' => true,
+                'physical_stock_verified' => true,
+                'physical_stock_state' => 'positive',
+                'physical_stock_total_micros' => $stockMicros,
+                'physical_stock_total_snapshot' => $stock['physical_stock_total'],
+                'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
+                'physical_stock_correlation_id' => $stock['physical_stock_correlation_id'],
+                'stock_freshness_at' => $stock['freshness_at'],
+                'mikro_contract_fingerprint' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT,
+            ];
+        }, $lines);
+    }
+
+    private function revalidateStoredContextStock(object $context): void
+    {
+        $stored = DB::table(self::TABLE)->where('id', (int) $context->id)->first();
+        if (! $stored || (string) $stored->part_supplier !== self::SUPPLIER_EMAKS) {
+            return;
+        }
+
+        $projection = $this->rowProjection($stored, false);
+        $this->revalidatePhysicalStockLines(is_array($projection['lines'] ?? null) ? $projection['lines'] : []);
     }
 
     private function activeTechnician(TechnicalServiceRequest $request): TechnicalServiceTechnician
@@ -2570,6 +2961,41 @@ class TechnicalServicePaymentOrderContextService
         }
 
         return $scaled;
+    }
+
+    private function signedDecimalToScaledInteger(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (! is_scalar($value)) {
+            throw new DomainException('MIKRO_PHYSICAL_STOCK_QUANTITY_INVALID');
+        }
+        $normalized = trim((string) $value);
+        if (! preg_match('/^-?\d+(?:\.\d{1,'.self::PHYSICAL_STOCK_SCALE.'})?$/', $normalized)) {
+            throw new DomainException('MIKRO_PHYSICAL_STOCK_QUANTITY_INVALID');
+        }
+        $negative = str_starts_with($normalized, '-');
+        $absolute = ltrim($normalized, '-');
+        [$whole, $fraction] = array_pad(explode('.', $absolute, 2), 2, '');
+        if (strlen($whole) > 12) {
+            throw new DomainException('MIKRO_PHYSICAL_STOCK_QUANTITY_INVALID');
+        }
+        $fraction = str_pad($fraction, self::PHYSICAL_STOCK_SCALE, '0');
+        $scaled = ((int) $whole * (10 ** self::PHYSICAL_STOCK_SCALE)) + (int) $fraction;
+
+        return $negative ? -$scaled : $scaled;
+    }
+
+    private function scaledIntegerToDecimalString(int $value, int $scale): string
+    {
+        $negative = $value < 0;
+        $absolute = abs($value);
+        $divisor = 10 ** $scale;
+        $whole = intdiv($absolute, $divisor);
+        $fraction = str_pad((string) ($absolute % $divisor), $scale, '0', STR_PAD_LEFT);
+
+        return ($negative ? '-' : '').$whole.'.'.$fraction;
     }
 
     private function scaledIntegerToFloat(int $value, int $scale): float

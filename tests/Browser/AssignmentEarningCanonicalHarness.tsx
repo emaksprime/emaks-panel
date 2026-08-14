@@ -1657,9 +1657,18 @@ function Harness() {
               ? 'none'
               : purpose === 'mount_collection' ? 'standard_from_mikro_service_item' : supplier === 'emaks_prime' ? 'standard_from_mikro' : null
             const stockByToken = new Map([
-              ['tkn-token', { item_code: 'TKN000009', item_name: 'DDL 720 DIŞ DOKUMATİK', item_short_name: 'DIŞ DOKUMATİK', unit_code: 'ADET', serial_tracking_state: 'not_required' }],
-              ['part-two-token', { item_code: 'TKN000010', item_name: 'DDL 720 İç Göbek', item_short_name: 'İç Göbek', unit_code: 'ADET', serial_tracking_state: 'not_required' }],
-              ['serial-part-token', { item_code: 'TKN000011', item_name: 'Seri Takipli Motor', item_short_name: null, unit_code: 'ADET', serial_tracking_state: 'required' }],
+              ['stand-one-token', {
+                item_code: 'EE.BCK.STD.0010', item_name: 'PHILIPS SUNUM STANDI - D BOY', item_short_name: 'SUNUM STANDI', unit_code: 'ADET',
+                item_kind: 'accessory' as const, physical_stock_total: 83, physical_stock_total_label: '83', serial_tracking_state: 'not_required',
+              }],
+              ['stand-two-token', {
+                item_code: 'EE.BCK.STD.0011', item_name: 'PHILIPS SUNUM STANDI - Y BOY', item_short_name: 'SUNUM STANDI', unit_code: 'ADET',
+                item_kind: 'accessory' as const, physical_stock_total: 4, physical_stock_total_label: '4', serial_tracking_state: 'not_required',
+              }],
+              ['serial-part-token', {
+                item_code: 'TKN000011', item_name: 'Seri Takipli Motor', item_short_name: null, unit_code: 'ADET',
+                item_kind: 'part' as const, physical_stock_total: 2, physical_stock_total_label: '2', serial_tracking_state: 'required',
+              }],
             ])
             const inputLines = Array.isArray(orderInput.lines) ? orderInput.lines : []
             const partLines = supplier === 'emaks_prime'
@@ -1669,6 +1678,9 @@ function Harness() {
                     item_name: 'Doğrulanmamış satır',
                     item_short_name: null,
                     unit_code: 'ADET',
+                    item_kind: 'unknown' as const,
+                    physical_stock_total: null,
+                    physical_stock_total_label: null,
                     serial_tracking_state: 'unverified',
                   }
                   const quantity = Number(line.quantity ?? 0)
@@ -1681,9 +1693,9 @@ function Harness() {
                     position: index + 1,
                     selection_token: String(line.stock_selection_token ?? ''),
                     ...stock,
-                    item_kind: 'part' as const,
+                    item_kind: stock.item_kind,
                     classification_source: 'mikro_stock_type',
-                    classification_contract_version: 'technical-service-part-classification-v1',
+                    classification_contract_version: 'technical-service-part-classification-v2',
                     quantity,
                     unit_price: unitPrice,
                     unit_price_label: `${unitPrice.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`,
@@ -1693,8 +1705,15 @@ function Harness() {
                     warehouse_code: null,
                     stock_source: 'mikro',
                     stock_source_label: 'Mikro API',
-                    stock_freshness_at: '2026-08-14T15:00:00+03:00',
-                    availability_verified: false,
+                    stock_freshness_at: '2026-08-14T17:45:00+03:00',
+                    availability_verified: stock.physical_stock_total !== null,
+                    physical_stock_verified: stock.physical_stock_total !== null,
+                    physical_stock_state: Number(stock.physical_stock_total) > 0 ? 'positive' as const : 'unverified' as const,
+                    physical_stock_total: stock.physical_stock_total,
+                    physical_stock_total_snapshot: stock.physical_stock_total,
+                    physical_stock_total_label: stock.physical_stock_total_label,
+                    physical_stock_contract_version: 'technical-service-part-physical-stock-v1',
+                    stock_status_label: stock.physical_stock_total !== null ? `Stokta: ${stock.physical_stock_total_label} ${stock.unit_code}` : 'Stok doğrulanamadı',
                     serial_tracking_required: stock.serial_tracking_state === 'required',
                     selected_part_serial: null,
                   }
@@ -1706,7 +1725,10 @@ function Harness() {
               : commercialMode === 'free' && deliveryMode === 'shipment' ? 0 : requestedAmount
             const amount = supplier === 'emaks_prime' ? orderLineTotal : requestedAmount
             const collectionAmount = collectionRequired ? amount : 0
-            const readinessBlocked = purpose === 'part_charge' && supplier === 'emaks_prime'
+            const readinessBlocked = purpose === 'part_charge'
+              && supplier === 'emaks_prime'
+              && (taxMode === 'standard_from_mikro'
+                || partLines.some((line) => line.serial_tracking_state === 'required' && !line.selected_part_serial))
             const paymentStatus = collectionRequired ? (paymentLinkRequired && !readinessBlocked ? 'paid' : 'pending') : 'not_required'
             const stateValue = readinessBlocked
               ? 'draft'
@@ -1864,8 +1886,10 @@ function Harness() {
                 ready: false,
                 order_ready: false,
                 payment_ready: false,
-                blocker_codes: ['stock_availability_unverified'],
-                blockers: ['Parça kimlikleri Mikro API’den doğrulandı. Stok uygunluğu henüz doğrulanmadığı için ödeme bağlantısı oluşturulamaz.'],
+                blocker_codes: taxMode === 'standard_from_mikro' ? ['vat_unverified'] : ['part_serial_selection_unverified'],
+                blockers: taxMode === 'standard_from_mikro'
+                  ? ['KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.']
+                  : ['Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.'],
               } : {
                 ready: true,
                 order_ready: true,
