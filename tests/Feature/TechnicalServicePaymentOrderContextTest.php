@@ -10,12 +10,14 @@ use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Services\Mikro\MikroApiClient;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServicePaymentOrderContextService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
+use Mockery;
 use Tests\TestCase;
 
 class TechnicalServicePaymentOrderContextTest extends TestCase
@@ -32,6 +34,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         config([
             'app.key' => 'base64:'.base64_encode(str_repeat('a', 32)),
             'services.partner_portal.public_url' => 'https://payments.example.test',
+            'services.technical_service.payment_order_context_test_stock' => true,
         ]);
     }
 
@@ -207,6 +210,8 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $nonSerial = $this->service()->preview($request, 'part_charge', [
             ...$this->billingInput(),
             'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
             'stock_selection_token' => $gateway['selection_token'],
             'quantity' => 1,
             'shipping_same_as_billing' => true,
@@ -220,6 +225,8 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             $this->service()->preview($request, 'part_charge', [
                 ...$this->billingInput(),
                 'part_supplier' => 'emaks_prime',
+                'commercial_mode' => 'paid',
+                'delivery_mode' => 'shipment',
                 'stock_selection_token' => $tracked['selection_token'],
                 'quantity' => 1,
                 'shipping_same_as_billing' => true,
@@ -232,6 +239,8 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $serialPreview = $this->service()->preview($request, 'part_charge', [
             ...$this->billingInput(),
             'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
             'stock_selection_token' => $tracked['selection_token'],
             'quantity' => 1,
             'selected_part_serial' => 'TSP-2026-0001',
@@ -271,14 +280,19 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertSame('mount_collection', data_get($payment->raw_payload, 'purpose'));
     }
 
-    public function test_changed_context_cannot_reuse_pending_payment(): void
+    public function test_changed_context_cannot_reuse_pending_link(): void
     {
         [$request, $session] = $this->requestFixture();
-        $this->pendingMountContext($request, $session);
+        [, $payment] = $this->pendingMountContext($request, $session);
         $changed = $this->service()->preview($request, 'mount_collection', [
             'billing_source' => 'manual_billing_draft',
             'billing' => $this->manualBilling(),
-        ], 1200, 'TRY');
+        ], 1200, 'TRY', 'fake', 'local');
+
+        $this->assertSame('fresh_link_required', $changed['payment_retry']['state']);
+        $this->assertFalse($changed['payment_retry']['reason_required']);
+        $this->assertSame($payment->id, $changed['payment_retry']['supersede_payment_id']);
+        $this->assertSame(1, $changed['payment_retry']['authoritative_counts']['pending']);
 
         $this->expectException(ValidationException::class);
         $this->service()->prepare($request, 'mount_collection', [
@@ -286,7 +300,129 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'billing' => $this->manualBilling(),
             'expected_context_hash' => $changed['context_hash'],
             'expected_revision' => $changed['revision'],
-        ], 1200, 'TRY', $this->actor(), false);
+        ], 1200, 'TRY', $this->actor(), false, null, 'fake', 'local');
+    }
+
+    public function test_changed_context_explicitly_supersedes_pending_and_creates_one_fresh_link(): void
+    {
+        [$request, $session] = $this->requestFixture();
+        [, $oldPayment] = $this->pendingMountContext($request, $session);
+        $input = [
+            'billing_source' => 'manual_billing_draft',
+            'billing' => $this->manualBilling(),
+        ];
+        $preview = $this->service()->preview($request, 'mount_collection', $input, 1200, 'TRY', 'fake', 'local');
+        $payload = [
+            'amount' => '1200.00',
+            'currency' => 'TRY',
+            'reason' => 'mount_collection',
+            'purpose' => 'mount_collection',
+            'fresh_payment_requested' => true,
+            'order_context' => [
+                ...$input,
+                'expected_context_hash' => $preview['context_hash'],
+                'expected_revision' => $preview['revision'],
+            ],
+        ];
+
+        $this->actingAs($this->actor())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", $payload)
+            ->assertCreated()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING);
+        $oldPayment->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $oldPayment->status);
+        $this->assertSame('order_context_superseded', data_get($oldPayment->raw_payload, 'cancel_source'));
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->where('technical_service_request_id', $request->id)->count());
+
+        $this->actingAs($this->actor())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", $payload)
+            ->assertOk()
+            ->assertJsonPath('ok', true);
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->where('technical_service_request_id', $request->id)->count());
+        $this->assertSame(1, TechnicalServiceMountPayment::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->count());
+    }
+
+    public function test_unsafe_pending_session_can_be_superseded_once(): void
+    {
+        [$request, $session] = $this->requestFixture();
+        [, $oldPayment] = $this->pendingMountContext($request, $session);
+        $oldPayment->forceFill(['payment_url' => null])->save();
+        $preview = $this->service()->preview($request, 'mount_collection', $this->billingInput(), 1200, 'TRY', 'fake', 'local');
+
+        $this->assertSame('fresh_link_required', $preview['payment_retry']['state']);
+        $this->assertTrue($preview['payment_retry']['reason_required']);
+        $this->assertSame($oldPayment->id, $preview['payment_retry']['supersede_payment_id']);
+
+        $payload = [
+            'amount' => '1200.00',
+            'currency' => 'TRY',
+            'reason' => 'mount_collection',
+            'purpose' => 'mount_collection',
+            'fresh_payment_requested' => true,
+            'terminal_retry_reason' => 'Eski sağlayıcı oturumu güncel yerel profile ait değil.',
+            'order_context' => [
+                ...$this->billingInput(),
+                'expected_context_hash' => $preview['context_hash'],
+                'expected_revision' => $preview['revision'],
+            ],
+        ];
+
+        $this->actingAs($this->actor())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", $payload)
+            ->assertCreated()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $oldPayment->fresh()->status);
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->where('technical_service_request_id', $request->id)->count());
+        $this->assertSame(2, DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+            ->where('technical_service_request_id', $request->id)
+            ->where('payment_purpose', 'mount_collection')
+            ->count());
+
+        $this->actingAs($this->actor())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", $payload)
+            ->assertOk()
+            ->assertJsonPath('ok', true);
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->where('technical_service_request_id', $request->id)->count());
+    }
+
+    public function test_terminal_payment_allows_explicit_fresh_retry(): void
+    {
+        [$request, $session] = $this->requestFixture();
+        [$context, $oldPayment] = $this->pendingMountContext($request, $session);
+        $oldPayment->forceFill(['status' => TechnicalServiceMountPayment::STATUS_FAILED])->save();
+        $this->service()->releaseFailedPayment((int) $context->id, $oldPayment->fresh());
+        $preview = $this->service()->preview($request, 'mount_collection', $this->billingInput(), 1200, 'TRY', 'fake', 'local');
+
+        $this->assertSame('fresh_link_required', $preview['payment_retry']['state']);
+        $this->assertTrue($preview['payment_retry']['reason_required']);
+        $this->assertSame(1, $preview['payment_retry']['authoritative_counts']['failed']);
+
+        $this->actingAs($this->actor())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'amount' => '1200.00',
+                'currency' => 'TRY',
+                'reason' => 'mount_collection',
+                'purpose' => 'mount_collection',
+                'fresh_payment_requested' => true,
+                'terminal_retry_reason' => 'Önceki sağlayıcı oturumu başarısız tamamlandı.',
+                'order_context' => [
+                    ...$this->billingInput(),
+                    'expected_context_hash' => $preview['context_hash'],
+                    'expected_revision' => $preview['revision'],
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $oldPayment->fresh()->status);
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->where('technical_service_request_id', $request->id)->count());
     }
 
     public function test_paid_mount_context_waits_for_future_mikro_write(): void
@@ -310,6 +446,8 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         [, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, [
             ...$this->billingInput(),
             'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
             'stock_selection_token' => $this->stockItem($request, 'Gateway')['selection_token'],
             'quantity' => 1,
             'shipping_same_as_billing' => true,
@@ -393,6 +531,8 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->service()->preview($request, 'part_charge', [
             ...$this->billingInput(),
             'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
             'stock_selection_token' => $stock['selection_token'],
             'quantity' => 1,
             'shipping_same_as_billing' => true,
@@ -423,6 +563,419 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         DB::disableQueryLog();
 
         $this->assertCount(0, $queries);
+    }
+
+    public function test_individual_billing_requires_first_and_last_name(): void
+    {
+        [$request] = $this->requestFixture();
+
+        try {
+            $this->mountPreview($request, 1200, [
+                'billing_source' => 'manual_billing_draft',
+                'billing' => [...$this->individualBilling(), 'last_name' => ''],
+            ]);
+            $this->fail('Soyadı olmayan kişi faturası kabul edildi.');
+        } catch (ValidationException $exception) {
+            $this->assertSame('Soyad alanı zorunludur.', $exception->errors()['order_context.billing.last_name'][0]);
+        }
+    }
+
+    public function test_individual_billing_projects_full_name(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->mountPreview($request, 1200, [
+            'billing_source' => 'manual_billing_draft',
+            'billing' => $this->individualBilling(),
+        ]);
+
+        $this->assertSame('Ahmet Aslan', $preview['billing']['name_or_title']);
+        $this->assertStringContainsString('FATURA MÜŞTERİSİ: Ahmet Aslan', $preview['description2_preview']);
+    }
+
+    public function test_company_billing_uses_legal_title(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->mountPreview($request, 1200, [
+            'billing_source' => 'manual_billing_draft',
+            'billing' => $this->manualBilling(),
+        ]);
+
+        $this->assertSame('company', $preview['billing']['billing_type']);
+        $this->assertSame('Fatura AŞ', $preview['billing']['legal_title']);
+        $this->assertSame('Fatura AŞ', $preview['billing']['name_or_title']);
+    }
+
+    public function test_billing_phone_rejects_letters(): void
+    {
+        [$request] = $this->requestFixture();
+
+        $this->expectException(ValidationException::class);
+        $this->mountPreview($request, 1200, [
+            'billing_source' => 'manual_billing_draft',
+            'billing' => [...$this->individualBilling(), 'phone' => 'Aslan'],
+        ]);
+    }
+
+    public function test_billing_city_and_district_are_not_reversed(): void
+    {
+        [$request] = $this->requestFixture();
+
+        try {
+            $this->mountPreview($request, 1200, [
+                'billing_source' => 'manual_billing_draft',
+                'billing' => [...$this->individualBilling(), 'city' => 'Esenyurt', 'district' => 'İstanbul'],
+            ]);
+            $this->fail('Ters il/ilçe kabul edildi.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('Türkiye ili', $exception->errors()['order_context'][0]);
+        }
+    }
+
+    public function test_normal_runtime_never_returns_test_part_fixture(): void
+    {
+        [$request] = $this->requestFixture();
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $mikro = Mockery::mock(MikroApiClient::class);
+        $mikro->shouldReceive('listStocks')->once()->andReturn(['ok' => false, 'error_code' => 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED']);
+        $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
+
+        try {
+            $service->searchParts($request, 'Gateway');
+            $this->fail('Normal runtime sahte stok döndürdü.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('Gerçek stok doğrulanmadan', $exception->errors()['query'][0]);
+            $this->assertStringNotContainsString('TS-PART-001', $exception->errors()['query'][0]);
+        }
+    }
+
+    public function test_part_search_uses_typed_mikro_stock_list(): void
+    {
+        [$request] = $this->requestFixture();
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $mikro = Mockery::mock(MikroApiClient::class);
+        $mikro->shouldReceive('listStocks')->once()->andReturn([
+            'ok' => true,
+            'data' => [[
+                'stock_code' => 'GERCEK-001',
+                'stock_name' => 'Gerçek Parça',
+                'unit_code' => 'ADET',
+                'warehouse_code' => '1',
+                'on_hand' => 5,
+                'reserved' => 1,
+                'available' => 4,
+                'serial_tracking_required' => false,
+            ]],
+        ]);
+        $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
+        $result = $service->searchParts($request, 'GERCEK');
+
+        $this->assertSame('Mikro API', $result['source_label']);
+        $this->assertSame('GERCEK-001', $result['items'][0]['item_code']);
+    }
+
+    public function test_real_part_selection_is_revalidated_with_typed_stock_availability(): void
+    {
+        [$request] = $this->requestFixture();
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $mikro = Mockery::mock(MikroApiClient::class);
+        $mikro->shouldReceive('listStocks')->once()->andReturn([
+            'ok' => true,
+            'data' => [[
+                'stock_code' => 'GERCEK-002',
+                'stock_name' => 'Gerçek Kilit Gövdesi',
+                'unit_code' => 'ADET',
+                'warehouse_code' => '1',
+                'on_hand' => 5,
+                'reserved' => 1,
+                'available' => 4,
+                'serial_tracking_required' => false,
+            ]],
+        ]);
+        $mikro->shouldReceive('stockAvailability')->once()->with('GERCEK-002')->andReturn([
+            'ok' => true,
+            'data' => [[
+                'depot_1_quantity' => 2,
+                'depot_5_quantity' => 3,
+                'available_quantity' => 3,
+            ]],
+        ]);
+        $mikro->shouldNotReceive('serialLookup');
+        $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
+        $stock = $service->searchParts($request, 'GERCEK-002')['items'][0];
+        $preview = $service->preview($request, 'part_charge', [
+            ...$this->billingInput(),
+            'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
+            'stock_selection_token' => $stock['selection_token'],
+            'quantity' => 1,
+            'shipping_same_as_billing' => true,
+        ], 600, 'TRY');
+
+        $this->assertSame('GERCEK-002', $preview['part']['item_code']);
+        $this->assertSame(5.0, $preview['part']['on_hand']);
+        $this->assertSame(2.0, $preview['part']['reserved']);
+        $this->assertSame(3.0, $preview['part']['available']);
+    }
+
+    public function test_serial_tracked_real_part_uses_typed_serial_lookup(): void
+    {
+        [$request] = $this->requestFixture();
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $mikro = Mockery::mock(MikroApiClient::class);
+        $mikro->shouldReceive('listStocks')->once()->andReturn([
+            'ok' => true,
+            'data' => [[
+                'stock_code' => 'GERCEK-SERI-001',
+                'stock_name' => 'Seri Takipli Gerçek Parça',
+                'unit_code' => 'ADET',
+                'warehouse_code' => '1',
+                'on_hand' => 1,
+                'reserved' => 0,
+                'available' => 1,
+                'serial_tracking_required' => true,
+            ]],
+        ]);
+        $mikro->shouldReceive('stockAvailability')->once()->with('GERCEK-SERI-001')->andReturn([
+            'ok' => true,
+            'data' => [[
+                'depot_1_quantity' => 1,
+                'depot_5_quantity' => 0,
+                'available_quantity' => 1,
+            ]],
+        ]);
+        $mikro->shouldReceive('serialLookup')->once()->with('PART-SERIAL-001')->andReturn([
+            'ok' => true,
+            'data' => [[
+                'stock_code' => 'GERCEK-SERI-001',
+                'serial_number' => 'PART-SERIAL-001',
+            ]],
+        ]);
+        $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
+        $stock = $service->searchParts($request, 'GERCEK-SERI-001')['items'][0];
+        $preview = $service->preview($request, 'part_charge', [
+            ...$this->billingInput(),
+            'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
+            'stock_selection_token' => $stock['selection_token'],
+            'selected_part_serial' => 'PART-SERIAL-001',
+            'quantity' => 1,
+            'shipping_same_as_billing' => true,
+        ], 600, 'TRY');
+
+        $this->assertTrue($preview['part']['serial_tracking_required']);
+        $this->assertSame('PART-SERIAL-001', $preview['part']['selected_part_serial']);
+    }
+
+    public function test_free_hand_delivery_resolves_q_and_zero_vat(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->emaksPartPreview($request, [
+            'commercial_mode' => 'free',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ], 750);
+
+        $this->assertSame('Q', $preview['desired_mikro_series']);
+        $this->assertSame('none', $preview['tax_mode']);
+        $this->assertSame(0.0, $preview['vat_rate']);
+        $this->assertFalse($preview['payment_link_required']);
+        $this->assertSame(750.0, $preview['order_line_total']);
+        $this->assertSame(0.0, $preview['collection_amount']);
+        $this->assertSame('not_required', $preview['payment_status']);
+    }
+
+    public function test_free_shipment_resolves_q_zero_amount_and_zero_vat(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->emaksPartPreview($request, [
+            'commercial_mode' => 'free',
+            'delivery_mode' => 'shipment',
+        ], 0);
+
+        $this->assertSame('Q', $preview['desired_mikro_series']);
+        $this->assertSame(0.0, $preview['order_line_total']);
+        $this->assertSame(0.0, $preview['collection_amount']);
+        $this->assertFalse($preview['payment_link_required']);
+        $this->assertTrue($preview['shipment_required']);
+    }
+
+    public function test_paid_hand_delivery_resolves_q_and_zero_vat(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->emaksPartPreview($request, [
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ], 600);
+
+        $this->assertSame('Q', $preview['desired_mikro_series']);
+        $this->assertSame('none', $preview['tax_mode']);
+        $this->assertFalse($preview['payment_link_required']);
+        $this->assertSame('manual', $preview['payment_collection_mode']);
+        $this->assertSame('pending', $preview['payment_status']);
+    }
+
+    public function test_paid_shipment_resolves_s_and_mikro_tax(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->emaksPartPreview($request, [
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
+        ], 600);
+
+        $this->assertSame('S', $preview['desired_mikro_series']);
+        $this->assertSame('standard_from_mikro', $preview['tax_mode']);
+        $this->assertNull($preview['vat_rate']);
+        $this->assertTrue($preview['payment_link_required']);
+        $this->assertSame('payment_paid', $preview['future_order_trigger']);
+    }
+
+    public function test_mount_collection_resolves_s_service_order(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->mountPreview($request);
+
+        $this->assertSame('S', $preview['desired_mikro_series']);
+        $this->assertSame('standard_from_mikro_service_item', $preview['tax_mode']);
+        $this->assertTrue($preview['payment_link_required']);
+        $this->assertFalse($preview['shipment_required']);
+    }
+
+    public function test_client_cannot_override_series_or_tax_mode(): void
+    {
+        [$request] = $this->requestFixture();
+
+        $this->expectException(ValidationException::class);
+        $this->emaksPartPreview($request, [
+            'commercial_mode' => 'free',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+            'desired_mikro_series' => 'S',
+            'tax_mode' => 'standard_from_mikro',
+        ], 600);
+    }
+
+    public function test_hand_delivery_can_never_create_payment_link(): void
+    {
+        [$request] = $this->requestFixture();
+        $preview = $this->emaksPartPreview($request, [
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ], 600);
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$this->emaksPartInput($request, [
+                'commercial_mode' => 'paid',
+                'delivery_mode' => 'hand_delivery',
+                'delivery_target' => 'mrn_customer',
+            ]),
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 600, 'TRY', $this->actor(), false);
+        $projection = $this->service()->finalizeWithoutPayment($prepared['context'], $this->actor());
+
+        $this->assertFalse($projection['payment_link_required']);
+        $this->assertSame('manual_collection_pending', $projection['state']);
+        $this->assertDatabaseCount('technical_service_mount_payments', 0);
+    }
+
+    public function test_part_summary_ignores_newer_mount_context(): void
+    {
+        [$request] = $this->requestFixture();
+        $partInput = $this->emaksPartInput($request, [
+            'commercial_mode' => 'free',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ]);
+        $partPreview = $this->service()->preview($request, 'part_charge', $partInput, 600, 'TRY');
+        $partContext = $this->service()->prepare($request, 'part_charge', [
+            ...$partInput,
+            'expected_context_hash' => $partPreview['context_hash'],
+            'expected_revision' => $partPreview['revision'],
+        ], 600, 'TRY', $this->actor(), false)['context'];
+        $mountInput = $this->billingInput();
+        $mountPreview = $this->mountPreview($request, 1200, $mountInput);
+        $this->service()->prepare($request, 'mount_collection', [
+            ...$mountInput,
+            'expected_context_hash' => $mountPreview['context_hash'],
+            'expected_revision' => $mountPreview['revision'],
+        ], 1200, 'TRY', $this->actor(), false);
+
+        $latestPart = $this->service()->latestPartContext($request);
+
+        $this->assertSame((int) $partContext->id, $latestPart['id']);
+        $this->assertSame('part_charge', $latestPart['payment_purpose']);
+    }
+
+    public function test_technician_delivery_marks_paid_once(): void
+    {
+        [$request] = $this->requestFixture();
+        $this->activateTechnician($request, 'Teslim Ustası', 'Denizli', 'Pamukkale');
+        $input = $this->emaksPartInput($request->fresh(), [
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'technician',
+        ]);
+        $preview = $this->service()->preview($request->fresh(), 'part_charge', $input, 600, 'TRY');
+        $prepared = $this->service()->prepare($request->fresh(), 'part_charge', [
+            ...$input,
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 600, 'TRY', $this->actor(), false);
+        $this->service()->finalizeWithoutPayment($prepared['context'], $this->actor());
+        $updated = $this->service()->updateHandDeliveryState($request->fresh(), (int) $prepared['context']->id, 1, 'record_delivery', null, null, $this->actor());
+        $again = $this->service()->updateHandDeliveryState($request->fresh(), (int) $prepared['context']->id, 2, 'record_delivery', null, null, $this->actor());
+
+        $this->assertSame('delivered', $updated['delivery_status']);
+        $this->assertSame('paid', $updated['payment_status']);
+        $this->assertSame('auto_from_technician_delivery', $updated['payment_status_source']);
+        $this->assertSame(2, $again['revision']);
+        $this->assertSame(1, $request->events()->where('event_type', 'part_hand_delivery_recorded')->count());
+        $this->assertDatabaseCount('technical_service_mount_payments', 0);
+    }
+
+    public function test_ops_can_override_auto_paid_with_reason_and_finance_review(): void
+    {
+        [$request] = $this->requestFixture();
+        $this->activateTechnician($request, 'Teslim Ustası', 'Denizli', 'Pamukkale');
+        $input = $this->emaksPartInput($request->fresh(), [
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'technician',
+        ]);
+        $preview = $this->service()->preview($request->fresh(), 'part_charge', $input, 600, 'TRY');
+        $prepared = $this->service()->prepare($request->fresh(), 'part_charge', [
+            ...$input,
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 600, 'TRY', $this->actor(), false);
+        $this->service()->finalizeWithoutPayment($prepared['context'], $this->actor());
+        $this->service()->updateHandDeliveryState($request->fresh(), (int) $prepared['context']->id, 1, 'record_delivery', null, null, $this->actor());
+
+        try {
+            $this->service()->updateHandDeliveryState($request->fresh(), (int) $prepared['context']->id, 2, 'set_payment_status', 'cancelled', '', $this->actor());
+            $this->fail('Gerekçesiz ödeme override kabul edildi.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('reason', $exception->errors());
+        }
+        $cancelled = $this->service()->updateHandDeliveryState($request->fresh(), (int) $prepared['context']->id, 2, 'set_payment_status', 'cancelled', 'Müşteri ödemesi teyit edilemedi', $this->actor());
+
+        $this->assertSame('cancelled', $cancelled['payment_status']);
+        $this->assertTrue($cancelled['finance_review_required']);
+        $this->assertSame('manual', $cancelled['payment_status_source']);
+        $this->assertDatabaseCount('technical_service_mount_payments', 0);
+    }
+
+    public function test_local_code_generates_no_real_order_number_or_max_plus_one(): void
+    {
+        $source = file_get_contents(app_path('Services/TechnicalService/TechnicalServicePaymentOrderContextService.php'));
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('MAX(order_no)', $source);
+        $this->assertStringNotContainsString('MAX(siparis_no)', $source);
+        $this->assertDoesNotMatchRegularExpression('/[QS]-(?:FAKE|DRYRUN)-/i', $source);
     }
 
     /** @return array{0:TechnicalServiceRequest,1:TechnicalServiceMountSession} */
@@ -469,15 +1022,39 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     private function manualBilling(): array
     {
         return [
-            'name_or_title' => 'Fatura AŞ',
+            'billing_type' => 'company',
+            'first_name' => null,
+            'last_name' => null,
+            'legal_title' => 'Fatura AŞ',
             'phone' => '905550001122',
             'email' => 'fatura@example.test',
-            'tax_identity' => '1234567890',
+            'tckn' => null,
+            'vkn' => '1234567890',
             'tax_office' => 'Pamukkale',
             'address' => 'Fatura Caddesi No:1',
             'city' => 'Denizli',
             'district' => 'Merkezefendi',
             'postal_code' => '20000',
+        ];
+    }
+
+    /** @return array<string, string|null> */
+    private function individualBilling(): array
+    {
+        return [
+            'billing_type' => 'individual',
+            'first_name' => 'Ahmet',
+            'last_name' => 'Aslan',
+            'legal_title' => null,
+            'phone' => '905550001122',
+            'email' => 'ahmet@example.test',
+            'tckn' => '11111111111',
+            'vkn' => null,
+            'tax_office' => null,
+            'address' => 'Fatura Caddesi No:1',
+            'city' => 'İstanbul',
+            'district' => 'Esenyurt',
+            'postal_code' => '34000',
         ];
     }
 
@@ -495,23 +1072,31 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     }
 
     /** @return array<string, mixed> */
-    private function mountPreview(TechnicalServiceRequest $request, float $amount = 1200): array
+    private function mountPreview(TechnicalServiceRequest $request, float $amount = 1200, ?array $input = null): array
     {
-        return $this->service()->preview($request, 'mount_collection', $this->billingInput(), $amount, 'TRY');
+        return $this->service()->preview($request, 'mount_collection', $input ?? $this->billingInput(), $amount, 'TRY');
     }
 
     /** @param array<string, mixed> $overrides @return array<string, mixed> */
     private function emaksPartPreview(TechnicalServiceRequest $request, array $overrides = [], float $amount = 1000): array
     {
+        return $this->service()->preview($request, 'part_charge', $this->emaksPartInput($request, $overrides), $amount, 'TRY');
+    }
+
+    /** @param array<string, mixed> $overrides @return array<string, mixed> */
+    private function emaksPartInput(TechnicalServiceRequest $request, array $overrides = []): array
+    {
         $stock = $this->stockItem($request, 'Gateway');
 
-        return $this->service()->preview($request, 'part_charge', array_replace([
+        return array_replace([
             ...$this->billingInput(),
             'part_supplier' => 'emaks_prime',
+            'commercial_mode' => 'paid',
+            'delivery_mode' => 'shipment',
             'stock_selection_token' => $stock['selection_token'],
             'quantity' => 1,
             'shipping_same_as_billing' => true,
-        ], $overrides), $amount, 'TRY');
+        ], $overrides);
     }
 
     /** @return array<string, mixed> */
@@ -555,6 +1140,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'technical_service_request_id' => $request->id,
             'provider' => 'fake',
             'provider_reference' => 'order-context-'.uniqid(),
+            'payment_url' => 'https://payments.example.test/mount-payment/'.uniqid(),
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => $amount,
             'currency' => 'TRY',
@@ -562,6 +1148,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
                 'source' => 'operation_order_context_payment',
                 'purpose' => $purpose,
                 'total_amount' => $amount,
+                'provider_mode' => 'local',
             ],
         ]);
         $payment = $this->service()->attachPayment($prepared['context'], $payment);

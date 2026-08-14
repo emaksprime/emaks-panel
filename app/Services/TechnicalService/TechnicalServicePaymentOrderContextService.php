@@ -8,6 +8,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Mikro\MikroApiClient;
+use App\Support\TechnicalServiceTurkeyLocations;
 use DomainException;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Crypt;
@@ -31,6 +32,22 @@ class TechnicalServicePaymentOrderContextService
     public const ALLOCATION_RETAIN_COMPANY = 'retain_company';
 
     public const ALLOCATION_PAY_TECHNICIAN = 'pay_technician';
+
+    public const COMMERCIAL_FREE = 'free';
+
+    public const COMMERCIAL_PAID = 'paid';
+
+    public const DELIVERY_HAND = 'hand_delivery';
+
+    public const DELIVERY_SHIPMENT = 'shipment';
+
+    public const PAYMENT_NOT_REQUIRED = 'not_required';
+
+    public const PAYMENT_PENDING = 'pending';
+
+    public const PAYMENT_PAID = 'paid';
+
+    public const PAYMENT_CANCELLED = 'cancelled';
 
     private const DESCRIPTION2_VERSION = 1;
 
@@ -63,17 +80,20 @@ class TechnicalServicePaymentOrderContextService
             ]);
         }
 
-        if (app()->environment(['local', 'testing'])) {
+        if (app()->environment('testing') && (bool) config('services.technical_service.payment_order_context_test_stock', false)) {
             return $this->localPartFixtures($request, $query);
         }
 
         try {
             $result = $this->mikro->listStocks($query, size: 20);
+            if (($result['ok'] ?? false) !== true) {
+                throw new DomainException((string) ($result['error_code'] ?? 'MIKRO_STOCK_READ_UNAVAILABLE'));
+            }
         } catch (Throwable $exception) {
             report($exception);
 
             throw ValidationException::withMessages([
-                'query' => 'Mikro stok bilgisi şu anda alınamıyor. Parça seçimi tamamlanamadı.',
+                'query' => 'Mikro stok bağlantısı hazır değil. Gerçek stok doğrulanmadan parça seçilemez.',
             ]);
         }
 
@@ -93,7 +113,7 @@ class TechnicalServicePaymentOrderContextService
                         'serial_tracking_required' => (bool) ($row['serial_tracking_required'] ?? false),
                         'serials' => [],
                         'source' => 'mikro',
-                        'source_label' => 'Mikro read-only',
+                        'source_label' => 'Mikro API',
                         'freshness_at' => now()->toISOString(),
                     ];
 
@@ -108,14 +128,14 @@ class TechnicalServicePaymentOrderContextService
             report($exception);
 
             throw ValidationException::withMessages([
-                'query' => 'Mikro stok yanıt sözleşmesi parça seçimi için doğrulanmadı. Parça seçimi tamamlanamadı.',
+                'query' => 'Mikro stok bağlantısı hazır değil. Gerçek stok doğrulanmadan parça seçilemez.',
             ]);
         }
 
         if ($rows->isEmpty()) {
             return [
                 'source' => 'mikro',
-                'source_label' => 'Mikro read-only',
+                'source_label' => 'Mikro API',
                 'freshness_at' => now()->toISOString(),
                 'items' => [],
             ];
@@ -123,7 +143,7 @@ class TechnicalServicePaymentOrderContextService
 
         return [
             'source' => 'mikro',
-            'source_label' => 'Mikro read-only',
+            'source_label' => 'Mikro API',
             'freshness_at' => now()->toISOString(),
             'items' => $rows->all(),
         ];
@@ -139,6 +159,8 @@ class TechnicalServicePaymentOrderContextService
         array $input,
         float $amount,
         string $currency,
+        ?string $providerFamily = null,
+        ?string $providerMode = null,
     ): array {
         $normalized = $this->normalize($request, $purpose, $input, $amount, $currency);
         $existing = DB::table(self::TABLE)
@@ -158,7 +180,216 @@ class TechnicalServicePaymentOrderContextService
             'id' => $existing ? (int) $existing->id : null,
             'revision' => $revision,
             'reusable' => $existing !== null,
+            'payment_retry' => $this->paymentRetryProjection(
+                $request,
+                $purpose,
+                $normalized,
+                $providerFamily,
+                $providerMode,
+            ),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    public function paymentRetryPlan(
+        TechnicalServiceRequest $request,
+        string $purpose,
+        array $input,
+        float $amount,
+        string $currency,
+        ?string $providerFamily,
+        ?string $providerMode,
+    ): array {
+        $preview = $this->preview(
+            $request,
+            $purpose,
+            $input,
+            $amount,
+            $currency,
+            $providerFamily,
+            $providerMode,
+        );
+        $expectedHash = trim((string) ($input['expected_context_hash'] ?? ''));
+        $expectedRevision = (int) ($input['expected_revision'] ?? 0);
+        $idempotentExistingPayment = in_array((string) data_get($preview, 'payment_retry.state'), [
+            'reuse_pending',
+            'already_paid',
+        ], true)
+            && $expectedRevision > 0
+            && $expectedRevision <= (int) $preview['revision'];
+        if ($expectedHash === ''
+            || ! hash_equals((string) $preview['context_hash'], $expectedHash)
+            || ($expectedRevision !== (int) $preview['revision'] && ! $idempotentExistingPayment)) {
+            throw ValidationException::withMessages([
+                'order_context' => 'Sipariş hazırlığı değişti. Güncel önizlemeyi kontrol edip tekrar deneyin.',
+            ]);
+        }
+
+        return $preview['payment_retry'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $normalized
+     * @return array<string, mixed>
+     */
+    private function paymentRetryProjection(
+        TechnicalServiceRequest $request,
+        string $purpose,
+        array $normalized,
+        ?string $providerFamily,
+        ?string $providerMode,
+    ): array {
+        $contexts = DB::table(self::TABLE)
+            ->where('technical_service_request_id', $request->id)
+            ->where('payment_purpose', $purpose)
+            ->orderByDesc('revision')
+            ->orderByDesc('id')
+            ->get();
+        $contextsById = $contexts->keyBy(fn (object $context): string => (string) $context->id);
+        $contextsByPaymentId = $contexts
+            ->filter(fn (object $context): bool => is_numeric($context->technical_service_mount_payment_id))
+            ->keyBy(fn (object $context): string => (string) $context->technical_service_mount_payment_id);
+        $payments = TechnicalServiceMountPayment::query()
+            ->where('technical_service_request_id', $request->id)
+            ->orderByDesc('id')
+            ->get();
+        $candidates = $payments->map(function (TechnicalServiceMountPayment $payment) use (
+            $contextsById,
+            $contextsByPaymentId,
+            $purpose,
+        ): ?array {
+            $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+            $snapshot = is_array($payload['order_context'] ?? null) ? $payload['order_context'] : [];
+            $contextId = is_numeric($snapshot['id'] ?? null)
+                ? (int) $snapshot['id']
+                : (is_numeric($payload['order_context_id'] ?? null) ? (int) $payload['order_context_id'] : null);
+            $context = $contextId !== null ? $contextsById->get((string) $contextId) : null;
+            $context ??= $contextsByPaymentId->get((string) $payment->id);
+            $candidatePurpose = trim((string) ($snapshot['payment_purpose'] ?? $payload['purpose'] ?? $context?->payment_purpose ?? ''));
+            if ($candidatePurpose !== $purpose) {
+                return null;
+            }
+
+            return [
+                'payment' => $payment,
+                'payment_id' => (int) $payment->id,
+                'status' => (string) $payment->status,
+                'context_hash' => trim((string) ($snapshot['context_hash'] ?? $payload['order_context_hash'] ?? $context?->context_hash ?? '')),
+            ];
+        })->filter()->values();
+        $counts = [
+            'paid' => $candidates->where('status', TechnicalServiceMountPayment::STATUS_PAID)->count(),
+            'pending' => $candidates->where('status', TechnicalServiceMountPayment::STATUS_PENDING)->count(),
+            'cancelled' => $candidates->where('status', TechnicalServiceMountPayment::STATUS_CANCELLED)->count(),
+            'failed' => $candidates->where('status', TechnicalServiceMountPayment::STATUS_FAILED)->count(),
+            'expired' => $candidates->where('status', TechnicalServiceMountPayment::STATUS_EXPIRED)->count(),
+        ];
+        $base = [
+            'state' => 'none',
+            'fresh_link_required' => false,
+            'reason_required' => false,
+            'action_label' => null,
+            'message' => null,
+            'audit_reason' => null,
+            'supersede_payment_id' => null,
+            'authoritative_counts' => $counts,
+        ];
+        $exact = $candidates
+            ->filter(fn (array $candidate): bool => $candidate['context_hash'] !== ''
+                && hash_equals((string) $normalized['context_hash'], $candidate['context_hash']));
+        $paid = $exact->firstWhere('status', TechnicalServiceMountPayment::STATUS_PAID);
+        if (is_array($paid)) {
+            return [...$base, 'state' => 'already_paid'];
+        }
+
+        $pending = $exact->firstWhere('status', TechnicalServiceMountPayment::STATUS_PENDING);
+        if (is_array($pending)) {
+            /** @var TechnicalServiceMountPayment $payment */
+            $payment = $pending['payment'];
+            if ($this->pendingPaymentMatchesCurrentAuthority($payment, $providerFamily, $providerMode)) {
+                return [...$base, 'state' => 'reuse_pending'];
+            }
+
+            return [
+                ...$base,
+                'state' => 'fresh_link_required',
+                'fresh_link_required' => true,
+                'reason_required' => true,
+                'action_label' => 'Yeni bağlantı oluştur',
+                'message' => 'Eski ödeme bağlantısı tekrar kullanılamaz. Bu işlem için yeni bağlantı oluşturulacaktır.',
+                'audit_reason' => 'Önceki bekleyen ödeme bağlantısının provider veya session kimliği güncel authority ile eşleşmedi.',
+                'supersede_payment_id' => $pending['payment_id'],
+            ];
+        }
+
+        $terminal = $exact->first(fn (array $candidate): bool => in_array($candidate['status'], [
+            TechnicalServiceMountPayment::STATUS_CANCELLED,
+            TechnicalServiceMountPayment::STATUS_FAILED,
+            TechnicalServiceMountPayment::STATUS_EXPIRED,
+        ], true));
+        if (is_array($terminal)) {
+            return [
+                ...$base,
+                'state' => 'fresh_link_required',
+                'fresh_link_required' => true,
+                'reason_required' => true,
+                'action_label' => 'Yeni bağlantı oluştur',
+                'message' => 'Eski ödeme bağlantısı tekrar kullanılamaz. Bu işlem için yeni bağlantı oluşturulacaktır.',
+                'audit_reason' => 'Terminal ödeme geçmişi korunarak açık kullanıcı kararıyla yeni bağlantı oluşturuldu.',
+            ];
+        }
+
+        $changedPending = $candidates->first(fn (array $candidate): bool => $candidate['status'] === TechnicalServiceMountPayment::STATUS_PENDING
+            && ($candidate['context_hash'] === '' || ! hash_equals((string) $normalized['context_hash'], $candidate['context_hash'])));
+        if (is_array($changedPending)) {
+            return [
+                ...$base,
+                'state' => 'fresh_link_required',
+                'fresh_link_required' => true,
+                'reason_required' => false,
+                'action_label' => 'Yeni bağlantı oluştur',
+                'message' => 'Fatura, sevk, parça veya tutar değişti. Eski ödeme bağlantısı sonlandırılıp bu işlem için yeni bağlantı oluşturulacaktır.',
+                'audit_reason' => 'Fatura, sevk, parça veya tutar değiştiği için önceki bekleyen ödeme bağlantısı sonlandırıldı.',
+                'supersede_payment_id' => $changedPending['payment_id'],
+            ];
+        }
+
+        return $base;
+    }
+
+    private function pendingPaymentMatchesCurrentAuthority(
+        TechnicalServiceMountPayment $payment,
+        ?string $providerFamily,
+        ?string $providerMode,
+    ): bool {
+        if (trim((string) $payment->provider_reference) === '' || trim((string) $payment->payment_url) === '') {
+            return false;
+        }
+
+        $expectedFamily = $this->canonicalProviderFamily($providerFamily);
+        if ($expectedFamily !== null && $this->canonicalProviderFamily((string) $payment->provider) !== $expectedFamily) {
+            return false;
+        }
+        $expectedMode = strtolower(trim((string) $providerMode));
+        if ($expectedMode === '') {
+            return true;
+        }
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $storedMode = strtolower(trim((string) ($payload['provider_mode'] ?? $payload['provider_environment'] ?? '')));
+
+        return $storedMode !== '' && hash_equals($expectedMode, $storedMode);
+    }
+
+    private function canonicalProviderFamily(?string $provider): ?string
+    {
+        return match (strtolower(trim((string) $provider))) {
+            'fake', 'fake_payment' => 'fake',
+            'iyzico', 'iyzico_sandbox', 'iyzico_live' => 'iyzico',
+            default => null,
+        };
     }
 
     /**
@@ -173,6 +404,9 @@ class TechnicalServicePaymentOrderContextService
         string $currency,
         ?Authenticatable $actor,
         bool $allowTerminalRetry,
+        ?string $retryReason = null,
+        ?string $providerFamily = null,
+        ?string $providerMode = null,
     ): array {
         $normalized = $this->normalize($request, $purpose, $input, $amount, $currency);
         $expectedHash = trim((string) ($input['expected_context_hash'] ?? ''));
@@ -183,7 +417,36 @@ class TechnicalServicePaymentOrderContextService
             ]);
         }
 
-        return DB::transaction(function () use (
+        $retry = $this->paymentRetryProjection(
+            $request,
+            $purpose,
+            $normalized,
+            $providerFamily,
+            $providerMode,
+        );
+        $resolvedRetryReason = trim((string) $retryReason);
+        if (($retry['state'] ?? 'none') === 'fresh_link_required') {
+            if (! $allowTerminalRetry) {
+                throw ValidationException::withMessages([
+                    'order_context' => (string) $retry['message'],
+                ]);
+            }
+            if (is_numeric($retry['supersede_payment_id'] ?? null)) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Eski bekleyen ödeme bağlantısı sonlandırılmadan yeni bağlantı oluşturulamaz.',
+                ]);
+            }
+            if (($retry['reason_required'] ?? false) === true && mb_strlen($resolvedRetryReason) < 3) {
+                throw ValidationException::withMessages([
+                    'terminal_retry_reason' => 'Yeni bağlantı oluşturma nedenini yazınız.',
+                ]);
+            }
+            if ($resolvedRetryReason === '') {
+                $resolvedRetryReason = (string) ($retry['audit_reason'] ?? 'Ödeme bağlamı değiştiği için yeni bağlantı oluşturuldu.');
+            }
+        }
+
+        $result = DB::transaction(function () use (
             $request,
             $purpose,
             $normalized,
@@ -210,7 +473,7 @@ class TechnicalServicePaymentOrderContextService
                         TechnicalServiceMountPayment::STATUS_PENDING,
                         TechnicalServiceMountPayment::STATUS_PAID,
                     ], true)) {
-                    if ($expectedRevision !== (int) $exact->revision) {
+                    if ($expectedRevision <= 0 || $expectedRevision > (int) $exact->revision) {
                         throw ValidationException::withMessages([
                             'order_context' => 'Sipariş hazırlığı revizyonu güncellendi. Önizlemeyi yenileyin.',
                         ]);
@@ -231,18 +494,19 @@ class TechnicalServicePaymentOrderContextService
                 }
             }
 
-            $pendingDifferentContext = $rows
-                ->filter(fn (object $row): bool => ! hash_equals((string) $row->context_hash, $normalized['context_hash']))
-                ->first(function (object $row): bool {
-                    if (! is_numeric($row->technical_service_mount_payment_id)) {
-                        return false;
-                    }
-
-                    return TechnicalServiceMountPayment::query()
-                        ->whereKey((int) $row->technical_service_mount_payment_id)
-                        ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
-                        ->exists();
-                });
+            $pendingPaymentIds = TechnicalServiceMountPayment::query()
+                ->whereIn('id', $rows
+                    ->pluck('technical_service_mount_payment_id')
+                    ->filter(fn (mixed $paymentId): bool => is_numeric($paymentId))
+                    ->map(fn (mixed $paymentId): int => (int) $paymentId)
+                    ->all())
+                ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
+                ->pluck('id')
+                ->map(fn (mixed $paymentId): int => (int) $paymentId)
+                ->all();
+            $pendingDifferentContext = $rows->first(fn (object $row): bool => is_numeric($row->technical_service_mount_payment_id)
+                && in_array((int) $row->technical_service_mount_payment_id, $pendingPaymentIds, true)
+                && ! hash_equals((string) $row->context_hash, $normalized['context_hash']));
             if ($pendingDifferentContext) {
                 throw ValidationException::withMessages([
                     'order_context' => 'Fatura, sevk, parça veya tutar değişti. Önce mevcut bekleyen ödeme bağlantısını iptal edin.',
@@ -260,7 +524,9 @@ class TechnicalServicePaymentOrderContextService
             }
 
             $revision = $latestRevision + 1;
-            if ($expectedRevision !== $revision) {
+            $expectedRevisionAuthority = $exact ? $latestRevision : $revision;
+            if (($exact && (int) $exact->revision !== $latestRevision)
+                || $expectedRevision !== $expectedRevisionAuthority) {
                 throw ValidationException::withMessages([
                     'order_context' => 'Sipariş hazırlığı revizyonu güncellendi. Önizlemeyi yenileyin.',
                 ]);
@@ -305,6 +571,8 @@ class TechnicalServicePaymentOrderContextService
 
             return ['context' => $context, 'payment' => null, 'created' => true];
         });
+
+        return [...$result, 'retry_reason' => $resolvedRetryReason !== '' ? $resolvedRetryReason : null];
     }
 
     public function attachPayment(object $context, TechnicalServiceMountPayment $payment): TechnicalServiceMountPayment
@@ -328,6 +596,8 @@ class TechnicalServicePaymentOrderContextService
             DB::table(self::TABLE)->where('id', $lockedContext->id)->update([
                 'technical_service_mount_payment_id' => $lockedPayment->id,
                 'state' => 'payment_pending',
+                'payment_status' => self::PAYMENT_PENDING,
+                'payment_status_source' => 'provider',
                 'updated_at' => now(),
             ]);
             $context = DB::table(self::TABLE)->where('id', $lockedContext->id)->first();
@@ -371,6 +641,9 @@ class TechnicalServicePaymentOrderContextService
 
             DB::table(self::TABLE)->where('id', $context->id)->update([
                 'state' => 'cancelled',
+                'payment_status' => self::PAYMENT_CANCELLED,
+                'payment_status_source' => 'provider',
+                'payment_status_changed_at' => now(),
                 'updated_at' => now(),
             ]);
             $this->writePaymentSnapshot($payment, DB::table(self::TABLE)->where('id', $context->id)->first());
@@ -408,6 +681,9 @@ class TechnicalServicePaymentOrderContextService
 
         DB::table(self::TABLE)->where('id', $context->id)->update([
             'state' => 'paid_waiting_mikro_write',
+            'payment_status' => self::PAYMENT_PAID,
+            'payment_status_source' => 'provider',
+            'payment_status_changed_at' => now(),
             'updated_at' => now(),
         ]);
         $updatedContext = DB::table(self::TABLE)->where('id', $context->id)->first();
@@ -454,6 +730,158 @@ class TechnicalServicePaymentOrderContextService
         return $this->rowProjection($context);
     }
 
+    /** @return array<string, mixed>|null */
+    public function latestPartContext(TechnicalServiceRequest $request): ?array
+    {
+        $context = DB::table(self::TABLE)
+            ->where('technical_service_request_id', $request->id)
+            ->where('payment_purpose', self::PURPOSE_PART_CHARGE)
+            ->orderByDesc('revision')
+            ->orderByDesc('id')
+            ->first();
+
+        return $context ? $this->rowProjection($context) : null;
+    }
+
+    /** @return array<string, mixed> */
+    public function finalizeWithoutPayment(object $context, ?Authenticatable $actor): array
+    {
+        return DB::transaction(function () use ($context, $actor): array {
+            $locked = DB::table(self::TABLE)->where('id', (int) $context->id)->lockForUpdate()->first();
+            if (! $locked) {
+                throw ValidationException::withMessages(['order_context' => 'Sipariş hazırlığı bulunamadı.']);
+            }
+            if ((bool) $locked->payment_link_required) {
+                throw ValidationException::withMessages(['order_context' => 'Bu işlem ödeme bağlantısı gerektiriyor.']);
+            }
+
+            $state = (string) $locked->payment_status === self::PAYMENT_NOT_REQUIRED
+                ? 'ready_without_collection'
+                : ((string) $locked->payment_status === self::PAYMENT_PAID ? 'manual_collection_paid' : 'manual_collection_pending');
+            if ((string) $locked->state !== $state) {
+                DB::table(self::TABLE)->where('id', $locked->id)->update([
+                    'state' => $state,
+                    'updated_at' => now(),
+                ]);
+                $request = TechnicalServiceRequest::query()->whereKey($locked->technical_service_request_id)->firstOrFail();
+                $request->events()->create([
+                    'event_type' => 'payment_order_context_saved_without_provider',
+                    'title' => (string) $locked->payment_status === self::PAYMENT_NOT_REQUIRED
+                        ? 'Tahsilatsız parça hazırlığı kaydedildi'
+                        : 'Elden teslim tahsilat durumu kaydedildi',
+                    'note' => 'Ödeme sağlayıcısı, Mikro write ve kargo çağrısı yapılmadı.',
+                    'from_status' => $request->workflow_status,
+                    'to_status' => $request->workflow_status,
+                    'author_user_id' => $actor?->getAuthIdentifier(),
+                    'metadata' => [
+                        'order_context_id' => (int) $locked->id,
+                        'payment_status' => $locked->payment_status,
+                        'payment_link_required' => false,
+                        'provider_execution_count' => 0,
+                    ],
+                ]);
+            }
+
+            return $this->rowProjection(DB::table(self::TABLE)->where('id', $locked->id)->firstOrFail());
+        });
+    }
+
+    /** @return array<string, mixed> */
+    public function updateHandDeliveryState(
+        TechnicalServiceRequest $request,
+        int $contextId,
+        int $expectedRevision,
+        string $action,
+        ?string $paymentStatus,
+        ?string $reason,
+        ?Authenticatable $actor,
+    ): array {
+        return DB::transaction(function () use ($request, $contextId, $expectedRevision, $action, $paymentStatus, $reason, $actor): array {
+            $context = DB::table(self::TABLE)
+                ->where('id', $contextId)
+                ->where('technical_service_request_id', $request->id)
+                ->lockForUpdate()
+                ->first();
+            if (! $context) {
+                throw ValidationException::withMessages(['order_context' => 'Parça hazırlığı bulunamadı.']);
+            }
+            if ((int) $context->revision !== $expectedRevision) {
+                throw ValidationException::withMessages(['expected_revision' => 'Parça hazırlığı güncellendi. Güncel durumu açıp tekrar deneyin.']);
+            }
+            if ((string) $context->delivery_mode !== self::DELIVERY_HAND || (bool) $context->payment_link_required) {
+                throw ValidationException::withMessages(['order_context' => 'Yalnız linksiz elden teslim durumu bu alandan güncellenebilir.']);
+            }
+
+            $beforeDelivery = (string) $context->delivery_status;
+            $beforePayment = (string) $context->payment_status;
+            $nextDelivery = $beforeDelivery;
+            $nextPayment = $beforePayment;
+            $nextSource = (string) $context->payment_status_source;
+            $normalizedReason = trim((string) $reason);
+
+            if ($action === 'record_delivery') {
+                $nextDelivery = 'delivered';
+                if ((string) $context->commercial_mode === self::COMMERCIAL_PAID
+                    && (string) $context->delivery_target === 'technician') {
+                    $nextPayment = self::PAYMENT_PAID;
+                    $nextSource = 'auto_from_technician_delivery';
+                }
+            } elseif ($action === 'set_payment_status') {
+                if ((string) $context->commercial_mode !== self::COMMERCIAL_PAID
+                    || ! in_array($paymentStatus, [self::PAYMENT_PENDING, self::PAYMENT_PAID, self::PAYMENT_CANCELLED], true)) {
+                    throw ValidationException::withMessages(['payment_status' => 'Geçerli ödeme durumunu seçin.']);
+                }
+                if ($normalizedReason === '') {
+                    throw ValidationException::withMessages(['reason' => 'Ödeme durumu değişikliği için açıklama yazınız.']);
+                }
+                $nextPayment = (string) $paymentStatus;
+                $nextSource = 'manual';
+            } else {
+                throw ValidationException::withMessages(['action' => 'Geçerli teslim veya ödeme durumu aksiyonunu seçin.']);
+            }
+
+            if ($beforeDelivery === $nextDelivery && $beforePayment === $nextPayment) {
+                return $this->rowProjection($context);
+            }
+
+            $financeReview = (bool) $context->finance_review_required
+                || ($beforeDelivery === 'delivered' && $beforePayment === self::PAYMENT_PAID && $nextPayment === self::PAYMENT_CANCELLED);
+            DB::table(self::TABLE)->where('id', $context->id)->update([
+                'delivery_status' => $nextDelivery,
+                'payment_status' => $nextPayment,
+                'payment_status_source' => $nextSource,
+                'payment_status_changed_by' => $actor?->getAuthIdentifier(),
+                'payment_status_changed_at' => now(),
+                'payment_status_reason' => $normalizedReason !== '' ? $normalizedReason : null,
+                'finance_review_required' => $financeReview,
+                'state' => $nextPayment === self::PAYMENT_PAID ? 'manual_collection_paid' : ($nextPayment === self::PAYMENT_CANCELLED ? 'cancelled' : 'manual_collection_pending'),
+                'revision' => $expectedRevision + 1,
+                'updated_at' => now(),
+            ]);
+
+            $request->events()->create([
+                'event_type' => $action === 'record_delivery' ? 'part_hand_delivery_recorded' : 'part_hand_payment_status_changed',
+                'title' => $action === 'record_delivery' ? 'Parça elden teslim edildi' : 'Elden teslim ödeme durumu güncellendi',
+                'note' => $normalizedReason !== '' ? $normalizedReason : 'Teslim kaydı üzerinden otomatik ödeme durumu uygulandı.',
+                'from_status' => $request->workflow_status,
+                'to_status' => $request->workflow_status,
+                'author_user_id' => $actor?->getAuthIdentifier(),
+                'metadata' => [
+                    'order_context_id' => (int) $context->id,
+                    'before' => ['delivery_status' => $beforeDelivery, 'payment_status' => $beforePayment],
+                    'after' => ['delivery_status' => $nextDelivery, 'payment_status' => $nextPayment],
+                    'payment_status_source' => $nextSource,
+                    'finance_review_required' => $financeReview,
+                    'correlation_id' => $context->correlation_id,
+                    'payment_write_count' => 0,
+                    'earning_write_count' => 0,
+                ],
+            ]);
+
+            return $this->rowProjection(DB::table(self::TABLE)->where('id', $context->id)->firstOrFail());
+        });
+    }
+
     /**
      * @param  array<string, mixed>  $input
      * @return array<string, mixed>
@@ -468,9 +896,6 @@ class TechnicalServicePaymentOrderContextService
         if (! in_array($purpose, [self::PURPOSE_MOUNT_COLLECTION, self::PURPOSE_PART_CHARGE], true)) {
             throw ValidationException::withMessages(['purpose' => 'Sipariş hazırlığı bu tahsilat amacı için kullanılamaz.']);
         }
-        if ($amount <= 0) {
-            throw ValidationException::withMessages(['amount' => 'Ödeme tutarı 0 TL üzerinde olmalıdır.']);
-        }
         $currency = strtoupper(trim($currency));
         if (! preg_match('/^[A-Z]{3}$/', $currency)) {
             throw ValidationException::withMessages(['currency' => 'Para birimi üç harfli kod olmalıdır.']);
@@ -483,13 +908,13 @@ class TechnicalServicePaymentOrderContextService
         $partSupplier = null;
         $collectionAllocation = null;
         $part = null;
+        $commercialMode = self::COMMERCIAL_PAID;
+        $deliveryMode = null;
+        $deliveryStatus = 'pending';
         $shippingSameAsBilling = false;
         $deliveryTarget = null;
         $shipping = null;
-        $shipmentRequired = false;
-        $futureCarrierState = 'not_required';
-        $desiredMikroSeries = 'S';
-        $futureMikroWriteState = 'not_authorized';
+        $quantity = 1.0;
 
         if ($purpose === self::PURPOSE_PART_CHARGE) {
             if ($relatedProductSerial === '') {
@@ -505,19 +930,82 @@ class TechnicalServicePaymentOrderContextService
             }
 
             if ($partSupplier === self::SUPPLIER_EMAKS) {
+                $commercialMode = trim((string) ($input['commercial_mode'] ?? ''));
+                $deliveryMode = trim((string) ($input['delivery_mode'] ?? ''));
+                if (! in_array($commercialMode, [self::COMMERCIAL_FREE, self::COMMERCIAL_PAID], true)) {
+                    throw ValidationException::withMessages([
+                        'order_context.commercial_mode' => 'Parçanın ücretsiz veya ücretli olduğunu seçin.',
+                    ]);
+                }
+                if (! in_array($deliveryMode, [self::DELIVERY_HAND, self::DELIVERY_SHIPMENT], true)) {
+                    throw ValidationException::withMessages([
+                        'order_context.delivery_mode' => 'Parçanın elden teslim veya sevk edileceğini seçin.',
+                    ]);
+                }
                 $part = $this->selectedStockItem($request, $input);
-                $shipmentRequired = true;
-                $futureCarrierState = 'waiting_future_integration';
+                $quantity = (float) ($part['quantity'] ?? 1);
                 $collectionAllocation = self::ALLOCATION_RETAIN_COMPANY;
-                $shippingSameAsBilling = (bool) ($input['shipping_same_as_billing'] ?? false);
-                [$deliveryTarget, $shipping] = $this->shippingSnapshot($request, $input, $billing, $shippingSameAsBilling);
+                if ($deliveryMode === self::DELIVERY_SHIPMENT) {
+                    $shippingSameAsBilling = (bool) ($input['shipping_same_as_billing'] ?? false);
+                    [$deliveryTarget, $shipping] = $this->shippingSnapshot($request, $input, $billing, $shippingSameAsBilling);
+                } else {
+                    $deliveryTarget = trim((string) ($input['delivery_target'] ?? 'technician'));
+                    if (! in_array($deliveryTarget, ['technician', 'mrn_customer', 'billing_address'], true)) {
+                        throw ValidationException::withMessages([
+                            'order_context.delivery_target' => 'Elden teslim alıcısını seçin.',
+                        ]);
+                    }
+                }
             } else {
                 $contextType = 'technician_supplied_part';
-                $desiredMikroSeries = null;
-                $futureMikroWriteState = 'not_required';
                 $collectionAllocation = self::ALLOCATION_PAY_TECHNICIAN;
                 $part = $this->technicianPartSnapshot($input);
+                $quantity = (float) ($part['quantity'] ?? 1);
                 $this->activeTechnician($request);
+            }
+        }
+
+        $decision = $this->commercialDecision($purpose, $partSupplier, $commercialMode, $deliveryMode);
+        $shipmentRequired = (bool) $decision['shipment_required'];
+        $futureCarrierState = $shipmentRequired ? 'waiting_future_integration' : 'not_required';
+        $desiredMikroSeries = $decision['desired_mikro_series'];
+        $futureMikroWriteState = $decision['future_mikro_write_state'];
+        $paymentLinkRequired = (bool) $decision['payment_link_required'];
+        $collectionRequired = (bool) $decision['collection_required'];
+        $paymentCollectionMode = (string) $decision['payment_collection_mode'];
+        $taxMode = (string) $decision['tax_mode'];
+        $vatRate = $taxMode === 'none' ? 0.0 : null;
+        $futureOrderTrigger = $decision['future_order_trigger'];
+
+        if ($purpose === self::PURPOSE_MOUNT_COLLECTION || $partSupplier === self::SUPPLIER_TECHNICIAN || $collectionRequired) {
+            if ($amount <= 0) {
+                throw ValidationException::withMessages(['amount' => 'Tahsilat tutarı 0 TL üzerinde olmalıdır.']);
+            }
+        } elseif ($amount < 0) {
+            throw ValidationException::withMessages(['amount' => 'Tutar negatif olamaz.']);
+        }
+
+        if ($commercialMode === self::COMMERCIAL_FREE && $deliveryMode === self::DELIVERY_SHIPMENT && abs($amount) > 0.0001) {
+            throw ValidationException::withMessages([
+                'amount' => 'Ücretsiz sevkte sipariş ve tahsilat tutarı 0 TL olmalıdır.',
+            ]);
+        }
+
+        $orderLineTotal = $purpose === self::PURPOSE_PART_CHARGE && $partSupplier === self::SUPPLIER_EMAKS
+            ? ($commercialMode === self::COMMERCIAL_FREE && $deliveryMode === self::DELIVERY_SHIPMENT ? 0.0 : round($amount, 2))
+            : round($amount, 2);
+        $orderLineUnitPrice = $quantity > 0 ? round($orderLineTotal / $quantity, 2) : $orderLineTotal;
+        $collectionAmount = $collectionRequired ? round($amount, 2) : 0.0;
+        $paymentStatus = $collectionRequired ? self::PAYMENT_PENDING : self::PAYMENT_NOT_REQUIRED;
+        $paymentStatusSource = 'system';
+
+        foreach (['desired_mikro_series', 'tax_mode', 'payment_link_required'] as $serverOwnedField) {
+            if (array_key_exists($serverOwnedField, $input)
+                && $input[$serverOwnedField] !== null
+                && (string) $input[$serverOwnedField] !== (string) $decision[$serverOwnedField]) {
+                throw ValidationException::withMessages([
+                    'order_context.'.$serverOwnedField => 'Seri, KDV ve ödeme bağlantısı kuralları sunucu tarafından belirlenir.',
+                ]);
             }
         }
 
@@ -535,6 +1023,9 @@ class TechnicalServicePaymentOrderContextService
             'state' => 'draft',
             'state_label' => 'Sipariş hazırlığı taslak',
             'desired_mikro_series' => $desiredMikroSeries,
+            'tax_mode' => $taxMode,
+            'tax_label' => $this->taxLabel($taxMode),
+            'vat_rate' => $vatRate,
             'future_mikro_write_state' => $futureMikroWriteState,
             'future_mikro_write_label' => $futureMikroWriteState === 'not_required'
                 ? 'Mikro siparişi gerekmiyor'
@@ -557,9 +1048,30 @@ class TechnicalServicePaymentOrderContextService
                 default => null,
             },
             'part' => $part,
+            'commercial_mode' => $commercialMode,
+            'commercial_mode_label' => $commercialMode === self::COMMERCIAL_FREE ? 'Ücretsiz' : 'Ücretli',
+            'delivery_mode' => $deliveryMode,
+            'delivery_mode_label' => $deliveryMode === self::DELIVERY_SHIPMENT ? 'Sevk' : ($deliveryMode === self::DELIVERY_HAND ? 'Elden' : 'Yok'),
+            'delivery_status' => $deliveryStatus,
+            'delivery_status_label' => 'Teslim bekliyor',
+            'payment_collection_mode' => $paymentCollectionMode,
+            'payment_status' => $paymentStatus,
+            'payment_status_label' => $this->paymentStatusLabel($paymentStatus),
+            'payment_status_source' => $paymentStatusSource,
+            'payment_status_source_label' => 'Sistem',
+            'payment_link_required' => $paymentLinkRequired,
+            'collection_required' => $collectionRequired,
+            'order_line_unit_price' => $orderLineUnitPrice,
+            'order_line_unit_price_label' => $this->moneyLabel($orderLineUnitPrice, $currency),
+            'order_line_total' => $orderLineTotal,
+            'order_line_total_label' => $this->moneyLabel($orderLineTotal, $currency),
+            'collection_amount' => $collectionAmount,
+            'collection_amount_label' => $this->moneyLabel($collectionAmount, $currency),
+            'future_order_trigger' => $futureOrderTrigger,
+            'finance_review_required' => false,
             'related_product_serial' => $relatedProductSerial !== '' ? $relatedProductSerial : null,
-            'charged_amount' => round($amount, 2),
-            'charged_amount_label' => $this->moneyLabel($amount, $currency),
+            'charged_amount' => $collectionAmount,
+            'charged_amount_label' => $this->moneyLabel($collectionAmount, $currency),
             'currency' => $currency,
             'shipment_required' => $shipmentRequired,
             'future_carrier_state' => $futureCarrierState,
@@ -578,17 +1090,25 @@ class TechnicalServicePaymentOrderContextService
             'payment_purpose' => $purpose,
             'context_type' => $contextType,
             'desired_mikro_series' => $desiredMikroSeries,
+            'tax_mode' => $taxMode,
+            'vat_rate' => $vatRate,
             'billing' => $billing,
             'shipping_same_as_billing' => $shippingSameAsBilling,
             'delivery_target' => $deliveryTarget,
             'shipping' => $shipping,
             'part_supplier' => $partSupplier,
+            'commercial_mode' => $commercialMode,
+            'delivery_mode' => $deliveryMode,
             'collection_allocation' => $collectionAllocation,
             'part' => $this->partIdentity($part),
             'related_product_serial' => $normalized['related_product_serial'],
-            'charged_amount' => number_format($amount, 2, '.', ''),
+            'order_line_total' => number_format($orderLineTotal, 2, '.', ''),
+            'collection_amount' => number_format($collectionAmount, 2, '.', ''),
             'currency' => $currency,
             'shipment_required' => $shipmentRequired,
+            'payment_link_required' => $paymentLinkRequired,
+            'payment_status' => $paymentStatus,
+            'future_order_trigger' => $futureOrderTrigger,
             'future_carrier_state' => $futureCarrierState,
             'description2_version' => self::DESCRIPTION2_VERSION,
         ];
@@ -602,31 +1122,80 @@ class TechnicalServicePaymentOrderContextService
     {
         $source = trim((string) ($input['billing_source'] ?? 'mrn_customer'));
         if ($source === 'mrn_customer') {
+            $name = trim((string) $request->customer_name);
+            [$firstName, $lastName] = $this->splitIndividualName($name);
             $snapshot = [
                 'source' => $source,
+                'billing_type' => 'individual',
                 'customer_code' => null,
-                'name_or_title' => trim((string) $request->customer_name),
-                'phone' => trim((string) $request->customer_phone),
+                'first_name' => $firstName,
+                'last_name' => $lastName,
+                'legal_title' => null,
+                'name_or_title' => $name,
+                'phone' => $this->normalizePhone($request->customer_phone, 'order_context.billing.phone'),
                 'email' => null,
+                'tckn' => null,
+                'vkn' => null,
                 'tax_identity' => null,
                 'tax_office' => null,
                 'address' => $this->requestAddress($request),
-                'city' => trim((string) $request->customer_city),
+                'city' => $this->normalizeCity($request->customer_city, $request->customer_district, 'Fatura'),
                 'district' => trim((string) $request->customer_district),
                 'postal_code' => null,
             ];
         } elseif ($source === 'manual_billing_draft') {
             $billing = is_array($input['billing'] ?? null) ? $input['billing'] : [];
+            $billingType = trim((string) ($billing['billing_type'] ?? ''));
+            if (! in_array($billingType, ['individual', 'company'], true)) {
+                throw ValidationException::withMessages([
+                    'order_context.billing.billing_type' => 'Fatura müşterisi kişi veya şirket olarak seçilmelidir.',
+                ]);
+            }
+            $firstName = trim((string) ($billing['first_name'] ?? ''));
+            $lastName = trim((string) ($billing['last_name'] ?? ''));
+            $legalTitle = trim((string) ($billing['legal_title'] ?? ''));
+            if ($billingType === 'individual' && ($firstName === '' || $lastName === '')) {
+                throw ValidationException::withMessages([
+                    $firstName === '' ? 'order_context.billing.first_name' : 'order_context.billing.last_name' => $firstName === ''
+                        ? 'Ad alanı zorunludur.'
+                        : 'Soyad alanı zorunludur.',
+                ]);
+            }
+            if ($billingType === 'company' && $legalTitle === '') {
+                throw ValidationException::withMessages([
+                    'order_context.billing.legal_title' => 'Şirket unvanı zorunludur.',
+                ]);
+            }
+            $email = $this->nullableText($billing['email'] ?? null);
+            if ($email !== null && filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                throw ValidationException::withMessages([
+                    'order_context.billing.email' => 'Geçerli bir e-posta adresi girin.',
+                ]);
+            }
+            $tckn = $this->validatedIdentityNumber($billing['tckn'] ?? null, 11, 'TCKN', 'order_context.billing.tckn');
+            $vkn = $this->validatedIdentityNumber($billing['vkn'] ?? null, 10, 'VKN', 'order_context.billing.vkn');
+            if ($billingType === 'individual' && $vkn !== null) {
+                throw ValidationException::withMessages(['order_context.billing.vkn' => 'VKN yalnız şirket faturasında kullanılabilir.']);
+            }
+            if ($billingType === 'company' && $tckn !== null) {
+                throw ValidationException::withMessages(['order_context.billing.tckn' => 'TCKN yalnız kişi faturasında kullanılabilir.']);
+            }
             $snapshot = [
                 'source' => $source,
+                'billing_type' => $billingType,
                 'customer_code' => $this->nullableText($billing['customer_code'] ?? null),
-                'name_or_title' => trim((string) ($billing['name_or_title'] ?? '')),
-                'phone' => trim((string) ($billing['phone'] ?? '')),
-                'email' => $this->nullableText($billing['email'] ?? null),
-                'tax_identity' => $this->nullableText($billing['tax_identity'] ?? null),
+                'first_name' => $billingType === 'individual' ? $firstName : null,
+                'last_name' => $billingType === 'individual' ? $lastName : null,
+                'legal_title' => $billingType === 'company' ? $legalTitle : null,
+                'name_or_title' => $billingType === 'company' ? $legalTitle : trim($firstName.' '.$lastName),
+                'phone' => $this->normalizePhone($billing['phone'] ?? null, 'order_context.billing.phone'),
+                'email' => $email,
+                'tckn' => $tckn,
+                'vkn' => $vkn,
+                'tax_identity' => $billingType === 'company' ? $vkn : $tckn,
                 'tax_office' => $this->nullableText($billing['tax_office'] ?? null),
                 'address' => trim((string) ($billing['address'] ?? '')),
-                'city' => trim((string) ($billing['city'] ?? '')),
+                'city' => $this->normalizeCity($billing['city'] ?? null, $billing['district'] ?? null, 'Fatura'),
                 'district' => trim((string) ($billing['district'] ?? '')),
                 'postal_code' => $this->nullableText($billing['postal_code'] ?? null),
             ];
@@ -657,9 +1226,9 @@ class TechnicalServicePaymentOrderContextService
             'billing_address' => $this->recipientFromBilling($billing),
             'mrn_customer' => [
                 'recipient_name' => trim((string) $request->customer_name),
-                'recipient_phone' => trim((string) $request->customer_phone),
+                'recipient_phone' => $this->normalizePhone($request->customer_phone, 'order_context.shipping.recipient_phone'),
                 'address' => $this->requestAddress($request),
-                'city' => trim((string) $request->customer_city),
+                'city' => $this->normalizeCity($request->customer_city, $request->customer_district, 'Sevk'),
                 'district' => trim((string) $request->customer_district),
                 'postal_code' => null,
             ],
@@ -697,6 +1266,20 @@ class TechnicalServicePaymentOrderContextService
             ]);
         }
 
+        $fixtureTransport = app()->environment('testing')
+            && (bool) config('services.technical_service.payment_order_context_test_stock', false);
+        $source = trim((string) ($decoded['source'] ?? ''));
+        if (($source === 'test_fixture') !== $fixtureTransport) {
+            throw ValidationException::withMessages([
+                'order_context.stock_selection_token' => 'Gerçek Mikro stok seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
+            ]);
+        }
+        if (! $fixtureTransport && $source !== 'mikro') {
+            throw ValidationException::withMessages([
+                'order_context.stock_selection_token' => 'Gerçek Mikro stok seçimi doğrulanamadı. Stok aramasından tekrar seçin.',
+            ]);
+        }
+
         $quantity = is_numeric($input['quantity'] ?? null) ? round((float) $input['quantity'], 3) : 0.0;
         if ($quantity <= 0) {
             throw ValidationException::withMessages(['order_context.quantity' => 'Parça adedi 0 üzerinde olmalıdır.']);
@@ -707,10 +1290,46 @@ class TechnicalServicePaymentOrderContextService
             ->map(fn (mixed $serial): string => trim((string) $serial))
             ->filter()
             ->values();
-        if ($serialRequired && ($selectedSerial === '' || ! $serials->contains($selectedSerial))) {
+        if ($serialRequired && $selectedSerial === '') {
             throw ValidationException::withMessages([
                 'order_context.selected_part_serial' => 'Seri takipli parça için doğrulanmış parça seri numarasını seçin.',
             ]);
+        }
+
+        $onHand = $decoded['on_hand'] ?? null;
+        $reserved = $decoded['reserved'] ?? null;
+        $available = $decoded['available'] ?? null;
+        if ($fixtureTransport) {
+            if ($serialRequired && ! $serials->contains($selectedSerial)) {
+                throw ValidationException::withMessages([
+                    'order_context.selected_part_serial' => 'Seri takipli parça için doğrulanmış parça seri numarasını seçin.',
+                ]);
+            }
+        } else {
+            $availability = $this->mikro->stockAvailability(trim((string) ($decoded['item_code'] ?? '')));
+            $availabilityRow = collect($availability['data'] ?? [])->first(fn (mixed $row): bool => is_array($row));
+            if (($availability['ok'] ?? false) !== true || ! is_array($availabilityRow)) {
+                throw ValidationException::withMessages([
+                    'order_context.stock_selection_token' => 'Mikro stok kullanılabilirliği doğrulanamadı. Parça seçimi tamamlanamadı.',
+                ]);
+            }
+            $onHand = round((float) ($availabilityRow['depot_1_quantity'] ?? 0) + (float) ($availabilityRow['depot_5_quantity'] ?? 0), 3);
+            $available = is_numeric($availabilityRow['available_quantity'] ?? null)
+                ? (float) $availabilityRow['available_quantity']
+                : null;
+            $reserved = $available !== null ? max(0, round($onHand - $available, 3)) : null;
+
+            if ($serialRequired) {
+                $serialResult = $this->mikro->serialLookup($selectedSerial);
+                $serialRow = collect($serialResult['data'] ?? [])->first(fn (mixed $row): bool => is_array($row));
+                if (($serialResult['ok'] ?? false) !== true
+                    || ! is_array($serialRow)
+                    || trim((string) ($serialRow['stock_code'] ?? '')) !== trim((string) ($decoded['item_code'] ?? ''))) {
+                    throw ValidationException::withMessages([
+                        'order_context.selected_part_serial' => 'Parça seri numarası seçilen Mikro stok kartıyla doğrulanamadı.',
+                    ]);
+                }
+            }
         }
 
         return [
@@ -719,12 +1338,12 @@ class TechnicalServicePaymentOrderContextService
             'quantity' => $quantity,
             'unit_code' => trim((string) ($decoded['unit_code'] ?? 'ADET')) ?: 'ADET',
             'warehouse_code' => $this->nullableText($decoded['warehouse_code'] ?? null),
-            'stock_source' => trim((string) ($decoded['source'] ?? '')),
+            'stock_source' => $source,
             'stock_source_label' => trim((string) ($decoded['source_label'] ?? '')),
             'stock_freshness_at' => trim((string) ($decoded['freshness_at'] ?? '')),
-            'on_hand' => $decoded['on_hand'] ?? null,
-            'reserved' => $decoded['reserved'] ?? null,
-            'available' => $decoded['available'] ?? null,
+            'on_hand' => $onHand,
+            'reserved' => $reserved,
+            'available' => $available,
             'serial_tracking_required' => $serialRequired,
             'selected_part_serial' => $serialRequired ? $selectedSerial : null,
         ];
@@ -781,9 +1400,17 @@ class TechnicalServicePaymentOrderContextService
             'context_type' => $normalized['context_type'],
             'state' => 'draft',
             'desired_mikro_series' => $normalized['desired_mikro_series'],
+            'tax_mode' => $normalized['tax_mode'],
+            'vat_rate' => $normalized['vat_rate'],
             'future_mikro_write_state' => $normalized['future_mikro_write_state'],
+            'future_order_trigger' => $normalized['future_order_trigger'],
+            'finance_review_required' => false,
             'billing_source' => $billing['source'],
+            'billing_type' => $billing['billing_type'],
             'billing_customer_code' => $billing['customer_code'],
+            'billing_first_name' => $billing['first_name'],
+            'billing_last_name' => $billing['last_name'],
+            'billing_legal_title' => $billing['legal_title'],
             'billing_name_or_title' => $billing['name_or_title'],
             'billing_phone' => $billing['phone'],
             'billing_email' => $billing['email'],
@@ -803,6 +1430,12 @@ class TechnicalServicePaymentOrderContextService
             'shipping_postal_code' => $shipping['postal_code'] ?? null,
             'part_supplier' => $normalized['part_supplier'],
             'collection_allocation' => $normalized['collection_allocation'],
+            'commercial_mode' => $normalized['commercial_mode'],
+            'delivery_mode' => $normalized['delivery_mode'],
+            'delivery_status' => $normalized['delivery_status'],
+            'payment_collection_mode' => $normalized['payment_collection_mode'],
+            'payment_status' => $normalized['payment_status'],
+            'payment_status_source' => $normalized['payment_status_source'],
             'item_code' => $part['item_code'] ?? null,
             'item_name_snapshot' => $part['item_name'] ?? null,
             'quantity' => $part['quantity'] ?? null,
@@ -814,6 +1447,11 @@ class TechnicalServicePaymentOrderContextService
             'selected_part_serial' => $part['selected_part_serial'] ?? null,
             'related_product_serial' => $normalized['related_product_serial'],
             'charged_amount' => $normalized['charged_amount'],
+            'order_line_unit_price' => $normalized['order_line_unit_price'],
+            'order_line_total' => $normalized['order_line_total'],
+            'collection_amount' => $normalized['collection_amount'],
+            'payment_link_required' => $normalized['payment_link_required'],
+            'collection_required' => $normalized['collection_required'],
             'currency' => $normalized['currency'],
             'shipment_required' => $normalized['shipment_required'],
             'future_carrier_state' => $normalized['future_carrier_state'],
@@ -821,6 +1459,7 @@ class TechnicalServicePaymentOrderContextService
             'description2_version' => self::DESCRIPTION2_VERSION,
             'context_hash' => $normalized['context_hash'],
             'idempotency_key' => $idempotencyKey,
+            'correlation_id' => (string) Str::uuid(),
             'revision' => $revision,
             'created_by' => $actor?->getAuthIdentifier(),
             'metadata' => json_encode([
@@ -861,7 +1500,11 @@ class TechnicalServicePaymentOrderContextService
         $stockSnapshot = is_array($metadata['stock_snapshot'] ?? null) ? $metadata['stock_snapshot'] : [];
         $billing = [
             'source' => (string) $row->billing_source,
+            'billing_type' => $row->billing_type ?: 'individual',
             'customer_code' => $row->billing_customer_code,
+            'first_name' => $row->billing_first_name,
+            'last_name' => $row->billing_last_name,
+            'legal_title' => $row->billing_legal_title,
             'name_or_title' => (string) $row->billing_name_or_title,
             'phone' => (string) $row->billing_phone,
             'email' => $row->billing_email,
@@ -913,6 +1556,9 @@ class TechnicalServicePaymentOrderContextService
             'state' => (string) $row->state,
             'state_label' => $this->stateLabel((string) $row->state, (string) $row->context_type),
             'desired_mikro_series' => $row->desired_mikro_series,
+            'tax_mode' => $row->tax_mode,
+            'tax_label' => $this->taxLabel((string) $row->tax_mode),
+            'vat_rate' => is_numeric($row->vat_rate) ? (float) $row->vat_rate : null,
             'future_mikro_write_state' => (string) $row->future_mikro_write_state,
             'future_mikro_write_label' => (string) $row->future_mikro_write_state === 'not_required'
                 ? 'Mikro siparişi gerekmiyor'
@@ -929,6 +1575,28 @@ class TechnicalServicePaymentOrderContextService
                 ? 'Şirkette bırakılacak'
                 : ((string) $row->collection_allocation === self::ALLOCATION_PAY_TECHNICIAN ? 'Ustaya hakediş olarak eklenecek' : null),
             'part' => $part,
+            'commercial_mode' => $row->commercial_mode,
+            'commercial_mode_label' => (string) $row->commercial_mode === self::COMMERCIAL_FREE ? 'Ücretsiz' : ((string) $row->commercial_mode === self::COMMERCIAL_PAID ? 'Ücretli' : null),
+            'delivery_mode' => $row->delivery_mode,
+            'delivery_mode_label' => (string) $row->delivery_mode === self::DELIVERY_SHIPMENT ? 'Sevk' : ((string) $row->delivery_mode === self::DELIVERY_HAND ? 'Elden' : 'Yok'),
+            'delivery_status' => $row->delivery_status,
+            'delivery_status_label' => $this->deliveryStatusLabel((string) $row->delivery_status),
+            'payment_collection_mode' => $row->payment_collection_mode,
+            'payment_status' => $row->payment_status,
+            'payment_status_label' => $this->paymentStatusLabel((string) $row->payment_status),
+            'payment_status_source' => $row->payment_status_source,
+            'payment_status_source_label' => $this->paymentStatusSourceLabel((string) $row->payment_status_source),
+            'payment_link_required' => (bool) $row->payment_link_required,
+            'collection_required' => (bool) $row->collection_required,
+            'order_line_unit_price' => (float) $row->order_line_unit_price,
+            'order_line_unit_price_label' => $this->moneyLabel((float) $row->order_line_unit_price, (string) $row->currency),
+            'order_line_total' => (float) $row->order_line_total,
+            'order_line_total_label' => $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
+            'collection_amount' => (float) $row->collection_amount,
+            'collection_amount_label' => $this->moneyLabel((float) $row->collection_amount, (string) $row->currency),
+            'future_order_trigger' => $row->future_order_trigger,
+            'finance_review_required' => (bool) $row->finance_review_required,
+            'payment_status_reason' => $row->payment_status_reason,
             'related_product_serial' => $row->related_product_serial,
             'charged_amount' => (float) $row->charged_amount,
             'charged_amount_label' => $this->moneyLabel((float) $row->charged_amount, (string) $row->currency),
@@ -962,6 +1630,8 @@ class TechnicalServicePaymentOrderContextService
                 'SERİ NO: '.((string) ($context['related_product_serial'] ?? '-')),
                 'FATURA MÜŞTERİSİ: '.$billing['name_or_title'],
                 'SEVKİYAT: YOK',
+                'HEDEF SERİ: S',
+                'KDV: MİKRO HİZMET KARTI',
             ]);
         }
 
@@ -979,7 +1649,37 @@ class TechnicalServicePaymentOrderContextService
         $lines[] = 'İLGİLİ ÜRÜN SERİ NO: '.$context['related_product_serial'];
         $lines[] = 'PARÇA: '.$itemIdentity;
         $lines[] = 'ADET: '.$this->quantityLabel((float) ($part['quantity'] ?? 0));
-        if ($context['shipment_required']) {
+
+        if ($context['context_type'] === 'technician_supplied_part') {
+            $lines[] = 'TEDARİK: USTA';
+            $lines[] = 'MİKRO PARÇA SİPARİŞİ: YOK';
+            $lines[] = 'SEVKİYAT: YOK';
+            $lines[] = 'FATURA MÜŞTERİSİ: '.$billing['name_or_title'];
+
+            return implode("\n", $lines);
+        }
+
+        $lines[] = 'TİCARİ DURUM: '.($context['commercial_mode'] === self::COMMERCIAL_FREE ? 'ÜCRETSİZ' : 'ÜCRETLİ');
+        if ($context['delivery_mode'] === self::DELIVERY_HAND) {
+            $lines[] = 'TESLİM: ELDEN';
+            $lines[] = $context['commercial_mode'] === self::COMMERCIAL_FREE
+                ? 'SİPARİŞ SATIR DEĞERİ: '.$context['order_line_total_label']
+                : 'TUTAR: '.$context['collection_amount_label'];
+            $lines[] = 'KDV: YOK';
+            $lines[] = 'HEDEF SERİ: Q';
+            $lines[] = $context['commercial_mode'] === self::COMMERCIAL_FREE
+                ? 'TAHSİLAT: GEREKMİYOR'
+                : 'ÖDEME DURUMU: '.mb_strtoupper($this->paymentStatusLabel((string) $context['payment_status']), 'UTF-8');
+        } elseif ($context['shipment_required']) {
+            if ($context['commercial_mode'] === self::COMMERCIAL_FREE) {
+                $lines[] = 'SİPARİŞ TUTARI: '.$context['order_line_total_label'];
+                $lines[] = 'KDV: YOK';
+                $lines[] = 'HEDEF SERİ: Q';
+                $lines[] = 'TAHSİLAT: GEREKMİYOR';
+            } else {
+                $lines[] = 'HEDEF SERİ: S';
+                $lines[] = 'KDV: MİKRO STOK KARTI';
+            }
             if ($context['shipping_same_as_billing']) {
                 $lines[] = 'SEVK/FATURA: AYNI';
             } else {
@@ -992,10 +1692,6 @@ class TechnicalServicePaymentOrderContextService
             if (filled($billing['customer_code'] ?? null)) {
                 $lines[] = 'FATURA CARİ KODU: '.$billing['customer_code'];
             }
-        } else {
-            $lines[] = 'TEDARİK: USTA';
-            $lines[] = 'SEVKİYAT: YOK';
-            $lines[] = 'FATURA MÜŞTERİSİ: '.$billing['name_or_title'];
         }
 
         return implode("\n", $lines);
@@ -1090,9 +1786,9 @@ class TechnicalServicePaymentOrderContextService
         $address = trim((string) ($technician->address ?: $technician->google_formatted_address ?: $technician->default_start_address));
         $snapshot = [
             'recipient_name' => trim((string) $technician->name),
-            'recipient_phone' => trim((string) ($technician->phone_e164 ?: $technician->phone)),
+            'recipient_phone' => $this->normalizePhone($technician->phone_e164 ?: $technician->phone, 'order_context.shipping.recipient_phone'),
             'address' => $address,
-            'city' => trim((string) $technician->city),
+            'city' => $this->normalizeCity($technician->city, $technician->district, 'Sevk'),
             'district' => trim((string) $technician->district),
             'postal_code' => null,
         ];
@@ -1125,9 +1821,9 @@ class TechnicalServicePaymentOrderContextService
 
         return [
             'recipient_name' => trim((string) ($shipping['recipient_name'] ?? '')),
-            'recipient_phone' => trim((string) ($shipping['recipient_phone'] ?? '')),
+            'recipient_phone' => $this->normalizePhone($shipping['recipient_phone'] ?? null, 'order_context.shipping.recipient_phone'),
             'address' => trim((string) ($shipping['address'] ?? '')),
-            'city' => trim((string) ($shipping['city'] ?? '')),
+            'city' => $this->normalizeCity($shipping['city'] ?? null, $shipping['district'] ?? null, 'Sevk'),
             'district' => trim((string) ($shipping['district'] ?? '')),
             'postal_code' => $this->nullableText($shipping['postal_code'] ?? null),
         ];
@@ -1147,6 +1843,139 @@ class TechnicalServicePaymentOrderContextService
     private function requestAddress(TechnicalServiceRequest $request): string
     {
         return trim((string) ($request->location_formatted_address ?: $request->service_address));
+    }
+
+    /** @return array<string, mixed> */
+    private function commercialDecision(string $purpose, ?string $supplier, string $commercialMode, ?string $deliveryMode): array
+    {
+        if ($purpose === self::PURPOSE_MOUNT_COLLECTION) {
+            return [
+                'desired_mikro_series' => 'S',
+                'tax_mode' => 'standard_from_mikro_service_item',
+                'payment_link_required' => true,
+                'collection_required' => true,
+                'payment_collection_mode' => 'payment_link',
+                'future_order_trigger' => 'payment_paid',
+                'future_mikro_write_state' => 'not_authorized',
+                'shipment_required' => false,
+            ];
+        }
+
+        if ($supplier === self::SUPPLIER_TECHNICIAN) {
+            return [
+                'desired_mikro_series' => null,
+                'tax_mode' => 'none',
+                'payment_link_required' => true,
+                'collection_required' => true,
+                'payment_collection_mode' => 'payment_link',
+                'future_order_trigger' => null,
+                'future_mikro_write_state' => 'not_required',
+                'shipment_required' => false,
+            ];
+        }
+
+        return match ($commercialMode.'|'.$deliveryMode) {
+            self::COMMERCIAL_FREE.'|'.self::DELIVERY_HAND => [
+                'desired_mikro_series' => 'Q',
+                'tax_mode' => 'none',
+                'payment_link_required' => false,
+                'collection_required' => false,
+                'payment_collection_mode' => 'none',
+                'future_order_trigger' => 'ops_approved',
+                'future_mikro_write_state' => 'not_authorized',
+                'shipment_required' => false,
+            ],
+            self::COMMERCIAL_FREE.'|'.self::DELIVERY_SHIPMENT => [
+                'desired_mikro_series' => 'Q',
+                'tax_mode' => 'none',
+                'payment_link_required' => false,
+                'collection_required' => false,
+                'payment_collection_mode' => 'none',
+                'future_order_trigger' => 'ops_approved',
+                'future_mikro_write_state' => 'not_authorized',
+                'shipment_required' => true,
+            ],
+            self::COMMERCIAL_PAID.'|'.self::DELIVERY_HAND => [
+                'desired_mikro_series' => 'Q',
+                'tax_mode' => 'none',
+                'payment_link_required' => false,
+                'collection_required' => true,
+                'payment_collection_mode' => 'manual',
+                'future_order_trigger' => 'delivery_recorded',
+                'future_mikro_write_state' => 'not_authorized',
+                'shipment_required' => false,
+            ],
+            self::COMMERCIAL_PAID.'|'.self::DELIVERY_SHIPMENT => [
+                'desired_mikro_series' => 'S',
+                'tax_mode' => 'standard_from_mikro',
+                'payment_link_required' => true,
+                'collection_required' => true,
+                'payment_collection_mode' => 'payment_link',
+                'future_order_trigger' => 'payment_paid',
+                'future_mikro_write_state' => 'not_authorized',
+                'shipment_required' => true,
+            ],
+            default => throw ValidationException::withMessages([
+                'order_context' => 'Parça ticari durumu ve teslim şekli birlikte seçilmelidir.',
+            ]),
+        };
+    }
+
+    /** @return array{0:string,1:string} */
+    private function splitIndividualName(string $name): array
+    {
+        $parts = preg_split('/\s+/u', trim($name)) ?: [];
+        if (count($parts) < 2) {
+            return [$name, ''];
+        }
+
+        $lastName = (string) array_pop($parts);
+
+        return [trim(implode(' ', $parts)), $lastName];
+    }
+
+    private function normalizePhone(mixed $value, string $field): string
+    {
+        $raw = trim((string) $value);
+        if ($raw === '' || preg_match('/[[:alpha:]]/u', $raw)) {
+            throw ValidationException::withMessages([$field => 'Geçerli bir telefon numarası girin.']);
+        }
+        $leadingPlus = str_starts_with($raw, '+');
+        $digits = preg_replace('/\D+/', '', $raw) ?? '';
+        if (strlen($digits) < 10 || strlen($digits) > 15) {
+            throw ValidationException::withMessages([$field => 'Telefon numarası 10-15 rakam içermelidir.']);
+        }
+
+        return $leadingPlus ? '+'.$digits : $digits;
+    }
+
+    private function normalizeCity(mixed $city, mixed $district, string $label): string
+    {
+        $cityName = trim((string) $city);
+        $districtName = trim((string) $district);
+        $canonicalCity = TechnicalServiceTurkeyLocations::standardizeProvinceName($cityName);
+        if ($canonicalCity === null) {
+            throw ValidationException::withMessages([
+                'order_context' => $label.' ili geçerli bir Türkiye ili olmalıdır.',
+            ]);
+        }
+        if ($districtName !== '' && TechnicalServiceTurkeyLocations::findProvinceByName($districtName) !== null) {
+            throw ValidationException::withMessages([
+                'order_context' => $label.' il ve ilçe bilgileri ters girilmiş görünüyor.',
+            ]);
+        }
+
+        return $canonicalCity;
+    }
+
+    private function validatedIdentityNumber(mixed $value, int $length, string $label, string $field): ?string
+    {
+        $identity = $this->nullableText($value);
+        if ($identity !== null && ! preg_match('/^\d{'.$length.'}$/', $identity)) {
+            throw ValidationException::withMessages([$field => $label.' '.$length.' rakam olmalıdır.']);
+        }
+
+        return $identity;
     }
 
     /** @param array<string, mixed> $input */
@@ -1227,11 +2056,54 @@ class TechnicalServicePaymentOrderContextService
         return match ($state) {
             'draft' => 'Sipariş hazırlığı taslak',
             'payment_link_ready', 'payment_pending' => 'Ödeme bekleniyor',
+            'ready_without_collection' => 'Tahsilat gerekmiyor',
+            'manual_collection_pending' => 'Ödeme bekleniyor',
+            'manual_collection_paid' => 'Ödeme alındı',
             'paid_waiting_mikro_write' => $contextType === 'technician_supplied_part'
                 ? 'Ödeme alındı; Mikro siparişi gerekmiyor'
                 : 'Ödeme alındı; Mikro yazımı bekliyor',
             'cancelled' => 'İptal edildi',
             default => 'Sipariş hazırlığı bekliyor',
+        };
+    }
+
+    private function taxLabel(string $taxMode): string
+    {
+        return match ($taxMode) {
+            'none' => 'Yok / %0',
+            'standard_from_mikro' => 'Mikro stok kartından',
+            'standard_from_mikro_service_item' => 'Mikro hizmet kartından',
+            default => 'Doğrulanmadı',
+        };
+    }
+
+    private function paymentStatusLabel(string $status): string
+    {
+        return match ($status) {
+            self::PAYMENT_NOT_REQUIRED => 'Tahsilat gerekmiyor',
+            self::PAYMENT_PENDING => 'Ödeme bekleniyor',
+            self::PAYMENT_PAID => 'Ödeme alındı',
+            self::PAYMENT_CANCELLED => 'İptal',
+            default => 'Belirlenmedi',
+        };
+    }
+
+    private function paymentStatusSourceLabel(string $source): string
+    {
+        return match ($source) {
+            'auto_from_technician_delivery' => 'Teslim kaydı',
+            'manual' => 'OPS kararı',
+            'provider' => 'Ödeme sağlayıcısı',
+            default => 'Sistem',
+        };
+    }
+
+    private function deliveryStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'delivered' => 'Teslim edildi',
+            'cancelled' => 'İptal edildi',
+            default => 'Teslim bekliyor',
         };
     }
 

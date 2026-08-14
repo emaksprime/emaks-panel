@@ -2817,6 +2817,9 @@ class TechnicalServiceWorkflowService
             'customer_charges' => $customerCharges,
             'payment_summary' => $paymentSummary,
             'technician_earning_message' => $this->technicianEarningMessagePayload($request),
+            'part_order_context' => $includePaymentHistory
+                ? app(TechnicalServicePaymentOrderContextService::class)->latestPartContext($request)
+                : null,
         ];
     }
 

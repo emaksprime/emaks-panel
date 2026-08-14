@@ -31,6 +31,7 @@ return [
 
     'technical_service' => [
         'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'gateway'),
+        'payment_order_context_test_stock' => env('TECHNICAL_SERVICE_PAYMENT_ORDER_CONTEXT_TEST_STOCK', false),
     ],
 
     'mikro_api' => [

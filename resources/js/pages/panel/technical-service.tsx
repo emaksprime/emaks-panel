@@ -4124,6 +4124,30 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handlePaymentOrderContextStateUpdate = async (
+    contextId: number | string,
+    payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null },
+  ) => {
+    if (!selectedId) {
+      return
+    }
+
+    const requestId = selectedId
+    const response = await apiRequest(`/api/technical-service/requests/${requestId}/payments/order-context/${encodeURIComponent(String(contextId))}/state`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest && selectedIdRef.current === requestId) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((item) => item.id === updatedRequest.id ? updatedRequest : item))
+        setSelectedListRequest((current) => current?.id === updatedRequest.id ? updatedRequest : current)
+        setSelectedDetailRequest(updatedRequest)
+      })
+    }
+  }
+
   const handleMountPaymentCancel = async (paymentId: number | string, payload?: { reason?: string | null }) => {
     if (!selectedId) {
       return
@@ -7021,6 +7045,7 @@ export function TechnicalServiceOperationCenter() {
                     onRouteQuoteCalculate={handleRouteQuoteCalculate}
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
+                    onPaymentOrderContextStateUpdate={handlePaymentOrderContextStateUpdate}
                     onMountPaymentCancel={handleMountPaymentCancel}
                     onMountPaymentSync={handleMountPaymentSync}
                     onMountPaymentSendContext={handleMountPaymentSendContext}

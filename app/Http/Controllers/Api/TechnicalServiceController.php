@@ -1122,7 +1122,7 @@ class TechnicalServiceController extends Controller
             return 'Ödeme bağlantısı oluşturuluyor. Lütfen kısa süre sonra tekrar deneyin.';
         }
         if (str_contains($message, 'PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE')) {
-            return 'Mevcut ödeme bağlantısı güvenli biçimde kullanılamıyor. Ödeme geçmişini kontrol edip açıklamalı yeni bağlantı oluşturun.';
+            return 'Ödeme sağlayıcısı güvenli bir bağlantı oturumu döndürmedi. Eski kayıt tekrar kullanılmayacak; bu işlem için yeni bağlantı oluşturun.';
         }
         if (str_contains($message, 'PUBLIC_ORIGIN_')) {
             return 'Ödeme bağlantısı için public/LAN adresi hazır değil. Teknik Servis Admin > Entegrasyonlar ayarını kontrol edin.';
@@ -1164,14 +1164,18 @@ class TechnicalServiceController extends Controller
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServicePaymentOrderContextService $orderContexts,
+        TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
+        PaymentProviderManager $paymentProviderManager,
     ): JsonResponse {
         $validated = $request->validate([
             'purpose' => ['required', 'string', 'in:mount_collection,part_charge'],
-            'amount' => ['required', 'numeric', 'gt:0'],
+            'amount' => ['required', 'numeric', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
             'order_context' => ['required', 'array'],
         ]);
         $this->assertStrictPaymentDecimalInputs($request, ['amount']);
+        $providerFamily = $paymentProviderManager->providerName();
+        $providerMode = $providerFamily === 'fake' ? 'local' : $paymentProviderSettings->providerMode();
 
         return response()->json([
             'ok' => true,
@@ -1182,6 +1186,8 @@ class TechnicalServiceController extends Controller
                 $validated['order_context'],
                 (float) $validated['amount'],
                 strtoupper((string) ($validated['currency'] ?? 'TRY')),
+                $providerFamily,
+                $providerMode,
             ),
             'external_execution' => [
                 'mikro_read' => app()->environment(['local', 'testing']) ? 0 : null,
@@ -1207,6 +1213,43 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
+    public function updatePaymentOrderContextState(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        int $orderContext,
+        TechnicalServicePaymentOrderContextService $orderContexts,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'expected_revision' => ['required', 'integer', 'min:1'],
+            'action' => ['required', 'string', 'in:record_delivery,set_payment_status'],
+            'payment_status' => ['nullable', 'string', 'in:pending,paid,cancelled'],
+            'reason' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $context = $orderContexts->updateHandDeliveryState(
+            $technicalServiceRequest,
+            $orderContext,
+            (int) $validated['expected_revision'],
+            (string) $validated['action'],
+            isset($validated['payment_status']) ? (string) $validated['payment_status'] : null,
+            isset($validated['reason']) ? (string) $validated['reason'] : null,
+            $request->user(),
+        );
+
+        return response()->json([
+            'ok' => true,
+            'order_context' => $context,
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            'external_execution' => [
+                'payment_write' => 0,
+                'earning_write' => 0,
+                'provider' => 0,
+                'mikro_write' => 0,
+                'hepsijet' => 0,
+            ],
+        ]);
+    }
+
     public function createExtraMountFeePayment(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
@@ -1219,7 +1262,7 @@ class TechnicalServiceController extends Controller
             'technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
             'selected_serial_ids' => ['nullable', 'array'],
             'selected_serial_ids.*' => ['integer'],
-            'amount' => ['nullable', 'numeric', 'gt:0'],
+            'amount' => ['nullable', 'numeric', 'min:0'],
             'service_amount' => ['nullable', 'numeric', 'min:0'],
             'part_amount' => ['nullable', 'numeric', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
@@ -1231,6 +1274,7 @@ class TechnicalServiceController extends Controller
             'note' => ['nullable', 'string', 'max:2000'],
             'message_template' => ['nullable', 'string', 'max:4000'],
             'terminal_retry_reason' => ['nullable', 'string', 'min:3', 'max:500'],
+            'fresh_payment_requested' => ['nullable', 'boolean'],
         ]);
         $this->assertStrictPaymentDecimalInputs($request, ['amount', 'service_amount', 'part_amount']);
         if (isset($validated['purpose'], $validated['charge_type'])
@@ -1332,7 +1376,7 @@ class TechnicalServiceController extends Controller
         $partAmount = $this->minorUnitsToDecimal($partAmountMinor);
         $totalAmount = $this->minorUnitsToDecimal($totalAmountMinor);
 
-        if ($totalAmountMinor <= 0 || $totalAmountMinor > 999999999999) {
+        if ((! $isOrderContextPurpose && $totalAmountMinor <= 0) || $totalAmountMinor < 0 || $totalAmountMinor > 999999999999) {
             throw ValidationException::withMessages([
                 'amount' => $totalAmountMinor <= 0
                     ? 'Ödeme tutarı 0 TL üzerinde olmalı.'
@@ -1344,14 +1388,74 @@ class TechnicalServiceController extends Controller
         if ($isOrderContextPurpose) {
             $actor = $request->user();
             abort_unless($actor instanceof User, 401);
+            $orderContextInput = is_array($validated['order_context'] ?? null) ? $validated['order_context'] : [];
+            $freshPaymentRequested = (bool) ($validated['fresh_payment_requested'] ?? false);
+            $providerFamily = $paymentProviderManager->providerName();
+            $providerMode = $providerFamily === 'fake' ? 'local' : $paymentProviderSettings->providerMode();
+            if ($freshPaymentRequested) {
+                $retryPlan = $orderContexts->paymentRetryPlan(
+                    $technicalServiceRequest,
+                    $purpose,
+                    $orderContextInput,
+                    (float) $totalAmount,
+                    $currency,
+                    $providerFamily,
+                    $providerMode,
+                );
+                if (($retryPlan['state'] ?? 'none') === 'fresh_link_required'
+                    && ($retryPlan['reason_required'] ?? false) === true
+                    && ! filled($validated['terminal_retry_reason'] ?? null)) {
+                    throw ValidationException::withMessages([
+                        'terminal_retry_reason' => 'Yeni bağlantı oluşturma nedenini yazınız.',
+                    ]);
+                }
+                if (is_numeric($retryPlan['supersede_payment_id'] ?? null)) {
+                    $supersededPayment = TechnicalServiceMountPayment::query()
+                        ->whereKey((int) $retryPlan['supersede_payment_id'])
+                        ->where('technical_service_request_id', $technicalServiceRequest->id)
+                        ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
+                        ->first();
+                    if (! $supersededPayment instanceof TechnicalServiceMountPayment) {
+                        throw ValidationException::withMessages([
+                            'order_context' => 'Ödeme bağlantısı başka bir işlemle güncellendi. Güncel önizlemeyi açıp tekrar deneyin.',
+                        ]);
+                    }
+                    $supersedeReason = filled($validated['terminal_retry_reason'] ?? null)
+                        ? trim((string) $validated['terminal_retry_reason'])
+                        : (string) ($retryPlan['audit_reason'] ?? 'Ödeme bağlamı değiştiği için yeni bağlantı oluşturuldu.');
+                    try {
+                        $cancelResult = $paymentProviderManager->cancelPayment($supersededPayment, [
+                            'cancelled_at' => now()->toISOString(),
+                            'cancelled_by_user_id' => $actor->id,
+                            'cancelled_by_name' => $actor->name,
+                            'cancellation_reason' => $supersedeReason,
+                            'cancel_source' => 'order_context_superseded',
+                        ]);
+                        $supersededPayment = $paymentProviderManager->canonicalPaymentFromMutationResult($cancelResult);
+                    } catch (Throwable $exception) {
+                        throw ValidationException::withMessages([
+                            'order_context' => $exception->getMessage(),
+                        ]);
+                    }
+                    if ($supersededPayment->status !== TechnicalServiceMountPayment::STATUS_CANCELLED) {
+                        throw ValidationException::withMessages([
+                            'order_context' => 'Eski ödeme bağlantısı terminal duruma geçti; yeni bağlantı oluşturulmadı.',
+                        ]);
+                    }
+                    $orderContexts->markCancelled($supersededPayment);
+                }
+            }
             $preparedContext = $orderContexts->prepare(
                 $technicalServiceRequest,
                 $purpose,
-                is_array($validated['order_context'] ?? null) ? $validated['order_context'] : [],
+                $orderContextInput,
                 (float) $totalAmount,
                 $currency,
                 $actor,
-                filled($validated['terminal_retry_reason'] ?? null),
+                $freshPaymentRequested || filled($validated['terminal_retry_reason'] ?? null),
+                isset($validated['terminal_retry_reason']) ? (string) $validated['terminal_retry_reason'] : null,
+                $providerFamily,
+                $providerMode,
             );
             if ($preparedContext['payment'] instanceof TechnicalServiceMountPayment) {
                 $existingPayment = $preparedContext['payment'];
@@ -1371,6 +1475,26 @@ class TechnicalServiceController extends Controller
                     ]),
                     'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
                 ]);
+            }
+
+            $preparedProjection = $orderContexts->contextProjection($preparedContext['context']);
+            if (($preparedProjection['payment_link_required'] ?? true) === false) {
+                $context = $orderContexts->finalizeWithoutPayment($preparedContext['context'], $actor);
+
+                return response()->json([
+                    'ok' => true,
+                    'message' => $context['payment_status'] === TechnicalServicePaymentOrderContextService::PAYMENT_NOT_REQUIRED
+                        ? 'Tahsilatsız parça hazırlığı kaydedildi.'
+                        : 'Elden teslim ve ödeme durumu kaydedildi.',
+                    'payment' => null,
+                    'order_context' => $context,
+                    'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+                    'external_execution' => [
+                        'payment_provider' => 0,
+                        'mikro_write' => 0,
+                        'hepsijet' => 0,
+                    ],
+                ], $preparedContext['created'] ? 201 : 200);
             }
         }
 
@@ -1419,11 +1543,12 @@ class TechnicalServiceController extends Controller
             'message_template' => $validated['message_template'] ?? null,
             'note' => $validated['note'] ?? null,
         ];
-        if (filled($validated['terminal_retry_reason'] ?? null)) {
+        $resolvedRetryReason = trim((string) ($preparedContext['retry_reason'] ?? $validated['terminal_retry_reason'] ?? ''));
+        if ($resolvedRetryReason !== '') {
             $paymentPayload['canonical_payment_terminal_retry'] = [
                 'schema_version' => 1,
                 'source' => 'ops_explicit_terminal_retry',
-                'reason' => trim((string) $validated['terminal_retry_reason']),
+                'reason' => $resolvedRetryReason,
                 'requested_by_user_id' => $request->user()?->id,
                 'requested_at' => now()->toIso8601String(),
             ];

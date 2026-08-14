@@ -9,6 +9,7 @@ import { apiRequest } from '@/lib/api'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { PaymentLinkSendDialog, PendingPaymentLinkActions, canonicalPaymentLinkSendPayload, canonicalPendingPaymentUrl, paymentLinkSendDisabledReason } from './PendingPaymentLinkActions'
 import type { PaymentLinkSendContext, PaymentLinkSendPayload, PaymentLinkSendResult, PendingPaymentLinkActionPayment, PendingPaymentLinkSurface } from './PendingPaymentLinkActions'
+import { findDistrictByName, findProvinceByName, TURKEY_PROVINCES } from './turkey-locations'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinancePaymentRecord, ServiceRequestFinancialScopeKey, ServiceRequestInvoiceSerial, ServiceRequestMikroPartSearchItem, ServiceRequestPaymentOrderContext, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessageDispatch, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import type { ServiceRequestCanonicalEarningSnapshot } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
@@ -25,10 +26,14 @@ type PaymentLinkSendTarget = PendingPaymentLinkActionPayment & {
 type ExtraPaymentPurpose = NonNullable<ServiceRequestExtraMountPaymentPayload['purpose']>
 
 type OrderPartyDraft = {
-  nameOrTitle: string
+  billingType: 'individual' | 'company'
+  firstName: string
+  lastName: string
+  legalTitle: string
   phone: string
   email: string
-  taxIdentity: string
+  tckn: string
+  vkn: string
   taxOffice: string
   address: string
   city: string
@@ -253,6 +258,7 @@ type ServiceRequestDetailsProps = {
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) => void | Promise<void>
+  onPaymentOrderContextStateUpdate?: (contextId: number | string, payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null }) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
@@ -1635,6 +1641,7 @@ export function ServiceRequestDetails({
   onRouteQuoteCalculate,
   onRouteQuoteManualSave,
   onExtraMountPaymentCreate,
+  onPaymentOrderContextStateUpdate,
   onMountPaymentCancel,
   onMountPaymentSync,
   onMountPaymentSendContext,
@@ -1912,14 +1919,17 @@ export function ServiceRequestDetails({
   const [extraPaymentPurpose, setExtraPaymentPurpose] = useState<ExtraPaymentPurpose>('general_extra')
   const [orderBillingSource, setOrderBillingSource] = useState<'mrn_customer' | 'manual_billing_draft'>('mrn_customer')
   const [orderBillingDraft, setOrderBillingDraft] = useState<OrderPartyDraft>({
-    nameOrTitle: '', phone: '', email: '', taxIdentity: '', taxOffice: '', address: '', city: '', district: '', postalCode: '',
+    billingType: 'individual', firstName: '', lastName: '', legalTitle: '', phone: '', email: '', tckn: '', vkn: '', taxOffice: '', address: '', city: '', district: '', postalCode: '',
   })
+  const [orderBillingErrors, setOrderBillingErrors] = useState<Record<string, string>>({})
   const [orderShippingSameAsBilling, setOrderShippingSameAsBilling] = useState(true)
   const [orderDeliveryTarget, setOrderDeliveryTarget] = useState<'billing_address' | 'mrn_customer' | 'technician' | 'custom_recipient'>('billing_address')
   const [orderShippingDraft, setOrderShippingDraft] = useState<ShippingPartyDraft>({
     recipientName: '', recipientPhone: '', address: '', city: '', district: '', postalCode: '',
   })
   const [orderPartSupplier, setOrderPartSupplier] = useState<'emaks_prime' | 'technician' | null>(null)
+  const [orderCommercialMode, setOrderCommercialMode] = useState<'free' | 'paid'>('paid')
+  const [orderDeliveryMode, setOrderDeliveryMode] = useState<'hand_delivery' | 'shipment'>('shipment')
   const [orderPartSearch, setOrderPartSearch] = useState('')
   const [orderPartSearchItems, setOrderPartSearchItems] = useState<ServiceRequestMikroPartSearchItem[]>([])
   const [orderPartSearchLoading, setOrderPartSearchLoading] = useState(false)
@@ -1935,6 +1945,8 @@ export function ServiceRequestDetails({
   const [orderContextPreviewLoadingInputKey, setOrderContextPreviewLoadingInputKey] = useState<string | null>(null)
   const [orderContextPreviewError, setOrderContextPreviewError] = useState<string | null>(null)
   const [orderContextPreviewErrorInputKey, setOrderContextPreviewErrorInputKey] = useState<string | null>(null)
+  const [orderContextStateUpdating, setOrderContextStateUpdating] = useState(false)
+  const [orderContextStatusReason, setOrderContextStatusReason] = useState('')
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
@@ -2218,6 +2230,7 @@ export function ServiceRequestDetails({
     : null
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
   const customerChargeSummary = saleAndPayment?.customer_charges ?? null
+  const latestPartOrderContext = saleAndPayment?.part_order_context ?? null
   const mountPaymentRecords = saleAndPayment?.mount_payments?.rows ?? []
   const paymentHistoryRecords = [...mountPaymentRecords, ...(customerChargeSummary?.rows ?? [])]
     .filter((payment, index, rows) => rows.findIndex((candidate) => String(candidate.id) === String(payment.id)) === index)
@@ -2272,10 +2285,14 @@ export function ServiceRequestDetails({
     billing_source: orderBillingSource,
     billing: orderBillingSource === 'manual_billing_draft'
       ? {
-          name_or_title: orderBillingDraft.nameOrTitle,
+          billing_type: orderBillingDraft.billingType,
+          first_name: orderBillingDraft.firstName,
+          last_name: orderBillingDraft.lastName,
+          legal_title: orderBillingDraft.legalTitle,
           phone: orderBillingDraft.phone,
           email: orderBillingDraft.email || null,
-          tax_identity: orderBillingDraft.taxIdentity || null,
+          tckn: orderBillingDraft.tckn || null,
+          vkn: orderBillingDraft.vkn || null,
           tax_office: orderBillingDraft.taxOffice || null,
           address: orderBillingDraft.address,
           city: orderBillingDraft.city,
@@ -2283,14 +2300,21 @@ export function ServiceRequestDetails({
           postal_code: orderBillingDraft.postalCode || null,
         }
       : undefined,
+    commercial_mode: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? orderCommercialMode
+      : null,
+    delivery_mode: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+      ? orderDeliveryMode
+      : null,
     shipping_same_as_billing: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
-      ? orderShippingSameAsBilling
+      ? orderDeliveryMode === 'shipment' && orderShippingSameAsBilling
       : false,
     delivery_target: extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
-      ? (orderShippingSameAsBilling ? 'billing_address' : orderDeliveryTarget)
+      ? (orderDeliveryMode === 'shipment' && orderShippingSameAsBilling ? 'billing_address' : orderDeliveryTarget)
       : null,
     shipping: extraPaymentPurpose === 'part_charge'
       && orderPartSupplier === 'emaks_prime'
+      && orderDeliveryMode === 'shipment'
       && !orderShippingSameAsBilling
       && orderDeliveryTarget === 'custom_recipient'
       ? {
@@ -2321,6 +2345,8 @@ export function ServiceRequestDetails({
     extraPaymentPurpose,
     orderBillingDraft,
     orderBillingSource,
+    orderCommercialMode,
+    orderDeliveryMode,
     orderDeliveryTarget,
     orderPartQuantity,
     orderPartSupplier,
@@ -2335,7 +2361,8 @@ export function ServiceRequestDetails({
   const orderBillingReady = orderBillingSource === 'mrn_customer'
     ? [request.customer, request.phone, request.address, request.city, request.district].every((value) => String(value ?? '').trim() !== '')
     : [
-        orderBillingDraft.nameOrTitle,
+        orderBillingDraft.billingType === 'individual' ? orderBillingDraft.firstName : orderBillingDraft.legalTitle,
+        orderBillingDraft.billingType === 'individual' ? orderBillingDraft.lastName : 'company',
         orderBillingDraft.phone,
         orderBillingDraft.address,
         orderBillingDraft.city,
@@ -2355,6 +2382,7 @@ export function ServiceRequestDetails({
     )
   const orderShippingReady = extraPaymentPurpose !== 'part_charge'
     || orderPartSupplier !== 'emaks_prime'
+    || orderDeliveryMode !== 'shipment'
     || orderShippingSameAsBilling
     || orderDeliveryTarget !== 'custom_recipient'
     || [
@@ -2367,7 +2395,7 @@ export function ServiceRequestDetails({
   const canPreviewPaymentOrderContext = Boolean(
     usesPaymentOrderContext
     && extraPaymentAmount !== null
-    && extraPaymentAmount > 0
+    && (extraPaymentAmount > 0 || (extraPaymentPurpose === 'part_charge' && orderCommercialMode === 'free' && orderDeliveryMode === 'shipment'))
     && orderBillingReady
     && orderPartReady
     && orderShippingReady,
@@ -2497,15 +2525,22 @@ export function ServiceRequestDetails({
   const pendingOnlinePaymentLink = pendingMountPaymentRecords.length > 0
   const paidOnlinePaymentLink = paidMountPaymentRecords.length > 0
   const cancelledOnlinePaymentLink = cancelledMountPaymentRecords.length > 0
-  const terminalPaymentRetryRequired = cancelledMountPaymentRecords.some(isSameLogicalPayment)
+  const historyTerminalPaymentRetryRequired = cancelledMountPaymentRecords.some(isSameLogicalPayment)
     && !pendingMountPaymentRecords.some(isSameLogicalPayment)
+  const paymentRetry = activeOrderContextPreview?.payment_retry ?? null
+  const freshPaymentActionRequired = paymentRetry?.fresh_link_required === true || historyTerminalPaymentRetryRequired
+  const terminalPaymentRetryRequired = paymentRetry?.fresh_link_required === true
+    ? paymentRetry.reason_required === true
+    : historyTerminalPaymentRetryRequired
   const terminalPaymentRetryReason = terminalPaymentRetryReasons[String(request.id)] ?? ''
   const hasPaymentHistory = pendingOnlinePaymentLink || paidOnlinePaymentLink || cancelledOnlinePaymentLink
   const paymentLinkActionLabel = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
   const paymentLinkModalTitle = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
   const paymentLinkSubmitLabel = extraPaymentCreateLoading
-    ? 'Ödeme bağlantısı hazırlanıyor...'
-    : terminalPaymentRetryRequired ? 'Yeni ödeme bağlantısı oluştur' : 'Link oluştur'
+    ? (activeOrderContextPreview?.payment_link_required === false ? 'Kaydediliyor...' : 'Ödeme bağlantısı hazırlanıyor...')
+    : activeOrderContextPreview?.payment_link_required === false
+      ? 'Parça bağlamını kaydet'
+      : freshPaymentActionRequired ? (paymentRetry?.action_label ?? 'Yeni ödeme bağlantısı oluştur') : 'Link oluştur'
   const paymentLinkAmountSourceLabel = routeFeeExtraPaymentInput.trim() === ''
     ? 'Tutar kaynağı: Manuel giriş gerekli'
     : existingPendingPaymentAmount !== null && routeFeeExtraPaymentInput === existingPendingPaymentAmountInput
@@ -3289,7 +3324,21 @@ export function ServiceRequestDetails({
     setRouteFeeEditorMode('payment_link')
     setExtraPaymentPurpose('general_extra')
     setOrderBillingSource('mrn_customer')
-    setOrderBillingDraft({ nameOrTitle: '', phone: '', email: '', taxIdentity: '', taxOffice: '', address: '', city: '', district: '', postalCode: '' })
+    setOrderBillingDraft({
+      billingType: 'individual',
+      firstName: '',
+      lastName: '',
+      legalTitle: '',
+      phone: '',
+      email: '',
+      tckn: '',
+      vkn: '',
+      taxOffice: '',
+      address: '',
+      city: '',
+      district: '',
+      postalCode: '',
+    })
     setOrderShippingSameAsBilling(true)
     setOrderDeliveryTarget('billing_address')
     setOrderShippingDraft({ recipientName: '', recipientPhone: '', address: '', city: '', district: '', postalCode: '' })
@@ -3414,7 +3463,12 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (extraPaymentAmount === null || extraPaymentAmount <= 0) {
+    const allowsZeroAmount = extraPaymentPurpose === 'part_charge'
+      && orderPartSupplier === 'emaks_prime'
+      && orderCommercialMode === 'free'
+      && orderDeliveryMode === 'shipment'
+
+    if (extraPaymentAmount === null || extraPaymentAmount < 0 || (!allowsZeroAmount && extraPaymentAmount <= 0)) {
       setRouteFeeEditorOpen(true)
 
       if (routeFeeEditorMode === 'payment_link') {
@@ -3425,6 +3479,48 @@ export function ServiceRequestDetails({
       }
 
       return
+    }
+
+    if (usesPaymentOrderContext && orderBillingSource === 'manual_billing_draft') {
+      const errors: Record<string, string> = {}
+      const phoneDigits = orderBillingDraft.phone.replace(/\D/g, '')
+
+      if (orderBillingDraft.billingType === 'individual') {
+        if (orderBillingDraft.firstName.trim() === '') {
+errors.firstName = 'Ad alanı zorunludur.'
+}
+
+        if (orderBillingDraft.lastName.trim() === '') {
+errors.lastName = 'Soyad alanı zorunludur.'
+}
+      } else if (orderBillingDraft.legalTitle.trim() === '') {
+        errors.legalTitle = 'Şirket unvanı zorunludur.'
+      }
+
+      if (/[a-zçğıöşü]/i.test(orderBillingDraft.phone) || phoneDigits.length < 10 || phoneDigits.length > 15) {
+        errors.phone = 'Geçerli bir telefon numarası girin.'
+      }
+
+      if (orderBillingDraft.email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(orderBillingDraft.email.trim())) {
+        errors.email = 'Geçerli bir e-posta adresi girin.'
+      }
+
+      const province = findProvinceByName(orderBillingDraft.city)
+
+      if (!province) {
+        errors.city = 'Geçerli bir il seçin.'
+      } else if (!findDistrictByName(orderBillingDraft.city, orderBillingDraft.district)) {
+        errors.district = 'İl ile uyumlu bir ilçe seçin.'
+      }
+
+      setOrderBillingErrors(errors)
+      const firstInvalid = Object.keys(errors)[0]
+
+      if (firstInvalid) {
+        window.requestAnimationFrame(() => document.getElementById(`order-billing-${firstInvalid}`)?.focus())
+
+        return
+      }
     }
 
     setPaymentAmountError(null)
@@ -3462,6 +3558,7 @@ export function ServiceRequestDetails({
           }
         : null,
       terminal_retry_reason: terminalPaymentRetryRequired ? terminalPaymentRetryReason.trim() : null,
+      fresh_payment_requested: freshPaymentActionRequired,
     }
 
     try {
@@ -3470,9 +3567,40 @@ export function ServiceRequestDetails({
       setPaymentLinkCopyMessage(null)
       setPaymentLinkManualCopyValue(null)
       setPaymentLinkCopyTarget(null)
-      setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
+      setRouteFeeEditorMessage(activeOrderContextPreview?.payment_link_required === false
+        ? 'Parça ticari ve teslim bağlamı kaydedildi.'
+        : 'Ödeme linki oluşturuldu.')
     } catch {
       setRouteFeeEditorMessage(null)
+    }
+  }
+  const handleOrderContextStateUpdate = async (
+    action: 'record_delivery' | 'set_payment_status',
+    paymentStatus?: 'pending' | 'paid' | 'cancelled',
+  ) => {
+    if (!latestPartOrderContext?.id || !latestPartOrderContext.revision || !onPaymentOrderContextStateUpdate || orderContextStateUpdating) {
+      return
+    }
+
+    if (action === 'set_payment_status' && orderContextStatusReason.trim() === '') {
+      setRouteFeeEditorMessage('Ödeme durumu değişikliği için açıklama yazınız.')
+
+      return
+    }
+
+    setOrderContextStateUpdating(true)
+    setRouteFeeEditorMessage(null)
+
+    try {
+      await onPaymentOrderContextStateUpdate(latestPartOrderContext.id, {
+        expected_revision: Number(latestPartOrderContext.revision),
+        action,
+        payment_status: paymentStatus ?? null,
+        reason: action === 'set_payment_status' ? orderContextStatusReason.trim() : null,
+      })
+      setOrderContextStatusReason('')
+    } finally {
+      setOrderContextStateUpdating(false)
     }
   }
   const handlePendingPaymentCancel = async (payment: PaymentLinkSendTarget) => {
@@ -4708,6 +4836,53 @@ export function ServiceRequestDetails({
               </div>
 
               {orderPartSupplier === 'emaks_prime' ? (
+                <div className="grid gap-3 sm:grid-cols-2" data-testid="part-commercial-controls">
+                  <div className="grid gap-2">
+                    <p className="text-xs font-semibold text-slate-700">Ticari durum</p>
+                    <div className="grid grid-cols-2 gap-2" role="group" aria-label="Parça ticari durumu">
+                      <Button type="button" size="sm" variant={orderCommercialMode === 'free' ? 'default' : 'outline'} onClick={() => {
+                        setOrderCommercialMode('free')
+
+                        if (orderDeliveryMode === 'shipment') {
+                          setRouteFeeExtraPaymentInput('0')
+                          setPaymentAmountError(null)
+                        }
+                      }}>Ücretsiz</Button>
+                      <Button type="button" size="sm" variant={orderCommercialMode === 'paid' ? 'default' : 'outline'} onClick={() => setOrderCommercialMode('paid')}>Ücretli</Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <p className="text-xs font-semibold text-slate-700">Teslim şekli</p>
+                    <div className="grid grid-cols-2 gap-2" role="group" aria-label="Parça teslim şekli">
+                      <Button type="button" size="sm" variant={orderDeliveryMode === 'hand_delivery' ? 'default' : 'outline'} onClick={() => setOrderDeliveryMode('hand_delivery')}>Elden</Button>
+                      <Button type="button" size="sm" variant={orderDeliveryMode === 'shipment' ? 'default' : 'outline'} onClick={() => {
+                        setOrderDeliveryMode('shipment')
+
+                        if (orderCommercialMode === 'free') {
+                          setRouteFeeExtraPaymentInput('0')
+                          setPaymentAmountError(null)
+                        }
+                      }}>Sevk</Button>
+                    </div>
+                  </div>
+                  {orderDeliveryMode === 'hand_delivery' ? (
+                    <label className="grid gap-1 text-xs font-semibold text-slate-700 sm:col-span-2">
+                      Elden teslim alıcısı
+                      <select
+                        value={orderDeliveryTarget}
+                        onChange={(event) => setOrderDeliveryTarget(event.target.value as typeof orderDeliveryTarget)}
+                        className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                      >
+                        <option value="technician">Usta</option>
+                        <option value="mrn_customer">Müşteri</option>
+                        <option value="billing_address">Fatura müşterisi</option>
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {orderPartSupplier === 'emaks_prime' ? (
                 <div className="grid gap-3">
                   <label className="grid gap-1 text-xs font-semibold text-slate-700">
                     2. Mikro stoktan parça seçimi
@@ -4720,6 +4895,8 @@ export function ServiceRequestDetails({
 
                           setOrderPartSearch(query)
                           setOrderPartSearchItems([])
+                          setOrderSelectedPart(null)
+                          setOrderSelectedPartSerial('')
                           setOrderPartSearchLoading(false)
                           setOrderPartSearchError(query.trim().length === 1 ? 'Parça araması için en az 2 karakter girin.' : null)
                         }}
@@ -4768,14 +4945,18 @@ export function ServiceRequestDetails({
                       {orderSelectedPart.serial_tracking_required ? (
                         <label className="grid gap-1 font-semibold">
                           4. Parça seri numarası
-                          <select
-                            value={orderSelectedPartSerial}
-                            onChange={(event) => setOrderSelectedPartSerial(event.target.value)}
-                            className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                          >
-                            <option value="">Seri seçin</option>
-                            {(orderSelectedPart.serials ?? []).map((serial) => <option key={serial} value={serial}>{serial}</option>)}
-                          </select>
+                          {(orderSelectedPart.serials ?? []).length > 0 ? (
+                            <select
+                              value={orderSelectedPartSerial}
+                              onChange={(event) => setOrderSelectedPartSerial(event.target.value)}
+                              className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                            >
+                              <option value="">Seri seçin</option>
+                              {(orderSelectedPart.serials ?? []).map((serial) => <option key={serial} value={serial}>{serial}</option>)}
+                            </select>
+                          ) : (
+                            <Input value={orderSelectedPartSerial} onChange={(event) => setOrderSelectedPartSerial(event.target.value)} placeholder="Mikro'da doğrulanacak seri numarası" />
+                          )}
                         </label>
                       ) : null}
                     </div>
@@ -4833,21 +5014,63 @@ export function ServiceRequestDetails({
                 </div>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Ad / unvan<Input value={orderBillingDraft.nameOrTitle} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, nameOrTitle: event.target.value }))} /></label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Telefon<Input value={orderBillingDraft.phone} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, phone: event.target.value }))} /></label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">E-posta<Input type="email" value={orderBillingDraft.email} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, email: event.target.value }))} /></label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">VKN / TCKN<Input value={orderBillingDraft.taxIdentity} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, taxIdentity: event.target.value }))} /></label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Vergi dairesi<Input value={orderBillingDraft.taxOffice} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, taxOffice: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700 sm:col-span-2">
+                    Fatura müşteri tipi
+                    <select
+                      value={orderBillingDraft.billingType}
+                      onChange={(event) => setOrderBillingDraft((current) => ({ ...current, billingType: event.target.value as 'individual' | 'company' }))}
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    >
+                      <option value="individual">Kişi</option>
+                      <option value="company">Şirket</option>
+                    </select>
+                  </label>
+                  {orderBillingDraft.billingType === 'individual' ? (
+                    <>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">Ad<Input id="order-billing-firstName" value={orderBillingDraft.firstName} onChange={(event) => {
+                        setOrderBillingDraft((current) => ({ ...current, firstName: event.target.value }))
+                        setOrderBillingErrors((current) => ({ ...current, firstName: '' }))
+                      }} />{orderBillingErrors.firstName ? <span className="text-rose-700">{orderBillingErrors.firstName}</span> : null}</label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">Soyad<Input id="order-billing-lastName" value={orderBillingDraft.lastName} onChange={(event) => {
+                        setOrderBillingDraft((current) => ({ ...current, lastName: event.target.value }))
+                        setOrderBillingErrors((current) => ({ ...current, lastName: '' }))
+                      }} />{orderBillingErrors.lastName ? <span className="text-rose-700">{orderBillingErrors.lastName}</span> : null}</label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">TCKN (opsiyonel)<Input id="order-billing-tckn" inputMode="numeric" maxLength={11} value={orderBillingDraft.tckn} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, tckn: event.target.value }))} /></label>
+                    </>
+                  ) : (
+                    <>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700 sm:col-span-2">Şirket unvanı<Input id="order-billing-legalTitle" value={orderBillingDraft.legalTitle} onChange={(event) => {
+                        setOrderBillingDraft((current) => ({ ...current, legalTitle: event.target.value }))
+                        setOrderBillingErrors((current) => ({ ...current, legalTitle: '' }))
+                      }} />{orderBillingErrors.legalTitle ? <span className="text-rose-700">{orderBillingErrors.legalTitle}</span> : null}</label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">VKN (opsiyonel)<Input id="order-billing-vkn" inputMode="numeric" maxLength={10} value={orderBillingDraft.vkn} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, vkn: event.target.value }))} /></label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-700">Vergi dairesi<Input value={orderBillingDraft.taxOffice} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, taxOffice: event.target.value }))} /></label>
+                    </>
+                  )}
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">Telefon<Input id="order-billing-phone" value={orderBillingDraft.phone} onChange={(event) => {
+                    setOrderBillingDraft((current) => ({ ...current, phone: event.target.value }))
+                    setOrderBillingErrors((current) => ({ ...current, phone: '' }))
+                  }} />{orderBillingErrors.phone ? <span className="text-rose-700">{orderBillingErrors.phone}</span> : null}</label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">E-posta<Input id="order-billing-email" type="email" value={orderBillingDraft.email} onChange={(event) => {
+                    setOrderBillingDraft((current) => ({ ...current, email: event.target.value }))
+                    setOrderBillingErrors((current) => ({ ...current, email: '' }))
+                  }} />{orderBillingErrors.email ? <span className="text-rose-700">{orderBillingErrors.email}</span> : null}</label>
                   <label className="grid gap-1 text-xs font-semibold text-slate-700">Posta kodu<Input value={orderBillingDraft.postalCode} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, postalCode: event.target.value }))} /></label>
                   <label className="grid gap-1 text-xs font-semibold text-slate-700 sm:col-span-2">Adres<Input value={orderBillingDraft.address} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, address: event.target.value }))} /></label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">İl<Input value={orderBillingDraft.city} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, city: event.target.value }))} /></label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-700">İlçe<Input value={orderBillingDraft.district} onChange={(event) => setOrderBillingDraft((current) => ({ ...current, district: event.target.value }))} /></label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">İl<select id="order-billing-city" value={orderBillingDraft.city} onChange={(event) => {
+                    setOrderBillingDraft((current) => ({ ...current, city: event.target.value, district: '' }))
+                    setOrderBillingErrors((current) => ({ ...current, city: '', district: '' }))
+                  }} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"><option value="">İl seçin</option>{TURKEY_PROVINCES.map((province) => <option key={province.name} value={province.name}>{province.name}</option>)}</select>{orderBillingErrors.city ? <span className="text-rose-700">{orderBillingErrors.city}</span> : null}</label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">İlçe<select id="order-billing-district" value={orderBillingDraft.district} disabled={!orderBillingDraft.city} onChange={(event) => {
+                    setOrderBillingDraft((current) => ({ ...current, district: event.target.value }))
+                    setOrderBillingErrors((current) => ({ ...current, district: '' }))
+                  }} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm disabled:bg-slate-100"><option value="">İlçe seçin</option>{(findProvinceByName(orderBillingDraft.city)?.districts ?? []).map((district) => <option key={district.name} value={district.name}>{district.name}</option>)}</select>{orderBillingErrors.district ? <span className="text-rose-700">{orderBillingErrors.district}</span> : null}</label>
                 </div>
               )}
             </div>
           ) : null}
 
-          {extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime' ? (
+          {extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime' && orderDeliveryMode === 'shipment' ? (
             <div data-testid="payment-order-shipping-context" className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3">
               <label className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                 <input
@@ -4903,7 +5126,13 @@ export function ServiceRequestDetails({
 
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             {usesPaymentOrderContext
-              ? (extraPaymentPurpose === 'part_charge' ? '8. Tahsilat tutarı' : '2. Montaj tahsilat tutarı')
+              ? (extraPaymentPurpose === 'part_charge'
+                  ? orderCommercialMode === 'free' && orderDeliveryMode === 'hand_delivery'
+                    ? 'Sipariş satırı referans değeri'
+                    : orderCommercialMode === 'free'
+                      ? 'Sipariş tutarı'
+                      : 'Tahsilat tutarı'
+                  : '2. Montaj tahsilat tutarı')
               : (pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı')}
             <Input
               type="number"
@@ -4911,13 +5140,24 @@ export function ServiceRequestDetails({
               min="0"
               step="1"
               value={routeFeeExtraPaymentInput}
+              readOnly={extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime' && orderCommercialMode === 'free' && orderDeliveryMode === 'shipment'}
               aria-invalid={paymentAmountError !== null}
               onChange={(event) => {
                 setRouteFeeExtraPaymentInput(event.target.value)
                 setPaymentAmountError(null)
               }}
             />
-            <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
+            <span className="font-medium text-slate-500">
+              {extraPaymentPurpose === 'part_charge' && orderPartSupplier === 'emaks_prime'
+                ? orderCommercialMode === 'free' && orderDeliveryMode === 'hand_delivery'
+                  ? 'Referans değer müşteriden tahsil edilmez.'
+                  : orderCommercialMode === 'free'
+                    ? 'Ücretsiz sevkte sipariş ve tahsilat tutarı 0 TL’dir.'
+                    : orderDeliveryMode === 'hand_delivery'
+                      ? 'Elden teslimde ödeme bağlantısı oluşturulmaz.'
+                      : 'Ücretli sevkte ödeme bağlantısı ile tahsil edilir.'
+                : paymentLinkAmountSourceLabel}
+            </span>
             {paymentAmountError ? <span className="font-semibold text-rose-700">{paymentAmountError}</span> : null}
           </label>
           <label className="grid gap-2 text-sm font-medium text-slate-700">
@@ -4945,6 +5185,12 @@ export function ServiceRequestDetails({
                   <div className="grid gap-1 rounded-md border border-blue-200 bg-white p-2 sm:grid-cols-2">
                     <span>Mikro sipariş hazırlığı: <strong>Bekliyor</strong></span>
                     <span>{activeOrderContextPreview.future_mikro_write_label ?? 'Mikro yazımı bu aşamada kapalı'}</span>
+                    <span>Ticari durum: <strong>{activeOrderContextPreview.commercial_mode_label ?? '-'}</strong></span>
+                    <span>Teslim: <strong>{activeOrderContextPreview.delivery_mode_label ?? activeOrderContextPreview.delivery_target_label ?? 'Yok'}</strong></span>
+                    <span>KDV: <strong>{activeOrderContextPreview.tax_label ?? '-'}</strong></span>
+                    <span>Ödeme bağlantısı: <strong>{activeOrderContextPreview.payment_link_required ? 'Gerekli' : 'Yok'}</strong></span>
+                    <span>Tahsilat: <strong>{activeOrderContextPreview.payment_status_label ?? '-'}</strong></span>
+                    <span>Tahsilat tutarı: <strong>{activeOrderContextPreview.collection_amount_label ?? activeOrderContextPreview.charged_amount_label ?? '-'}</strong></span>
                     <span>Sevkiyat: <strong>{activeOrderContextPreview.shipment_required ? 'Hazırlık bekliyor' : 'Yok'}</strong></span>
                     {activeOrderContextPreview.shipment_required ? <span>{activeOrderContextPreview.future_carrier_label}</span> : null}
                     <span>Fatura müşterisi: <strong>{activeOrderContextPreview.billing?.name_or_title ?? '-'}</strong></span>
@@ -4958,19 +5204,21 @@ export function ServiceRequestDetails({
               ) : null}
             </div>
           ) : null}
-          {terminalPaymentRetryRequired ? (
+          {freshPaymentActionRequired ? (
             <label className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-950">
-              Önceki ödeme bağlantısı iptal edildi. Yeni bir ödeme bağlantısı oluşturmak için yeniden deneme nedeni girin.
-              <Input
-                value={terminalPaymentRetryReason}
-                onChange={(event) => setTerminalPaymentRetryReasons((current) => ({
-                  ...current,
-                  [String(request.id)]: event.target.value,
-                }))}
-                minLength={3}
-                maxLength={500}
-                placeholder="Yeniden deneme nedeni"
-              />
+              {paymentRetry?.message ?? 'Eski ödeme bağlantısı tekrar kullanılamaz. Bu işlem için yeni bağlantı oluşturulacaktır.'}
+              {terminalPaymentRetryRequired ? (
+                <Input
+                  value={terminalPaymentRetryReason}
+                  onChange={(event) => setTerminalPaymentRetryReasons((current) => ({
+                    ...current,
+                    [String(request.id)]: event.target.value,
+                  }))}
+                  minLength={3}
+                  maxLength={500}
+                  placeholder="Yeni bağlantı oluşturma nedeni"
+                />
+              ) : null}
             </label>
           ) : null}
           <div className="flex flex-wrap justify-end gap-2">
@@ -7152,6 +7400,55 @@ export function ServiceRequestDetails({
             {assignSuccess ? (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
                 {assignSuccess}
+              </div>
+            ) : null}
+            {latestPartOrderContext?.payment_purpose === 'part_charge' ? (
+              <div data-testid="part-order-context-summary" className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">Parça</p>
+                    <p className="mt-1 text-xs text-violet-800">
+                      {latestPartOrderContext.part?.item_code ? `${latestPartOrderContext.part.item_code} · ` : ''}{latestPartOrderContext.part?.item_name ?? '-'}
+                    </p>
+                  </div>
+                  <Badge variant="outline">{latestPartOrderContext.payment_status_label ?? latestPartOrderContext.state_label ?? '-'}</Badge>
+                </div>
+                <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                  <span>Tedarik: <strong>{latestPartOrderContext.part_supplier_label ?? '-'}</strong></span>
+                  <span>Ticari durum: <strong>{latestPartOrderContext.commercial_mode_label ?? '-'}</strong></span>
+                  <span>Teslim: <strong>{latestPartOrderContext.delivery_mode_label ?? '-'}</strong></span>
+                  <span>Alıcı: <strong>{latestPartOrderContext.delivery_target_label ?? '-'}</strong></span>
+                  <span>Hedef seri: <strong>{latestPartOrderContext.desired_mikro_series ?? 'Yok'}</strong></span>
+                  <span>KDV: <strong>{latestPartOrderContext.tax_label ?? '-'}</strong></span>
+                  <span>Tahsilat: <strong>{latestPartOrderContext.payment_status_label ?? '-'}</strong></span>
+                  <span>Tutar: <strong>{latestPartOrderContext.collection_required ? latestPartOrderContext.collection_amount_label : latestPartOrderContext.order_line_total_label}</strong></span>
+                  {latestPartOrderContext.payment_status_source_label ? <span>Kaynak: <strong>{latestPartOrderContext.payment_status_source_label}</strong></span> : null}
+                </div>
+                {latestPartOrderContext.delivery_mode === 'hand_delivery' && latestPartOrderContext.delivery_status !== 'delivered' ? (
+                  <div className="flex flex-wrap justify-end">
+                    <Button type="button" size="sm" variant="outline" disabled={orderContextStateUpdating} onClick={() => void handleOrderContextStateUpdate('record_delivery')}>
+                      {orderContextStateUpdating ? 'Kaydediliyor...' : 'Elden teslim edildi'}
+                    </Button>
+                  </div>
+                ) : null}
+                {latestPartOrderContext.delivery_mode === 'hand_delivery' && latestPartOrderContext.commercial_mode === 'paid' ? (
+                  <details className="rounded-md border border-violet-100 bg-white p-2 text-xs">
+                    <summary className="cursor-pointer font-semibold">Ödeme durumunu düzelt</summary>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+                      <select id="part-hand-payment-status" defaultValue={latestPartOrderContext.payment_status ?? 'pending'} className="h-9 rounded-md border border-slate-200 bg-white px-2">
+                        <option value="paid">Ödeme alındı</option>
+                        <option value="pending">Ödeme bekleniyor</option>
+                        <option value="cancelled">İptal</option>
+                      </select>
+                      <Input value={orderContextStatusReason} onChange={(event) => setOrderContextStatusReason(event.target.value)} placeholder="Değişiklik nedeni" />
+                      <Button type="button" size="sm" disabled={orderContextStateUpdating} onClick={() => {
+                        const field = document.getElementById('part-hand-payment-status') as HTMLSelectElement | null
+                        void handleOrderContextStateUpdate('set_payment_status', (field?.value ?? 'pending') as 'pending' | 'paid' | 'cancelled')
+                      }}>Kaydet</Button>
+                    </div>
+                  </details>
+                ) : null}
+                {latestPartOrderContext.finance_review_required ? <p className="font-semibold text-rose-700">Teslim sonrası iptal için finans incelemesi gerekiyor.</p> : null}
               </div>
             ) : null}
             {shouldShowPartCreateAction ? (

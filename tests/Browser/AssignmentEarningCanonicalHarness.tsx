@@ -19,6 +19,7 @@ type HarnessState = {
   boardRefetchCount: number
   modalMountCount: number
   paymentCreateCount: number
+  paymentOrderStateUpdateCount: number
   failNextSave: boolean
   lastSavePayload: {
     labor_amount: number
@@ -1094,6 +1095,7 @@ const state: HarnessState = {
   boardRefetchCount: 0,
   modalMountCount: 0,
   paymentCreateCount: 0,
+  paymentOrderStateUpdateCount: 0,
   failNextSave: false,
   lastSavePayload: null,
   lastSavedSnapshot: null,
@@ -1191,6 +1193,7 @@ function Harness() {
   const [lastSendPayload, setLastSendPayload] = useState<ServiceRequestTechnicianEarningMessagePayload | null>(null)
   const [failNextSave, setFailNextSave] = useState(false)
   const [paymentCreateCount, setPaymentCreateCount] = useState(0)
+  const [paymentOrderStateUpdateCount, setPaymentOrderStateUpdateCount] = useState(0)
   const [lastPaymentCreatePayload, setLastPaymentCreatePayload] = useState<HarnessState['lastPaymentCreatePayload']>(null)
   const saveLock = useRef(false)
   const paymentCreateLock = useRef(false)
@@ -1367,6 +1370,7 @@ function Harness() {
       <output data-testid="financial-board-refetch-count" className="sr-only">{state.boardRefetchCount}</output>
       <output data-testid="financial-modal-mount-count" className="sr-only">{modalMountId}</output>
       <output data-testid="payment-order-create-count" className="sr-only">{paymentCreateCount}</output>
+      <output data-testid="payment-order-state-update-count" className="sr-only">{paymentOrderStateUpdateCount}</output>
       <output data-testid="payment-order-last-payload" className="sr-only">{JSON.stringify(lastPaymentCreatePayload)}</output>
       <section className="grid max-w-md gap-4 p-4" aria-label="Board technician location fixtures">
         <div data-testid="assignment-dynamic-board-card">
@@ -1632,45 +1636,107 @@ function Harness() {
             const purpose = payload.purpose === 'part_charge' ? 'part_charge' : 'mount_collection'
             const orderInput = payload.order_context ?? {}
             const supplier = orderInput.part_supplier ?? null
-            const shipmentRequired = purpose === 'part_charge' && supplier === 'emaks_prime'
+            const commercialMode = purpose === 'part_charge' && supplier === 'emaks_prime'
+              ? orderInput.commercial_mode ?? 'paid'
+              : purpose === 'mount_collection' ? 'paid' : null
+            const deliveryMode = purpose === 'part_charge' && supplier === 'emaks_prime'
+              ? orderInput.delivery_mode ?? 'shipment'
+              : null
+            const shipmentRequired = purpose === 'part_charge' && supplier === 'emaks_prime' && deliveryMode === 'shipment'
             const sameAsBilling = shipmentRequired && Boolean(orderInput.shipping_same_as_billing)
+            const paymentLinkRequired = purpose === 'mount_collection'
+              || supplier === 'technician'
+              || (supplier === 'emaks_prime' && commercialMode === 'paid' && deliveryMode === 'shipment')
+            const collectionRequired = purpose === 'mount_collection'
+              || supplier === 'technician'
+              || (supplier === 'emaks_prime' && commercialMode === 'paid')
+            const desiredSeries = purpose === 'mount_collection'
+              ? 'S'
+              : supplier === 'technician' ? null : deliveryMode === 'hand_delivery' || commercialMode === 'free' ? 'Q' : 'S'
+            const taxMode = desiredSeries === 'Q'
+              ? 'none'
+              : purpose === 'mount_collection' ? 'standard_from_mikro_service_item' : supplier === 'emaks_prime' ? 'standard_from_mikro' : null
+            const amount = Number(payload.amount ?? payload.service_amount ?? 0)
+            const orderLineTotal = commercialMode === 'free' && deliveryMode === 'shipment' ? 0 : amount
+            const collectionAmount = collectionRequired ? amount : 0
+            const paymentStatus = collectionRequired ? (paymentLinkRequired ? 'paid' : 'pending') : 'not_required'
+            const stateValue = paymentLinkRequired
+              ? 'paid_waiting_mikro_write'
+              : paymentStatus === 'not_required' ? 'ready_without_collection' : 'manual_collection_pending'
+            const stateLabel = paymentLinkRequired
+              ? (supplier === 'technician' ? 'Ödeme alındı; Mikro siparişi gerekmiyor' : 'Ödeme alındı; Mikro yazımı bekliyor')
+              : paymentStatus === 'not_required' ? 'Tahsilat gerekmiyor' : 'Ödeme bekleniyor'
             const itemName = supplier === 'technician'
               ? orderInput.technician_part_name ?? 'Usta parçası'
               : orderInput.stock_selection_token === 'motor-token' ? 'Akıllı Kilit Motor Modülü' : 'Gateway'
             const itemCode = supplier === 'technician'
               ? orderInput.technician_part_code ?? null
-              : orderInput.stock_selection_token === 'motor-token' ? 'TS-PART-002' : 'TS-PART-001'
+              : orderInput.stock_selection_token === 'motor-token' ? 'EMK-MOTOR-002' : 'EMK-GW-001'
+            const manualBilling = orderInput.billing
+            const billing = orderInput.billing_source === 'manual_billing_draft' && manualBilling
+              ? {
+                  source: 'manual_billing_draft',
+                  billing_type: manualBilling.billing_type,
+                  first_name: manualBilling.first_name,
+                  last_name: manualBilling.last_name,
+                  legal_title: manualBilling.legal_title,
+                  name_or_title: manualBilling.billing_type === 'company'
+                    ? manualBilling.legal_title
+                    : [manualBilling.first_name, manualBilling.last_name].filter(Boolean).join(' '),
+                  phone: manualBilling.phone,
+                  email: manualBilling.email,
+                  tckn: manualBilling.tckn,
+                  vkn: manualBilling.vkn,
+                  tax_office: manualBilling.tax_office,
+                  address: manualBilling.address,
+                  city: manualBilling.city,
+                  district: manualBilling.district,
+                  postal_code: manualBilling.postal_code,
+                }
+              : {
+                  source: 'mrn_customer',
+                  billing_type: 'individual',
+                  first_name: request.customer,
+                  last_name: null,
+                  legal_title: null,
+                  name_or_title: request.customer,
+                  phone: request.phone,
+                  address: request.address,
+                  city: request.city,
+                  district: request.district,
+                }
+            const deliveryTarget = shipmentRequired
+              ? (sameAsBilling ? 'billing_address' : orderInput.delivery_target ?? null)
+              : deliveryMode === 'hand_delivery' ? orderInput.delivery_target ?? null : null
+            const shipping = shipmentRequired ? {
+              recipient_name: sameAsBilling ? billing.name_or_title : request.technician,
+              recipient_phone: sameAsBilling ? billing.phone : request.technicianPhone,
+              address: sameAsBilling ? billing.address : request.technicianProfile?.address,
+              city: sameAsBilling ? billing.city : request.technicianProfile?.city,
+              district: sameAsBilling ? billing.district : request.technicianProfile?.district,
+            } : null
             const context: ServiceRequestPaymentOrderContext = {
               id: 9800 + state.paymentCreateCount,
-              payment_id: 9900 + state.paymentCreateCount,
+              payment_id: paymentLinkRequired ? 9900 + state.paymentCreateCount : null,
               request_id: request.id,
               root_request_id: request.id,
               srv_request_id: null,
               payment_purpose: purpose,
               purpose_label: purpose === 'part_charge' ? 'Parça ödemesi' : 'Montaj ücreti tahsilatı',
               context_type: purpose === 'mount_collection' ? 'mount_service' : supplier === 'technician' ? 'technician_supplied_part' : 'part_sale',
-              state: 'paid_waiting_mikro_write',
-              state_label: supplier === 'technician' ? 'Ödeme alındı; Mikro siparişi gerekmiyor' : 'Ödeme alındı; Mikro yazımı bekliyor',
-              desired_mikro_series: supplier === 'technician' ? null : 'S',
+              state: stateValue,
+              state_label: stateLabel,
+              desired_mikro_series: desiredSeries,
+              tax_mode: taxMode,
+              tax_label: taxMode === 'none' ? 'Yok / %0' : taxMode === 'standard_from_mikro_service_item' ? 'Mikro hizmet kartından' : taxMode === 'standard_from_mikro' ? 'Mikro stok kartından' : null,
+              vat_rate: taxMode === 'none' ? 0 : null,
               future_mikro_write_state: supplier === 'technician' ? 'not_required' : 'not_authorized',
               future_mikro_write_label: supplier === 'technician' ? 'Mikro siparişi gerekmiyor' : 'Mikro yazımı bu aşamada kapalı',
-              billing: {
-                source: 'mrn_customer',
-                name_or_title: request.customer,
-                phone: request.phone,
-                address: request.address,
-                city: request.city,
-                district: request.district,
-              },
+              billing,
               shipping_same_as_billing: sameAsBilling,
-              delivery_target: shipmentRequired ? (sameAsBilling ? 'billing_address' : orderInput.delivery_target ?? null) : null,
-              shipping: shipmentRequired ? {
-                recipient_name: sameAsBilling ? request.customer : request.technician,
-                recipient_phone: sameAsBilling ? request.phone : request.technicianPhone,
-                address: sameAsBilling ? request.address : request.technicianProfile?.address,
-                city: sameAsBilling ? request.city : request.technicianProfile?.city,
-                district: sameAsBilling ? request.district : request.technicianProfile?.district,
-              } : null,
+              delivery_target: deliveryTarget,
+              delivery_target_label: deliveryTarget === 'technician' ? 'Usta' : deliveryTarget === 'mrn_customer' ? 'MRN müşterisi' : deliveryTarget === 'billing_address' ? 'Fatura adresi' : null,
+              shipping,
               part_supplier: supplier,
               part_supplier_label: supplier === 'technician' ? 'Usta' : supplier === 'emaks_prime' ? 'EMAKS Prime' : null,
               collection_allocation: supplier === 'technician' ? 'pay_technician' : supplier === 'emaks_prime' ? 'retain_company' : null,
@@ -1681,14 +1747,35 @@ function Harness() {
                 quantity: orderInput.quantity ?? 1,
                 unit_code: 'ADET',
                 warehouse_code: supplier === 'emaks_prime' ? 'MERKEZ' : null,
-                stock_source: supplier === 'emaks_prime' ? 'test_fixture' : 'technician_declaration',
-                stock_source_label: supplier === 'emaks_prime' ? 'Test verisi' : 'Usta beyanı',
+                stock_source: supplier === 'emaks_prime' ? 'mikro' : 'technician_declaration',
+                stock_source_label: supplier === 'emaks_prime' ? 'Mikro API' : 'Usta beyanı',
                 serial_tracking_required: orderInput.stock_selection_token === 'motor-token',
                 selected_part_serial: orderInput.selected_part_serial ?? null,
               } : null,
+              commercial_mode: commercialMode,
+              commercial_mode_label: commercialMode === 'free' ? 'Ücretsiz' : commercialMode === 'paid' ? 'Ücretli' : null,
+              delivery_mode: deliveryMode,
+              delivery_mode_label: deliveryMode === 'hand_delivery' ? 'Elden' : deliveryMode === 'shipment' ? 'Sevk' : 'Yok',
+              delivery_status: deliveryMode === 'hand_delivery' ? 'pending' : null,
+              delivery_status_label: deliveryMode === 'hand_delivery' ? 'Teslim bekliyor' : null,
+              payment_collection_mode: paymentLinkRequired ? 'payment_link' : collectionRequired ? 'manual' : 'none',
+              payment_status: paymentStatus,
+              payment_status_label: paymentStatus === 'paid' ? 'Ödeme alındı' : paymentStatus === 'pending' ? 'Ödeme bekleniyor' : paymentStatus === 'not_required' ? 'Tahsilat gerekmiyor' : 'İptal',
+              payment_status_source: paymentLinkRequired ? 'provider' : 'system',
+              payment_status_source_label: paymentLinkRequired ? 'Ödeme sağlayıcısı' : 'Sistem',
+              payment_link_required: paymentLinkRequired,
+              collection_required: collectionRequired,
+              order_line_unit_price: orderLineTotal,
+              order_line_unit_price_label: `${orderLineTotal.toLocaleString('tr-TR')},00 TL`,
+              order_line_total: orderLineTotal,
+              order_line_total_label: `${orderLineTotal.toLocaleString('tr-TR')},00 TL`,
+              collection_amount: collectionAmount,
+              collection_amount_label: `${collectionAmount.toLocaleString('tr-TR')},00 TL`,
+              future_order_trigger: paymentLinkRequired ? 'payment_paid' : deliveryMode === 'hand_delivery' && commercialMode === 'paid' ? 'delivery_recorded' : 'ops_approved',
+              finance_review_required: false,
               related_product_serial: request.serialNumber,
-              charged_amount: Number(payload.amount ?? payload.service_amount ?? 0),
-              charged_amount_label: `${Number(payload.amount ?? payload.service_amount ?? 0).toLocaleString('tr-TR')},00 TL`,
+              charged_amount: amount,
+              charged_amount_label: `${amount.toLocaleString('tr-TR')},00 TL`,
               currency: payload.currency ?? 'TRY',
               shipment_required: shipmentRequired,
               future_carrier_state: shipmentRequired ? 'waiting_future_integration' : 'not_required',
@@ -1702,13 +1789,13 @@ function Harness() {
               mikro_write_execution_count: 0,
               carrier_execution_count: 0,
             }
-            const paidPayment: ServiceRequestExtraMountPayment = {
+            const paidPayment: ServiceRequestExtraMountPayment | null = paymentLinkRequired ? {
               id: 9900 + state.paymentCreateCount,
               request_id: request.id,
               status: 'paid',
               status_label: 'Ödendi',
-              amount: Number(payload.amount ?? payload.service_amount ?? 0),
-              amount_label: `${Number(payload.amount ?? payload.service_amount ?? 0).toLocaleString('tr-TR')},00 TL`,
+              amount,
+              amount_label: `${amount.toLocaleString('tr-TR')},00 TL`,
               currency: payload.currency ?? 'TRY',
               provider: 'fake',
               provider_mode: 'local',
@@ -1717,13 +1804,14 @@ function Harness() {
               readonly: true,
               paid_at: '2026-08-14T06:30:00+03:00',
               order_context: context,
-            }
+            } : null
             setRequest((current) => ({
               ...current,
               saleAndPayment: {
                 ...current.saleAndPayment,
+                part_order_context: purpose === 'part_charge' ? context : current.saleAndPayment?.part_order_context,
                 history_loaded: true,
-                mount_payments: {
+                mount_payments: paidPayment ? {
                   rows: [paidPayment],
                   paid_rows: [paidPayment],
                   pending_rows: [],
@@ -1735,12 +1823,53 @@ function Harness() {
                   has_paid: true,
                   has_pending: false,
                   has_cancelled: false,
-                },
+                } : current.saleAndPayment?.mount_payments,
               },
             }))
           } finally {
             paymentCreateLock.current = false
           }
+        }}
+        onPaymentOrderContextStateUpdate={async (contextId, payload) => {
+          state.paymentOrderStateUpdateCount += 1
+          setPaymentOrderStateUpdateCount(state.paymentOrderStateUpdateCount)
+          setRequest((current) => {
+            const context = current.saleAndPayment?.part_order_context
+
+            if (!context || String(context.id) !== String(contextId)) {
+              return current
+            }
+
+            const deliveredToTechnician = payload.action === 'record_delivery'
+              && context.delivery_target === 'technician'
+              && context.commercial_mode === 'paid'
+              && context.delivery_mode === 'hand_delivery'
+            const paymentStatus = deliveredToTechnician
+              ? 'paid'
+              : payload.action === 'set_payment_status' ? payload.payment_status ?? context.payment_status : context.payment_status
+            const nextContext: ServiceRequestPaymentOrderContext = {
+              ...context,
+              revision: Number(context.revision ?? 0) + 1,
+              delivery_status: payload.action === 'record_delivery' ? 'delivered' : context.delivery_status,
+              delivery_status_label: payload.action === 'record_delivery' ? 'Teslim edildi' : context.delivery_status_label,
+              payment_status: paymentStatus,
+              payment_status_label: paymentStatus === 'paid' ? 'Ödeme alındı' : paymentStatus === 'pending' ? 'Ödeme bekleniyor' : 'İptal',
+              payment_status_source: deliveredToTechnician ? 'auto_from_technician_delivery' : payload.action === 'set_payment_status' ? 'manual' : context.payment_status_source,
+              payment_status_source_label: deliveredToTechnician ? 'Teslim kaydı' : payload.action === 'set_payment_status' ? 'OPS düzeltmesi' : context.payment_status_source_label,
+              payment_status_reason: payload.reason ?? context.payment_status_reason,
+              finance_review_required: context.delivery_status === 'delivered' && paymentStatus === 'cancelled',
+              state: paymentStatus === 'paid' ? 'manual_collection_paid' : paymentStatus === 'cancelled' ? 'cancelled' : 'manual_collection_pending',
+              state_label: paymentStatus === 'paid' ? 'Ödeme alındı' : paymentStatus === 'cancelled' ? 'İptal edildi' : 'Ödeme bekleniyor',
+            }
+
+            return {
+              ...current,
+              saleAndPayment: {
+                ...current.saleAndPayment,
+                part_order_context: nextContext,
+              },
+            }
+          })
         }}
         onCompanyPaymentDecisionApprove={async (decisions) => {
           state.allocationSubmitCount += 1

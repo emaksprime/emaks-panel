@@ -1123,6 +1123,7 @@ export type ServiceRequestSaleAndPayment = {
   customer_charges?: ServiceRequestCustomerChargeSummary | null
   payment_summary?: ServiceRequestPaymentSummary | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
+  part_order_context?: ServiceRequestPaymentOrderContext | null
 }
 
 export type ServiceRequestAssignmentPaymentModel = {
@@ -1196,10 +1197,16 @@ export type ServiceRequestPaymentStatus = {
 
 export type ServiceRequestOrderPartySnapshot = {
   source?: string | null
+  billing_type?: 'individual' | 'company' | string | null
   customer_code?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  legal_title?: string | null
   name_or_title?: string | null
   phone?: string | null
   email?: string | null
+  tckn?: string | null
+  vkn?: string | null
   tax_identity?: string | null
   tax_office?: string | null
   address?: string | null
@@ -1255,6 +1262,9 @@ export type ServiceRequestPaymentOrderContext = {
   state?: string | null
   state_label?: string | null
   desired_mikro_series?: string | null
+  tax_mode?: 'none' | 'standard_from_mikro' | 'standard_from_mikro_service_item' | string | null
+  tax_label?: string | null
+  vat_rate?: number | null
   future_mikro_write_state?: string | null
   future_mikro_write_label?: string | null
   billing?: ServiceRequestOrderPartySnapshot | null
@@ -1267,6 +1277,28 @@ export type ServiceRequestPaymentOrderContext = {
   collection_allocation?: 'retain_company' | 'pay_technician' | string | null
   collection_allocation_label?: string | null
   part?: ServiceRequestPaymentOrderPart | null
+  commercial_mode?: 'free' | 'paid' | string | null
+  commercial_mode_label?: string | null
+  delivery_mode?: 'hand_delivery' | 'shipment' | string | null
+  delivery_mode_label?: string | null
+  delivery_status?: 'pending' | 'delivered' | 'cancelled' | string | null
+  delivery_status_label?: string | null
+  payment_collection_mode?: 'none' | 'manual' | 'payment_link' | string | null
+  payment_status?: 'not_required' | 'pending' | 'paid' | 'cancelled' | string | null
+  payment_status_label?: string | null
+  payment_status_source?: 'system' | 'manual' | 'auto_from_technician_delivery' | 'provider' | string | null
+  payment_status_source_label?: string | null
+  payment_link_required?: boolean
+  collection_required?: boolean
+  order_line_unit_price?: number | null
+  order_line_unit_price_label?: string | null
+  order_line_total?: number | null
+  order_line_total_label?: string | null
+  collection_amount?: number | null
+  collection_amount_label?: string | null
+  future_order_trigger?: string | null
+  finance_review_required?: boolean
+  payment_status_reason?: string | null
   related_product_serial?: string | null
   charged_amount?: number | null
   charged_amount_label?: string | null
@@ -1280,6 +1312,20 @@ export type ServiceRequestPaymentOrderContext = {
   revision?: number | null
   mikro_write_execution_count?: number | null
   carrier_execution_count?: number | null
+  payment_retry?: {
+    state?: 'none' | 'reuse_pending' | 'already_paid' | 'fresh_link_required' | string
+    fresh_link_required?: boolean
+    reason_required?: boolean
+    action_label?: string | null
+    message?: string | null
+    authoritative_counts?: {
+      paid?: number
+      pending?: number
+      cancelled?: number
+      failed?: number
+      expired?: number
+    }
+  } | null
 }
 
 export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext & {
@@ -1646,11 +1692,15 @@ export type ServiceRequestExtraMountPaymentPayload = {
   purpose?: 'mount_extra' | 'multi_product_mount' | 'manual_mount_payment' | 'service_payment' | 'part_payment' | 'service_and_part_payment' | 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra' | 'general_extra' | 'extra_service' | 'route_difference' | 'mount_collection' | 'part_charge'
   note?: string | null
   message_template?: string | null
+  terminal_retry_reason?: string | null
+  fresh_payment_requested?: boolean
   order_context?: {
     expected_context_hash?: string | null
     expected_revision?: number | null
     billing_source?: 'mrn_customer' | 'manual_billing_draft' | string
     billing?: ServiceRequestOrderPartySnapshot
+    commercial_mode?: 'free' | 'paid' | null
+    delivery_mode?: 'hand_delivery' | 'shipment' | null
     shipping_same_as_billing?: boolean
     delivery_target?: 'billing_address' | 'mrn_customer' | 'technician' | 'custom_recipient' | string | null
     shipping?: ServiceRequestOrderPartySnapshot
