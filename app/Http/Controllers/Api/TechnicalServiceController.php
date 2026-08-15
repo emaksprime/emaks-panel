@@ -1244,20 +1244,29 @@ class TechnicalServiceController extends Controller
     ): JsonResponse {
         $validated = $request->validate([
             'expected_revision' => ['required', 'integer', 'min:1'],
-            'action' => ['required', 'string', 'in:record_delivery,set_payment_status'],
+            'action' => ['required', 'string', 'in:record_delivery,set_payment_status,remove_line'],
             'payment_status' => ['nullable', 'string', 'in:pending,paid,cancelled'],
             'reason' => ['nullable', 'string', 'max:1000'],
+            'line_key' => ['nullable', 'required_if:action,remove_line', 'string', 'size:64'],
         ]);
 
-        $context = $orderContexts->updateHandDeliveryState(
-            $technicalServiceRequest,
-            $orderContext,
-            (int) $validated['expected_revision'],
-            (string) $validated['action'],
-            isset($validated['payment_status']) ? (string) $validated['payment_status'] : null,
-            isset($validated['reason']) ? (string) $validated['reason'] : null,
-            $request->user(),
-        );
+        $context = (string) $validated['action'] === 'remove_line'
+            ? $orderContexts->removePartContextLine(
+                $technicalServiceRequest,
+                $orderContext,
+                (int) $validated['expected_revision'],
+                (string) $validated['line_key'],
+                $request->user(),
+            )
+            : $orderContexts->updateHandDeliveryState(
+                $technicalServiceRequest,
+                $orderContext,
+                (int) $validated['expected_revision'],
+                (string) $validated['action'],
+                isset($validated['payment_status']) ? (string) $validated['payment_status'] : null,
+                isset($validated['reason']) ? (string) $validated['reason'] : null,
+                $request->user(),
+            );
 
         return response()->json([
             'ok' => true,

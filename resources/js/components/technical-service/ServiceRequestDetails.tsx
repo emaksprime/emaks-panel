@@ -72,6 +72,7 @@ type PaymentOrderPartLineDraft = {
   item: PhysicalStockPartSearchItem
   quantity: string
   unitPrice: string
+  persistedLineKey?: string | null
 }
 
 type PaymentOrderContextPreviewResponse = {
@@ -291,7 +292,7 @@ type ServiceRequestDetailsProps = {
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) => void | Promise<void>
-  onPaymentOrderContextStateUpdate?: (contextId: number | string, payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null }) => void | Promise<void>
+  onPaymentOrderContextStateUpdate?: (contextId: number | string, payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status' | 'remove_line', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null, line_key?: string | null }) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
@@ -1992,11 +1993,15 @@ export function ServiceRequestDetails({
   const [orderContextPreviewErrorInputKey, setOrderContextPreviewErrorInputKey] = useState<string | null>(null)
   const [orderContextStateUpdating, setOrderContextStateUpdating] = useState(false)
   const [orderContextStatusReason, setOrderContextStatusReason] = useState('')
+  const [orderPartLineRemovingKey, setOrderPartLineRemovingKey] = useState<string | null>(null)
+  const [orderPartLineRemoveError, setOrderPartLineRemoveError] = useState<string | null>(null)
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const orderPartSearchGenerationRef = useRef(0)
   const orderPartSearchRetryQueryRef = useRef<string | null>(null)
   const orderPartPhysicalRetryInFlightRef = useRef(false)
   const orderPartPhysicalRetryAbortRef = useRef<AbortController | null>(null)
+  const orderPartHydratedContextKeyRef = useRef<string | null>(null)
+  const orderPartLineRemoveInFlightRef = useRef(false)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
   const [routeFeeRoundTripKmInput, setRouteFeeRoundTripKmInput] = useState('')
@@ -2682,9 +2687,16 @@ export function ServiceRequestDetails({
       || routeFeeEditorMode !== 'payment_link'
       || extraPaymentPurpose !== 'part_charge'
       || orderPartSupplier !== 'emaks_prime'
-      || orderPartLines.length > 0
       || latestPartOrderContext?.payment_id != null
       || Number(latestPartOrderContext?.request_id) !== Number(request.id)) {
+      return
+    }
+
+    const hydrationKey = latestPartOrderContext
+      ? `${latestPartOrderContext.id}:${latestPartOrderContext.revision}:${latestPartOrderContext.context_hash}`
+      : null
+
+    if (!hydrationKey || orderPartHydratedContextKeyRef.current === hydrationKey) {
       return
     }
 
@@ -2739,31 +2751,73 @@ export function ServiceRequestDetails({
           },
           quantity: numericInputValue(line.quantity),
           unitPrice: numericInputValue(line.unit_price),
+          persistedLineKey: typeof line.line_key === 'string' ? line.line_key : null,
         }
       })
 
-    if (restoredLines.length === 0) {
-      return
-    }
+    const hydrationTimer = window.setTimeout(() => {
+      orderPartHydratedContextKeyRef.current = hydrationKey
 
-    if (latestPartOrderContext?.commercial_mode === 'free' || latestPartOrderContext?.commercial_mode === 'paid') {
-      setOrderCommercialMode(latestPartOrderContext.commercial_mode)
-    }
+      if (latestPartOrderContext?.commercial_mode === 'free' || latestPartOrderContext?.commercial_mode === 'paid') {
+        setOrderCommercialMode(latestPartOrderContext.commercial_mode)
+      }
 
-    if (latestPartOrderContext?.delivery_mode === 'hand_delivery' || latestPartOrderContext?.delivery_mode === 'shipment') {
-      setOrderDeliveryMode(latestPartOrderContext.delivery_mode)
-    }
+      if (latestPartOrderContext?.delivery_mode === 'hand_delivery' || latestPartOrderContext?.delivery_mode === 'shipment') {
+        setOrderDeliveryMode(latestPartOrderContext.delivery_mode)
+      }
 
-    setOrderPartLines(restoredLines)
+      setOrderPartLines(restoredLines)
+    }, 0)
+
+    return () => window.clearTimeout(hydrationTimer)
   }, [
     extraPaymentPurpose,
     latestPartOrderContext,
-    orderPartLines.length,
     orderPartSupplier,
     request.id,
     routeFeeEditorMode,
     routeFeeEditorOpen,
   ])
+
+  const removeOrderPartLine = async (line: PaymentOrderPartLineDraft) => {
+    if (orderPartLineRemoveInFlightRef.current) {
+      return
+    }
+
+    const beforeLines = orderPartLines
+    const remainingLines = beforeLines.filter((candidate) => candidate.item.item_code !== line.item.item_code)
+    const persistedLineKey = line.persistedLineKey ?? null
+
+    if (!persistedLineKey
+      || !latestPartOrderContext?.id
+      || !latestPartOrderContext.revision
+      || !onPaymentOrderContextStateUpdate) {
+      setOrderPartLines(remainingLines)
+
+      return
+    }
+
+    orderPartLineRemoveInFlightRef.current = true
+    setOrderPartLineRemovingKey(persistedLineKey)
+    setOrderPartLineRemoveError(null)
+    setOrderContextPreview(null)
+    setOrderContextPreviewError(null)
+    setOrderPartLines(remainingLines)
+
+    try {
+      await onPaymentOrderContextStateUpdate(latestPartOrderContext.id, {
+        expected_revision: Number(latestPartOrderContext.revision),
+        action: 'remove_line',
+        line_key: persistedLineKey,
+      })
+    } catch (caught: unknown) {
+      setOrderPartLines(beforeLines)
+      setOrderPartLineRemoveError(caught instanceof Error ? caught.message : 'Parça satırı kaldırılamadı.')
+    } finally {
+      orderPartLineRemoveInFlightRef.current = false
+      setOrderPartLineRemovingKey(null)
+    }
+  }
 
   useEffect(() => {
     if (!routeFeeEditorOpen || routeFeeEditorMode !== 'payment_link' || !canPreviewPaymentOrderContext || extraPaymentAmount === null) {
@@ -3662,6 +3716,10 @@ export function ServiceRequestDetails({
     setOrderPartSearchError(null)
     setOrderPartSearchFailureScope(null)
     setOrderPartLines([])
+    setOrderPartLineRemovingKey(null)
+    setOrderPartLineRemoveError(null)
+    orderPartHydratedContextKeyRef.current = null
+    orderPartLineRemoveInFlightRef.current = false
     setOrderPartQuantity('1')
     setOrderTechnicianPartCode('')
     setOrderTechnicianPartName('')
@@ -5396,7 +5454,8 @@ errors.lastName = 'Soyad alanı zorunludur.'
                                 variant="ghost"
                                 title={`${line.item.item_name} satırını sil`}
                                 aria-label={`${line.item.item_name} satırını sil`}
-                                onClick={() => setOrderPartLines((current) => current.filter((candidate) => candidate.item.item_code !== line.item.item_code))}
+                                disabled={orderPartLineRemovingKey !== null}
+                                onClick={() => void removeOrderPartLine(line)}
                               >
                                 <X className="size-4" />
                               </Button>
@@ -5424,7 +5483,16 @@ errors.lastName = 'Soyad alanı zorunludur.'
                         <p className="font-semibold text-amber-800">Mikro stok bilgisi doğrulanmadan ödeme veya sipariş hazırlığı tamamlanamaz.</p>
                       ) : null}
                     </div>
-                  ) : null}
+                  ) : (
+                    <div data-testid="selected-payment-parts" className="grid gap-3 rounded-md border border-blue-200 bg-blue-50/40 p-3 text-xs text-slate-700">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-950">Seçilen parçalar (0)</p>
+                        <p className="font-semibold text-slate-950">Genel toplam: {formatMoneyValue(0)}</p>
+                      </div>
+                      <p data-testid="selected-payment-parts-empty" className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-4 text-center font-medium text-slate-600">Henüz parça seçilmedi.</p>
+                    </div>
+                  )}
+                  {orderPartLineRemoveError ? <p className="font-semibold text-rose-700">{orderPartLineRemoveError}</p> : null}
                 </div>
               ) : null}
 

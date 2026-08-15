@@ -4126,7 +4126,7 @@ export function TechnicalServiceOperationCenter() {
 
   const handlePaymentOrderContextStateUpdate = async (
     contextId: number | string,
-    payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null },
+    payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status' | 'remove_line', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null, line_key?: string | null },
   ) => {
     if (!selectedId) {
       return

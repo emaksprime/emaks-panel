@@ -1278,6 +1278,221 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::ITEM_TABLE, 0);
     }
 
+    public function test_final_active_line_can_be_deleted(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+
+        $this->actingAs($this->actor())
+            ->patchJson("/api/technical-service/requests/{$request->id}/payments/order-context/{$context->id}/state", [
+                'expected_revision' => (int) $context->revision,
+                'action' => 'remove_line',
+                'line_key' => $lineKey,
+            ])
+            ->assertOk()
+            ->assertJsonPath('order_context.line_count', 0)
+            ->assertJsonPath('order_context.lines', [])
+            ->assertJsonPath('order_context.order_line_total', 0)
+            ->assertJsonPath('order_context.collection_amount', 0)
+            ->assertJsonPath('external_execution.payment_write', 0)
+            ->assertJsonPath('external_execution.provider', 0)
+            ->assertJsonPath('external_execution.mikro_write', 0);
+    }
+
+    public function test_explicit_empty_items_does_not_invoke_legacy_adapter(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $cleared = $this->service()->removePartContextLine(
+            $request,
+            (int) $context->id,
+            (int) $context->revision,
+            $lineKey,
+            $this->actor(),
+        );
+        DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+            ->where('id', $cleared['id'])
+            ->update([
+                'item_code' => 'LEGACY-STALE',
+                'item_name_snapshot' => 'Eski tek parça alanı',
+                'quantity' => 1,
+                'order_line_unit_price' => 500,
+                'order_line_total' => 500,
+            ]);
+
+        $projection = $this->service()->latestPartContext($request);
+
+        $this->assertSame([], $projection['lines']);
+        $this->assertNull($projection['part']);
+        $this->assertFalse($projection['readiness']['legacy_context']);
+        $this->assertSame(['part_lines_empty'], $projection['readiness']['blocker_codes']);
+    }
+
+    public function test_multi_line_initialized_context_remains_empty_after_clear(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+
+        $firstRead = $this->service()->latestPartContext($request);
+        $secondRead = $this->service()->latestPartContext($request->fresh());
+
+        $this->assertSame(0, $firstRead['line_count']);
+        $this->assertSame([], $firstRead['lines']);
+        $this->assertSame($firstRead['context_hash'], $secondRead['context_hash']);
+        $this->assertSame([], $secondRead['lines']);
+    }
+
+    public function test_active_line_projection_excludes_deleted_rows(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $cleared = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+
+        $this->assertSame(1, DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->count());
+        $this->assertSame(0, DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $cleared['id'])
+            ->count());
+        $this->assertSame([], $this->service()->latestPartContext($request)['lines']);
+    }
+
+    public function test_empty_context_totals_are_zero(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $cleared = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+
+        $this->assertSame(0.0, $cleared['order_line_total']);
+        $this->assertSame(0.0, $cleared['collection_amount']);
+        $this->assertSame(0.0, $cleared['charged_amount']);
+        $this->assertSame(0, $cleared['total_quantity']);
+        $this->assertFalse($cleared['payment_link_required']);
+        $this->assertFalse($cleared['collection_required']);
+    }
+
+    public function test_final_delete_updates_revision_once(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $cleared = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+
+        $this->assertSame((int) $context->revision + 1, $cleared['revision']);
+        $this->assertNotSame((string) $context->context_hash, $cleared['context_hash']);
+        $this->assertSame(1, $request->events()->where('event_type', 'payment_order_context_line_removed')->count());
+    }
+
+    public function test_repeated_final_delete_is_idempotent(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $first = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+        $second = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+
+        $this->assertSame($first['id'], $second['id']);
+        $this->assertSame($first['context_hash'], $second['context_hash']);
+        $this->assertSame(2, DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+            ->where('technical_service_request_id', $request->id)
+            ->where('payment_purpose', 'part_charge')
+            ->count());
+        $this->assertSame(1, $request->events()->where('event_type', 'payment_order_context_line_removed')->count());
+    }
+
+    public function test_pending_payment_is_not_reused_after_cart_clear(): void
+    {
+        [$request, $session] = $this->requestFixture();
+        $input = $this->emaksPartInput($request, [
+            'delivery_mode' => 'shipment',
+            'shipping_same_as_billing' => true,
+        ], 500);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 500, 'TRY', 'fake', 'local');
+        [$context, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, $input, 500);
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+
+        $cleared = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+        $nextPreview = $this->service()->preview($request, 'part_charge', $input, 500, 'TRY', 'fake', 'local');
+
+        $this->assertNull($cleared['payment_id']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        $this->assertSame('fresh_link_required', $nextPreview['payment_retry']['state']);
+        $this->assertSame($payment->id, $nextPreview['payment_retry']['supersede_payment_id']);
+    }
+
+    public function test_cart_clear_creates_no_new_payment_or_order(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $paymentCount = TechnicalServiceMountPayment::query()->count();
+        $cleared = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+
+        $this->assertSame($paymentCount, TechnicalServiceMountPayment::query()->count());
+        $this->assertNull($cleared['payment_id']);
+        $this->assertSame('not_authorized', $cleared['future_mikro_write_state']);
+        $this->assertSame(0, $cleared['mikro_write_execution_count']);
+        $this->assertSame(0, $cleared['carrier_execution_count']);
+    }
+
+    public function test_paid_history_is_not_mutated(): void
+    {
+        [$request, $session] = $this->requestFixture();
+        $input = $this->emaksPartInput($request, [
+            'delivery_mode' => 'shipment',
+            'shipping_same_as_billing' => true,
+        ], 500);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 500, 'TRY', 'fake', 'local');
+        [$context, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, $input, 500);
+        $this->observePaid($payment);
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $beforeContextCount = DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count();
+
+        try {
+            $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+            $this->fail('Ödenmiş parça bağlamı değiştirildi.');
+        } catch (ValidationException $exception) {
+            $this->assertSame('Ödenmiş parça bağlamı değiştirilemez.', $exception->errors()['order_context'][0]);
+        }
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->fresh()->status);
+        $this->assertSame($beforeContextCount, DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count());
+        $this->assertSame(1, DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)->where('context_id', $context->id)->count());
+    }
+
+    public function test_mikro_write_remains_zero_after_cart_clear(): void
+    {
+        [$request, , $context] = $this->preparedSinglePartContext();
+        $lineKey = (string) DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
+            ->where('context_id', $context->id)
+            ->value('line_key');
+        $cleared = $this->service()->removePartContextLine($request, (int) $context->id, (int) $context->revision, $lineKey, $this->actor());
+        $metadata = DB::table(TechnicalServicePaymentOrderContextService::TABLE)->where('id', $cleared['id'])->value('metadata');
+        $metadata = is_string($metadata) ? json_decode($metadata, true) : $metadata;
+
+        $this->assertSame(0, data_get($metadata, 'external_execution.mikro_write_count'));
+        $this->assertSame(0, data_get($metadata, 'external_execution.provider_count'));
+        $this->assertSame(0, data_get($metadata, 'external_execution.message_send_count'));
+    }
+
     public function test_client_total_cannot_override_server_total(): void
     {
         [$request] = $this->requestFixture();
@@ -1746,6 +1961,10 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     /** @param array<string, mixed> $line */
     private function convertPreparedContextToLegacy(object $context, array $line): void
     {
+        $metadata = json_decode((string) $context->metadata, true);
+        $metadata['schema_version'] = 1;
+        unset($metadata['line_count'], $metadata['explicit_items'], $metadata['explicit_empty']);
+
         DB::table(TechnicalServicePaymentOrderContextService::TABLE)
             ->where('id', $context->id)
             ->update([
@@ -1759,6 +1978,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
                 'selected_part_serial' => $line['selected_part_serial'],
                 'order_line_unit_price' => $line['unit_price'],
                 'order_line_total' => $line['line_total'],
+                'metadata' => json_encode($metadata, JSON_THROW_ON_ERROR),
             ]);
         DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)
             ->where('context_id', $context->id)
@@ -1827,6 +2047,24 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'correlation_id' => 'physical-stock-test',
             'data' => $rows,
         ];
+    }
+
+    /** @return array{0:TechnicalServiceRequest,1:TechnicalServiceMountSession,2:object,3:array<string, mixed>,4:array<string, mixed>} */
+    private function preparedSinglePartContext(): array
+    {
+        [$request, $session] = $this->requestFixture();
+        $input = $this->emaksPartInput($request, [
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ], 500);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 500, 'TRY');
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$input,
+            'expected_context_hash' => $preview['context_hash'],
+            'expected_revision' => $preview['revision'],
+        ], 500, 'TRY', $this->actor(), false);
+
+        return [$request, $session, $prepared['context'], $input, $preview];
     }
 
     /** @return array{0:object,1:TechnicalServiceMountPayment} */

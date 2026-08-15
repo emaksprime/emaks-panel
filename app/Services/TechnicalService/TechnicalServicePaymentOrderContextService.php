@@ -471,6 +471,17 @@ class TechnicalServicePaymentOrderContextService
         $contextsByPaymentId = $contexts
             ->filter(fn (object $context): bool => is_numeric($context->technical_service_mount_payment_id))
             ->keyBy(fn (object $context): string => (string) $context->technical_service_mount_payment_id);
+        $supersededPaymentIds = $contexts
+            ->map(function (object $context): ?int {
+                $metadata = is_string($context->metadata ?? null)
+                    ? json_decode((string) $context->metadata, true)
+                    : (is_array($context->metadata ?? null) ? $context->metadata : []);
+                $paymentId = $metadata['superseded_payment_id'] ?? null;
+
+                return is_numeric($paymentId) ? (int) $paymentId : null;
+            })
+            ->filter()
+            ->unique();
         $payments = TechnicalServiceMountPayment::query()
             ->where('technical_service_request_id', $request->id)
             ->orderByDesc('id')
@@ -526,6 +537,19 @@ class TechnicalServicePaymentOrderContextService
 
         $pending = $exact->firstWhere('status', TechnicalServiceMountPayment::STATUS_PENDING);
         if (is_array($pending)) {
+            if ($supersededPaymentIds->contains((int) $pending['payment_id'])) {
+                return [
+                    ...$base,
+                    'state' => 'fresh_link_required',
+                    'fresh_link_required' => true,
+                    'reason_required' => false,
+                    'action_label' => 'Yeni bağlantı oluştur',
+                    'message' => 'Parça listesi değişti. Eski ödeme bağlantısı tekrar kullanılamaz.',
+                    'audit_reason' => 'Parça listesi temizlendiği için önceki bekleyen ödeme bağlantısı geçersizleştirildi.',
+                    'supersede_payment_id' => $pending['payment_id'],
+                ];
+            }
+
             /** @var TechnicalServiceMountPayment $payment */
             $payment = $pending['payment'];
             if ($this->pendingPaymentMatchesCurrentAuthority($payment, $providerFamily, $providerMode)) {
@@ -1101,6 +1125,255 @@ class TechnicalServicePaymentOrderContextService
             ]);
 
             return $this->rowProjection(DB::table(self::TABLE)->where('id', $context->id)->firstOrFail());
+        });
+    }
+
+    /** @return array<string, mixed> */
+    public function removePartContextLine(
+        TechnicalServiceRequest $request,
+        int $contextId,
+        int $expectedRevision,
+        string $lineKey,
+        ?Authenticatable $actor,
+    ): array {
+        return DB::transaction(function () use ($request, $contextId, $expectedRevision, $lineKey, $actor): array {
+            $latest = DB::table(self::TABLE)
+                ->where('technical_service_request_id', $request->id)
+                ->where('payment_purpose', self::PURPOSE_PART_CHARGE)
+                ->orderByDesc('revision')
+                ->orderByDesc('id')
+                ->lockForUpdate()
+                ->first();
+            if (! $latest) {
+                throw ValidationException::withMessages(['order_context' => 'Parça hazırlığı bulunamadı.']);
+            }
+
+            $normalizedLineKey = trim($lineKey);
+            $latestLines = DB::table(self::ITEM_TABLE)
+                ->where('context_id', (int) $latest->id)
+                ->orderBy('position')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            $lineExists = $latestLines->contains(
+                fn (object $line): bool => hash_equals((string) $line->line_key, $normalizedLineKey),
+            );
+
+            if ((int) $latest->id !== $contextId || (int) $latest->revision !== $expectedRevision) {
+                if (! $lineExists) {
+                    return $this->rowProjection($latest);
+                }
+
+                throw ValidationException::withMessages([
+                    'expected_revision' => 'Parça hazırlığı güncellendi. Güncel durumu açıp tekrar deneyin.',
+                ]);
+            }
+
+            $metadata = is_string($latest->metadata ?? null)
+                ? json_decode((string) $latest->metadata, true)
+                : (is_array($latest->metadata ?? null) ? $latest->metadata : []);
+            if ((int) ($metadata['schema_version'] ?? 0) < 2) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Eski tek-parça kaydı bu ekrandan değiştirilemez.',
+                ]);
+            }
+            if (! $lineExists) {
+                return $this->rowProjection($latest);
+            }
+            if ((string) $latest->payment_status === self::PAYMENT_PAID) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Ödenmiş parça bağlamı değiştirilemez.',
+                ]);
+            }
+
+            $supersededPaymentId = is_numeric($metadata['superseded_payment_id'] ?? null)
+                ? (int) $metadata['superseded_payment_id']
+                : null;
+            if (is_numeric($latest->technical_service_mount_payment_id)) {
+                $linkedPayment = TechnicalServiceMountPayment::query()
+                    ->whereKey((int) $latest->technical_service_mount_payment_id)
+                    ->lockForUpdate()
+                    ->first();
+                if ($linkedPayment instanceof TechnicalServiceMountPayment
+                    && $linkedPayment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+                    throw ValidationException::withMessages([
+                        'order_context' => 'Ödenmiş parça bağlamı değiştirilemez.',
+                    ]);
+                }
+                if ($linkedPayment instanceof TechnicalServiceMountPayment
+                    && $linkedPayment->status === TechnicalServiceMountPayment::STATUS_PENDING) {
+                    $supersededPaymentId = (int) $linkedPayment->id;
+                }
+            }
+
+            $removedLine = $latestLines->first(
+                fn (object $line): bool => hash_equals((string) $line->line_key, $normalizedLineKey),
+            );
+            $remainingLines = $latestLines
+                ->reject(fn (object $line): bool => hash_equals((string) $line->line_key, $normalizedLineKey))
+                ->values();
+            $remainingCount = $remainingLines->count();
+            $lineTotalMinor = (int) $remainingLines->sum(
+                fn (object $line): int => $this->decimalToScaledInteger(
+                    number_format((float) $line->line_total, 2, '.', ''),
+                    2,
+                    'line_total',
+                    0,
+                    999999999999,
+                ),
+            );
+            $lineTotal = $this->scaledIntegerToFloat($lineTotalMinor, 2);
+            $totalQuantity = (float) $remainingLines->sum(fn (object $line): float => (float) $line->quantity);
+            $collectionRequired = $remainingCount > 0 && (bool) $latest->collection_required;
+            $paymentLinkRequired = $remainingCount > 0 && (bool) $latest->payment_link_required;
+            $shipmentRequired = $remainingCount > 0 && (bool) $latest->shipment_required;
+            $collectionAmount = $collectionRequired ? $lineTotal : 0.0;
+            $paymentStatus = $remainingCount > 0
+                ? (string) $latest->payment_status
+                : self::PAYMENT_NOT_REQUIRED;
+            $nextRevision = (int) $latest->revision + 1;
+            $now = now();
+
+            $descriptionContext = $this->rowProjection($latest);
+            $descriptionLines = $remainingLines->map(fn (object $line): array => [
+                'item_code' => (string) $line->item_code,
+                'item_name' => (string) $line->item_name_snapshot,
+                'quantity' => (float) $line->quantity,
+                'unit_code' => $line->unit_code,
+                'unit_price' => (float) $line->unit_price,
+                'line_total' => (float) $line->line_total,
+            ])->all();
+            $descriptionContext = array_merge($descriptionContext, [
+                'request_code' => trim((string) ($request->service_code ?: $request->mrn)),
+                'lines' => $descriptionLines,
+                'part' => $descriptionLines[0] ?? null,
+                'line_count' => $remainingCount,
+                'total_quantity' => $totalQuantity,
+                'order_reference_total_label' => $this->moneyLabel($lineTotal, (string) $latest->currency),
+                'collection_amount_label' => $this->moneyLabel($collectionAmount, (string) $latest->currency),
+                'payment_status' => $paymentStatus,
+                'payment_link_required' => $paymentLinkRequired,
+                'collection_required' => $collectionRequired,
+                'shipment_required' => $shipmentRequired,
+            ]);
+
+            $contextHash = hash('sha256', json_encode([
+                'source_context_hash' => (string) $latest->context_hash,
+                'request_id' => (int) $request->id,
+                'payment_purpose' => self::PURPOSE_PART_CHARGE,
+                'commercial_mode' => $latest->commercial_mode,
+                'delivery_mode' => $latest->delivery_mode,
+                'billing_source' => $latest->billing_source,
+                'shipping_same_as_billing' => (bool) $latest->shipping_same_as_billing,
+                'line_keys' => $remainingLines->pluck('line_key')->sort()->values()->all(),
+                'line_total' => number_format($lineTotal, 2, '.', ''),
+                'collection_amount' => number_format($collectionAmount, 2, '.', ''),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $nextMetadata = array_merge($metadata, [
+                'schema_version' => 2,
+                'line_count' => $remainingCount,
+                'explicit_items' => true,
+                'explicit_empty' => $remainingCount === 0,
+                'source_context_id' => (int) $latest->id,
+                'removed_line_key' => $normalizedLineKey,
+                'superseded_payment_id' => $supersededPaymentId,
+                'stock_snapshot' => null,
+                'external_execution' => [
+                    'payment_write_count' => 0,
+                    'provider_count' => 0,
+                    'mikro_write_count' => 0,
+                    'carrier_count' => 0,
+                    'message_send_count' => 0,
+                ],
+            ]);
+            $payload = (array) $latest;
+            unset($payload['id']);
+            $payload = array_merge($payload, [
+                'technical_service_mount_payment_id' => null,
+                'state' => 'draft',
+                'item_code' => null,
+                'item_name_snapshot' => null,
+                'quantity' => null,
+                'unit_code' => null,
+                'warehouse_code' => null,
+                'stock_source' => null,
+                'stock_freshness_at' => null,
+                'part_serial_tracking_required' => false,
+                'selected_part_serial' => null,
+                'charged_amount' => $collectionAmount,
+                'order_line_unit_price' => $remainingCount === 1 ? (float) $remainingLines->first()->unit_price : 0,
+                'order_line_total' => $lineTotal,
+                'collection_amount' => $collectionAmount,
+                'payment_link_required' => $paymentLinkRequired,
+                'collection_required' => $collectionRequired,
+                'payment_collection_mode' => $remainingCount > 0 ? $latest->payment_collection_mode : 'none',
+                'payment_status' => $paymentStatus,
+                'payment_status_source' => $remainingCount > 0 ? $latest->payment_status_source : 'system',
+                'payment_status_changed_by' => $remainingCount > 0 ? $latest->payment_status_changed_by : null,
+                'payment_status_changed_at' => $remainingCount > 0 ? $latest->payment_status_changed_at : null,
+                'payment_status_reason' => $remainingCount > 0 ? $latest->payment_status_reason : null,
+                'shipment_required' => $shipmentRequired,
+                'future_carrier_state' => $shipmentRequired ? $latest->future_carrier_state : 'not_required',
+                'description2_preview' => $this->renderDescription2($request, $descriptionContext),
+                'context_hash' => $contextHash,
+                'idempotency_key' => hash('sha256', implode('|', [
+                    'technical-service-payment-order-context-line-remove-v1',
+                    $request->id,
+                    $latest->id,
+                    $normalizedLineKey,
+                    $nextRevision,
+                    $contextHash,
+                ])),
+                'correlation_id' => (string) Str::uuid(),
+                'revision' => $nextRevision,
+                'created_by' => $actor?->getAuthIdentifier(),
+                'metadata' => json_encode($nextMetadata, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $nextContextId = DB::table(self::TABLE)->insertGetId($payload);
+
+            if ($remainingLines->isNotEmpty()) {
+                DB::table(self::ITEM_TABLE)->insert($remainingLines->map(
+                    function (object $line, int $position) use ($nextContextId, $actor, $now): array {
+                        $linePayload = (array) $line;
+                        unset($linePayload['id']);
+                        $linePayload['context_id'] = $nextContextId;
+                        $linePayload['position'] = $position + 1;
+                        $linePayload['created_by'] = $actor?->getAuthIdentifier();
+                        $linePayload['updated_by'] = $actor?->getAuthIdentifier();
+                        $linePayload['created_at'] = $now;
+                        $linePayload['updated_at'] = $now;
+
+                        return $linePayload;
+                    },
+                )->all());
+            }
+
+            $request->events()->create([
+                'event_type' => 'payment_order_context_line_removed',
+                'title' => 'Parça taslağı satırı kaldırıldı',
+                'note' => (string) ($removedLine->item_name_snapshot ?? $removedLine->item_code),
+                'from_status' => $request->workflow_status,
+                'to_status' => $request->workflow_status,
+                'author_user_id' => $actor?->getAuthIdentifier(),
+                'metadata' => [
+                    'source_order_context_id' => (int) $latest->id,
+                    'order_context_id' => $nextContextId,
+                    'removed_line_key' => $normalizedLineKey,
+                    'before_line_count' => $latestLines->count(),
+                    'after_line_count' => $remainingCount,
+                    'before_context_hash' => (string) $latest->context_hash,
+                    'after_context_hash' => $contextHash,
+                    'payment_write_count' => 0,
+                    'provider_count' => 0,
+                    'mikro_write_count' => 0,
+                    'carrier_count' => 0,
+                    'message_send_count' => 0,
+                ],
+            ]);
+
+            return $this->rowProjection(DB::table(self::TABLE)->where('id', $nextContextId)->firstOrFail());
         });
     }
 
@@ -2115,7 +2388,9 @@ class TechnicalServicePaymentOrderContextService
                 'postal_code' => $row->shipping_postal_code,
             ]
             : null;
-        $hasLineAuthority = $lines !== [];
+        $schemaVersion = (int) ($metadata['schema_version'] ?? 0);
+        $hasLineAuthority = (string) $row->payment_purpose === self::PURPOSE_PART_CHARGE
+            && $schemaVersion >= 2;
         $legacyPart = filled($row->item_name_snapshot)
             ? [
                 'line_key' => hash('sha256', mb_strtoupper((string) ($row->item_code ?: $row->item_name_snapshot), 'UTF-8')),
@@ -2147,12 +2422,24 @@ class TechnicalServicePaymentOrderContextService
                 'vat_rate_snapshot' => is_numeric($row->vat_rate) ? (float) $row->vat_rate : null,
             ]
             : null;
-        if ($lines === [] && $legacyPart !== null) {
+        if (! $hasLineAuthority && $lines === [] && $legacyPart !== null) {
             $lines = [$legacyPart];
         }
         $part = $lines[0] ?? null;
         $readiness = $hasLineAuthority
-            ? $this->partReadiness((string) $row->part_supplier, $lines, (string) $row->tax_mode)
+            ? ($lines === []
+                ? [
+                    'ready' => false,
+                    'order_ready' => false,
+                    'payment_ready' => false,
+                    'blocker_codes' => ['part_lines_empty'],
+                    'blockers' => ['Parça taslağında seçili kalem bulunmuyor.'],
+                    'legacy_context' => false,
+                ]
+                : [
+                    ...$this->partReadiness((string) $row->part_supplier, $lines, (string) $row->tax_mode),
+                    'legacy_context' => false,
+                ])
             : [
                 'ready' => true,
                 'order_ready' => true,

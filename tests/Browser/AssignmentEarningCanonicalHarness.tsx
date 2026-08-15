@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import type { ServiceRequestAssignmentDraft } from '../../resources/js/components/technical-service/ServiceRequestDetails'
@@ -1082,6 +1082,30 @@ const paymentImpactRequest = (): ServiceRequest => {
   }
 }
 
+const persistedPartContextStorageKey = 'payment-order-context-dom-canonical'
+
+function initialHarnessRequest(): ServiceRequest {
+  const persisted = window.sessionStorage.getItem(persistedPartContextStorageKey)
+
+  if (!persisted) {
+    return initialRequest
+  }
+
+  try {
+    const partContext = JSON.parse(persisted) as ServiceRequestPaymentOrderContext
+
+    return {
+      ...initialRequest,
+      saleAndPayment: {
+        ...initialRequest.saleAndPayment,
+        part_order_context: partContext,
+      },
+    }
+  } catch {
+    return initialRequest
+  }
+}
+
 const state: HarnessState = {
   saveCount: 0,
   sendCount: 0,
@@ -1171,7 +1195,7 @@ function Harness() {
 
     return state.modalMountCount
   })
-  const [request, setRequest] = useState(initialRequest)
+  const [request, setRequest] = useState(initialHarnessRequest)
   const [saveCount, setSaveCount] = useState(0)
   const [lastSavePayload, setLastSavePayload] = useState<HarnessState['lastSavePayload']>(null)
   const [sendCount, setSendCount] = useState(0)
@@ -1205,6 +1229,14 @@ function Harness() {
     && selectedTechnicianId
     && String(request.technicianId) !== String(selectedTechnicianId),
   )
+
+  useEffect(() => {
+    const partContext = request.saleAndPayment?.part_order_context
+
+    if (partContext) {
+      window.sessionStorage.setItem(persistedPartContextStorageKey, JSON.stringify(partContext))
+    }
+  }, [request.saleAndPayment?.part_order_context])
 
   return (
     <>
@@ -1955,6 +1987,63 @@ function Harness() {
 
             if (!context || String(context.id) !== String(contextId)) {
               return current
+            }
+
+            if (payload.action === 'remove_line') {
+              const nextLines = (context.lines ?? []).filter((line) => line.line_key !== payload.line_key)
+
+              if (nextLines.length === (context.lines ?? []).length) {
+                return current
+              }
+
+              const orderLineTotal = nextLines.reduce((total, line) => total + Number(line.line_total ?? 0), 0)
+              const totalQuantity = nextLines.reduce((total, line) => total + Number(line.quantity ?? 0), 0)
+              const collectionRequired = nextLines.length > 0 && context.collection_required
+              const contextMoney = (value: number) => `${value.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL`
+              const nextContext: ServiceRequestPaymentOrderContext = {
+                ...context,
+                id: Number(context.id) + 1,
+                payment_id: null,
+                revision: Number(context.revision ?? 0) + 1,
+                context_hash: `${Number(context.revision ?? 0) + 1}`.padStart(64, '0'),
+                part: nextLines[0] ?? null,
+                lines: nextLines,
+                line_count: nextLines.length,
+                total_quantity: totalQuantity,
+                total_quantity_label: String(totalQuantity),
+                order_line_unit_price: nextLines.length === 1 ? Number(nextLines[0]?.unit_price ?? 0) : 0,
+                order_line_unit_price_label: contextMoney(nextLines.length === 1 ? Number(nextLines[0]?.unit_price ?? 0) : 0),
+                order_line_total: orderLineTotal,
+                order_line_total_label: contextMoney(orderLineTotal),
+                order_reference_total: orderLineTotal,
+                order_reference_total_label: contextMoney(orderLineTotal),
+                collection_amount: collectionRequired ? orderLineTotal : 0,
+                collection_amount_label: contextMoney(collectionRequired ? orderLineTotal : 0),
+                charged_amount: collectionRequired ? orderLineTotal : 0,
+                charged_amount_label: contextMoney(collectionRequired ? orderLineTotal : 0),
+                collection_required: collectionRequired,
+                payment_link_required: nextLines.length > 0 && context.payment_link_required,
+                payment_collection_mode: nextLines.length > 0 ? context.payment_collection_mode : 'none',
+                payment_status: nextLines.length > 0 ? context.payment_status : 'not_required',
+                payment_status_label: nextLines.length > 0 ? context.payment_status_label : 'Tahsilat gerekmiyor',
+                shipment_required: nextLines.length > 0 && context.shipment_required,
+                future_carrier_state: nextLines.length > 0 ? context.future_carrier_state : 'not_required',
+                readiness: nextLines.length > 0 ? context.readiness : {
+                  ready: false,
+                  order_ready: false,
+                  payment_ready: false,
+                  blocker_codes: ['part_lines_empty'],
+                  blockers: ['Parça taslağında seçili kalem bulunmuyor.'],
+                },
+              }
+
+              return {
+                ...current,
+                saleAndPayment: {
+                  ...current.saleAndPayment,
+                  part_order_context: nextContext,
+                },
+              }
             }
 
             const deliveredToTechnician = payload.action === 'record_delivery'
