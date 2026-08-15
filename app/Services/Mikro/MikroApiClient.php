@@ -6,6 +6,7 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Throwable;
@@ -159,10 +160,21 @@ class MikroApiClient
         return $this->fixed('stock.search', ['search' => $query]);
     }
 
+    public function retrySearchStocks(string $query): array
+    {
+        return $this->retryFixed('stock.search', ['search' => $query]);
+    }
+
     /** @param array<int, string> $itemCodes */
     public function physicalStockQuantities(array $itemCodes): array
     {
         return $this->fixed('stock.physical_quantity', ['item_codes' => $itemCodes]);
+    }
+
+    /** @param array<int, string> $itemCodes */
+    public function retryPhysicalStockQuantities(array $itemCodes): array
+    {
+        return $this->retryFixed('stock.physical_quantity', ['item_codes' => $itemCodes]);
     }
 
     public function stockAvailability(string $stockCode): array
@@ -296,6 +308,40 @@ class MikroApiClient
         }
 
         return $this->execute($operationKey, ['SQLSorgu' => $sql], $queryParameters);
+    }
+
+    private function retryFixed(string $operationKey, array $parameters): array
+    {
+        $context = $this->settings->mikroApiConnectionContext();
+        $origin = rtrim((string) ($context['base_url'] ?? ''), '/');
+        if ($origin === '') {
+            return $this->fixed($operationKey, $parameters);
+        }
+
+        $lock = Cache::lock(
+            'mikro:manual-retry:'.hash('sha256', strtolower($origin).':'.$operationKey),
+            30,
+        );
+        if (! $lock->get()) {
+            return $this->failureResult(
+                $operationKey,
+                'MIKRO_RETRY_IN_PROGRESS',
+                (string) Str::uuid(),
+                null,
+                0,
+                null,
+                null,
+                $this->runtimeState->circuit($origin, $operationKey)['circuit_state'],
+            );
+        }
+
+        try {
+            $this->runtimeState->resetCircuit($origin, $operationKey);
+
+            return $this->fixed($operationKey, $parameters);
+        } finally {
+            $lock->release();
+        }
     }
 
     private function execute(string $operationKey, array $payload = [], array $snapshotFilters = []): array

@@ -62,7 +62,10 @@ type PhysicalStockPartSearchItem = Omit<ServiceRequestMikroPartSearchItem, 'item
   }>
   physical_stock_contract_version?: string | null
   physical_stock_correlation_id?: string | null
+  physical_stock_error_code?: string | null
   stock_status_label?: string | null
+  identity_state?: 'current' | 'stale'
+  stock_identity_token?: string | null
 }
 
 type PaymentOrderPartLineDraft = {
@@ -79,8 +82,17 @@ type PaymentOrderPartSearchResponse = {
   source?: string | null
   source_label?: string | null
   freshness_at?: string | null
+  search_state?: 'current' | 'stale' | 'unavailable'
+  physical_stock_state?: 'current' | 'partial' | 'unavailable' | 'not_requested'
+  error_code?: string | null
+  error_message?: string | null
+  correlation_id?: string | null
+  circuit_state?: string | null
+  fallback_used?: boolean
   items?: PhysicalStockPartSearchItem[]
 }
+
+type PartSearchFailureScope = 'search' | 'physical_stock'
 
 type AssignmentEarningDraft = {
   laborAmount: string
@@ -1965,6 +1977,9 @@ export function ServiceRequestDetails({
   const [orderPartSearchItems, setOrderPartSearchItems] = useState<PhysicalStockPartSearchItem[]>([])
   const [orderPartSearchLoading, setOrderPartSearchLoading] = useState(false)
   const [orderPartSearchError, setOrderPartSearchError] = useState<string | null>(null)
+  const [orderPartSearchFailureScope, setOrderPartSearchFailureScope] = useState<PartSearchFailureScope | null>(null)
+  const [orderPartSearchPhase, setOrderPartSearchPhase] = useState<PartSearchFailureScope>('search')
+  const [orderPartSearchRetryVersion, setOrderPartSearchRetryVersion] = useState(0)
   const [orderPartLines, setOrderPartLines] = useState<PaymentOrderPartLineDraft[]>([])
   const [orderPartQuantity, setOrderPartQuantity] = useState('1')
   const [orderTechnicianPartCode, setOrderTechnicianPartCode] = useState('')
@@ -1978,6 +1993,10 @@ export function ServiceRequestDetails({
   const [orderContextStateUpdating, setOrderContextStateUpdating] = useState(false)
   const [orderContextStatusReason, setOrderContextStatusReason] = useState('')
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
+  const orderPartSearchGenerationRef = useRef(0)
+  const orderPartSearchRetryQueryRef = useRef<string | null>(null)
+  const orderPartPhysicalRetryInFlightRef = useRef(false)
+  const orderPartPhysicalRetryAbortRef = useRef<AbortController | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
   const [routeFeeRoundTripKmInput, setRouteFeeRoundTripKmInput] = useState('')
@@ -2474,7 +2493,84 @@ export function ServiceRequestDetails({
   const activeOrderContextPreviewLoading = orderContextPreviewLoading
     && orderContextPreviewLoadingInputKey === paymentOrderContextInputKey
 
+  const retryOrderPartPhysicalStock = () => {
+    if (orderPartPhysicalRetryInFlightRef.current) {
+      return
+    }
+
+    const identityTokens = orderPartSearchItems
+      .filter((item) => (item.item_kind === 'part' || item.item_kind === 'accessory') && item.identity_state === 'current')
+      .map((item) => item.stock_identity_token ?? item.selection_token)
+      .filter((token): token is string => typeof token === 'string' && token !== '')
+
+    if (identityTokens.length === 0) {
+      return
+    }
+
+    const generation = orderPartSearchGenerationRef.current
+    const controller = new AbortController()
+
+    orderPartPhysicalRetryAbortRef.current = controller
+    orderPartPhysicalRetryInFlightRef.current = true
+    setOrderPartSearchLoading(true)
+    setOrderPartSearchPhase('physical_stock')
+    setOrderPartSearchError(null)
+    setOrderPartSearchFailureScope(null)
+
+    void apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/parts`, {
+      method: 'POST',
+      signal: controller.signal,
+      body: JSON.stringify({
+        phase: 'physical_stock',
+        identity_tokens: identityTokens,
+        retry_scope: 'physical_stock',
+      }),
+    })
+      .then((response: PaymentOrderPartSearchResponse) => {
+        if (generation !== orderPartSearchGenerationRef.current) {
+          return
+        }
+
+        setOrderPartSearchItems(Array.isArray(response.items) ? response.items : orderPartSearchItems)
+
+        if (response.physical_stock_state !== 'current') {
+          setOrderPartSearchError('Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.')
+          setOrderPartSearchFailureScope('physical_stock')
+        }
+      })
+      .catch((caught: unknown) => {
+        if (caught instanceof Error && caught.name === 'AbortError') {
+          return
+        }
+
+        if (generation !== orderPartSearchGenerationRef.current) {
+          return
+        }
+
+        setOrderPartSearchError('Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.')
+        setOrderPartSearchFailureScope('physical_stock')
+      })
+      .finally(() => {
+        if (orderPartPhysicalRetryAbortRef.current !== controller) {
+          return
+        }
+
+        orderPartPhysicalRetryAbortRef.current = null
+        orderPartPhysicalRetryInFlightRef.current = false
+
+        if (generation === orderPartSearchGenerationRef.current) {
+          setOrderPartSearchLoading(false)
+        }
+      })
+  }
+
   useEffect(() => {
+    const generation = ++orderPartSearchGenerationRef.current
+
+    orderPartPhysicalRetryAbortRef.current?.abort()
+    orderPartPhysicalRetryAbortRef.current = null
+    orderPartPhysicalRetryInFlightRef.current = false
+
     if (!routeFeeEditorOpen
       || routeFeeEditorMode !== 'payment_link'
       || extraPaymentPurpose !== 'part_charge'
@@ -2490,34 +2586,96 @@ export function ServiceRequestDetails({
 
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      setOrderPartSearchLoading(true)
-      setOrderPartSearchError(null)
-      void apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/parts?query=${encodeURIComponent(query)}`, {
-        signal: controller.signal,
-      })
-        .then((response: PaymentOrderPartSearchResponse) => {
-          setOrderPartSearchItems(Array.isArray(response.items) ? response.items : [])
-        })
-        .catch((caught: unknown) => {
+      let activeScope: PartSearchFailureScope = 'search'
+      const run = async () => {
+        const manualSearchRetry = orderPartSearchRetryQueryRef.current === query
+        orderPartSearchRetryQueryRef.current = null
+        setOrderPartSearchLoading(true)
+        setOrderPartSearchPhase('search')
+        setOrderPartSearchError(null)
+        setOrderPartSearchFailureScope(null)
+
+        try {
+          const retryQuery = manualSearchRetry ? '&retry_scope=search' : ''
+          const response = await apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/parts?phase=identity&query=${encodeURIComponent(query)}${retryQuery}`, {
+            signal: controller.signal,
+          }) as PaymentOrderPartSearchResponse
+
+          if (controller.signal.aborted || generation !== orderPartSearchGenerationRef.current) {
+            return
+          }
+
+          const identityItems = Array.isArray(response.items) ? response.items : []
+          setOrderPartSearchItems(identityItems)
+
+          if (response.search_state !== 'current') {
+            setOrderPartSearchError(response.search_state === 'stale'
+              ? 'Eski Mikro kaydı. Ürün ve stok bilgisi yeniden doğrulanmalıdır.'
+              : 'Mikro stok araması şu anda yapılamıyor. Stok aramasını yeniden dene.')
+            setOrderPartSearchFailureScope('search')
+
+            return
+          }
+
+          const identityTokens = identityItems
+            .filter((item) => item.item_kind === 'part' || item.item_kind === 'accessory')
+            .map((item) => item.stock_identity_token ?? item.selection_token)
+            .filter((token): token is string => typeof token === 'string' && token !== '')
+
+          if (identityTokens.length === 0) {
+            return
+          }
+
+          activeScope = 'physical_stock'
+          setOrderPartSearchPhase('physical_stock')
+          const physicalResponse = await apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/parts`, {
+            method: 'POST',
+            signal: controller.signal,
+            body: JSON.stringify({ phase: 'physical_stock', identity_tokens: identityTokens }),
+          }) as PaymentOrderPartSearchResponse
+
+          if (controller.signal.aborted || generation !== orderPartSearchGenerationRef.current) {
+            return
+          }
+
+          setOrderPartSearchItems(Array.isArray(physicalResponse.items) ? physicalResponse.items : identityItems)
+
+          if (physicalResponse.physical_stock_state !== 'current') {
+            setOrderPartSearchError('Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.')
+            setOrderPartSearchFailureScope('physical_stock')
+          }
+        } catch (caught: unknown) {
           if (caught instanceof Error && caught.name === 'AbortError') {
             return
           }
 
-          setOrderPartSearchItems([])
-          setOrderPartSearchError(caught instanceof Error ? caught.message : 'Mikro stok bilgisi şu anda alınamıyor. Parça seçimi tamamlanamadı.')
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) {
+          if (generation !== orderPartSearchGenerationRef.current) {
+            return
+          }
+
+          if (activeScope === 'search') {
+            setOrderPartSearchItems([])
+            setOrderPartSearchError('Mikro stok araması şu anda yapılamıyor. Stok aramasını yeniden dene.')
+          } else {
+            setOrderPartSearchError('Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.')
+          }
+
+          setOrderPartSearchFailureScope(activeScope)
+        } finally {
+          if (!controller.signal.aborted && generation === orderPartSearchGenerationRef.current) {
             setOrderPartSearchLoading(false)
           }
-        })
+        }
+      }
+
+      void run()
     }, 400)
 
     return () => {
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [extraPaymentPurpose, orderPartSearch, orderPartSupplier, request.id, routeFeeEditorMode, routeFeeEditorOpen])
+  }, [extraPaymentPurpose, orderPartSearch, orderPartSearchRetryVersion, orderPartSupplier, request.id, routeFeeEditorMode, routeFeeEditorOpen])
 
   useEffect(() => {
     if (!routeFeeEditorOpen
@@ -3502,6 +3660,7 @@ export function ServiceRequestDetails({
     setOrderPartSearchItems([])
     setOrderPartSearchLoading(false)
     setOrderPartSearchError(null)
+    setOrderPartSearchFailureScope(null)
     setOrderPartLines([])
     setOrderPartQuantity('1')
     setOrderTechnicianPartCode('')
@@ -5048,10 +5207,12 @@ errors.lastName = 'Soyad alanı zorunludur.'
                         onChange={(event) => {
                           const query = event.target.value
 
+                          orderPartSearchGenerationRef.current += 1
                           setOrderPartSearch(query)
                           setOrderPartSearchItems([])
                           setOrderPartSearchLoading(false)
                           setOrderPartSearchError(query.trim().length === 1 ? 'Parça araması için en az 2 karakter girin.' : null)
+                          setOrderPartSearchFailureScope(null)
                         }}
                         className="pl-10"
                         placeholder="Stok kodu veya stok adı"
@@ -5059,8 +5220,36 @@ errors.lastName = 'Soyad alanı zorunludur.'
                       />
                     </div>
                   </label>
-                  {orderPartSearchLoading ? <p className="text-xs font-semibold text-blue-700">Stok kontrol ediliyor...</p> : null}
-                  {orderPartSearchError ? <p className="text-xs font-semibold text-rose-700">{orderPartSearchError}</p> : null}
+                  {orderPartSearchLoading ? (
+                    <p className="text-xs font-semibold text-blue-700">
+                      {orderPartSearchPhase === 'search' ? 'Mikro stok araması yapılıyor...' : 'Stok kontrol ediliyor...'}
+                    </p>
+                  ) : null}
+                  {orderPartSearchError ? (
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <p className="font-semibold text-rose-700">{orderPartSearchError}</p>
+                      {orderPartSearchFailureScope ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={orderPartSearchLoading}
+                          onClick={() => {
+                            if (orderPartSearchFailureScope === 'search') {
+                              orderPartSearchRetryQueryRef.current = orderPartSearch.trim()
+                              setOrderPartSearchRetryVersion((current) => current + 1)
+
+                              return
+                            }
+
+                            retryOrderPartPhysicalStock()
+                          }}
+                        >
+                          {orderPartSearchFailureScope === 'search' ? 'Stok aramasını yeniden dene' : 'Stoku yeniden kontrol et'}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {orderPartSearch.trim().length >= 2 && !orderPartSearchLoading && !orderPartSearchError && orderPartSearchItems.length === 0 ? (
                     <p className="text-xs text-slate-600">Aramaya uygun parça bulunamadı.</p>
                   ) : null}
@@ -5068,7 +5257,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                     <div className="grid max-h-64 gap-2 overflow-y-auto pr-1" data-testid="mikro-part-search-results">
                       {orderPartSearchItems.map((item) => (
                         <div
-                          key={item.selection_token}
+                          key={item.item_code}
                           className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 text-left text-xs"
                         >
                           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -5086,6 +5275,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
 
                                 if (physicalStockTotal === null || physicalStockTotal <= 0) {
                                   setOrderPartSearchError(physicalStockTotal === null ? 'Stok doğrulanamadı' : 'Stokta yok')
+                                  setOrderPartSearchFailureScope(physicalStockTotal === null ? 'physical_stock' : null)
 
                                   return
                                 }
@@ -5098,6 +5288,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
 
                                     if (nextQuantity > physicalStockTotal) {
                                       setOrderPartSearchError(`Stokta yalnız ${item.physical_stock_total_label ?? physicalStockTotal} ${item.unit_code ?? 'ADET'} bulunuyor.`)
+                                      setOrderPartSearchFailureScope(null)
 
                                       return current
                                     }
@@ -5109,12 +5300,14 @@ errors.lastName = 'Soyad alanı zorunludur.'
 
                                   if (current.length >= 20) {
                                     setOrderPartSearchError('En fazla 20 farklı parça kalemi seçilebilir.')
+                                    setOrderPartSearchFailureScope(null)
 
                                     return current
                                   }
 
                                   if (1 > physicalStockTotal) {
                                     setOrderPartSearchError(`Stokta yalnız ${item.physical_stock_total_label ?? physicalStockTotal} ${item.unit_code ?? 'ADET'} bulunuyor.`)
+                                    setOrderPartSearchFailureScope(null)
 
                                     return current
                                   }

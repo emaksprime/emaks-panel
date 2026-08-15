@@ -220,6 +220,10 @@ const searchFor = async (dialog, query, code) => {
   const row = dialog.getByTestId('mikro-part-search-results').locator('div').filter({ hasText: code }).first()
   await row.waitFor({ state: 'visible', timeout: 5000 })
 
+  if (code !== 'EP.BCK.003.0001.R001') {
+    await row.getByText(/^(Stokta:|Stokta yok|Stok doğrulanamadı)/).waitFor({ state: 'visible', timeout: 5000 })
+  }
+
   return row
 }
 
@@ -232,7 +236,8 @@ const waitForPreview = async (dialog, expected) => {
 }
 
 const inspectViewport = async (browser, name, viewport) => {
-  const counters = { partSearch: 0, preview: 0, realExternal: 0 }
+  const counters = { partSearch: 0, physicalStock: 0, searchRetry: 0, physicalRetry: 0, preview: 0, realExternal: 0, maxPhysicalInFlight: 0 }
+  let physicalInFlight = 0
   const page = await browser.newPage({ viewport })
   page.on('pageerror', (error) => browserErrors.push(`${name}:page:${error.message}`))
   page.on('request', (request) => {
@@ -240,12 +245,99 @@ const inspectViewport = async (browser, name, viewport) => {
 counters.realExternal += 1
 }
   })
-  await page.route('**/api/technical-service/requests/*/payments/order-context/parts?*', async (route) => {
+  await page.route('**/api/technical-service/requests/*/payments/order-context/parts*', async (route) => {
+    if (route.request().method() === 'POST') {
+      counters.physicalStock += 1
+      physicalInFlight += 1
+      counters.maxPhysicalInFlight = Math.max(counters.maxPhysicalInFlight, physicalInFlight)
+      const payload = route.request().postDataJSON()
+      const tokens = Array.isArray(payload.identity_tokens) ? payload.identity_tokens : []
+      const retry = payload.retry_scope === 'physical_stock'
+
+      if (retry) {
+        counters.physicalRetry += 1
+      }
+
+      const items = stockItems
+        .filter((item) => tokens.includes(item.selection_token))
+        .map((item) => retry && item.item_code === 'FAIL-001'
+          ? {
+              ...item,
+              identity_state: 'current',
+              selectable: true,
+              selection_blocker: null,
+              physical_stock_state: 'positive',
+              physical_stock_verified: true,
+              physical_stock_total: '3.000000',
+              physical_stock_total_label: '3',
+              physical_stock_correlation_id: 'dom-retry-failure-001',
+              stock_status_label: 'Stokta: 3 ADET',
+              freshness_at: '2026-08-14T17:46:00+03:00',
+            }
+          : { ...item, identity_state: 'current' })
+      const failed = items.some((item) => item.item_code === 'FAIL-001' && !retry)
+
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true,
+        source: 'mikro',
+        source_label: 'Mikro API',
+        freshness_at: '2026-08-14T17:45:00+03:00',
+        search_state: 'current',
+        physical_stock_state: failed ? 'unavailable' : 'current',
+        error_code: failed ? 'MIKRO_CONNECT_TIMEOUT' : null,
+        error_message: failed ? 'Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.' : null,
+        items,
+        write_execution_count: 0,
+      }) })
+      physicalInFlight -= 1
+
+      return
+    }
+
     counters.partSearch += 1
-    const query = normalizedSearch(new URL(route.request().url()).searchParams.get('query') ?? '')
-    const items = stockItems.filter((item) => normalizedSearch(`${item.item_code} ${item.item_name} ${item.item_short_name ?? ''}`).includes(query)).slice(0, 20)
+    const url = new URL(route.request().url())
+    const query = normalizedSearch(url.searchParams.get('query') ?? '')
+    const retry = url.searchParams.get('retry_scope') === 'search'
+
+    if (retry) {
+      counters.searchRetry += 1
+    }
+
+    if (query === 'SEARCH-FAIL' && !retry) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true,
+        source: 'mikro',
+        source_label: 'Mikro API',
+        search_state: 'unavailable',
+        physical_stock_state: 'not_requested',
+        error_code: 'MIKRO_CONNECT_TIMEOUT',
+        error_message: 'Mikro stok araması şu anda yapılamıyor. Stok aramasını yeniden dene.',
+        items: [],
+        write_execution_count: 0,
+      }) })
+
+      return
+    }
+
+    const matched = query === 'SEARCH-FAIL' && retry
+      ? [stockItems[0]]
+      : stockItems.filter((item) => normalizedSearch(`${item.item_code} ${item.item_name} ${item.item_short_name ?? ''}`).includes(query)).slice(0, 20)
+    const items = matched.map((item) => (item.item_kind === 'part' || item.item_kind === 'accessory')
+      ? {
+          ...item,
+          selectable: false,
+          selection_blocker: 'Stok kontrol ediliyor...',
+          physical_stock_state: 'unverified',
+          physical_stock_verified: false,
+          physical_stock_total: null,
+          physical_stock_total_label: null,
+          stock_status_label: 'Stok kontrol ediliyor...',
+          identity_state: 'current',
+        }
+      : { ...item, identity_state: 'current' })
+
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-      ok: true, source: 'mikro', source_label: 'Mikro API', freshness_at: '2026-08-14T15:00:00+03:00', items, write_execution_count: 0,
+      ok: true, source: 'mikro', source_label: 'Mikro API', freshness_at: '2026-08-14T15:00:00+03:00', search_state: 'current', physical_stock_state: 'not_requested', items, write_execution_count: 0,
     }) })
   })
   await page.route('**/api/technical-service/requests/*/payments/order-context/preview', async (route) => {
@@ -281,6 +373,7 @@ counters.realExternal += 1
   const failedStockRow = await searchFor(dialog, 'FAIL-001', 'FAIL-001')
   assert((await text(failedStockRow)).includes('Stok doğrulanamadı'), `${name}: failed physical stock label is missing`)
   assert(await failedStockRow.getByRole('button', { name: 'Ekle' }).isDisabled(), `${name}: unverified-stock add action is enabled`)
+  assert(await dialog.getByRole('button', { name: 'Stoku yeniden kontrol et', exact: true }).count() === 1, `${name}: physical-stock retry action is missing`)
 
   const deviceRow = await searchFor(dialog, 'EP.BCK.003.0001.R001', 'EP.BCK.003.0001.R001')
   const deviceText = await text(deviceRow)
@@ -298,6 +391,23 @@ counters.realExternal += 1
   assert((await text(row)).includes('Stokta: 4 ADET'), `${name}: second accessory physical stock is missing`)
   await row.getByRole('button', { name: 'Ekle' }).click()
   assert(await selected.count() === 2, `${name}: second part line was not added`)
+
+  const selectedCountBeforeRetry = await selected.count()
+  const retryRow = await searchFor(dialog, 'FAIL-001', 'FAIL-001')
+  assert((await text(retryRow)).includes('Stok doğrulanamadı'), `${name}: controlled quantity failure did not stay distinct`)
+  await dialog.getByRole('button', { name: 'Stoku yeniden kontrol et', exact: true }).click()
+  await retryRow.getByText('Stokta: 3 ADET', { exact: true }).waitFor({ state: 'visible', timeout: 5000 })
+  assert(!(await retryRow.getByRole('button', { name: 'Ekle' }).isDisabled()), `${name}: successful quantity retry did not enable Add`)
+  assert(await selected.count() === selectedCountBeforeRetry, `${name}: quantity retry cleared selected lines`)
+
+  await dialog.getByLabel('Mikro stok parçası ara').fill('SEARCH-FAIL')
+  await dialog.getByText('Mikro stok araması şu anda yapılamıyor. Stok aramasını yeniden dene.', { exact: true }).waitFor({ state: 'visible', timeout: 5000 })
+  assert(!(await text(dialog)).includes('Mikro stok bağlantısı hazır değil.'), `${name}: typed search failure collapsed to global readiness`)
+  await dialog.getByRole('button', { name: 'Stok aramasını yeniden dene', exact: true }).click()
+  const searchRetryRow = dialog.getByTestId('mikro-part-search-results').locator('div').filter({ hasText: 'EE.BCK.STD.0010' }).first()
+  await searchRetryRow.waitFor({ state: 'visible', timeout: 5000 })
+  await searchRetryRow.getByText('Stokta: 83 ADET', { exact: true }).waitFor({ state: 'visible', timeout: 5000 })
+  assert(await selected.count() === selectedCountBeforeRetry, `${name}: stock-search retry cleared selected lines`)
 
   await dialog.getByLabel('Mikro stok parçası ara').fill('bulunmayan parça')
   await dialog.getByText('Aramaya uygun parça bulunamadı.', { exact: true }).waitFor({ state: 'visible' })
@@ -421,6 +531,9 @@ counters.realExternal += 1
   assert(await output(page, 'financial-board-refetch-count') === '0', `${name}: board refetch count is not zero`)
   assert(await output(page, 'financial-modal-mount-count') === '1', `${name}: detail modal remounted`)
   assert(await output(page, 'assignment-scroll-reset-count') === '0', `${name}: scroll reset count is not zero`)
+  assert(counters.searchRetry === 1, `${name}: search retry count is ${counters.searchRetry}`)
+  assert(counters.physicalRetry === 1, `${name}: physical retry count is ${counters.physicalRetry}`)
+  assert(counters.maxPhysicalInFlight === 1, `${name}: parallel physical-stock request count exceeded one`)
   assert(counters.realExternal === 0, `${name}: external Mikro/HepsiJet/n8n count is ${counters.realExternal}`)
   const fullText = await text(dialog)
   assert(!fullText.includes('TS-PART-001'), `${name}: TS-PART fixture is visible`)

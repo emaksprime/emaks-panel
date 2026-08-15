@@ -905,6 +905,59 @@ class MikroApiConnectionTest extends TestCase
         $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
     }
 
+    public function test_manual_stock_search_retry_resets_only_search_circuit_and_reuses_fixed_contract(): void
+    {
+        $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                    'operation_controls' => [
+                        'stock.search' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                        'stock.physical_quantity' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $origin = 'https://mikro-api.example.test';
+        $runtime = app(MikroRuntimeState::class);
+        foreach (range(1, MikroRuntimeState::FAILURE_THRESHOLD) as $_) {
+            $runtime->recordTransientFailure($origin, 'stock.search');
+            $runtime->recordTransientFailure($origin, 'stock.physical_quantity');
+        }
+        $this->assertSame('OPEN', $runtime->circuit($origin, 'stock.search')['circuit_state']);
+        $this->assertSame('OPEN', $runtime->circuit($origin, 'stock.physical_quantity')['circuit_state']);
+
+        Http::fake([
+            'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2' => $this->fixedQueryResponse([[
+                'item_code' => 'EE.BCK.STD.0010',
+                'item_name' => 'PHILIPS SUNUM STANDI',
+                'item_short_name' => 'SUNUM STANDI',
+                'unit_code' => 'ADET',
+                'stock_type' => 6,
+                'detail_tracking_type' => 0,
+                'cancelled' => 0,
+                'hidden' => 0,
+            ]]),
+        ]);
+
+        $result = app(MikroApiClient::class)->retrySearchStocks('sunum');
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('CLOSED', $runtime->circuit($origin, 'stock.search')['circuit_state']);
+        $this->assertSame('OPEN', $runtime->circuit($origin, 'stock.physical_quantity')['circuit_state']);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => str_contains((string) $request['SQLSorgu'], 'SELECT TOP (20)')
+            && str_contains((string) $request['SQLSorgu'], "N'SUNUM'")
+            && ! preg_match('/\b(INSERT|UPDATE|DELETE|MERGE|EXEC)\b/i', (string) $request['SQLSorgu']));
+        $this->getJson('/api/technical-service/messaging-settings')
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0);
+    }
+
     public function test_operation_schemas_drop_unknown_fields_and_re_sanitize_last_good_snapshots(): void
     {
         $schemas = app(MikroResponseSchemaCatalog::class);

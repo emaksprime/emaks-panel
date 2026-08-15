@@ -638,13 +638,14 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $mikro->shouldReceive('searchStocks')->once()->andReturn(['success' => false, 'error_code' => 'MIKRO_RESPONSE_SCHEMA_UNVERIFIED']);
         $service = new TechnicalServicePaymentOrderContextService($mikro, app(TechnicalServiceAssignmentSettlementService::class));
 
-        try {
-            $service->searchParts($request, 'Gateway');
-            $this->fail('Normal runtime sahte stok döndürdü.');
-        } catch (ValidationException $exception) {
-            $this->assertStringContainsString('Gerçek stok doğrulanmadan', $exception->errors()['query'][0]);
-            $this->assertStringNotContainsString('TS-PART-001', $exception->errors()['query'][0]);
-        }
+        $result = $service->searchParts($request, 'Gateway');
+
+        $this->assertSame('unavailable', $result['search_state']);
+        $this->assertSame('not_requested', $result['physical_stock_state']);
+        $this->assertSame('MIKRO_RESPONSE_SCHEMA_UNVERIFIED', $result['error_code']);
+        $this->assertSame('Mikro stok araması şu anda yapılamıyor. Stok aramasını yeniden dene.', $result['error_message']);
+        $this->assertSame([], $result['items']);
+        $this->assertStringNotContainsString('TS-PART-001', json_encode($result, JSON_THROW_ON_ERROR));
     }
 
     public function test_part_search_uses_typed_mikro_stock_list(): void
@@ -851,6 +852,141 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertFalse($failedItem['selectable']);
         $this->assertSame('unverified', $failedItem['physical_stock_state']);
         $this->assertSame('Stok doğrulanamadı', $failedItem['stock_status_label']);
+    }
+
+    public function test_search_failure_is_distinct_from_quantity_failure_and_retry_preserves_identity(): void
+    {
+        [$request] = $this->requestFixture();
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $row = [
+            'item_code' => 'EE.BCK.STD.0010',
+            'item_name' => 'PHILIPS SUNUM STANDI',
+            'item_short_name' => 'SUNUM STANDI',
+            'unit_code' => 'ADET',
+            'stock_type' => 6,
+            'detail_tracking_type' => 0,
+        ];
+
+        $searchFailure = Mockery::mock(MikroApiClient::class);
+        $searchFailure->shouldReceive('searchStocks')->once()->andReturn([
+            'success' => false,
+            'error_code' => 'MIKRO_CONNECT_TIMEOUT',
+            'correlation_id' => '11111111-1111-4111-8111-111111111111',
+            'circuit_state' => 'OPEN',
+        ]);
+        $failedSearch = (new TechnicalServicePaymentOrderContextService(
+            $searchFailure,
+            app(TechnicalServiceAssignmentSettlementService::class),
+        ))->searchParts($request, 'sunum', false);
+
+        $this->assertSame('unavailable', $failedSearch['search_state']);
+        $this->assertSame('not_requested', $failedSearch['physical_stock_state']);
+        $this->assertSame([], $failedSearch['items']);
+        $this->assertSame('11111111-1111-4111-8111-111111111111', $failedSearch['correlation_id']);
+
+        $mikro = Mockery::mock(MikroApiClient::class);
+        $mikro->shouldReceive('searchStocks')->once()->andReturn([
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
+            'correlation_id' => '22222222-2222-4222-8222-222222222222',
+            'circuit_state' => 'CLOSED',
+            'data' => [$row],
+        ]);
+        $mikro->shouldReceive('physicalStockQuantities')->once()->with(['EE.BCK.STD.0010'])->andReturn([
+            'success' => false,
+            'error_code' => 'MIKRO_CONNECT_TIMEOUT',
+            'correlation_id' => '33333333-3333-4333-8333-333333333333',
+            'circuit_state' => 'CLOSED',
+            'data' => [],
+        ]);
+        $mikro->shouldReceive('retryPhysicalStockQuantities')->once()->with(['EE.BCK.STD.0010'])->andReturn(
+            $this->physicalStockResponse(['EE.BCK.STD.0010'], '83.000000', '0.000000'),
+        );
+        $service = new TechnicalServicePaymentOrderContextService(
+            $mikro,
+            app(TechnicalServiceAssignmentSettlementService::class),
+        );
+        $identity = $service->searchParts($request, 'sunum', false);
+
+        $this->assertSame('current', $identity['search_state']);
+        $this->assertSame('not_requested', $identity['physical_stock_state']);
+        $this->assertFalse($identity['items'][0]['selectable']);
+        $this->assertSame('Stok kontrol ediliyor...', $identity['items'][0]['stock_status_label']);
+
+        $quantityFailure = $service->physicalStocksForPartSearch(
+            $request,
+            [$identity['items'][0]['selection_token']],
+        );
+        $this->assertSame('unavailable', $quantityFailure['physical_stock_state']);
+        $this->assertSame('current', $quantityFailure['search_state']);
+        $this->assertSame('Stok doğrulanamadı', $quantityFailure['items'][0]['stock_status_label']);
+        $this->assertFalse($quantityFailure['items'][0]['selectable']);
+        $this->assertSame($identity['items'][0]['stock_identity_token'], $quantityFailure['items'][0]['stock_identity_token']);
+
+        $retried = $service->physicalStocksForPartSearch(
+            $request,
+            [$quantityFailure['items'][0]['stock_identity_token']],
+            true,
+        );
+        $this->assertSame('current', $retried['physical_stock_state']);
+        $this->assertSame('83.000000', $retried['items'][0]['physical_stock_total']);
+        $this->assertSame('Stokta: 83 ADET', $retried['items'][0]['stock_status_label']);
+        $this->assertTrue($retried['items'][0]['selectable']);
+    }
+
+    public function test_stale_identity_and_missing_physical_row_fail_closed_without_fake_zero(): void
+    {
+        [$request] = $this->requestFixture();
+        config(['services.technical_service.payment_order_context_test_stock' => false]);
+        $row = [
+            'item_code' => 'EE.BCK.STD.0011',
+            'item_name' => 'PHILIPS SUNUM STANDI',
+            'item_short_name' => null,
+            'unit_code' => 'ADET',
+            'stock_type' => 6,
+            'detail_tracking_type' => 0,
+        ];
+        $staleMikro = Mockery::mock(MikroApiClient::class);
+        $staleMikro->shouldReceive('searchStocks')->once()->andReturn([
+            'success' => true,
+            'stale' => true,
+            'fallback_used' => true,
+            'error_code' => 'MIKRO_CONNECT_TIMEOUT',
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
+            'data' => [$row],
+        ]);
+        $staleMikro->shouldNotReceive('physicalStockQuantities');
+        $stale = (new TechnicalServicePaymentOrderContextService(
+            $staleMikro,
+            app(TechnicalServiceAssignmentSettlementService::class),
+        ))->searchParts($request, 'sunum', false);
+
+        $this->assertSame('stale', $stale['search_state']);
+        $this->assertSame('Eski Mikro kaydı', $stale['source_label']);
+        $this->assertFalse($stale['items'][0]['selectable']);
+
+        $missingMikro = Mockery::mock(MikroApiClient::class);
+        $missingMikro->shouldReceive('searchStocks')->once()->andReturn([
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:00+03:00',
+            'data' => [$row],
+        ]);
+        $missingMikro->shouldReceive('physicalStockQuantities')->once()->with(['EE.BCK.STD.0011'])->andReturn([
+            'success' => true,
+            'freshness_at' => '2026-08-14T12:00:01+03:00',
+            'correlation_id' => '44444444-4444-4444-8444-444444444444',
+            'circuit_state' => 'CLOSED',
+            'data' => [],
+        ]);
+        $missing = (new TechnicalServicePaymentOrderContextService(
+            $missingMikro,
+            app(TechnicalServiceAssignmentSettlementService::class),
+        ))->searchParts($request, 'sunum');
+
+        $this->assertSame('partial', $missing['physical_stock_state']);
+        $this->assertNull($missing['items'][0]['physical_stock_total']);
+        $this->assertSame('MIKRO_PHYSICAL_STOCK_ROW_MISSING', $missing['items'][0]['physical_stock_error_code']);
+        $this->assertSame('Stok doğrulanamadı', $missing['items'][0]['stock_status_label']);
     }
 
     public function test_canonical_product_catalog_maps_device_and_device_cannot_be_added_to_part_context(): void

@@ -84,11 +84,13 @@ class TechnicalServicePaymentOrderContextService
         ];
     }
 
-    /**
-     * @return array{source:string,source_label:string,freshness_at:string,items:array<int, array<string, mixed>>}
-     */
-    public function searchParts(TechnicalServiceRequest $request, string $query): array
-    {
+    /** @return array<string, mixed> */
+    public function searchParts(
+        TechnicalServiceRequest $request,
+        string $query,
+        bool $includePhysicalStock = true,
+        bool $manualRetry = false,
+    ): array {
         $query = preg_replace('/\s+/u', ' ', trim($query)) ?? '';
         if (mb_strlen($query) < 2 || mb_strlen($query) > 60 || preg_match('/[\x00-\x1F\x7F]/u', $query)) {
             throw ValidationException::withMessages([
@@ -97,29 +99,37 @@ class TechnicalServicePaymentOrderContextService
         }
 
         if (app()->environment('testing') && (bool) config('services.technical_service.payment_order_context_test_stock', false)) {
-            return $this->localPartFixtures($request, $query);
+            return [
+                ...$this->localPartFixtures($request, $query),
+                'search_state' => 'current',
+                'physical_stock_state' => 'current',
+                'error_code' => null,
+                'error_message' => null,
+                'correlation_id' => null,
+                'circuit_state' => 'TEST_FIXTURE',
+                'fallback_used' => false,
+            ];
         }
 
         try {
-            $result = $this->mikro->searchStocks($query);
+            $result = $manualRetry
+                ? $this->mikro->retrySearchStocks($query)
+                : $this->mikro->searchStocks($query);
             if (($result['success'] ?? $result['ok'] ?? false) !== true) {
                 throw new DomainException((string) ($result['error_code'] ?? 'MIKRO_STOCK_READ_UNAVAILABLE'));
             }
         } catch (Throwable $exception) {
             report($exception);
 
-            throw ValidationException::withMessages([
-                'query' => 'Mikro stok bağlantısı hazır değil. Gerçek stok doğrulanmadan parça seçilemez.',
-            ]);
+            return $this->stockSearchFailure($result ?? [], $exception->getMessage());
         }
 
         try {
             $freshnessAt = filled($result['freshness_at'] ?? null)
                 ? (string) $result['freshness_at']
                 : now()->toISOString();
-            $sourceLabel = (bool) ($result['stale'] ?? false)
-                ? 'Mikro API (güncel olmayan doğrulanmış kayıt)'
-                : 'Mikro API';
+            $searchIsStale = ($result['stale'] ?? false) === true || ($result['fallback_used'] ?? false) === true;
+            $sourceLabel = $searchIsStale ? 'Eski Mikro kaydı' : 'Mikro API';
             $candidateRows = collect($result['data'] ?? $result['rows'] ?? $result['result'] ?? [])
                 ->filter(fn (mixed $row): bool => is_array($row))
                 ->take(self::MAX_PART_LINES)
@@ -129,7 +139,7 @@ class TechnicalServicePaymentOrderContextService
                 ->filter()
                 ->all());
             $classifiedRows = $candidateRows
-                ->map(function (array $row) use ($freshnessAt, $sourceLabel, $deviceCodes): array {
+                ->map(function (array $row) use ($freshnessAt, $sourceLabel, $deviceCodes, $searchIsStale): array {
                     $classification = $this->classifyStockItem($row, $deviceCodes);
                     $detailTrackingType = filter_var($row['detail_tracking_type'] ?? null, FILTER_VALIDATE_INT);
                     $serialTrackingState = match ($detailTrackingType) {
@@ -163,6 +173,8 @@ class TechnicalServicePaymentOrderContextService
                         'source_label' => $sourceLabel,
                         'freshness_at' => $freshnessAt,
                         'mikro_contract_fingerprint' => MikroResponseSchemaCatalog::STOCK_SEARCH_RESPONSE_SCHEMA_FINGERPRINT,
+                        'identity_state' => $searchIsStale ? 'stale' : 'current',
+                        'identity_verified_at' => $searchIsStale ? null : now()->toISOString(),
                     ];
 
                     if ($item['item_code'] === '' || $item['item_name'] === '') {
@@ -172,39 +184,187 @@ class TechnicalServicePaymentOrderContextService
                     return $item;
                 })
                 ->values();
+        } catch (DomainException $exception) {
+            report($exception);
 
-            $stockByCode = $this->physicalStockByItemCodes($classifiedRows
-                ->filter(fn (array $item): bool => (bool) ($item['selectable'] ?? false))
-                ->pluck('item_code')
-                ->all());
+            return $this->stockSearchFailure($result, $exception->getMessage());
+        }
+
+        if ($searchIsStale) {
+            $rows = $classifiedRows
+                ->map(function (array $item) use ($request): array {
+                    $stale = [
+                        ...$item,
+                        'selectable' => false,
+                        'selection_blocker' => 'Eski Mikro kaydı. Ürün ve stok bilgisi yeniden doğrulanmalıdır.',
+                        'stock_status_label' => 'Eski Mikro kaydı',
+                    ];
+
+                    return $this->partSearchItem($request, $stale);
+                })
+                ->values();
+
+            return [
+                'source' => 'mikro',
+                'source_label' => $sourceLabel,
+                'freshness_at' => $freshnessAt,
+                'search_state' => 'stale',
+                'physical_stock_state' => 'not_requested',
+                'error_code' => (string) ($result['error_code'] ?? 'MIKRO_STOCK_SEARCH_STALE'),
+                'error_message' => 'Eski Mikro kaydı. Ürün ve stok bilgisi yeniden doğrulanmalıdır.',
+                'correlation_id' => $result['correlation_id'] ?? null,
+                'circuit_state' => (string) ($result['circuit_state'] ?? 'CLOSED'),
+                'fallback_used' => true,
+                'items' => $rows->all(),
+            ];
+        }
+
+        $physicalMeta = [
+            'state' => 'not_requested',
+            'error_code' => null,
+            'correlation_id' => null,
+            'circuit_state' => 'CLOSED',
+            'fallback_used' => false,
+        ];
+        if ($includePhysicalStock) {
+            $stockByCode = $this->physicalStockByItemCodes(
+                $classifiedRows
+                    ->filter(fn (array $item): bool => (bool) ($item['selectable'] ?? false))
+                    ->pluck('item_code')
+                    ->all(),
+                false,
+                true,
+                false,
+                $physicalMeta,
+            );
             $rows = $classifiedRows
                 ->map(fn (array $item): array => $this->partSearchItem(
                     $request,
                     $this->applyPhysicalStockProjection($item, $stockByCode),
                 ))
                 ->values();
-        } catch (DomainException $exception) {
-            report($exception);
+        } else {
+            $rows = $classifiedRows
+                ->map(function (array $item) use ($request): array {
+                    if (($item['selectable'] ?? false) !== true) {
+                        return $this->partSearchItem($request, $item);
+                    }
 
-            throw ValidationException::withMessages([
-                'query' => 'Mikro stok bağlantısı hazır değil. Gerçek stok doğrulanmadan parça seçilemez.',
-            ]);
-        }
+                    $identity = $item;
+                    $checking = [
+                        ...$item,
+                        'selectable' => false,
+                        'selection_blocker' => 'Stok kontrol ediliyor...',
+                        'stock_status_label' => 'Stok kontrol ediliyor...',
+                    ];
+                    $projection = $this->partSearchItem($request, $checking, $identity);
 
-        if ($rows->isEmpty()) {
-            return [
-                'source' => 'mikro',
-                'source_label' => $sourceLabel,
-                'freshness_at' => $freshnessAt,
-                'items' => [],
-            ];
+                    return [
+                        ...$projection,
+                        'stock_identity_token' => $projection['selection_token'],
+                    ];
+                })
+                ->values();
         }
 
         return [
             'source' => 'mikro',
             'source_label' => $sourceLabel,
             'freshness_at' => $freshnessAt,
+            'search_state' => 'current',
+            'physical_stock_state' => $physicalMeta['state'],
+            'error_code' => $physicalMeta['error_code'],
+            'error_message' => in_array($physicalMeta['state'], ['current', 'not_requested'], true)
+                ? null
+                : 'Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.',
+            'correlation_id' => $result['correlation_id'] ?? null,
+            'physical_stock_correlation_id' => $physicalMeta['correlation_id'],
+            'circuit_state' => (string) ($result['circuit_state'] ?? 'CLOSED'),
+            'physical_stock_circuit_state' => $physicalMeta['circuit_state'],
+            'fallback_used' => false,
             'items' => $rows->all(),
+        ];
+    }
+
+    /** @param array<int, string> $identityTokens @return array<string, mixed> */
+    public function physicalStocksForPartSearch(
+        TechnicalServiceRequest $request,
+        array $identityTokens,
+        bool $manualRetry = false,
+    ): array {
+        if ($identityTokens === [] || count($identityTokens) > self::MAX_PART_LINES) {
+            throw ValidationException::withMessages([
+                'identity_tokens' => 'Fiziksel stok kontrolü en fazla 20 ürün için yapılabilir.',
+            ]);
+        }
+
+        $identities = collect($identityTokens)
+            ->map(function (mixed $token) use ($request): array {
+                try {
+                    $decoded = json_decode(Crypt::decryptString((string) $token), true, 512, JSON_THROW_ON_ERROR);
+                } catch (Throwable) {
+                    throw ValidationException::withMessages([
+                        'identity_tokens' => 'Mikro ürün kimliği doğrulanamadı. Stok aramasını yenileyin.',
+                    ]);
+                }
+                if (! is_array($decoded)
+                    || (int) ($decoded['request_id'] ?? 0) !== (int) $request->id
+                    || ($decoded['source'] ?? null) !== 'mikro'
+                    || ($decoded['identity_state'] ?? null) !== 'current'
+                    || ! in_array($decoded['item_kind'] ?? null, ['part', 'accessory'], true)
+                    || ($decoded['selectable'] ?? false) !== true) {
+                    throw ValidationException::withMessages([
+                        'identity_tokens' => 'Mikro ürün kimliği güncel değil. Stok aramasını yenileyin.',
+                    ]);
+                }
+
+                unset($decoded['schema_version'], $decoded['request_id']);
+                $decoded['_stock_identity_token'] = (string) $token;
+
+                return $decoded;
+            })
+            ->unique(fn (array $item): string => mb_strtoupper(trim((string) ($item['item_code'] ?? '')), 'UTF-8'))
+            ->values();
+
+        $physicalMeta = [];
+        $stockByCode = $this->physicalStockByItemCodes(
+            $identities->pluck('item_code')->all(),
+            false,
+            ! $manualRetry,
+            $manualRetry,
+            $physicalMeta,
+        );
+        $items = $identities
+            ->map(function (array $identity) use ($request, $stockByCode): array {
+                $stockIdentityToken = (string) $identity['_stock_identity_token'];
+                unset($identity['_stock_identity_token']);
+                $projected = $this->applyPhysicalStockProjection($identity, $stockByCode);
+                $tokenItem = ($projected['physical_stock_verified'] ?? false) === true
+                    ? $projected
+                    : $identity;
+
+                return [
+                    ...$this->partSearchItem($request, $projected, $tokenItem),
+                    'stock_identity_token' => $stockIdentityToken,
+                ];
+            })
+            ->values()
+            ->all();
+
+        return [
+            'source' => 'mikro',
+            'source_label' => 'Mikro API',
+            'freshness_at' => $physicalMeta['freshness_at'] ?? null,
+            'search_state' => 'current',
+            'physical_stock_state' => $physicalMeta['state'] ?? 'unavailable',
+            'error_code' => $physicalMeta['error_code'] ?? null,
+            'error_message' => ($physicalMeta['state'] ?? 'unavailable') === 'current'
+                ? null
+                : 'Ürün Mikro API’den bulundu. Stok miktarı doğrulanamadı.',
+            'correlation_id' => $physicalMeta['correlation_id'] ?? null,
+            'circuit_state' => $physicalMeta['circuit_state'] ?? 'CLOSED',
+            'fallback_used' => $physicalMeta['fallback_used'] ?? false,
+            'items' => $items,
         ];
     }
 
@@ -2263,12 +2423,32 @@ class TechnicalServicePaymentOrderContextService
         ];
     }
 
-    /** @param array<string, mixed> $item @return array<string, mixed> */
-    private function partSearchItem(TechnicalServiceRequest $request, array $item): array
+    /** @return array<string, mixed> */
+    private function stockSearchFailure(array $result, string $fallbackError): array
+    {
+        $errorCode = trim((string) ($result['error_code'] ?? $fallbackError));
+
+        return [
+            'source' => 'mikro',
+            'source_label' => 'Mikro API',
+            'freshness_at' => $result['freshness_at'] ?? null,
+            'search_state' => 'unavailable',
+            'physical_stock_state' => 'not_requested',
+            'error_code' => $errorCode !== '' ? $errorCode : 'MIKRO_STOCK_READ_UNAVAILABLE',
+            'error_message' => 'Mikro stok araması şu anda yapılamıyor. Stok aramasını yeniden dene.',
+            'correlation_id' => $result['correlation_id'] ?? null,
+            'circuit_state' => (string) ($result['circuit_state'] ?? 'CLOSED'),
+            'fallback_used' => (bool) ($result['fallback_used'] ?? false),
+            'items' => [],
+        ];
+    }
+
+    /** @param array<string, mixed> $item @param array<string, mixed>|null $tokenItem @return array<string, mixed> */
+    private function partSearchItem(TechnicalServiceRequest $request, array $item, ?array $tokenItem = null): array
     {
         return [
             ...$item,
-            'selection_token' => $this->selectionTokenForSnapshot((int) $request->id, $item),
+            'selection_token' => $this->selectionTokenForSnapshot((int) $request->id, $tokenItem ?? $item),
         ];
     }
 
@@ -2371,6 +2551,7 @@ class TechnicalServicePaymentOrderContextService
             'physical_stock_warehouses' => $stock['physical_stock_warehouses'] ?? [],
             'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
             'physical_stock_correlation_id' => $stock['physical_stock_correlation_id'] ?? null,
+            'physical_stock_error_code' => $stock['physical_stock_error_code'] ?? null,
             'stock_status_label' => $positive
                 ? 'Stokta: '.($stock['physical_stock_total_label'] ?? $total).' '.((string) ($item['unit_code'] ?: $stock['unit_code'] ?: 'ADET'))
                 : ($verified ? 'Stokta yok' : 'Stok doğrulanamadı'),
@@ -2385,8 +2566,13 @@ class TechnicalServicePaymentOrderContextService
      * @param  array<int, string>  $itemCodes
      * @return array<string, array<string, mixed>>
      */
-    private function physicalStockByItemCodes(array $itemCodes, bool $strict = false, bool $useCache = true): array
-    {
+    private function physicalStockByItemCodes(
+        array $itemCodes,
+        bool $strict = false,
+        bool $useCache = true,
+        bool $manualRetry = false,
+        ?array &$operationMeta = null,
+    ): array {
         $codes = collect($itemCodes)
             ->map(fn (mixed $code): string => mb_strtoupper(trim((string) $code), 'UTF-8'))
             ->filter()
@@ -2394,15 +2580,21 @@ class TechnicalServicePaymentOrderContextService
             ->sort()
             ->values();
         if ($codes->isEmpty()) {
+            $operationMeta = [
+                'state' => 'current',
+                'error_code' => null,
+                'correlation_id' => null,
+                'circuit_state' => 'CLOSED',
+                'fallback_used' => false,
+                'freshness_at' => now()->toISOString(),
+            ];
+
             return [];
         }
         if ($codes->count() > self::MAX_PART_LINES) {
             throw new DomainException('MIKRO_PHYSICAL_STOCK_BATCH_LIMIT_EXCEEDED');
         }
 
-        $unverified = $codes
-            ->mapWithKeys(fn (string $code): array => [$code => $this->unverifiedPhysicalStock($code)])
-            ->all();
         $cacheKey = 'technical-service:physical-stock:'
             .MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION.':'
             .hash('sha256', json_encode($codes->all(), JSON_THROW_ON_ERROR));
@@ -2413,6 +2605,16 @@ class TechnicalServicePaymentOrderContextService
                 $cachedKeys = array_keys($cached);
                 sort($cachedKeys, SORT_STRING);
                 if ($cachedKeys === $codes->all()) {
+                    $first = collect($cached)->first(fn (mixed $row): bool => is_array($row));
+                    $operationMeta = [
+                        'state' => 'current',
+                        'error_code' => null,
+                        'correlation_id' => is_array($first) ? ($first['physical_stock_correlation_id'] ?? null) : null,
+                        'circuit_state' => 'CACHE',
+                        'fallback_used' => false,
+                        'freshness_at' => is_array($first) ? ($first['freshness_at'] ?? null) : null,
+                    ];
+
                     return $codes
                         ->mapWithKeys(fn (string $code): array => [$code => $cached[$code]])
                         ->all();
@@ -2420,8 +2622,19 @@ class TechnicalServicePaymentOrderContextService
             }
         }
 
+        $result = [];
         try {
-            $result = $this->mikro->physicalStockQuantities($codes->all());
+            $result = $manualRetry
+                ? $this->mikro->retryPhysicalStockQuantities($codes->all())
+                : $this->mikro->physicalStockQuantities($codes->all());
+            $operationMeta = [
+                'state' => 'unavailable',
+                'error_code' => $result['error_code'] ?? null,
+                'correlation_id' => $result['correlation_id'] ?? null,
+                'circuit_state' => (string) ($result['circuit_state'] ?? 'CLOSED'),
+                'fallback_used' => (bool) ($result['fallback_used'] ?? false),
+                'freshness_at' => $result['freshness_at'] ?? null,
+            ];
             if (($result['success'] ?? false) !== true
                 || ($result['stale'] ?? false) === true
                 || ($result['fallback_used'] ?? false) === true) {
@@ -2449,12 +2662,20 @@ class TechnicalServicePaymentOrderContextService
             }
 
             $resolved = [];
+            $missingCodes = [];
             foreach ($codes as $code) {
                 $warehouseRows = $grouped[$code] ?? [];
                 ksort($warehouseRows, SORT_NUMERIC);
                 if (array_keys($warehouseRows) !== self::PHYSICAL_STOCK_WAREHOUSES
                     || collect($warehouseRows)->contains(fn (array $row): bool => $row['physical_stock_micros'] === null)) {
-                    throw new DomainException('MIKRO_PHYSICAL_STOCK_SCHEMA_INCOMPLETE');
+                    $missingCodes[] = $code;
+                    $resolved[$code] = $this->unverifiedPhysicalStock($code, [
+                        'error_code' => 'MIKRO_PHYSICAL_STOCK_ROW_MISSING',
+                        'correlation_id' => $result['correlation_id'] ?? null,
+                        'freshness_at' => $result['freshness_at'] ?? null,
+                    ]);
+
+                    continue;
                 }
                 $totalMicros = array_sum(array_column($warehouseRows, 'physical_stock_micros'));
                 $total = $this->scaledIntegerToDecimalString($totalMicros, self::PHYSICAL_STOCK_SCALE);
@@ -2483,28 +2704,48 @@ class TechnicalServicePaymentOrderContextService
                     'freshness_at' => (string) ($result['freshness_at'] ?? now()->toISOString()),
                     'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
                     'physical_stock_correlation_id' => $this->nullableText($result['correlation_id'] ?? null),
+                    'physical_stock_error_code' => null,
                 ];
             }
 
-            if ($useCache) {
+            $operationMeta = [
+                'state' => $missingCodes === [] ? 'current' : 'partial',
+                'error_code' => $missingCodes === [] ? null : 'MIKRO_PHYSICAL_STOCK_ROW_MISSING',
+                'correlation_id' => $result['correlation_id'] ?? null,
+                'circuit_state' => (string) ($result['circuit_state'] ?? 'CLOSED'),
+                'fallback_used' => false,
+                'freshness_at' => $result['freshness_at'] ?? null,
+            ];
+            if ($useCache && $missingCodes === []) {
                 Cache::put($cacheKey, $resolved, self::PHYSICAL_STOCK_CACHE_SECONDS);
             }
 
             return $resolved;
         } catch (Throwable $exception) {
             report($exception);
+            $errorCode = trim((string) ($result['error_code'] ?? $exception->getMessage()));
+            $operationMeta = [
+                'state' => 'unavailable',
+                'error_code' => $errorCode !== '' ? $errorCode : 'MIKRO_PHYSICAL_STOCK_UNAVAILABLE',
+                'correlation_id' => $result['correlation_id'] ?? null,
+                'circuit_state' => (string) ($result['circuit_state'] ?? 'CLOSED'),
+                'fallback_used' => (bool) ($result['fallback_used'] ?? false),
+                'freshness_at' => $result['freshness_at'] ?? null,
+            ];
             if ($strict) {
                 throw ValidationException::withMessages([
                     'order_context.lines' => 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.',
                 ]);
             }
 
-            return $unverified;
+            return $codes
+                ->mapWithKeys(fn (string $code): array => [$code => $this->unverifiedPhysicalStock($code, $operationMeta)])
+                ->all();
         }
     }
 
-    /** @return array<string, mixed> */
-    private function unverifiedPhysicalStock(string $itemCode): array
+    /** @param array<string, mixed> $meta @return array<string, mixed> */
+    private function unverifiedPhysicalStock(string $itemCode, array $meta = []): array
     {
         return [
             'item_code' => $itemCode,
@@ -2516,9 +2757,10 @@ class TechnicalServicePaymentOrderContextService
             'physical_stock_total_label' => null,
             'physical_stock_warehouses' => [],
             'source' => 'mikro_api',
-            'freshness_at' => null,
+            'freshness_at' => $meta['freshness_at'] ?? null,
             'physical_stock_contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
-            'physical_stock_correlation_id' => null,
+            'physical_stock_correlation_id' => $this->nullableText($meta['correlation_id'] ?? null),
+            'physical_stock_error_code' => $meta['error_code'] ?? null,
         ];
     }
 

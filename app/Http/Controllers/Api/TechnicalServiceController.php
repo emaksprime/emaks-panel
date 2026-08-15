@@ -1202,13 +1202,36 @@ class TechnicalServiceController extends Controller
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServicePaymentOrderContextService $orderContexts,
     ): JsonResponse {
-        $validated = $request->validate([
-            'query' => ['required', 'string', 'min:2', 'max:60'],
-        ]);
+        $phase = (string) $request->input('phase', 'identity');
+        if ($phase === 'physical_stock') {
+            $validated = $request->validate([
+                'phase' => ['required', 'in:physical_stock'],
+                'identity_tokens' => ['required', 'array', 'min:1', 'max:20'],
+                'identity_tokens.*' => ['required', 'string', 'max:8192'],
+                'retry_scope' => ['nullable', 'in:physical_stock'],
+            ]);
+            $projection = $orderContexts->physicalStocksForPartSearch(
+                $technicalServiceRequest,
+                $validated['identity_tokens'],
+                ($validated['retry_scope'] ?? null) === 'physical_stock',
+            );
+        } else {
+            $validated = $request->validate([
+                'phase' => ['nullable', 'in:identity'],
+                'query' => ['required', 'string', 'min:2', 'max:60'],
+                'retry_scope' => ['nullable', 'in:search'],
+            ]);
+            $projection = $orderContexts->searchParts(
+                $technicalServiceRequest,
+                (string) $validated['query'],
+                false,
+                ($validated['retry_scope'] ?? null) === 'search',
+            );
+        }
 
         return response()->json([
             'ok' => true,
-            ...$orderContexts->searchParts($technicalServiceRequest, (string) $validated['query']),
+            ...$projection,
             'write_execution_count' => 0,
         ]);
     }
