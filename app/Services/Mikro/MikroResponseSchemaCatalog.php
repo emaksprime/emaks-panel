@@ -26,6 +26,10 @@ final class MikroResponseSchemaCatalog
 
     public const PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT = '1e5bf09b70fb8eef4447fdb81724c6658f2c86e110d3dfcbf8ec7d583fadb83c';
 
+    public const STOCK_TAX_PROFILE_CONTRACT_VERSION = 'technical-service-part-tax-profile-v1';
+
+    public const STOCK_TAX_PROFILE_RESPONSE_SCHEMA_FINGERPRINT = 'cf569d6f884734f47cb7cde8a78c1b5caae4b84171cdc62aec303fe870188fb0';
+
     /** @var array<string, array<int, string>> */
     private const VERIFIED_FIELDS = [
         'health.check' => ['service_status'],
@@ -150,6 +154,77 @@ final class MikroResponseSchemaCatalog
             ];
         }
 
+        if ($operationKey === 'stock.tax_profile') {
+            return [
+                'operation_key' => $operationKey,
+                'schema_status' => self::VERIFIED,
+                'normalizer_id' => self::STOCK_TAX_PROFILE_CONTRACT_VERSION,
+                'contract_version' => self::STOCK_TAX_PROFILE_CONTRACT_VERSION,
+                'response_schema_fingerprint' => self::STOCK_TAX_PROFILE_RESPONSE_SCHEMA_FINGERPRINT,
+                'allowed_top_level_fields' => ['result'],
+                'allowed_record_fields' => [
+                    'item_code',
+                    'retail_tax_pointer',
+                    'retail_tax_rate',
+                    'wholesale_tax_pointer',
+                    'wholesale_tax_rate',
+                    'selected_tax_basis',
+                    'selected_tax_pointer',
+                    'selected_tax_rate',
+                    'tax_status',
+                    'tax_resolution_source',
+                    'source',
+                    'freshness_at',
+                    'contract_version',
+                    'correlation_id',
+                ],
+                'required_record_fields' => [
+                    'item_code',
+                    'retail_tax_pointer',
+                    'retail_tax_rate',
+                    'wholesale_tax_pointer',
+                    'wholesale_tax_rate',
+                    'selected_tax_basis',
+                    'selected_tax_pointer',
+                    'selected_tax_rate',
+                    'tax_status',
+                    'tax_resolution_source',
+                    'source',
+                    'freshness_at',
+                    'contract_version',
+                    'correlation_id',
+                ],
+                'nullable_record_fields' => [
+                    'retail_tax_rate',
+                    'wholesale_tax_rate',
+                    'selected_tax_basis',
+                    'selected_tax_pointer',
+                    'selected_tax_rate',
+                ],
+                'normalized_fields' => [
+                    'item_code',
+                    'retail_tax_pointer',
+                    'retail_tax_rate',
+                    'wholesale_tax_pointer',
+                    'wholesale_tax_rate',
+                    'selected_tax_basis',
+                    'selected_tax_pointer',
+                    'selected_tax_rate',
+                    'tax_status',
+                    'tax_resolution_source',
+                    'source',
+                    'freshness_at',
+                    'contract_version',
+                    'correlation_id',
+                ],
+                'field_mapping' => [],
+                'nested_mapping' => [],
+                'sensitive_fields' => ['api_key', 'apikey', 'password', 'sifre', 'token', 'authorization'],
+                'snapshot_allowed' => true,
+                'blocker' => null,
+            ];
+        }
+
         $fields = self::VERIFIED_FIELDS[$operationKey] ?? null;
         if (is_array($fields)) {
             return [
@@ -204,6 +279,9 @@ final class MikroResponseSchemaCatalog
         if ($operationKey === 'stock.physical_quantity') {
             return $this->normalizePhysicalStock($rows);
         }
+        if ($operationKey === 'stock.tax_profile') {
+            return $this->normalizeStockTaxProfiles($rows);
+        }
 
         $allowed = array_flip($schema['allowed_record_fields']);
         $normalized = [];
@@ -250,6 +328,9 @@ final class MikroResponseSchemaCatalog
         }
         if ($operationKey === 'stock.physical_quantity') {
             return $this->normalizePhysicalStock($data);
+        }
+        if ($operationKey === 'stock.tax_profile') {
+            return $this->normalizeStockTaxProfiles($data);
         }
 
         return $this->normalize($operationKey, $data);
@@ -450,5 +531,220 @@ final class MikroResponseSchemaCatalog
         }
 
         return $normalized;
+    }
+
+    /** @param array<int, array<string, mixed>> $rows @return array<int, array<string, int|string>> */
+    public function normalizeStockTaxPointerRows(array $rows): array
+    {
+        $normalized = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)
+                || ! is_string($row['item_code'] ?? null)
+                || trim($row['item_code']) === ''
+                || ! array_key_exists('retail_tax_pointer', $row)
+                || filter_var($row['retail_tax_pointer'], FILTER_VALIDATE_INT) === false
+                || ! array_key_exists('wholesale_tax_pointer', $row)
+                || filter_var($row['wholesale_tax_pointer'], FILTER_VALIDATE_INT) === false) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $retailPointer = (int) $row['retail_tax_pointer'];
+            $wholesalePointer = (int) $row['wholesale_tax_pointer'];
+            if ($retailPointer < 0 || $retailPointer > 255 || $wholesalePointer < 0 || $wholesalePointer > 255) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $normalized[] = [
+                'item_code' => trim($row['item_code']),
+                'retail_tax_pointer' => $retailPointer,
+                'wholesale_tax_pointer' => $wholesalePointer,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    /** @return array<int, array{tax_pointer:int,tax_rate:string}> */
+    public function normalizeInstalledTaxRates(array $response): array
+    {
+        $result = $response['result'] ?? null;
+        $envelope = is_array($result) && array_is_list($result) ? ($result[0] ?? null) : null;
+        if (! is_array($envelope)
+            || ($envelope['IsError'] ?? true) !== false
+            || (int) ($envelope['StatusCode'] ?? 0) !== 200
+            || ! is_array($envelope['Data'] ?? null)
+            || ! is_array($envelope['Data']['list'] ?? null)
+            || ! array_is_list($envelope['Data']['list'])) {
+            throw new DomainException('MIKRO_INVALID_RESPONSE');
+        }
+
+        $byPointer = [];
+        foreach ($envelope['Data']['list'] as $row) {
+            if (! is_array($row)
+                || filter_var($row['vergiSiraNo'] ?? null, FILTER_VALIDATE_INT) === false
+                || ! array_key_exists('vergiOrani', $row)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            $pointer = (int) $row['vergiSiraNo'];
+            if ($pointer < 0 || $pointer > 255) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            $rate = $this->normalizedPercentage($row['vergiOrani']);
+            if ($rate === null || (isset($byPointer[$pointer]) && $byPointer[$pointer] !== $rate)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            $byPointer[$pointer] = $rate;
+        }
+        ksort($byPointer, SORT_NUMERIC);
+
+        return collect($byPointer)
+            ->map(fn (string $rate, int $pointer): array => ['tax_pointer' => $pointer, 'tax_rate' => $rate])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<int, array<string, int|string>>  $pointerRows
+     * @param  array<int, array{tax_pointer:int,tax_rate:string}>  $rateRows
+     * @return array<int, array<string, mixed>>
+     */
+    public function resolveStockTaxProfiles(
+        array $pointerRows,
+        array $rateRows,
+        string $freshnessAt,
+        string $correlationId,
+    ): array {
+        $rateByPointer = collect($rateRows)->mapWithKeys(
+            fn (array $row): array => [(int) $row['tax_pointer'] => (string) $row['tax_rate']],
+        )->all();
+
+        $profiles = array_map(function (array $row) use ($rateByPointer, $freshnessAt, $correlationId): array {
+            $retailPointer = (int) $row['retail_tax_pointer'];
+            $wholesalePointer = (int) $row['wholesale_tax_pointer'];
+            $retailRate = $rateByPointer[$retailPointer] ?? null;
+            $wholesaleRate = $rateByPointer[$wholesalePointer] ?? null;
+            $ratesVerified = is_string($retailRate) && is_string($wholesaleRate);
+            $equalRates = $ratesVerified && $retailRate === $wholesaleRate;
+
+            return [
+                'item_code' => (string) $row['item_code'],
+                'retail_tax_pointer' => $retailPointer,
+                'retail_tax_rate' => $retailRate,
+                'wholesale_tax_pointer' => $wholesalePointer,
+                'wholesale_tax_rate' => $wholesaleRate,
+                'selected_tax_basis' => $equalRates ? 'equal_rates' : null,
+                'selected_tax_pointer' => $equalRates && $retailPointer === $wholesalePointer ? $retailPointer : null,
+                'selected_tax_rate' => $equalRates ? $retailRate : null,
+                'tax_status' => ! $ratesVerified ? 'unavailable' : ($equalRates ? 'verified' : 'unresolved_basis'),
+                'tax_resolution_source' => 'STOKLAR.sto_*_vergi + VergiListesiV2.vergiSiraNo/vergiOrani',
+                'source' => 'mikro_api',
+                'freshness_at' => $freshnessAt,
+                'contract_version' => self::STOCK_TAX_PROFILE_CONTRACT_VERSION,
+                'correlation_id' => $correlationId,
+            ];
+        }, $pointerRows);
+
+        return $this->normalizeStockTaxProfiles($profiles);
+    }
+
+    /** @param array<int, array<string, mixed>> $rows @return array<int, array<string, mixed>> */
+    private function normalizeStockTaxProfiles(array $rows): array
+    {
+        $normalized = [];
+        foreach ($rows as $row) {
+            $required = $this->descriptor('stock.tax_profile')['required_record_fields'];
+            if (! is_array($row)
+                || array_diff($required, array_keys($row)) !== []
+                || ! is_string($row['item_code'])
+                || trim($row['item_code']) === ''
+                || filter_var($row['retail_tax_pointer'], FILTER_VALIDATE_INT) === false
+                || filter_var($row['wholesale_tax_pointer'], FILTER_VALIDATE_INT) === false
+                || ! in_array($row['tax_status'], ['verified', 'unresolved_basis', 'unavailable', 'stale'], true)
+                || ($row['tax_resolution_source'] ?? null) !== 'STOKLAR.sto_*_vergi + VergiListesiV2.vergiSiraNo/vergiOrani'
+                || $row['source'] !== 'mikro_api'
+                || $row['contract_version'] !== self::STOCK_TAX_PROFILE_CONTRACT_VERSION
+                || ! is_string($row['freshness_at'])
+                || trim($row['freshness_at']) === ''
+                || ! is_string($row['correlation_id'])
+                || trim($row['correlation_id']) === '') {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $retailPointer = (int) $row['retail_tax_pointer'];
+            $wholesalePointer = (int) $row['wholesale_tax_pointer'];
+            $selectedPointer = $row['selected_tax_pointer'];
+            if ($retailPointer < 0 || $retailPointer > 255
+                || $wholesalePointer < 0 || $wholesalePointer > 255
+                || ($selectedPointer !== null && filter_var($selectedPointer, FILTER_VALIDATE_INT) === false)
+                || ($selectedPointer !== null && ((int) $selectedPointer < 0 || (int) $selectedPointer > 255))) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $retailRate = $this->normalizedPercentage($row['retail_tax_rate']);
+            $wholesaleRate = $this->normalizedPercentage($row['wholesale_tax_rate']);
+            $selectedRate = $this->normalizedPercentage($row['selected_tax_rate']);
+            $selectedBasis = $row['selected_tax_basis'];
+            if ($selectedBasis !== null && $selectedBasis !== 'equal_rates') {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            if ($row['tax_status'] === 'verified'
+                && ($selectedBasis !== 'equal_rates' || $selectedRate === null || $retailRate !== $wholesaleRate || $selectedRate !== $retailRate)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            if ($row['tax_status'] === 'unresolved_basis'
+                && ($retailRate === null || $wholesaleRate === null || $retailRate === $wholesaleRate
+                    || $selectedBasis !== null || $selectedPointer !== null || $selectedRate !== null)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+            if (in_array($row['tax_status'], ['unavailable', 'stale'], true)
+                && ($selectedBasis !== null || $selectedPointer !== null || $selectedRate !== null)) {
+                throw new DomainException('MIKRO_INVALID_RESPONSE');
+            }
+
+            $normalized[] = [
+                'item_code' => trim($row['item_code']),
+                'retail_tax_pointer' => $retailPointer,
+                'retail_tax_rate' => $retailRate,
+                'wholesale_tax_pointer' => $wholesalePointer,
+                'wholesale_tax_rate' => $wholesaleRate,
+                'selected_tax_basis' => $selectedBasis,
+                'selected_tax_pointer' => $selectedPointer === null ? null : (int) $selectedPointer,
+                'selected_tax_rate' => $selectedRate,
+                'tax_status' => (string) $row['tax_status'],
+                'tax_resolution_source' => 'STOKLAR.sto_*_vergi + VergiListesiV2.vergiSiraNo/vergiOrani',
+                'source' => 'mikro_api',
+                'freshness_at' => trim($row['freshness_at']),
+                'contract_version' => self::STOCK_TAX_PROFILE_CONTRACT_VERSION,
+                'correlation_id' => trim($row['correlation_id']),
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function normalizedPercentage(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (! is_scalar($value)) {
+            throw new DomainException('MIKRO_INVALID_RESPONSE');
+        }
+
+        $value = trim((string) $value);
+        if (! preg_match('/^\d+(?:\.\d{1,4})?$/', $value)) {
+            throw new DomainException('MIKRO_INVALID_RESPONSE');
+        }
+
+        [$whole, $fraction] = array_pad(explode('.', $value, 2), 2, '');
+        if ((int) $whole > 100 || ((int) $whole === 100 && trim($fraction, '0') !== '')) {
+            throw new DomainException('MIKRO_INVALID_RESPONSE');
+        }
+
+        $canonical = ltrim($whole, '0');
+        $canonical = $canonical === '' ? '0' : $canonical;
+        $fraction = rtrim($fraction, '0');
+
+        return $fraction === '' ? $canonical : $canonical.'.'.$fraction;
     }
 }

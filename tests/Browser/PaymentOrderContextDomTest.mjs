@@ -17,6 +17,11 @@ const output = async (page, id) => (await page.getByTestId(id).textContent() ?? 
 const text = async (locator) => (await locator.innerText()).trim()
 const money = (value) => `${new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} TL`
 const roundTwo = (value) => Math.round((value + Number.EPSILON) * 100) / 100
+const taxProfileByItemCode = {
+  'EE.BCK.STD.0010': { pointer: 7, rate: 20 },
+  'EE.BCK.STD.0011': { pointer: 8, rate: 10 },
+  TKN000011: { pointer: 7, rate: 20 },
+}
 const normalizedSearch = (value) => value
   .normalize('NFD')
   .replace(/\p{M}/gu, '')
@@ -100,17 +105,24 @@ const stockItems = [
   },
 ]
 
-const previewResponse = (payload) => {
+const previewResponse = (payload, taxProfilesAvailable) => {
   const input = payload.order_context ?? {}
   const commercialMode = input.commercial_mode ?? 'paid'
   const deliveryMode = input.delivery_mode ?? 'shipment'
   const forceZero = commercialMode === 'free' && deliveryMode === 'shipment'
+  const desiredSeries = deliveryMode === 'hand_delivery' || commercialMode === 'free' ? 'Q' : 'S'
+  const taxMode = desiredSeries === 'Q' ? 'none' : 'standard_from_mikro'
   const rawLines = Array.isArray(input.lines) ? input.lines : []
   const lines = rawLines.map((raw, index) => {
     const item = stockItems.find((candidate) => candidate.selection_token === raw.stock_selection_token)
     const quantity = Number(raw.quantity ?? 0)
     const unitPrice = forceZero ? 0 : Number(raw.unit_price ?? 0)
     const lineTotal = roundTwo(quantity * unitPrice)
+    const installedTax = taxProfileByItemCode[item?.item_code]
+    const selectedTaxRate = taxMode === 'none' ? 0 : taxProfilesAvailable ? installedTax?.rate ?? null : null
+    const taxVerified = selectedTaxRate !== null
+    const netLineTotal = taxVerified ? roundTwo(lineTotal / (1 + selectedTaxRate / 100)) : null
+    const vatLineTotal = netLineTotal === null ? null : roundTwo(lineTotal - netLineTotal)
 
     return {
       id: null, line_key: item?.item_code ?? `line-${index}`, position: index + 1, selection_token: raw.stock_selection_token,
@@ -119,6 +131,21 @@ const previewResponse = (payload) => {
       classification_contract_version: item?.classification_contract_version ?? 'technical-service-part-classification-v2',
       quantity, unit_code: item?.unit_code ?? null, unit_price: unitPrice, unit_price_label: money(unitPrice),
       line_total: lineTotal, line_total_label: money(lineTotal), currency: 'TRY', warehouse_code: null,
+      gross_unit_price: unitPrice, gross_unit_price_label: money(unitPrice), gross_line_total: lineTotal, gross_line_total_label: money(lineTotal),
+      net_line_total: netLineTotal, net_line_total_label: netLineTotal === null ? null : money(netLineTotal),
+      vat_line_total: vatLineTotal, vat_line_total_label: vatLineTotal === null ? null : money(vatLineTotal),
+      retail_tax_pointer: taxMode === 'none' ? null : installedTax?.pointer ?? null,
+      retail_tax_rate: taxMode === 'none' ? null : installedTax?.rate ?? null,
+      wholesale_tax_pointer: taxMode === 'none' ? null : installedTax?.pointer ?? null,
+      wholesale_tax_rate: taxMode === 'none' ? null : installedTax?.rate ?? null,
+      selected_tax_basis: taxMode === 'none' ? 'q_series_zero' : taxVerified ? 'equal_rates' : null,
+      selected_tax_pointer: taxMode === 'none' ? null : taxVerified ? installedTax?.pointer ?? null : null,
+      selected_tax_rate: selectedTaxRate,
+      selected_tax_rate_label: selectedTaxRate === null ? null : `%${selectedTaxRate}`,
+      tax_status: taxVerified ? 'verified' : 'unavailable',
+      tax_source: taxMode === 'none' ? 'commercial_matrix' : 'mikro_api',
+      tax_freshness_at: taxVerified ? '2026-08-16T11:00:00+03:00' : null,
+      tax_contract_version: taxMode === 'none' ? 'technical-service-commercial-matrix-v1' : 'technical-service-stock-tax-profile-v1',
       stock_source: 'mikro', stock_source_label: 'Mikro API', stock_freshness_at: item?.freshness_at ?? null,
       availability_verified: item?.physical_stock_verified === true,
       physical_stock_verified: item?.physical_stock_verified === true,
@@ -134,8 +161,11 @@ const previewResponse = (payload) => {
   })
   const total = roundTwo(lines.reduce((sum, line) => sum + line.line_total, 0))
   const collectionTotal = commercialMode === 'paid' ? total : 0
-  const desiredSeries = deliveryMode === 'hand_delivery' || commercialMode === 'free' ? 'Q' : 'S'
-  const taxMode = desiredSeries === 'Q' ? 'none' : 'standard_from_mikro'
+  const taxVerified = lines.length > 0 && lines.every((line) => line.tax_status === 'verified')
+  const netTotal = taxVerified ? roundTwo(lines.reduce((sum, line) => sum + line.net_line_total, 0)) : null
+  const vatTotal = netTotal === null ? null : roundTwo(total - netTotal)
+  const taxRates = [...new Set(lines.map((line) => line.selected_tax_rate).filter((rate) => rate !== null))]
+  const mixedVatRates = taxVerified && taxRates.length > 1
   const shipmentRequired = deliveryMode === 'shipment'
   const paymentLinkRequired = commercialMode === 'paid' && shipmentRequired
   const serialBlocker = lines.some((line) => line.serial_tracking_state === 'required')
@@ -144,7 +174,7 @@ const previewResponse = (payload) => {
     : lines.some((line) => Number(line.physical_stock_total_snapshot) <= 0)
       ? 'Seçilen parçalardan en az biri stokta bulunmuyor.'
       : null
-  const taxBlocker = taxMode === 'standard_from_mikro'
+  const taxBlocker = taxMode === 'standard_from_mikro' && !taxVerified
     ? 'KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.'
     : null
   const blockers = [
@@ -154,8 +184,11 @@ const previewResponse = (payload) => {
   ].filter(Boolean)
   const lineDescription = lines.map((line, index) => [
     `${index + 1}. ${line.quantity} ${line.unit_code ?? ''} · ${line.item_code} · ${line.item_name}`,
-    `   BİRİM TUTAR: ${line.unit_price_label}`,
-    `   SATIR TOPLAMI: ${line.line_total_label}`,
+    `   BİRİM TUTAR (KDV DAHİL): ${line.gross_unit_price_label}`,
+    `   SATIR TOPLAMI (KDV DAHİL): ${line.gross_line_total_label}`,
+    `   KDV ORANI: ${line.selected_tax_rate_label ?? 'DOĞRULANMAYI BEKLİYOR'}`,
+    `   MATRAH: ${line.net_line_total_label ?? '-'}`,
+    `   KDV TUTARI: ${line.vat_line_total_label ?? '-'}`,
   ].join('\n')).join('\n\n')
   const totalQuantity = lines.reduce((sum, line) => sum + line.quantity, 0)
 
@@ -165,7 +198,10 @@ const previewResponse = (payload) => {
       id: null, payment_id: null, request_id: 9001, root_request_id: 9001, srv_request_id: null,
       payment_purpose: 'part_charge', purpose_label: 'Parça ödemesi', context_type: 'part_sale', state: 'draft',
       state_label: 'Parça taslağı; stok uygunluğu bekleniyor', desired_mikro_series: desiredSeries, tax_mode: taxMode,
-      tax_label: taxMode === 'none' ? 'Yok / %0' : 'Mikro stok kartından', vat_rate: taxMode === 'none' ? 0 : null,
+      tax_label: taxMode === 'none' ? 'Yok / %0' : taxVerified ? mixedVatRates ? 'Satır bazında farklı oranlar · toplam fiyata dahil' : `%${taxRates[0]} · toplam fiyata dahil` : 'Mikro stok kartından',
+      tax_status: taxVerified ? 'verified' : 'unavailable', tax_source: taxMode === 'none' ? 'commercial_matrix' : 'mikro_api',
+      tax_source_label: taxMode === 'none' ? 'Ticari karar matrisi' : 'Mikro API', mixed_vat_rates: mixedVatRates,
+      vat_rate: taxVerified && taxRates.length === 1 ? taxRates[0] : taxMode === 'none' ? 0 : null,
       future_mikro_write_state: 'not_authorized', future_mikro_write_label: 'Mikro yazımı bu aşamada kapalı',
       billing: { source: 'mrn_customer', billing_type: 'individual', name_or_title: 'Test Müşteri', phone: '9053****633', address: 'Test adresi', city: 'İstanbul', district: 'Kadıköy' },
       shipping_same_as_billing: shipmentRequired, delivery_target: shipmentRequired ? 'billing_address' : input.delivery_target ?? 'mrn_customer',
@@ -183,6 +219,8 @@ const previewResponse = (payload) => {
       collection_required: collectionTotal > 0, order_line_unit_price: lines.length === 1 ? lines[0].unit_price : 0,
       order_line_unit_price_label: money(lines.length === 1 ? lines[0].unit_price : 0), order_line_total: total,
       order_line_total_label: money(total), order_reference_total: total, order_reference_total_label: money(total),
+      gross_total: total, gross_total_label: money(total), net_total: netTotal, net_total_label: netTotal === null ? null : money(netTotal),
+      vat_total: vatTotal, vat_total_label: vatTotal === null ? null : money(vatTotal),
       collection_amount: collectionTotal, collection_amount_label: money(collectionTotal),
       future_order_trigger: paymentLinkRequired ? 'payment_paid' : commercialMode === 'paid' ? 'delivery_recorded' : 'ops_approved',
       finance_review_required: false, related_product_serial: 'SERI-DOM', charged_amount: total, charged_amount_label: money(total),
@@ -194,8 +232,8 @@ const previewResponse = (payload) => {
           ...(serialBlocker ? ['part_serial_selection_unverified'] : []),
           ...(taxBlocker ? ['vat_unverified'] : []),
         ], blockers },
-      description2_preview: `MRN/SRV: MRN-DOM-EARNING\nİLGİLİ ÜRÜN SERİ NO: SERI-DOM\n\nPARÇALAR:\n${lineDescription}\n\nPARÇA KALEMİ: ${lines.length}\nTOPLAM ADET: ${totalQuantity}\nSİPARİŞ/REFERANS TOPLAMI: ${money(total)}\nTAHSİLAT TOPLAMI: ${money(collectionTotal)}\nTİCARİ DURUM: ${commercialMode === 'free' ? 'ÜCRETSİZ' : 'ÜCRETLİ'}\nTESLİM: ${deliveryMode === 'hand_delivery' ? 'ELDEN' : 'SEVK'}\nHEDEF SERİ: ${desiredSeries}\nKDV: ${taxMode === 'none' ? 'YOK' : 'MİKRO STOK KARTI'}`,
-      description2_version: 2, context_hash: (total === 1750 ? 'b' : 'c').repeat(64), revision: 1,
+      description2_preview: `MRN/SRV: MRN-DOM-EARNING\nİLGİLİ ÜRÜN SERİ NO: SERI-DOM\n\nPARÇALAR:\n${lineDescription}\n\nPARÇA KALEMİ: ${lines.length}\nTOPLAM ADET: ${totalQuantity}\nSİPARİŞ/REFERANS TOPLAMI (KDV DAHİL): ${money(total)}\nMÜŞTERİDEN TAHSİL EDİLECEK: ${money(collectionTotal)}\nKDV HARİÇ TOPLAM: ${netTotal === null ? '-' : money(netTotal)}\nKDV TOPLAMI: ${vatTotal === null ? '-' : money(vatTotal)}\nKDV TOPLAMA DAHİLDİR.\nTİCARİ DURUM: ${commercialMode === 'free' ? 'ÜCRETSİZ' : 'ÜCRETLİ'}\nTESLİM: ${deliveryMode === 'hand_delivery' ? 'ELDEN' : 'SEVK'}\nHEDEF SERİ: ${desiredSeries}\nKDV: ${taxMode === 'none' ? 'YOK / %0' : taxVerified ? 'MİKRO API' : 'DOĞRULANMAYI BEKLİYOR'}`,
+      description2_version: 3, context_hash: (total === 2000 ? 'b' : 'c').repeat(64), revision: 1,
       mikro_write_execution_count: 0, carrier_execution_count: 0,
       payment_retry: { state: 'none', fresh_link_required: false, reason_required: false, action_label: null, message: null,
         authoritative_counts: { paid: 0, pending: 0, cancelled: 0, failed: 0, expired: 0 } },
@@ -236,8 +274,10 @@ const waitForPreview = async (dialog, expected) => {
 }
 
 const inspectViewport = async (browser, name, viewport) => {
-  const counters = { partSearch: 0, physicalStock: 0, searchRetry: 0, physicalRetry: 0, preview: 0, realExternal: 0, maxPhysicalInFlight: 0 }
+  const counters = { partSearch: 0, physicalStock: 0, searchRetry: 0, physicalRetry: 0, taxRetry: 0, preview: 0, realExternal: 0, maxPhysicalInFlight: 0, maxTaxInFlight: 0 }
   let physicalInFlight = 0
+  let taxInFlight = 0
+  let taxProfilesAvailable = false
   const page = await browser.newPage({ viewport })
   page.on('pageerror', (error) => browserErrors.push(`${name}:page:${error.message}`))
   page.on('request', (request) => {
@@ -342,7 +382,18 @@ counters.realExternal += 1
   })
   await page.route('**/api/technical-service/requests/*/payments/order-context/preview', async (route) => {
     counters.preview += 1
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(previewResponse(route.request().postDataJSON())) })
+    const payload = route.request().postDataJSON()
+    const retry = payload.order_context?.retry_scope === 'tax_profile'
+
+    if (retry) {
+      counters.taxRetry += 1
+      taxProfilesAvailable = true
+    }
+
+    taxInFlight += 1
+    counters.maxTaxInFlight = Math.max(counters.maxTaxInFlight, taxInFlight)
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(previewResponse(payload, taxProfilesAvailable)) })
+    taxInFlight -= 1
   })
 
   await page.goto(`${baseUrl}/tests/Browser/assignment-earning-canonical.html`, { waitUntil: 'networkidle' })
@@ -427,30 +478,30 @@ counters.realExternal += 1
   await firstLine.getByLabel('Adet').fill('2')
   await firstLine.getByLabel('Birim fiyat').fill('500')
   await secondLine.getByLabel('Adet').fill('1')
-  await secondLine.getByLabel('Birim fiyat').fill('750')
+  await secondLine.getByLabel('Birim fiyat').fill('1000')
   const grandTotal = dialog.getByText(/Genel toplam:/).first()
   await grandTotal.waitFor({ state: 'visible' })
-  assert((await text(grandTotal)).includes('1.750'), `${name}: grand total is not 1.750 TL`)
+  assert((await text(grandTotal)).includes('2.000'), `${name}: grand total is not 2.000 TL`)
   assert((await text(firstLine)).includes('1.000 TL'), `${name}: first line total is wrong`)
-  assert((await text(secondLine)).includes('750 TL'), `${name}: second line total is wrong`)
+  assert((await text(secondLine)).includes('1.000 TL'), `${name}: second line total is wrong`)
 
   await secondLine.getByRole('button', { name: /satırını sil/ }).click()
   assert(await selected.count() === 1, `${name}: removing one line removed another line or failed`)
   row = await searchFor(dialog, 'EE.BCK.STD.0011', 'EE.BCK.STD.0011')
   await row.getByRole('button', { name: 'Ekle' }).click()
   secondLine = selected.filter({ hasText: 'EE.BCK.STD.0011' })
-  await secondLine.getByLabel('Birim fiyat').fill('750')
+  await secondLine.getByLabel('Birim fiyat').fill('1000')
   assert(await selected.count() === 2, `${name}: second line could not be restored`)
 
   const commercial = dialog.getByRole('group', { name: 'Parça ticari durumu' })
   const delivery = dialog.getByRole('group', { name: 'Parça teslim şekli' })
   await commercial.getByRole('button', { name: 'Ücretsiz', exact: true }).click()
   await delivery.getByRole('button', { name: 'Elden', exact: true }).click()
-  let preview = await waitForPreview(dialog, 'TAHSİLAT TOPLAMI: 0,00 TL')
+  let preview = await waitForPreview(dialog, 'MÜŞTERİDEN TAHSİL EDİLECEK: 0,00 TL')
   let previewText = await text(preview)
   assert(previewText.includes('Hedef seri: Q'), `${name}: free hand target series is not Q`)
-  assert(previewText.includes('KDV: Yok / %0'), `${name}: free hand VAT is not zero`)
-  assert(previewText.includes('1.750,00 TL'), `${name}: free hand reference total is wrong`)
+  assert(previewText.includes('KDV: YOK / %0'), `${name}: free hand VAT is not zero`)
+  assert(previewText.includes('2.000,00 TL'), `${name}: free hand reference total is wrong`)
 
   await delivery.getByRole('button', { name: 'Sevk', exact: true }).click()
   const zeroGrandTotal = dialog.getByText(/Genel toplam:/).first()
@@ -463,7 +514,7 @@ counters.realExternal += 1
     assert(await price.getAttribute('readonly') !== null, `${name}: free shipment price remains editable`)
   }
 
-  preview = await waitForPreview(dialog, 'SİPARİŞ/REFERANS TOPLAMI: 0,00 TL')
+  preview = await waitForPreview(dialog, 'SİPARİŞ/REFERANS TOPLAMI (KDV DAHİL): 0,00 TL')
   previewText = await text(preview)
   assert(previewText.includes('Hedef seri: Q'), `${name}: free shipment target series is not Q`)
   assert(previewText.includes('Tahsilat tutarı: 0,00 TL'), `${name}: free shipment collection is nonzero`)
@@ -471,7 +522,7 @@ counters.realExternal += 1
   await commercial.getByRole('button', { name: 'Ücretli', exact: true }).click()
   await delivery.getByRole('button', { name: 'Elden', exact: true }).click()
   await dialog.getByLabel('Elden teslim alıcısı').selectOption('mrn_customer')
-  preview = await waitForPreview(dialog, 'TAHSİLAT TOPLAMI: 1.750,00 TL')
+  preview = await waitForPreview(dialog, 'MÜŞTERİDEN TAHSİL EDİLECEK: 2.000,00 TL')
   previewText = await text(preview)
   assert(previewText.includes('Hedef seri: Q'), `${name}: paid hand target series is not Q`)
   assert(previewText.includes('Ödeme bağlantısı: Yok'), `${name}: paid hand incorrectly requires a payment link`)
@@ -479,9 +530,31 @@ counters.realExternal += 1
   await delivery.getByRole('button', { name: 'Sevk', exact: true }).click()
   preview = await waitForPreview(dialog, 'HEDEF SERİ: S')
   previewText = await text(preview)
-  assert(previewText.includes('KDV: Mikro stok kartından'), `${name}: paid shipment lost Mikro VAT authority`)
+  assert(previewText.includes('KDV kaynağı: Mikro API'), `${name}: paid shipment lost Mikro VAT authority`)
   assert(previewText.includes('Ödeme bağlantısı: Gerekli'), `${name}: paid shipment canonical link requirement is missing`)
   assert(previewText.includes('KDV bilgisi Mikro stok kartından doğrulanmadan'), `${name}: VAT readiness blocker is missing`)
+  assert(await preview.getByRole('button', { name: 'KDV’yi yeniden kontrol et', exact: true }).count() === 1, `${name}: tax retry action is missing`)
+  const selectedCountBeforeTaxRetry = await selected.count()
+  const partSearchBeforeTaxRetry = counters.partSearch
+  const physicalStockBeforeTaxRetry = counters.physicalStock
+  const modalScrollBeforeTaxRetry = await dialog.evaluate((element) => element.scrollTop)
+  await preview.getByRole('button', { name: 'KDV’yi yeniden kontrol et', exact: true }).click()
+  await preview.getByText('KDV toplamı: 257,58 TL', { exact: false }).first().waitFor({ state: 'visible', timeout: 5000 })
+  previewText = await text(preview)
+  assert(previewText.includes('Brüt toplam (KDV dahil): 2.000,00 TL'), `${name}: gross total changed after VAT read`)
+  assert(previewText.includes('KDV hariç toplam: 1.742,42 TL'), `${name}: mixed VAT net total is wrong`)
+  assert(previewText.includes('KDV toplamı: 257,58 TL'), `${name}: mixed VAT total is wrong`)
+  assert(previewText.includes('KDV oranı: %20'), `${name}: first line Mikro VAT rate is missing`)
+  assert(previewText.includes('KDV oranı: %10'), `${name}: second line Mikro VAT rate is missing`)
+  const dialogTextAfterTaxRetry = await text(dialog)
+  assert(dialogTextAfterTaxRetry.includes('Satır bazında farklı KDV oranları uygulanıyor.'), `${name}: mixed-rate notice is missing`)
+  assert(dialogTextAfterTaxRetry.includes('KDV müşteriye ayrıca eklenmeyecek; toplam tutara dahildir.'), `${name}: VAT-inclusive notice is missing`)
+  assert(!previewText.includes('+ KDV'), `${name}: VAT was presented as an addition to gross`)
+  assert(await selected.count() === selectedCountBeforeTaxRetry, `${name}: tax retry cleared selected lines`)
+  assert(counters.partSearch === partSearchBeforeTaxRetry, `${name}: tax retry reran stock search`)
+  assert(counters.physicalStock === physicalStockBeforeTaxRetry, `${name}: tax retry reran physical stock`)
+  assert(await dialog.evaluate((element) => element.scrollTop) === modalScrollBeforeTaxRetry, `${name}: tax retry reset modal scroll`)
+  assert(await output(page, 'payment-order-create-count') === '0', `${name}: tax retry created a payment/context side effect`)
 
   row = await searchFor(dialog, 'TKN000011', 'TKN000011')
   await row.getByRole('button', { name: 'Ekle' }).click()
@@ -489,6 +562,11 @@ counters.realExternal += 1
   assert((await text(serialLine)).includes('Güncel parça seri seçimi doğrulanmadan'), `${name}: serial readiness blocker is missing`)
   assert(await serialLine.locator('select').count() === 0, `${name}: fake serial selector was rendered`)
   await serialLine.getByRole('button', { name: /satırını sil/ }).click()
+
+  taxProfilesAvailable = false
+  await secondLine.getByLabel('Birim fiyat').fill('999')
+  await secondLine.getByLabel('Birim fiyat').fill('1000')
+  await waitForPreview(dialog, 'KDV bilgisi Mikro stok kartından doğrulanmadan')
 
   const submit = dialog.getByRole('button', { name: 'Parça taslağını kaydet', exact: true })
   await submit.dblclick()
@@ -511,8 +589,8 @@ counters.realExternal += 1
   assert(await selected.count() === 2, `${name}: reopening did not hydrate both lines`)
   assert(await selected.filter({ hasText: 'EE.BCK.STD.0010' }).getByLabel('Adet').inputValue() === '2', `${name}: reopened quantity changed`)
   assert(await selected.filter({ hasText: 'EE.BCK.STD.0010' }).getByLabel('Birim fiyat').inputValue() === '500', `${name}: reopened first price changed`)
-  assert(await selected.filter({ hasText: 'EE.BCK.STD.0011' }).getByLabel('Birim fiyat').inputValue() === '750', `${name}: reopened second price changed`)
-  assert((await text(dialog.getByText(/Genel toplam:/).first())).includes('1.750'), `${name}: reopened grand total changed`)
+  assert(await selected.filter({ hasText: 'EE.BCK.STD.0011' }).getByLabel('Birim fiyat').inputValue() === '1000', `${name}: reopened second price changed`)
+  assert((await text(dialog.getByText(/Genel toplam:/).first())).includes('2.000'), `${name}: reopened grand total changed`)
 
   await selected.first().getByRole('button', { name: /satırını sil/ }).click()
   await page.waitForFunction(() => window.__assignmentEarningDomState?.paymentOrderStateUpdateCount === 1)
@@ -566,7 +644,9 @@ counters.realExternal += 1
   assert(await output(page, 'assignment-scroll-reset-count') === '0', `${name}: scroll reset count is not zero`)
   assert(counters.searchRetry === 1, `${name}: search retry count is ${counters.searchRetry}`)
   assert(counters.physicalRetry === 1, `${name}: physical retry count is ${counters.physicalRetry}`)
+  assert(counters.taxRetry === 1, `${name}: tax retry count is ${counters.taxRetry}`)
   assert(counters.maxPhysicalInFlight === 1, `${name}: parallel physical-stock request count exceeded one`)
+  assert(counters.maxTaxInFlight === 1, `${name}: parallel tax-profile request count exceeded one`)
   assert(counters.realExternal === 0, `${name}: external Mikro/HepsiJet/n8n count is ${counters.realExternal}`)
   const fullText = await text(dialog)
   assert(!fullText.includes('TS-PART-001'), `${name}: TS-PART fixture is visible`)

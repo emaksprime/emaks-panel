@@ -42,6 +42,7 @@ class MikroOperationRegistry
         'stock.list' => ['name' => 'Stock list', 'category' => 'stock', 'adapter' => 'DIRECT_ENDPOINT', 'target' => '/Api/APIMethods/StokListesiV2', 'method' => 'POST', 'payload_style' => 'standard', 'request' => 'MikroStockListQuery', 'response' => 'MikroStockListResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['stock_code', 'stock_name']],
         'stock.search' => ['name' => 'Technical service part search', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.search', 'request' => 'MikroStockSearchQuery', 'response' => 'MikroStockSearchResult', 'source' => 'mikro', 'fallback' => false, 'parity' => ['item_code', 'item_name', 'item_short_name', 'stock_type', 'detail_tracking_type']],
         'stock.physical_quantity' => ['name' => 'Technical service part physical stock', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.physical_quantity', 'request' => 'MikroPhysicalStockBatchQuery', 'response' => 'MikroPhysicalStockBatchResult', 'source' => 'mikro', 'fallback' => false, 'parity' => ['item_code', 'unit_code', 'warehouse_code', 'physical_quantity']],
+        'stock.tax_profile' => ['name' => 'Technical service part tax profile', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.tax_profile', 'request' => 'MikroStockTaxProfileBatchQuery', 'response' => 'MikroStockTaxProfileBatchResult', 'source' => 'mikro', 'fallback' => false, 'parity' => ['item_code', 'retail_tax_pointer', 'retail_tax_rate', 'wholesale_tax_pointer', 'wholesale_tax_rate', 'selected_tax_basis', 'selected_tax_rate']],
         'stock.availability' => ['name' => 'Stock availability', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.availability', 'request' => 'MikroStockAvailabilityQuery', 'response' => 'MikroStockAvailabilityResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['stock_code', 'depot_1_quantity', 'depot_5_quantity', 'available_quantity']],
         'stock.movement.list' => ['name' => 'Stock movements', 'category' => 'stock', 'adapter' => 'FIXED_QUERY', 'target' => 'stock.movement.list', 'request' => 'MikroStockMovementQuery', 'response' => 'MikroStockMovementResult', 'source' => 'n8n', 'fallback' => true, 'parity' => ['movement_guid', 'movement_date', 'quantity']],
         'serial.lookup' => ['name' => 'Serial lookup', 'category' => 'serial', 'adapter' => 'FIXED_QUERY', 'target' => 'serial.lookup', 'request' => 'MikroSerialLookupQuery', 'response' => 'MikroSerialLookupResult', 'source' => 'shadow_compare', 'fallback' => true, 'parity' => ['serial_number', 'stock_code', 'customer_code']],
@@ -303,10 +304,10 @@ class MikroOperationRegistry
             'response_schema_verified_count' => count(array_filter($reads, fn (array $row): bool => $row['response_schema_status'] === MikroResponseSchemaCatalog::VERIFIED)),
             'response_schema_missing_count' => count(array_filter($reads, fn (array $row): bool => $row['response_schema_status'] === MikroResponseSchemaCatalog::MISSING)),
             'parity_status_counts' => array_count_values(array_map(fn (array $row): string => (string) $row['business_parity_source']['status'], $operations)),
-            'matrix_complete' => count($operations) === 45 && count(array_filter($operations, fn (array $row): bool => in_array($row['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES, true)
+            'matrix_complete' => count($operations) === 46 && count(array_filter($operations, fn (array $row): bool => in_array($row['evidence_status'], MikroContractEvidenceCatalog::ALLOWED_STATUSES, true)
                 && preg_match('/^[a-f0-9]{64}$/', (string) $row['evidence_hash']) === 1
                 && is_array($row['business_parity_source'])
-                && in_array($row['business_parity_source']['status'] ?? null, MikroContractEvidenceCatalog::PARITY_STATUSES, true))) === 45,
+                && in_array($row['business_parity_source']['status'] ?? null, MikroContractEvidenceCatalog::PARITY_STATUSES, true))) === 46,
             'enabled_keys' => array_values(array_map(fn (array $row): string => $row['operation_key'], array_filter($reads, fn (array $row): bool => $row['runtime_enabled']))),
             'operations' => $operations,
         ];
@@ -360,6 +361,9 @@ class MikroOperationRegistry
         $adapter = $definition['adapter'];
         $evidence = MikroContractEvidenceCatalog::for($key, 'READ', $adapter);
         $schema = $this->responseSchemas->descriptor($key);
+        $fixedQuery = $adapter === 'FIXED_QUERY'
+            ? $this->fixedQueries->definition((string) $definition['target'])
+            : null;
         $runtimeEligible = (bool) $evidence['runtime_eligible']
             && $schema['schema_status'] === MikroResponseSchemaCatalog::VERIFIED;
 
@@ -380,6 +384,7 @@ class MikroOperationRegistry
             'payload_style' => $definition['payload_style'] ?? ($adapter === 'FIXED_QUERY' ? 'fixed_query' : null),
             'mikro_method' => $evidence['exact_path'] === null ? null : basename((string) $evidence['exact_path']),
             'fixed_query_id' => $adapter === 'FIXED_QUERY' ? $definition['target'] : null,
+            'supporting_endpoint' => is_array($fixedQuery) ? ($fixedQuery['rate_endpoint'] ?? null) : null,
             'api_version' => 'V17',
             'request_type' => $definition['request'],
             'response_type' => $definition['response'],

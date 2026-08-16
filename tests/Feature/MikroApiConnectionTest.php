@@ -31,6 +31,7 @@ class MikroApiConnectionTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config()->set('app.key', 'base64:'.base64_encode(str_repeat('a', 32)));
         config()->set('cache.default', 'array');
         Cache::flush();
         CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-07-29 14:00:00', 'Europe/Istanbul'));
@@ -53,10 +54,10 @@ class MikroApiConnectionTest extends TestCase
             ->assertJsonPath('messaging_settings.mikro_api.health_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.live_configuration_ready', false)
             ->assertJsonPath('messaging_settings.mikro_api.readiness_status', 'CONTRACT_READY')
-            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 34)
-            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 32)
+            ->assertJsonPath('messaging_settings.mikro_api.read_operation_count', 35)
+            ->assertJsonPath('messaging_settings.mikro_api.implemented_read_operation_count', 33)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_read_operation_count', 1)
-            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 4)
+            ->assertJsonPath('messaging_settings.mikro_api.server_verified_read_operation_count', 5)
             ->assertJsonPath('messaging_settings.mikro_api.server_unverified_operation_count', 28)
             ->assertJsonPath('messaging_settings.mikro_api.write_operation_count', 11)
             ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0)
@@ -905,6 +906,165 @@ class MikroApiConnectionTest extends TestCase
         $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
     }
 
+    public function test_stock_tax_profile_resolves_installed_rates_without_using_raw_pointer_as_percentage(): void
+    {
+        $schemas = app(MikroResponseSchemaCatalog::class);
+        $pointers = $schemas->normalizeStockTaxPointerRows([
+            [
+                'item_code' => 'EE.BCK.STD.0010',
+                'retail_tax_pointer' => 7,
+                'wholesale_tax_pointer' => 7,
+                'vat_rate' => 7,
+            ],
+            [
+                'item_code' => 'EP.YDP.002.015',
+                'retail_tax_pointer' => 8,
+                'wholesale_tax_pointer' => 8,
+            ],
+            [
+                'item_code' => 'MISSING-RATE',
+                'retail_tax_pointer' => 99,
+                'wholesale_tax_pointer' => 99,
+            ],
+        ]);
+        $rates = $schemas->normalizeInstalledTaxRates($this->installedTaxRatePayload([
+            ['vergiSiraNo' => 7, 'vergiOrani' => 20, 'vergiAdi' => 'KDV %20', 'unknown' => 'DROP-ME'],
+            ['vergiSiraNo' => 8, 'vergiOrani' => 10, 'vergiAdi' => 'KDV %10'],
+        ]));
+        $profiles = $schemas->resolveStockTaxProfiles(
+            $pointers,
+            $rates,
+            '2026-08-16T12:00:00+03:00',
+            'tax-profile-schema-test',
+        );
+
+        $this->assertSame(7, $profiles[0]['retail_tax_pointer']);
+        $this->assertSame('20', $profiles[0]['retail_tax_rate']);
+        $this->assertSame('20', $profiles[0]['selected_tax_rate']);
+        $this->assertNotSame((string) $profiles[0]['retail_tax_pointer'], $profiles[0]['selected_tax_rate']);
+        $this->assertSame('10', $profiles[1]['selected_tax_rate']);
+        $this->assertSame('unavailable', $profiles[2]['tax_status']);
+        $this->assertNull($profiles[2]['selected_tax_rate']);
+        $this->assertArrayNotHasKey('vat_rate', $profiles[0]);
+        $this->assertArrayNotHasKey('vergiAdi', $profiles[0]);
+    }
+
+    public function test_equal_rates_resolve_and_different_rates_require_authoritative_basis(): void
+    {
+        $schemas = app(MikroResponseSchemaCatalog::class);
+        $rates = $schemas->normalizeInstalledTaxRates($this->installedTaxRatePayload([
+            ['vergiSiraNo' => 7, 'vergiOrani' => 20],
+            ['vergiSiraNo' => 8, 'vergiOrani' => 10],
+            ['vergiSiraNo' => 9, 'vergiOrani' => 20],
+        ]));
+        $profiles = $schemas->resolveStockTaxProfiles(
+            $schemas->normalizeStockTaxPointerRows([
+                ['item_code' => 'EQUAL', 'retail_tax_pointer' => 7, 'wholesale_tax_pointer' => 9],
+                ['item_code' => 'DIFFERENT', 'retail_tax_pointer' => 7, 'wholesale_tax_pointer' => 8],
+            ]),
+            $rates,
+            '2026-08-16T12:00:00+03:00',
+            'tax-basis-schema-test',
+        );
+
+        $this->assertSame('verified', $profiles[0]['tax_status']);
+        $this->assertSame('equal_rates', $profiles[0]['selected_tax_basis']);
+        $this->assertSame('20', $profiles[0]['selected_tax_rate']);
+        $this->assertNull($profiles[0]['selected_tax_pointer']);
+        $this->assertSame('unresolved_basis', $profiles[1]['tax_status']);
+        $this->assertNull($profiles[1]['selected_tax_basis']);
+        $this->assertNull($profiles[1]['selected_tax_rate']);
+    }
+
+    public function test_stock_tax_profile_runtime_read_uses_two_typed_reads_and_zero_write(): void
+    {
+        $secrets = $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                    'operation_controls' => [
+                        'stock.tax_profile' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.mikro_api.write_enabled', false)
+            ->assertJsonPath('messaging_settings.mikro_api.enabled_write_operation_count', 0);
+
+        Http::fake(function (Request $request) {
+            if ($request->url() === 'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2') {
+                return $this->fixedQueryResponse([[
+                    'item_code' => 'EE.BCK.STD.0010',
+                    'retail_tax_pointer' => 7,
+                    'wholesale_tax_pointer' => 7,
+                ]]);
+            }
+            if ($request->url() === 'https://mikro-api.example.test/Api/APIMethods/VergiListesiV2') {
+                return Http::response($this->installedTaxRatePayload([
+                    ['vergiSiraNo' => 7, 'vergiOrani' => 20, 'vergiAdi' => 'KDV %20'],
+                ]), 200);
+            }
+
+            return Http::response([], 500);
+        });
+
+        $result = app(MikroApiClient::class)->stockTaxProfiles(['EE.BCK.STD.0010']);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('20', $result['data'][0]['selected_tax_rate']);
+        $this->assertSame('equal_rates', $result['data'][0]['selected_tax_basis']);
+        $this->assertSame('verified', $result['data'][0]['tax_status']);
+        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($secrets['api_key'], $encoded);
+        $this->assertStringNotContainsString($secrets['password'], $encoded);
+        Http::assertSentCount(2);
+        Http::assertSent(function (Request $request): bool {
+            if ($request->url() === 'https://mikro-api.example.test/Api/apiMethods/SqlVeriOkuV2') {
+                $sql = (string) $request['SQLSorgu'];
+
+                return str_contains($sql, 'sto.sto_perakende_vergi')
+                    && str_contains($sql, 'sto.sto_toptan_vergi')
+                    && str_contains($sql, "IN (N'EE.BCK.STD.0010')")
+                    && ! str_contains($sql, 'VERGI_FON_TANIMLARI')
+                    && ! preg_match('/\b(INSERT|UPDATE|DELETE|MERGE|EXEC)\b/i', $sql);
+            }
+
+            return $request->url() === 'https://mikro-api.example.test/Api/APIMethods/VergiListesiV2'
+                && ! isset($request['SQLSorgu'])
+                && is_array($request['Mikro']);
+        });
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('stock.availability')['runtime_enabled']);
+        $this->assertFalse(app(MikroOperationRegistry::class)->read('serial.lookup')['runtime_enabled']);
+    }
+
+    public function test_stock_tax_profile_batch_limit_blocks_before_network(): void
+    {
+        $this->configureLiveContract();
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'mikro_api' => [
+                    'enabled' => true,
+                    'read_sync_enabled' => false,
+                    'write_enabled' => false,
+                    'operation_controls' => [
+                        'stock.tax_profile' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $result = app(MikroApiClient::class)->stockTaxProfiles(
+            array_map(fn (int $index): string => 'TAX-'.str_pad((string) $index, 3, '0', STR_PAD_LEFT), range(1, 21)),
+        );
+
+        $this->assertFalse($result['success']);
+        $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $result['error_code']);
+        Http::assertNothingSent();
+    }
+
     public function test_manual_stock_search_retry_resets_only_search_circuit_and_reuses_fixed_contract(): void
     {
         $this->configureLiveContract();
@@ -1059,6 +1219,19 @@ class MikroApiConnectionTest extends TestCase
                 'IsError' => false,
             ]],
         ], 200);
+    }
+
+    /** @param array<int, array<string, mixed>> $rows @return array<string, mixed> */
+    private function installedTaxRatePayload(array $rows): array
+    {
+        return [
+            'result' => [[
+                'StatusCode' => 200,
+                'Data' => ['list' => $rows],
+                'ErrorMessage' => '',
+                'IsError' => false,
+            ]],
+        ];
     }
 
     /** @return array{api_key:string,user_code:string,password:string} */

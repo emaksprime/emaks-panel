@@ -157,6 +157,7 @@ final class MikroContractEvidenceCatalog
         'stock.availability' => '245e65f2a3f3a0fd4f7664559e225609b79869944f5a38a09a7ecdf18d8fdfb1',
         'stock.search' => '3b509a481a593be9f6b63fda83c796ecf5fe35e44b1a79beba8224f09f2981e1',
         'stock.physical_quantity' => '941539a9f84fcd69684f879fa725f54560f642309bfb260a64804aedc0777593',
+        'stock.tax_profile' => 'a9ca0179a19eeb3a00e12b09443389fc599f774b6264e072285b64620bcc9ffb',
         'stock.movement.list' => '7280b34fa4376964c60606c63b8101cbfcb136108895e443395f75016e0b40d3',
         'serial.lookup' => '53dbf0db942df656f470eff9c8a4b9d04dc384b5bde6d1268ec44ee6b344e9ea',
         'serial.history' => 'f7ea431026c2c8dce60ec0fe546704240d851a7f66d9ccf1f88f8ae98d63699b',
@@ -352,6 +353,49 @@ final class MikroContractEvidenceCatalog
                 'depot_method' => $depotMethod,
                 'contract_version' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_CONTRACT_VERSION,
                 'response_schema_fingerprint' => MikroResponseSchemaCatalog::PHYSICAL_STOCK_RESPONSE_SCHEMA_FINGERPRINT,
+            ]);
+        }
+        if ($operationKey === 'stock.tax_profile') {
+            $sources[] = [
+                'type' => 'official_current',
+                'uri' => 'https://apidocs.mikro.com.tr/apis/listeler/paths/~1api~1apimethods~1vergilistesiv2/post.md',
+                'sha256' => 'd99856b4fcc27db370ec04d53b7d28b36db85d1d501a88a84f5ef83ee21de7bb',
+            ];
+            $sources[] = [
+                'type' => 'installed_server_authenticated_response_schema',
+                'uri' => 'evidence://MikroLineVatProfile/20260816T083913Z/vergi-listesi-v2-response-fingerprint',
+                'sha256' => '22409ccea5c4d0a266b90db925f54918e8c852fd0a1559f4a2a2bde980082c7a',
+            ];
+            $sources[] = [
+                'type' => 'installed_server_authenticated_canary',
+                'uri' => 'evidence://MikroLineVatProfile/20260816T083913Z/installed-tax-profile-observations.json',
+                'sha256' => $evidenceHash,
+            ];
+
+            return self::descriptor([
+                'operation_key' => $operationKey,
+                'mode' => 'READ',
+                'adapter_type' => 'FIXED_QUERY',
+                'contract_status' => 'DOCUMENTED',
+                'evidence_status' => 'OFFICIAL_AND_SERVER_VERIFIED',
+                'runtime_eligible' => true,
+                'runtime_enabled' => false,
+                'installed_server_canary' => 'PASS_3_BOUNDED_TYPED_OBSERVATIONS_2026_08_16',
+                'official_api_page' => 'https://apidocs.mikro.com.tr/apis/listeler/paths/~1api~1apimethods~1vergilistesiv2/post.md',
+                'official_postman_item' => null,
+                'local_postman_item' => 'Listeler / VergiListesiV2 + SqlVeriOkuV2',
+                'exact_http_method' => 'POST',
+                'exact_path' => '/Api/apiMethods/SqlVeriOkuV2',
+                'exact_path_casing' => 'POINTERS=/Api/apiMethods/SqlVeriOkuV2;RATES=/Api/APIMethods/VergiListesiV2',
+                'request_root_keys' => ['Mikro', 'Mikro.ApiKey', 'Mikro.CalismaYili', 'Mikro.FirmaKodu', 'Mikro.KullaniciKodu', 'Mikro.Sifre', 'SQLSorgu'],
+                'response_root_keys' => ['result', 'result[].Data[].SQLResult1', 'result[].Data.list', 'result[].Data.list[].vergiSiraNo', 'result[].Data.list[].vergiOrani', 'result[].IsError', 'result[].StatusCode'],
+                'source_documents' => $sources,
+                'source_item_category' => 'SqlVeriOkuV2 / technical_service_part_tax_profile_v1 + VergiListesiV2',
+                'evidence_hash' => $evidenceHash,
+                'api_key_field' => 'ApiKey',
+                'blocker' => null,
+                'contract_version' => MikroResponseSchemaCatalog::STOCK_TAX_PROFILE_CONTRACT_VERSION,
+                'response_schema_fingerprint' => MikroResponseSchemaCatalog::STOCK_TAX_PROFILE_RESPONSE_SCHEMA_FINGERPRINT,
             ]);
         }
         $depotSourceFile = null;

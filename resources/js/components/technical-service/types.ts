@@ -1251,7 +1251,7 @@ export type ServiceRequestPaymentOrderPart = {
   item_code?: string | null
   item_name?: string | null
   item_short_name?: string | null
-  item_kind?: 'part' | 'device' | 'service' | 'unknown' | string | null
+  item_kind?: 'part' | 'accessory' | 'device' | 'service' | 'unknown' | string | null
   classification_source?: string | null
   classification_contract_version?: string | null
   quantity?: number | null
@@ -1260,6 +1260,28 @@ export type ServiceRequestPaymentOrderPart = {
   unit_price_label?: string | null
   line_total?: number | null
   line_total_label?: string | null
+  gross_unit_price?: number | string | null
+  gross_unit_price_label?: string | null
+  gross_line_total?: number | string | null
+  gross_line_total_label?: string | null
+  net_line_total?: number | string | null
+  net_line_total_label?: string | null
+  vat_line_total?: number | string | null
+  vat_line_total_label?: string | null
+  retail_tax_pointer?: number | null
+  retail_tax_rate?: number | string | null
+  wholesale_tax_pointer?: number | null
+  wholesale_tax_rate?: number | string | null
+  selected_tax_basis?: 'equal_rates' | 'q_series_zero' | string | null
+  selected_tax_pointer?: number | null
+  selected_tax_rate?: number | string | null
+  selected_tax_rate_label?: string | null
+  tax_status?: 'verified' | 'unresolved_basis' | 'unavailable' | 'stale' | string | null
+  tax_resolution_source?: string | null
+  tax_source?: 'mikro_api' | 'commercial_matrix' | string | null
+  tax_freshness_at?: string | null
+  tax_contract_version?: string | null
+  tax_correlation_id?: string | null
   currency?: string | null
   warehouse_code?: string | null
   stock_source?: string | null
@@ -1289,7 +1311,11 @@ export type ServiceRequestPaymentOrderContext = {
   desired_mikro_series?: string | null
   tax_mode?: 'none' | 'standard_from_mikro' | 'standard_from_mikro_service_item' | string | null
   tax_label?: string | null
-  vat_rate?: number | null
+  tax_status?: 'verified' | 'unresolved_basis' | 'unavailable' | 'not_applicable' | string | null
+  tax_source?: 'mikro_api' | 'commercial_matrix' | string | null
+  tax_source_label?: string | null
+  mixed_vat_rates?: boolean
+  vat_rate?: number | string | null
   future_mikro_write_state?: string | null
   future_mikro_write_label?: string | null
   billing?: ServiceRequestOrderPartySnapshot | null
@@ -1325,6 +1351,12 @@ export type ServiceRequestPaymentOrderContext = {
   order_line_total_label?: string | null
   order_reference_total?: number | null
   order_reference_total_label?: string | null
+  gross_total?: number | string | null
+  gross_total_label?: string | null
+  net_total?: number | string | null
+  net_total_label?: string | null
+  vat_total?: number | string | null
+  vat_total_label?: string | null
   collection_amount?: number | null
   collection_amount_label?: string | null
   future_order_trigger?: string | null

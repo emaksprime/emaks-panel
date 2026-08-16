@@ -1991,6 +1991,7 @@ export function ServiceRequestDetails({
   const [orderContextPreviewLoadingInputKey, setOrderContextPreviewLoadingInputKey] = useState<string | null>(null)
   const [orderContextPreviewError, setOrderContextPreviewError] = useState<string | null>(null)
   const [orderContextPreviewErrorInputKey, setOrderContextPreviewErrorInputKey] = useState<string | null>(null)
+  const [orderContextTaxRetryInFlight, setOrderContextTaxRetryInFlight] = useState(false)
   const [orderContextStateUpdating, setOrderContextStateUpdating] = useState(false)
   const [orderContextStatusReason, setOrderContextStatusReason] = useState('')
   const [orderPartLineRemovingKey, setOrderPartLineRemovingKey] = useState<string | null>(null)
@@ -2000,6 +2001,8 @@ export function ServiceRequestDetails({
   const orderPartSearchRetryQueryRef = useRef<string | null>(null)
   const orderPartPhysicalRetryInFlightRef = useRef(false)
   const orderPartPhysicalRetryAbortRef = useRef<AbortController | null>(null)
+  const orderContextPreviewAbortRef = useRef<AbortController | null>(null)
+  const orderContextTaxRetryInFlightRef = useRef(false)
   const orderPartHydratedContextKeyRef = useRef<string | null>(null)
   const orderPartLineRemoveInFlightRef = useRef(false)
   const [routeFeeNote, setRouteFeeNote] = useState('')
@@ -2497,6 +2500,59 @@ export function ServiceRequestDetails({
   const activeOrderContextPreviewError = orderContextPreviewErrorInputKey === paymentOrderContextInputKey ? orderContextPreviewError : null
   const activeOrderContextPreviewLoading = orderContextPreviewLoading
     && orderContextPreviewLoadingInputKey === paymentOrderContextInputKey
+  const activeOrderContextTaxRetryRequired = (activeOrderContextPreview?.readiness?.blocker_codes ?? [])
+    .some((code) => code === 'vat_unverified' || code === 'tax_basis_unresolved')
+
+  const retryOrderContextTaxProfile = () => {
+    if (orderContextTaxRetryInFlightRef.current || extraPaymentAmount === null) {
+      return
+    }
+
+    orderContextPreviewAbortRef.current?.abort()
+    const controller = new AbortController()
+    orderContextPreviewAbortRef.current = controller
+    orderContextTaxRetryInFlightRef.current = true
+    setOrderContextTaxRetryInFlight(true)
+    setOrderContextPreviewLoading(true)
+    setOrderContextPreviewLoadingInputKey(paymentOrderContextInputKey)
+    setOrderContextPreviewError(null)
+    setOrderContextPreviewErrorInputKey(null)
+
+    void apiRequest(`/api/technical-service/requests/${encodeURIComponent(String(request.id))}/payments/order-context/preview`, {
+      method: 'POST',
+      signal: controller.signal,
+      body: JSON.stringify({
+        purpose: extraPaymentPurpose,
+        amount: extraPaymentAmount.toFixed(2),
+        currency: 'TRY',
+        order_context: {
+          ...paymentOrderContextInput,
+          retry_scope: 'tax_profile',
+        },
+      }),
+    })
+      .then((response: PaymentOrderContextPreviewResponse) => {
+        setOrderContextPreview(response.order_context ?? null)
+        setOrderContextPreviewInputKey(paymentOrderContextInputKey)
+      })
+      .catch((caught: unknown) => {
+        if (caught instanceof Error && caught.name === 'AbortError') {
+          return
+        }
+
+        setOrderContextPreviewError(caught instanceof Error ? caught.message : 'KDV bilgisi yeniden doğrulanamadı.')
+        setOrderContextPreviewErrorInputKey(paymentOrderContextInputKey)
+      })
+      .finally(() => {
+        if (orderContextPreviewAbortRef.current === controller) {
+          orderContextPreviewAbortRef.current = null
+          setOrderContextPreviewLoading(false)
+        }
+
+        orderContextTaxRetryInFlightRef.current = false
+        setOrderContextTaxRetryInFlight(false)
+      })
+  }
 
   const retryOrderPartPhysicalStock = () => {
     if (orderPartPhysicalRetryInFlightRef.current) {
@@ -2826,6 +2882,12 @@ export function ServiceRequestDetails({
 
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
+      if (orderContextTaxRetryInFlightRef.current) {
+        return
+      }
+
+      orderContextPreviewAbortRef.current?.abort()
+      orderContextPreviewAbortRef.current = controller
       setOrderContextPreviewLoading(true)
       setOrderContextPreviewLoadingInputKey(paymentOrderContextInputKey)
       setOrderContextPreviewError(null)
@@ -2853,7 +2915,8 @@ export function ServiceRequestDetails({
           setOrderContextPreviewErrorInputKey(paymentOrderContextInputKey)
         })
         .finally(() => {
-          if (!controller.signal.aborted) {
+          if (orderContextPreviewAbortRef.current === controller) {
+            orderContextPreviewAbortRef.current = null
             setOrderContextPreviewLoading(false)
           }
         })
@@ -2862,6 +2925,10 @@ export function ServiceRequestDetails({
     return () => {
       window.clearTimeout(timer)
       controller.abort()
+
+      if (orderContextPreviewAbortRef.current === controller) {
+        orderContextPreviewAbortRef.current = null
+      }
     }
   }, [
     canPreviewPaymentOrderContext,
@@ -5408,6 +5475,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                           const lineTotal = roundTwo(Math.max(0, quantity) * Math.max(0, unitPrice))
                           const physicalStockTotal = verifiedPhysicalStockTotal(line.item)
                           const physicalStockExceeded = physicalStockTotal !== null && quantity > physicalStockTotal
+                          const canonicalTaxLine = activeOrderContextPreview?.lines?.find((candidate) => candidate.item_code === line.item.item_code)
 
                           return (
                             <div key={line.item.item_code} data-testid="selected-payment-part-line" className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,2fr)_minmax(7rem,0.7fr)_minmax(8rem,1fr)_minmax(8rem,1fr)_auto] sm:items-end">
@@ -5432,7 +5500,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                                 />
                               </label>
                               <label className="grid gap-1 font-semibold">
-                                {orderCommercialMode === 'free' && orderDeliveryMode === 'hand_delivery' ? 'Referans birim fiyatı' : 'Birim fiyat'}
+                                {orderCommercialMode === 'free' && orderDeliveryMode === 'hand_delivery' ? 'Referans birim fiyatı' : 'Birim fiyat (KDV dahil)'}
                                 <Input
                                   type="number"
                                   min="0"
@@ -5445,8 +5513,8 @@ errors.lastName = 'Soyad alanı zorunludur.'
                                 />
                               </label>
                               <div className="grid min-h-10 content-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                                <span className="font-medium text-slate-500">Satır toplamı</span>
-                                <strong className="text-sm text-slate-950">{formatMoneyValue(lineTotal)}</strong>
+                                <span className="font-medium text-slate-500">Satır toplamı {orderCommercialMode === 'paid' ? '(KDV dahil)' : ''}</span>
+                                <strong className="text-sm text-slate-950">{canonicalTaxLine?.gross_line_total_label ?? formatMoneyValue(lineTotal)}</strong>
                               </div>
                               <Button
                                 type="button"
@@ -5471,13 +5539,30 @@ errors.lastName = 'Soyad alanı zorunludur.'
                               {physicalStockTotal === null ? (
                                 <p className="font-semibold text-amber-800 sm:col-span-5">Stok yeniden doğrulanmalı</p>
                               ) : null}
+                              {canonicalTaxLine?.tax_status === 'verified' ? (
+                                <div data-testid="selected-payment-part-tax" className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 sm:col-span-5 sm:grid-cols-3">
+                                  <span>KDV oranı: <strong>{canonicalTaxLine.selected_tax_rate_label ?? '-'}</strong></span>
+                                  <span>Matrah: <strong>{canonicalTaxLine.net_line_total_label ?? '-'}</strong></span>
+                                  <span>KDV tutarı: <strong>{canonicalTaxLine.vat_line_total_label ?? '-'}</strong></span>
+                                </div>
+                              ) : null}
+                              {canonicalTaxLine?.tax_status === 'unresolved_basis' ? (
+                                <p className="font-semibold text-amber-900 sm:col-span-5">Mikro stok kartında perakende ve toptan KDV oranları farklı. Sipariş vergi temeli doğrulanmadan işlem tamamlanamaz.</p>
+                              ) : null}
+                              {canonicalTaxLine && !['verified', 'unresolved_basis'].includes(String(canonicalTaxLine.tax_status ?? '')) ? (
+                                <p className="font-semibold text-amber-800 sm:col-span-5">KDV bilgisi doğrulanmayı bekliyor.</p>
+                              ) : null}
                             </div>
                           )
                         })}
                       </div>
-                      <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-2">
-                        <span>Sipariş / referans toplamı: <strong>{formatMoneyValue(orderPartGrandTotal)}</strong></span>
-                        <span>Tahsilat toplamı: <strong>{formatMoneyValue(orderCommercialMode === 'paid' ? orderPartGrandTotal : 0)}</strong></span>
+                      <div data-testid="payment-order-tax-summary" className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-2">
+                        <span>Müşteriden tahsil edilecek toplam: <strong>{activeOrderContextPreview?.gross_total_label ?? formatMoneyValue(orderCommercialMode === 'paid' ? orderPartGrandTotal : 0)}</strong></span>
+                        <span>KDV hariç toplam: <strong>{activeOrderContextPreview?.net_total_label ?? '-'}</strong></span>
+                        <span>KDV toplamı: <strong>{activeOrderContextPreview?.vat_total_label ?? '-'}</strong></span>
+                        <span>KDV kaynağı: <strong>{activeOrderContextPreview?.tax_source_label ?? (orderCommercialMode === 'paid' && orderDeliveryMode === 'shipment' ? 'Doğrulanmayı bekliyor' : 'Ticari karar matrisi')}</strong></span>
+                        <p className="font-medium text-slate-600 sm:col-span-2">KDV müşteriye ayrıca eklenmeyecek; toplam tutara dahildir.</p>
+                        {activeOrderContextPreview?.mixed_vat_rates ? <p className="font-semibold text-blue-900 sm:col-span-2">Satır bazında farklı KDV oranları uygulanıyor.</p> : null}
                       </div>
                       {orderPartLines.some((line) => verifiedPhysicalStockTotal(line.item) === null) ? (
                         <p className="font-semibold text-amber-800">Mikro stok bilgisi doğrulanmadan ödeme veya sipariş hazırlığı tamamlanamaz.</p>
@@ -5723,7 +5808,10 @@ errors.lastName = 'Soyad alanı zorunludur.'
                     <span>{activeOrderContextPreview.future_mikro_write_label ?? 'Mikro yazımı bu aşamada kapalı'}</span>
                     <span>Ticari durum: <strong>{activeOrderContextPreview.commercial_mode_label ?? '-'}</strong></span>
                     <span>Teslim: <strong>{activeOrderContextPreview.delivery_mode_label ?? activeOrderContextPreview.delivery_target_label ?? 'Yok'}</strong></span>
-                    <span>KDV: <strong>{activeOrderContextPreview.tax_label ?? '-'}</strong></span>
+                    <span>KDV kaynağı: <strong>{activeOrderContextPreview.tax_source_label ?? activeOrderContextPreview.tax_label ?? '-'}</strong></span>
+                    <span>Brüt toplam (KDV dahil): <strong>{activeOrderContextPreview.gross_total_label ?? activeOrderContextPreview.charged_amount_label ?? '-'}</strong></span>
+                    <span>KDV hariç toplam: <strong>{activeOrderContextPreview.net_total_label ?? '-'}</strong></span>
+                    <span>KDV toplamı: <strong>{activeOrderContextPreview.vat_total_label ?? '-'}</strong></span>
                     <span>Ödeme bağlantısı: <strong>{activeOrderContextPreview.payment_link_required ? 'Gerekli' : 'Yok'}</strong></span>
                     <span>Tahsilat: <strong>{activeOrderContextPreview.payment_status_label ?? '-'}</strong></span>
                     <span>Tahsilat tutarı: <strong>{activeOrderContextPreview.collection_amount_label ?? activeOrderContextPreview.charged_amount_label ?? '-'}</strong></span>
@@ -5742,9 +5830,21 @@ errors.lastName = 'Soyad alanı zorunludur.'
                   {(activeOrderContextPreview.lines ?? []).length > 0 ? (
                     <div className="grid gap-2">
                       {(activeOrderContextPreview.lines ?? []).map((line) => (
-                        <div key={String(line.line_key ?? line.item_code)} className="flex flex-wrap justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
-                          <span><strong>{line.item_code}</strong> · {line.item_name} · {line.quantity} {line.unit_code ?? ''}</span>
-                          <span>{line.unit_price_label ?? formatMoneyValue(line.unit_price)} · <strong>{line.line_total_label ?? formatMoneyValue(line.line_total)}</strong></span>
+                        <div key={String(line.line_key ?? line.item_code)} className="grid gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+                          <div className="flex flex-wrap justify-between gap-2">
+                            <span><strong>{line.item_code}</strong> · {line.item_name} · {line.quantity} {line.unit_code ?? ''}</span>
+                            <span>
+                              Birim fiyat (KDV dahil): {line.gross_unit_price_label ?? line.unit_price_label ?? formatMoneyValue(line.unit_price)}
+                              {' · '}<strong>Satır toplamı (KDV dahil): {line.gross_line_total_label ?? line.line_total_label ?? formatMoneyValue(line.line_total)}</strong>
+                            </span>
+                          </div>
+                          {line.tax_status === 'verified' ? (
+                            <div className="grid gap-1 text-slate-600 sm:grid-cols-3">
+                              <span>KDV oranı: <strong>{line.selected_tax_rate_label ?? '-'}</strong></span>
+                              <span>Matrah: <strong>{line.net_line_total_label ?? '-'}</strong></span>
+                              <span>KDV tutarı: <strong>{line.vat_line_total_label ?? '-'}</strong></span>
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -5752,6 +5852,20 @@ errors.lastName = 'Soyad alanı zorunludur.'
                   {(activeOrderContextPreview.readiness?.blockers ?? []).map((blocker) => (
                     <p key={blocker} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 font-semibold text-amber-900">{blocker}</p>
                   ))}
+                  {activeOrderContextTaxRetryRequired ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                      <span className="font-semibold text-amber-950">KDV profili doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.</span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={orderContextTaxRetryInFlight}
+                        onClick={retryOrderContextTaxProfile}
+                      >
+                        {orderContextTaxRetryInFlight ? 'KDV kontrol ediliyor...' : 'KDV’yi yeniden kontrol et'}
+                      </Button>
+                    </div>
+                  ) : null}
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-white">{activeOrderContextPreview.description2_preview}</pre>
                   <p className="font-medium">Yerel hazırlık revizyonu: {activeOrderContextPreview.revision} · Mikro yazımı 0 · Kargo sağlayıcı çağrısı 0</p>
                 </>

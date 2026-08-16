@@ -19,20 +19,20 @@ class MikroOperationRegistryTest extends TestCase
         $summary = $registry->summary();
 
         $this->assertSame('active', $summary['status']);
-        $this->assertSame(34, $summary['read_count']);
-        $this->assertSame(32, $summary['implemented_read_count']);
+        $this->assertSame(35, $summary['read_count']);
+        $this->assertSame(33, $summary['implemented_read_count']);
         $this->assertSame(1, $summary['enabled_read_count']);
         $this->assertSame(11, $summary['write_count']);
         $this->assertSame(0, $summary['enabled_write_count']);
         $this->assertSame(9, $summary['direct_endpoint_count']);
-        $this->assertSame(23, $summary['fixed_query_count']);
+        $this->assertSame(24, $summary['fixed_query_count']);
         $this->assertSame(13, $summary['contract_blocked_count']);
-        $this->assertSame(4, $summary['server_verified_read_count']);
+        $this->assertSame(5, $summary['server_verified_read_count']);
         $this->assertSame(28, $summary['server_unverified_count']);
-        $this->assertSame(4, $summary['runtime_eligible_read_count']);
-        $this->assertSame(25, $summary['response_schema_verified_count']);
+        $this->assertSame(5, $summary['runtime_eligible_read_count']);
+        $this->assertSame(26, $summary['response_schema_verified_count']);
         $this->assertSame(9, $summary['response_schema_missing_count']);
-        $this->assertSame(23, $summary['parity_status_counts']['VERIFIED_SOURCE']);
+        $this->assertSame(24, $summary['parity_status_counts']['VERIFIED_SOURCE']);
         $this->assertSame(8, $summary['parity_status_counts']['PENDING_SOURCE']);
         $this->assertSame(1, $summary['parity_status_counts']['NOT_APPLICABLE_SYSTEM']);
         $this->assertSame(11, $summary['parity_status_counts']['WRITE_REQUIRES_READBACK_CONTRACT']);
@@ -44,7 +44,7 @@ class MikroOperationRegistryTest extends TestCase
         foreach ([
             'health.check', 'user.parameters', 'user.list',
             'customer.list', 'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.list', 'stock.availability', 'stock.search', 'stock.physical_quantity', 'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.list', 'stock.availability', 'stock.search', 'stock.physical_quantity', 'stock.tax_profile', 'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines', 'invoice.pdf',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines', 'dispatch.pdf',
@@ -90,6 +90,11 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame('stock.physical_quantity', $registry->read('stock.physical_quantity')['fixed_query_id']);
         $this->assertTrue($registry->read('stock.physical_quantity')['runtime_eligible']);
         $this->assertFalse($registry->read('stock.physical_quantity')['runtime_enabled']);
+        $this->assertSame('OFFICIAL_AND_SERVER_VERIFIED', $registry->read('stock.tax_profile')['evidence_status']);
+        $this->assertSame('stock.tax_profile', $registry->read('stock.tax_profile')['fixed_query_id']);
+        $this->assertSame('/Api/APIMethods/VergiListesiV2', $registry->read('stock.tax_profile')['supporting_endpoint']);
+        $this->assertTrue($registry->read('stock.tax_profile')['runtime_eligible']);
+        $this->assertFalse($registry->read('stock.tax_profile')['runtime_enabled']);
 
         $queries = app(MikroFixedQueryCatalog::class);
         $definition = $queries->definition('invoice.list');
@@ -217,6 +222,16 @@ class MikroOperationRegistryTest extends TestCase
         $this->assertSame('mikro', $stock['source_mode']);
         $this->assertFalse($registry->read('stock.availability')['runtime_enabled']);
         $this->assertFalse($registry->read('serial.lookup')['runtime_enabled']);
+
+        $taxProfile = $registry->assertReadAllowed('stock.tax_profile', [
+            'enabled' => true,
+            'read_sync_enabled' => false,
+            'operation_controls' => [
+                'stock.tax_profile' => ['runtime_enabled' => true, 'source_mode' => 'mikro'],
+            ],
+        ]);
+        $this->assertTrue($taxProfile['runtime_enabled']);
+        $this->assertSame('/Api/APIMethods/VergiListesiV2', $taxProfile['supporting_endpoint']);
     }
 
     public function test_write_gate_requires_master_operation_approval_and_idempotency(): void
@@ -257,6 +272,14 @@ class MikroOperationRegistryTest extends TestCase
             if ($operation['adapter_type'] === 'FIXED_QUERY') {
                 $this->assertNotEmpty($operation['v17_table_evidence']);
                 $sql = $queries->definition($operation['fixed_query_id'])['sql'];
+                if ($operation['operation_key'] === 'stock.tax_profile') {
+                    foreach (['item_code', 'retail_tax_pointer', 'wholesale_tax_pointer'] as $field) {
+                        $this->assertMatchesRegularExpression('/\bAS\s+'.preg_quote($field, '/').'\b/i', $sql);
+                    }
+                    $this->assertSame('/Api/APIMethods/VergiListesiV2', $operation['supporting_endpoint']);
+
+                    continue;
+                }
                 foreach ($operation['allowed_response_fields'] as $field) {
                     $this->assertMatchesRegularExpression('/\bAS\s+'.preg_quote($field, '/').'\b/i', $sql);
                 }

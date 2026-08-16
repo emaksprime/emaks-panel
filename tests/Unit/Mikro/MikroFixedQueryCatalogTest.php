@@ -15,21 +15,21 @@ class MikroFixedQueryCatalogTest extends TestCase
     {
         $catalog = app(MikroFixedQueryCatalog::class);
 
-        $this->assertCount(31, $catalog->queryIds());
+        $this->assertCount(32, $catalog->queryIds());
         $this->assertSame([
             'customer.detail', 'customer.balance', 'customer.document.timeline',
-            'stock.availability', 'stock.search', 'stock.physical_quantity', 'stock.movement.list', 'serial.lookup', 'serial.history',
+            'stock.availability', 'stock.search', 'stock.physical_quantity', 'stock.tax_profile', 'stock.movement.list', 'serial.lookup', 'serial.history',
             'order.list', 'order.detail', 'order.lines', 'order.remaining.quantity',
             'invoice.list', 'invoice.detail', 'invoice.lines',
             'dispatch.list', 'dispatch.detail', 'dispatch.lines',
             'return.list', 'return.detail', 'exchange.status', 'replacement.serial.lookup',
-        ], array_slice($catalog->queryIds(), 0, 23));
+        ], array_slice($catalog->queryIds(), 0, 24));
         $this->assertSame([
             'parity.customer.discovery.v2', 'parity.customer.detail.v2',
             'parity.stock.discovery.v1', 'parity.stock.detail.v1',
             'parity.serial.discovery.v1', 'parity.serial.detail.v1',
             'parity.order.discovery.v1', 'parity.order.detail.v1',
-        ], array_slice($catalog->queryIds(), 23));
+        ], array_slice($catalog->queryIds(), 24));
 
         foreach ($catalog->queryIds() as $queryId) {
             $definition = $catalog->definition($queryId);
@@ -120,6 +120,41 @@ class MikroFixedQueryCatalogTest extends TestCase
         try {
             $catalog->n8nTemplate('stock.physical_quantity');
             $this->fail('Physical stock must not gain an n8n path.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
+        }
+    }
+
+    public function test_stock_tax_profile_query_is_immutable_bounded_and_keeps_pointer_resolution_separate(): void
+    {
+        $catalog = app(MikroFixedQueryCatalog::class);
+        $definition = $catalog->definition('stock.tax_profile');
+        $sql = $catalog->render('stock.tax_profile', [
+            'item_codes' => ['TKN000009', 'EE.BCK.STD.0010'],
+        ]);
+
+        $this->assertSame('technical_service_part_tax_profile_v1', $definition['contract_id']);
+        $this->assertSame(['STOKLAR'], $definition['tables']);
+        $this->assertSame('/Api/APIMethods/VergiListesiV2', $definition['rate_endpoint']);
+        $this->assertStringContainsString('sto.sto_perakende_vergi', $sql);
+        $this->assertStringContainsString('sto.sto_toptan_vergi', $sql);
+        $this->assertStringContainsString('AS retail_tax_pointer', $sql);
+        $this->assertStringContainsString('AS wholesale_tax_pointer', $sql);
+        $this->assertStringContainsString("IN (N'EE.BCK.STD.0010', N'TKN000009')", $sql);
+        $this->assertStringNotContainsString('VERGI_FON_TANIMLARI', $sql);
+        $this->assertStringNotContainsString('tax_rate', $sql);
+        $this->assertStringNotContainsString('[[', $sql);
+
+        try {
+            $catalog->render('stock.tax_profile', ['item_codes' => array_fill(0, 21, 'OVER-LIMIT')]);
+            $this->fail('Tax-profile batch limit must fail closed.');
+        } catch (DomainException $exception) {
+            $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
+        }
+
+        try {
+            $catalog->n8nTemplate('stock.tax_profile');
+            $this->fail('Tax profile must not gain an n8n path.');
         } catch (DomainException $exception) {
             $this->assertSame('MIKRO_QUERY_PARAMETER_INVALID', $exception->getMessage());
         }

@@ -95,6 +95,13 @@ class MikroFixedQueryCatalog
             'depot_source_id' => 'stock_warehouse',
             'contract_id' => 'technical_service_part_physical_stock_v1',
         ],
+        'stock.tax_profile' => [
+            'sql' => 'SELECT LTRIM(RTRIM(sto.sto_kod)) AS item_code, CAST(sto.sto_perakende_vergi AS int) AS retail_tax_pointer, CAST(sto.sto_toptan_vergi AS int) AS wholesale_tax_pointer FROM dbo.STOKLAR AS sto WITH (NOLOCK) WHERE ISNULL(sto.sto_iptal, 0) = 0 AND ISNULL(sto.sto_hidden, 0) = 0 AND LTRIM(RTRIM(sto.sto_kod)) IN ([[item_codes]]) ORDER BY LTRIM(RTRIM(sto.sto_kod)) ASC',
+            'parameters' => ['item_codes' => 'code_list'],
+            'tables' => ['STOKLAR'],
+            'contract_id' => 'technical_service_part_tax_profile_v1',
+            'rate_endpoint' => '/Api/APIMethods/VergiListesiV2',
+        ],
         'stock.movement.list' => [
             'sql' => 'SELECT TOP ([[limit]]) sth.sth_Guid AS movement_guid, sth.sth_tarih AS movement_date, sth.sth_stok_kod AS stock_code, sth.sth_cari_kodu AS customer_code, sth.sth_tip AS movement_type, sth.sth_normal_iade AS is_return, sth.sth_miktar AS quantity, sth.sth_evrakno_seri AS document_series, sth.sth_evrakno_sira AS document_number FROM dbo.STOK_HAREKETLERI AS sth WITH (NOLOCK) WHERE LTRIM(RTRIM(sth.sth_stok_kod)) = [[stock_code]] AND CAST(sth.sth_tarih AS date) BETWEEN [[date_from]] AND [[date_to]] ORDER BY sth.sth_tarih DESC, sth.sth_Guid DESC',
             'parameters' => ['stock_code' => 'code', 'date_from' => 'date', 'date_to' => 'date', 'limit' => 'limit'],

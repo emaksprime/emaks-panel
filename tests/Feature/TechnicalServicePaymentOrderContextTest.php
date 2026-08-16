@@ -14,6 +14,7 @@ use App\Services\Mikro\MikroApiClient;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServicePaymentOrderContextService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
@@ -1592,8 +1593,9 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertStringContainsString('1. 2 ADET · TS-PART-001 · Gateway', $preview['description2_preview']);
         $this->assertStringContainsString('2. 1 ADET · TS-PART-002 · Akıllı Kilit Motor Modülü', $preview['description2_preview']);
         $this->assertStringContainsString('PARÇA KALEMİ: 2', $preview['description2_preview']);
-        $this->assertStringContainsString('SİPARİŞ/REFERANS TOPLAMI: 1.750,00 TL', $preview['description2_preview']);
-        $this->assertStringContainsString('TAHSİLAT TOPLAMI: 1.750,00 TL', $preview['description2_preview']);
+        $this->assertStringContainsString('SİPARİŞ/REFERANS TOPLAMI (KDV DAHİL): 1.750,00 TL', $preview['description2_preview']);
+        $this->assertStringContainsString('MÜŞTERİDEN TAHSİL EDİLECEK: 1.750,00 TL', $preview['description2_preview']);
+        $this->assertStringContainsString('KDV TOPLAMA DAHİLDİR.', $preview['description2_preview']);
         $this->assertSame(1, substr_count($preview['description2_preview'], 'İLGİLİ ÜRÜN SERİ NO:'));
     }
 
@@ -1608,7 +1610,9 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
         $this->assertSame('Q', $preview['desired_mikro_series']);
         $this->assertSame('none', $preview['tax_mode']);
-        $this->assertSame(0.0, $preview['vat_rate']);
+        $this->assertSame('0', $preview['vat_rate']);
+        $this->assertSame('750.00', $preview['net_total']);
+        $this->assertSame('0.00', $preview['vat_total']);
         $this->assertFalse($preview['payment_link_required']);
         $this->assertSame(750.0, $preview['order_line_total']);
         $this->assertSame(0.0, $preview['collection_amount']);
@@ -1656,9 +1660,150 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
         $this->assertSame('S', $preview['desired_mikro_series']);
         $this->assertSame('standard_from_mikro', $preview['tax_mode']);
-        $this->assertNull($preview['vat_rate']);
+        $this->assertSame('20', $preview['vat_rate']);
+        $this->assertSame('verified', $preview['tax_status']);
+        $this->assertSame('mikro_api', $preview['tax_source']);
+        $this->assertSame('600.00', $preview['gross_total']);
+        $this->assertSame('500.00', $preview['net_total']);
+        $this->assertSame('100.00', $preview['vat_total']);
+        $this->assertSame('20', $preview['lines'][0]['selected_tax_rate']);
         $this->assertTrue($preview['payment_link_required']);
         $this->assertSame('payment_paid', $preview['future_order_trigger']);
+    }
+
+    public function test_mixed_vat_lines_split_gross_without_increasing_customer_total(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $motor = $this->stockItem($request, 'Akıllı');
+        $input = $this->multiLineInput($request, [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 1, 'unit_price' => 1000],
+            [
+                'stock_selection_token' => $motor['selection_token'],
+                'quantity' => 1,
+                'unit_price' => 1000,
+                'selected_part_serial' => 'TSP-2026-0001',
+            ],
+        ]);
+
+        $preview = $this->service()->preview($request, 'part_charge', $input, 2000, 'TRY');
+
+        $this->assertSame(2000.0, $preview['collection_amount']);
+        $this->assertSame('2000.00', $preview['gross_total']);
+        $this->assertSame('1742.42', $preview['net_total']);
+        $this->assertSame('257.58', $preview['vat_total']);
+        $this->assertTrue($preview['mixed_vat_rates']);
+        $this->assertNull($preview['vat_rate']);
+        $this->assertSame(['20', '10'], array_column($preview['lines'], 'selected_tax_rate'));
+        $this->assertSame(['833.33', '909.09'], array_column($preview['lines'], 'net_line_total'));
+        $this->assertSame(['166.67', '90.91'], array_column($preview['lines'], 'vat_line_total'));
+        foreach ($preview['lines'] as $line) {
+            $grossMinor = (int) round((float) $line['gross_line_total'] * 100);
+            $netMinor = (int) round((float) $line['net_line_total'] * 100);
+            $vatMinor = (int) round((float) $line['vat_line_total'] * 100);
+            $this->assertSame($grossMinor, $netMinor + $vatMinor);
+        }
+        $this->assertSame(200000, 174242 + 25758);
+        $this->assertStringContainsString('MÜŞTERİDEN TAHSİL EDİLECEK: 2.000,00 TL', $preview['description2_preview']);
+        $this->assertStringContainsString('KDV HARİÇ TOPLAM: 1.742,42 TL', $preview['description2_preview']);
+        $this->assertStringContainsString('KDV TOPLAMI: 257,58 TL', $preview['description2_preview']);
+        $this->assertStringNotContainsString('+ KDV', $preview['description2_preview']);
+    }
+
+    public function test_q_flow_uses_zero_vat_without_requiring_mikro_tax_profile(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $token = json_decode(Crypt::decryptString($gateway['selection_token']), true, 512, JSON_THROW_ON_ERROR);
+        unset($token['tax_profile']);
+        $gateway['selection_token'] = Crypt::encryptString(json_encode($token, JSON_THROW_ON_ERROR));
+        $input = $this->multiLineInput($request, [[
+            'stock_selection_token' => $gateway['selection_token'],
+            'quantity' => 1,
+            'unit_price' => 1000,
+        ]], [
+            'delivery_mode' => 'hand_delivery',
+            'delivery_target' => 'mrn_customer',
+        ]);
+
+        $preview = $this->service()->preview($request, 'part_charge', $input, 1000, 'TRY');
+
+        $this->assertSame('Q', $preview['desired_mikro_series']);
+        $this->assertSame('none', $preview['tax_mode']);
+        $this->assertSame('verified', $preview['tax_status']);
+        $this->assertSame('0', $preview['vat_rate']);
+        $this->assertSame('1000.00', $preview['net_total']);
+        $this->assertSame('0.00', $preview['vat_total']);
+        $this->assertTrue($preview['readiness']['ready']);
+    }
+
+    public function test_unverified_vat_blocks_readiness_and_creates_no_payment_or_context(): void
+    {
+        [$request] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $token = json_decode(Crypt::decryptString($gateway['selection_token']), true, 512, JSON_THROW_ON_ERROR);
+        unset($token['tax_profile']);
+        $input = $this->multiLineInput($request, [[
+            'stock_selection_token' => Crypt::encryptString(json_encode($token, JSON_THROW_ON_ERROR)),
+            'quantity' => 1,
+            'unit_price' => 1000,
+        ]]);
+
+        $preview = $this->service()->preview($request, 'part_charge', $input, 1000, 'TRY');
+
+        $this->assertSame('unavailable', $preview['tax_status']);
+        $this->assertContains('vat_unverified', $preview['readiness']['blocker_codes']);
+        $this->assertFalse($preview['readiness']['payment_ready']);
+        try {
+            $this->service()->prepare($request, 'part_charge', [
+                ...$input,
+                'expected_context_hash' => $preview['context_hash'],
+                'expected_revision' => $preview['revision'],
+            ], 1000, 'TRY', $this->actor(), false);
+            $this->fail('Unverified VAT created a payment/order context.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('KDV', $exception->errors()['order_context'][0]);
+        }
+
+        $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::TABLE, 0);
+        $this->assertDatabaseCount('technical_service_mount_payments', 0);
+    }
+
+    public function test_vat_change_changes_context_hash_and_cannot_reuse_pending_payment(): void
+    {
+        [$request, $session] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $oldInput = $this->multiLineInput($request, [[
+            'stock_selection_token' => $gateway['selection_token'],
+            'quantity' => 1,
+            'unit_price' => 1000,
+        ]]);
+        $oldPreview = $this->service()->preview($request, 'part_charge', $oldInput, 1000, 'TRY', 'fake', 'local');
+        [, $payment] = $this->pendingContext($request, $session, 'part_charge', $oldPreview, $oldInput, 1000);
+
+        $token = json_decode(Crypt::decryptString($gateway['selection_token']), true, 512, JSON_THROW_ON_ERROR);
+        $token['tax_profile'] = [
+            'retail_tax_pointer' => 8,
+            'retail_tax_rate' => '10',
+            'wholesale_tax_pointer' => 8,
+            'wholesale_tax_rate' => '10',
+            'selected_tax_basis' => 'equal_rates',
+            'selected_tax_pointer' => 8,
+            'selected_tax_rate' => '10',
+            'tax_status' => 'verified',
+        ];
+        $newInput = $this->multiLineInput($request, [[
+            'stock_selection_token' => Crypt::encryptString(json_encode($token, JSON_THROW_ON_ERROR)),
+            'quantity' => 1,
+            'unit_price' => 1000,
+        ]]);
+        $newPreview = $this->service()->preview($request, 'part_charge', $newInput, 1000, 'TRY', 'fake', 'local');
+
+        $this->assertNotSame($oldPreview['context_hash'], $newPreview['context_hash']);
+        $this->assertSame('fresh_link_required', $newPreview['payment_retry']['state']);
+        $this->assertSame($payment->id, $newPreview['payment_retry']['supersede_payment_id']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->fresh()->status);
+        $this->assertDatabaseCount('technical_service_mount_payments', 1);
     }
 
     public function test_mount_collection_resolves_s_service_order(): void

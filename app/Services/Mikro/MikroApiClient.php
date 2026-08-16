@@ -15,6 +15,8 @@ class MikroApiClient
 {
     private const MAX_READ_ATTEMPTS = 2;
 
+    private const MAX_RESPONSE_BYTES = 2097152;
+
     public function __construct(
         private readonly MikroOperationRegistry $registry,
         private readonly MikroFixedQueryCatalog $queries,
@@ -177,6 +179,21 @@ class MikroApiClient
         return $this->retryFixed('stock.physical_quantity', ['item_codes' => $itemCodes]);
     }
 
+    /** @param array<int, string> $itemCodes */
+    public function stockTaxProfiles(array $itemCodes): array
+    {
+        return $this->executeStockTaxProfiles($itemCodes);
+    }
+
+    /** @param array<int, string> $itemCodes */
+    public function retryStockTaxProfiles(array $itemCodes): array
+    {
+        return $this->retryReadOperation(
+            'stock.tax_profile',
+            fn (): array => $this->executeStockTaxProfiles($itemCodes),
+        );
+    }
+
     public function stockAvailability(string $stockCode): array
     {
         return $this->fixed('stock.availability', ['stock_code' => $stockCode]);
@@ -312,10 +329,19 @@ class MikroApiClient
 
     private function retryFixed(string $operationKey, array $parameters): array
     {
+        return $this->retryReadOperation(
+            $operationKey,
+            fn (): array => $this->fixed($operationKey, $parameters),
+        );
+    }
+
+    /** @param callable():array<string, mixed> $callback */
+    private function retryReadOperation(string $operationKey, callable $callback): array
+    {
         $context = $this->settings->mikroApiConnectionContext();
         $origin = rtrim((string) ($context['base_url'] ?? ''), '/');
         if ($origin === '') {
-            return $this->fixed($operationKey, $parameters);
+            return $callback();
         }
 
         $lock = Cache::lock(
@@ -338,10 +364,176 @@ class MikroApiClient
         try {
             $this->runtimeState->resetCircuit($origin, $operationKey);
 
-            return $this->fixed($operationKey, $parameters);
+            return $callback();
         } finally {
             $lock->release();
         }
+    }
+
+    /** @param array<int, string> $itemCodes */
+    private function executeStockTaxProfiles(array $itemCodes): array
+    {
+        $operationKey = 'stock.tax_profile';
+        $correlationId = (string) Str::uuid();
+        $filters = ['item_codes' => $itemCodes];
+        $context = $this->settings->mikroApiConnectionContext();
+
+        try {
+            $sql = $this->queries->render($operationKey, $filters);
+            $operation = $this->registry->assertReadAllowed($operationKey, $context);
+        } catch (DomainException $exception) {
+            return $this->failureResult($operationKey, $exception->getMessage(), $correlationId);
+        }
+
+        $rateEndpoint = $operation['supporting_endpoint'] ?? null;
+        if (! is_string($rateEndpoint) || ! str_starts_with($rateEndpoint, '/Api/')) {
+            return $this->failureResult($operationKey, 'MIKRO_TAX_RATE_ENDPOINT_MISSING', $correlationId);
+        }
+
+        if (! ($context['live_configuration_ready'] ?? false)) {
+            return $this->failureResult($operationKey, 'MIKRO_LIVE_CONFIGURATION_MISSING', $correlationId);
+        }
+        if ($blocker = $this->registry->baseUrlBlocker($context['base_url'] ?? null)) {
+            return $this->failureResult($operationKey, 'MIKRO_INVALID_BASE_URL', $correlationId, null, 0, $blocker);
+        }
+
+        $origin = rtrim((string) $context['base_url'], '/');
+        $circuit = $this->runtimeState->beforeRequest($origin, $operationKey);
+        if (! $circuit['allowed']) {
+            return $this->fallbackOrFailure($operationKey, $filters, 'MIKRO_CIRCUIT_OPEN', $correlationId, null, 0, $circuit['circuit_state']);
+        }
+
+        $startedAt = microtime(true);
+        $lastError = 'MIKRO_CONNECTION_FAILED';
+        $lastStatus = null;
+        $lastMessage = null;
+        $attempts = 0;
+
+        for ($attempt = 1; $attempt <= self::MAX_READ_ATTEMPTS; $attempt++) {
+            $attempts = $attempt;
+            try {
+                $pointerResponse = $this->sendReadRequest(
+                    $origin.(string) $operation['endpoint'],
+                    $this->requestPayload($operation, ['SQLSorgu' => $sql], $context),
+                    $context,
+                    $correlationId,
+                );
+                $lastStatus = $pointerResponse->status();
+                if (! $pointerResponse->successful()) {
+                    $lastError = $this->httpErrorCode($pointerResponse);
+                    $lastMessage = $lastError;
+                    if ($this->shouldRetry($lastError, $lastStatus) && $attempt < self::MAX_READ_ATTEMPTS) {
+                        continue;
+                    }
+                    break;
+                }
+                if (strlen($pointerResponse->body()) > self::MAX_RESPONSE_BYTES) {
+                    return $this->failureResult($operationKey, 'MIKRO_RESPONSE_TOO_LARGE', $correlationId, $lastStatus, $attempt, null, $startedAt, $circuit['circuit_state']);
+                }
+                $pointerJson = $pointerResponse->json();
+                if (! is_array($pointerJson)) {
+                    return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $lastStatus, $attempt, null, $startedAt, $circuit['circuit_state']);
+                }
+                $pointerEnvelope = $this->fixedQueryEnvelope($operationKey, $pointerJson);
+                if (($pointerEnvelope['is_error'] ?? true) === true) {
+                    return $this->failureResult($operationKey, 'MIKRO_BUSINESS_ERROR', $correlationId, $lastStatus, $attempt, null, $startedAt, $circuit['circuit_state']);
+                }
+                $pointerRows = $this->responseSchemas->normalizeStockTaxPointerRows((array) ($pointerEnvelope['rows'] ?? []));
+
+                $rateResponse = $this->sendReadRequest(
+                    $origin.$rateEndpoint,
+                    $this->requestPayload($operation, [], $context),
+                    $context,
+                    $correlationId,
+                );
+                $lastStatus = $rateResponse->status();
+                if (! $rateResponse->successful()) {
+                    $lastError = $this->httpErrorCode($rateResponse);
+                    $lastMessage = $lastError;
+                    if ($this->shouldRetry($lastError, $lastStatus) && $attempt < self::MAX_READ_ATTEMPTS) {
+                        continue;
+                    }
+                    break;
+                }
+                if (strlen($rateResponse->body()) > self::MAX_RESPONSE_BYTES) {
+                    return $this->failureResult($operationKey, 'MIKRO_RESPONSE_TOO_LARGE', $correlationId, $lastStatus, $attempt, null, $startedAt, $circuit['circuit_state']);
+                }
+                $rateJson = $rateResponse->json();
+                if (! is_array($rateJson)) {
+                    return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $lastStatus, $attempt, null, $startedAt, $circuit['circuit_state']);
+                }
+                $rateRows = $this->responseSchemas->normalizeInstalledTaxRates($rateJson);
+                $freshness = now()->toIso8601String();
+                $data = $this->responseSchemas->resolveStockTaxProfiles(
+                    $pointerRows,
+                    $rateRows,
+                    $freshness,
+                    $correlationId,
+                );
+            } catch (ConnectionException $exception) {
+                $lastError = $this->connectionErrorCode($exception);
+                $lastMessage = $lastError;
+                if ($this->shouldRetry($lastError, null) && $attempt < self::MAX_READ_ATTEMPTS) {
+                    continue;
+                }
+                break;
+            } catch (DomainException $exception) {
+                return $this->failureResult($operationKey, 'MIKRO_INVALID_RESPONSE', $correlationId, $lastStatus, $attempt, $exception->getMessage(), $startedAt, $circuit['circuit_state']);
+            } catch (Throwable) {
+                $lastError = 'MIKRO_CONNECTION_FAILED';
+                $lastMessage = $lastError;
+                break;
+            }
+
+            $this->runtimeState->recordSuccess($origin, $operationKey);
+            $this->runtimeState->storeLastGood($operationKey, $filters, $data, 'mikro', $freshness, $correlationId);
+
+            return $this->resultEnvelope(
+                $operationKey,
+                true,
+                $lastStatus,
+                null,
+                'OK',
+                $startedAt,
+                $attempt,
+                $data,
+                'mikro',
+                $freshness,
+                $correlationId,
+                false,
+                false,
+                $circuit['circuit_state'],
+            );
+        }
+
+        if ($this->shouldRetry($lastError, $lastStatus)) {
+            $this->runtimeState->recordTransientFailure($origin, $operationKey);
+
+            return $this->fallbackOrFailure(
+                $operationKey,
+                $filters,
+                $lastError,
+                $correlationId,
+                $startedAt,
+                $attempts,
+                $this->runtimeState->circuit($origin, $operationKey)['circuit_state'],
+                $lastStatus,
+                $lastMessage,
+            );
+        }
+
+        return $this->failureResult($operationKey, $lastError, $correlationId, $lastStatus, $attempts, $lastMessage, $startedAt, $circuit['circuit_state']);
+    }
+
+    /** @param array<string, mixed> $payload @param array<string, mixed> $context */
+    private function sendReadRequest(string $url, array $payload, array $context, string $correlationId): Response
+    {
+        return Http::acceptJson()
+            ->asJson()
+            ->withHeaders(['X-Correlation-ID' => $correlationId])
+            ->connectTimeout(min(5, (int) $context['timeout_seconds']))
+            ->timeout((int) $context['timeout_seconds'])
+            ->post($url, $payload);
     }
 
     private function execute(string $operationKey, array $payload = [], array $snapshotFilters = []): array

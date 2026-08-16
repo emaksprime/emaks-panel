@@ -55,13 +55,17 @@ class TechnicalServicePaymentOrderContextService
 
     private const DESCRIPTION2_VERSION = 1;
 
-    private const PART_DESCRIPTION2_VERSION = 2;
+    private const PART_DESCRIPTION2_VERSION = 3;
 
     private const ITEM_CLASSIFICATION_VERSION = 'technical-service-part-classification-v2';
 
     private const MAX_PART_LINES = 20;
 
     private const PHYSICAL_STOCK_CACHE_SECONDS = 30;
+
+    private const TAX_PROFILE_CACHE_SECONDS = 30;
+
+    private const TAX_RATE_SCALE = 4;
 
     private const PHYSICAL_STOCK_SCALE = 6;
 
@@ -652,6 +656,19 @@ class TechnicalServicePaymentOrderContextService
         ?string $providerMode = null,
     ): array {
         $normalized = $this->normalize($request, $purpose, $input, $amount, $currency, true);
+        $taxBlockerCodes = array_values(array_intersect(
+            (array) ($normalized['readiness']['blocker_codes'] ?? []),
+            ['vat_unverified', 'tax_basis_unresolved'],
+        ));
+        if ($taxBlockerCodes !== []) {
+            $taxBlockerMessage = in_array('tax_basis_unresolved', $taxBlockerCodes, true)
+                ? 'Mikro stok kartında perakende ve toptan KDV oranları farklı. Sipariş vergi temeli doğrulanmadan işlem tamamlanamaz.'
+                : 'KDV doğrulanamadı. Ödeme ve sipariş hazırlığı tamamlanamaz.';
+
+            throw ValidationException::withMessages([
+                'order_context' => $taxBlockerMessage,
+            ]);
+        }
         $expectedHash = trim((string) ($input['expected_context_hash'] ?? ''));
         $expectedRevision = (int) ($input['expected_revision'] ?? 0);
         if ($expectedHash === '' || ! hash_equals($normalized['context_hash'], $expectedHash)) {
@@ -1475,7 +1492,6 @@ class TechnicalServicePaymentOrderContextService
         $collectionRequired = (bool) $decision['collection_required'];
         $paymentCollectionMode = (string) $decision['payment_collection_mode'];
         $taxMode = (string) $decision['tax_mode'];
-        $vatRate = $taxMode === 'none' ? 0.0 : null;
         $futureOrderTrigger = $decision['future_order_trigger'];
 
         $providedAmountMinor = $this->decimalToScaledInteger(number_format($amount, 2, '.', ''), 2, 'amount', 0, 999999999999);
@@ -1491,6 +1507,15 @@ class TechnicalServicePaymentOrderContextService
                 'amount' => 'Parça toplamı değişti. Sunucu tarafından hesaplanan güncel toplamı kullanın.',
             ]);
         }
+
+        $lines = $this->applyLineTaxProfiles(
+            $lines,
+            $taxMode,
+            $revalidatePhysicalStock,
+            ($input['retry_scope'] ?? null) === 'tax_profile',
+        );
+        $taxTotals = $this->lineTaxTotals($lines, $currency, $taxMode, $providedAmountMinor);
+        $vatRate = $taxTotals['cart_vat_rate'];
 
         if ($purpose === self::PURPOSE_MOUNT_COLLECTION || $partSupplier === self::SUPPLIER_TECHNICIAN || $collectionRequired) {
             if (($partSupplier === self::SUPPLIER_EMAKS ? $orderLineTotalMinor : $providedAmountMinor) <= 0) {
@@ -1517,7 +1542,15 @@ class TechnicalServicePaymentOrderContextService
             : self::DESCRIPTION2_VERSION;
         $readiness = $this->partReadiness($partSupplier, $lines, $taxMode);
         $lines = array_map(function (array $line): array {
-            unset($line['quantity_milli'], $line['unit_price_minor'], $line['line_total_minor'], $line['physical_stock_total_micros']);
+            unset(
+                $line['quantity_milli'],
+                $line['unit_price_minor'],
+                $line['line_total_minor'],
+                $line['physical_stock_total_micros'],
+                $line['net_line_total_minor'],
+                $line['vat_line_total_minor'],
+                $line['fixture_tax_profile'],
+            );
 
             return $line;
         }, $lines);
@@ -1548,7 +1581,11 @@ class TechnicalServicePaymentOrderContextService
             'state_label' => 'Sipariş hazırlığı taslak',
             'desired_mikro_series' => $desiredMikroSeries,
             'tax_mode' => $taxMode,
-            'tax_label' => $this->taxLabel($taxMode),
+            'tax_label' => $taxTotals['tax_label'],
+            'tax_status' => $taxTotals['tax_status'],
+            'tax_source' => $taxTotals['tax_source'],
+            'tax_source_label' => $taxTotals['tax_source_label'],
+            'mixed_vat_rates' => $taxTotals['mixed_vat_rates'],
             'vat_rate' => $vatRate,
             'future_mikro_write_state' => $futureMikroWriteState,
             'future_mikro_write_label' => $futureMikroWriteState === 'not_required'
@@ -1595,6 +1632,12 @@ class TechnicalServicePaymentOrderContextService
             'order_line_total_label' => $this->moneyLabel($orderLineTotal, $currency),
             'order_reference_total' => $orderLineTotal,
             'order_reference_total_label' => $this->moneyLabel($orderLineTotal, $currency),
+            'gross_total' => $taxTotals['gross_total'],
+            'gross_total_label' => $taxTotals['gross_total_label'],
+            'net_total' => $taxTotals['net_total'],
+            'net_total_label' => $taxTotals['net_total_label'],
+            'vat_total' => $taxTotals['vat_total'],
+            'vat_total_label' => $taxTotals['vat_total_label'],
             'collection_amount' => $collectionAmount,
             'collection_amount_label' => $this->moneyLabel($collectionAmount, $currency),
             'future_order_trigger' => $futureOrderTrigger,
@@ -1639,8 +1682,11 @@ class TechnicalServicePaymentOrderContextService
                         'item_code' => $line['item_code'],
                         'item_kind' => $line['item_kind'],
                         'quantity' => number_format((float) $line['quantity'], 3, '.', ''),
-                        'unit_price' => number_format((float) $line['unit_price'], 2, '.', ''),
-                        'line_total' => number_format((float) $line['line_total'], 2, '.', ''),
+                        'gross_unit_price' => $line['gross_unit_price'],
+                        'gross_line_total' => $line['gross_line_total'],
+                        'selected_tax_basis' => $line['selected_tax_basis'] ?? null,
+                        'selected_tax_pointer' => $line['selected_tax_pointer'] ?? null,
+                        'vat_rate_snapshot' => $line['vat_rate_snapshot'] ?? null,
                         'currency' => $line['currency'],
                         'serial_tracking_state' => $line['serial_tracking_state'],
                         'selected_part_serial' => $line['selected_part_serial'],
@@ -1972,6 +2018,9 @@ class TechnicalServicePaymentOrderContextService
                 'serial_tracking_state' => $serialTrackingState,
                 'serial_tracking_required' => $serialTrackingState === 'required',
                 'selected_part_serial' => $selectedSerial !== '' ? $selectedSerial : null,
+                'fixture_tax_profile' => $fixtureTransport && is_array($decoded['tax_profile'] ?? null)
+                    ? $decoded['tax_profile']
+                    : null,
                 'tax_mode_snapshot' => $commercialMode === self::COMMERCIAL_PAID && $deliveryMode === self::DELIVERY_SHIPMENT
                     ? 'standard_from_mikro'
                     : 'none',
@@ -2035,11 +2084,276 @@ class TechnicalServicePaymentOrderContextService
 
         return [
             ...$part,
+            'quantity_milli' => $quantityMilli,
+            'unit_price_minor' => $unitPriceMinor,
+            'line_total_minor' => $totalMinor,
             'unit_price' => $this->scaledIntegerToFloat($unitPriceMinor, 2),
             'line_total' => $this->scaledIntegerToFloat($totalMinor, 2),
             'currency' => $currency,
             'tax_mode_snapshot' => 'none',
             'vat_rate_snapshot' => 0.0,
+        ];
+    }
+
+    /** @param array<int, array<string, mixed>> $lines @return array<int, array<string, mixed>> */
+    private function applyLineTaxProfiles(
+        array $lines,
+        string $taxMode,
+        bool $strict,
+        bool $manualRetry,
+    ): array {
+        if ($lines === []) {
+            return [];
+        }
+
+        if ($taxMode === 'none') {
+            return array_map(fn (array $line): array => $this->withLineTaxProjection($line, [
+                'retail_tax_pointer' => null,
+                'retail_tax_rate' => null,
+                'wholesale_tax_pointer' => null,
+                'wholesale_tax_rate' => null,
+                'selected_tax_basis' => 'q_series_zero',
+                'selected_tax_pointer' => null,
+                'selected_tax_rate' => '0',
+                'tax_status' => 'verified',
+                'tax_resolution_source' => 'technical_service_commercial_matrix',
+                'source' => 'commercial_matrix',
+                'freshness_at' => now()->toIso8601String(),
+                'contract_version' => 'technical-service-commercial-matrix-v1',
+                'correlation_id' => null,
+            ]), $lines);
+        }
+
+        if ($taxMode !== 'standard_from_mikro') {
+            return $lines;
+        }
+
+        $fixtureTransport = app()->environment('testing')
+            && (bool) config('services.technical_service.payment_order_context_test_stock', false);
+        $profiles = $fixtureTransport
+            ? collect($lines)->mapWithKeys(function (array $line): array {
+                $profile = is_array($line['fixture_tax_profile'] ?? null) ? $line['fixture_tax_profile'] : [];
+
+                return [(string) $line['item_code'] => [
+                    ...$profile,
+                    'tax_resolution_source' => 'typed_test_fixture',
+                    'source' => 'test_fixture',
+                    'freshness_at' => now()->toIso8601String(),
+                    'contract_version' => 'typed-test-tax-profile-v1',
+                    'correlation_id' => null,
+                ]];
+            })->all()
+            : $this->taxProfilesByItemCodes(array_column($lines, 'item_code'), $strict, ! $strict, $manualRetry);
+
+        return array_map(function (array $line) use ($profiles): array {
+            $code = mb_strtoupper(trim((string) ($line['item_code'] ?? '')), 'UTF-8');
+            $profile = $profiles[$code] ?? $this->unavailableTaxProfile($code, 'MIKRO_TAX_PROFILE_ROW_MISSING');
+
+            return $this->withLineTaxProjection($line, $profile);
+        }, $lines);
+    }
+
+    /** @param array<string, mixed> $line @param array<string, mixed> $profile @return array<string, mixed> */
+    private function withLineTaxProjection(array $line, array $profile): array
+    {
+        $grossUnitMinor = (int) ($line['unit_price_minor'] ?? 0);
+        $grossLineMinor = (int) ($line['line_total_minor'] ?? 0);
+        $currency = (string) ($line['currency'] ?? 'TRY');
+        $rate = $profile['selected_tax_rate'] ?? null;
+        $rateScaled = ($profile['tax_status'] ?? null) === 'verified'
+            ? $this->percentageToScaledInteger($rate)
+            : null;
+        $netMinor = null;
+        $vatMinor = null;
+        if ($rateScaled !== null) {
+            $base = 100 * (10 ** self::TAX_RATE_SCALE);
+            $denominator = $base + $rateScaled;
+            $netMinor = intdiv(($grossLineMinor * $base) + intdiv($denominator, 2), $denominator);
+            $vatMinor = $grossLineMinor - $netMinor;
+        }
+
+        return [
+            ...$line,
+            'gross_unit_price' => $this->scaledIntegerToDecimalString($grossUnitMinor, 2),
+            'gross_unit_price_label' => $this->moneyLabelFromMinor($grossUnitMinor, $currency),
+            'gross_line_total' => $this->scaledIntegerToDecimalString($grossLineMinor, 2),
+            'gross_line_total_label' => $this->moneyLabelFromMinor($grossLineMinor, $currency),
+            'net_line_total_minor' => $netMinor,
+            'net_line_total' => $netMinor === null ? null : $this->scaledIntegerToDecimalString($netMinor, 2),
+            'net_line_total_label' => $netMinor === null ? null : $this->moneyLabelFromMinor($netMinor, $currency),
+            'vat_line_total_minor' => $vatMinor,
+            'vat_line_total' => $vatMinor === null ? null : $this->scaledIntegerToDecimalString($vatMinor, 2),
+            'vat_line_total_label' => $vatMinor === null ? null : $this->moneyLabelFromMinor($vatMinor, $currency),
+            'retail_tax_pointer' => $profile['retail_tax_pointer'] ?? null,
+            'retail_tax_rate' => $profile['retail_tax_rate'] ?? null,
+            'wholesale_tax_pointer' => $profile['wholesale_tax_pointer'] ?? null,
+            'wholesale_tax_rate' => $profile['wholesale_tax_rate'] ?? null,
+            'selected_tax_basis' => $profile['selected_tax_basis'] ?? null,
+            'selected_tax_pointer' => $profile['selected_tax_pointer'] ?? null,
+            'selected_tax_rate' => $rate,
+            'selected_tax_rate_label' => $rate === null ? null : '%'.str_replace('.', ',', (string) $rate),
+            'tax_status' => $profile['tax_status'] ?? 'unavailable',
+            'tax_resolution_source' => $profile['tax_resolution_source'] ?? null,
+            'tax_source' => $profile['source'] ?? null,
+            'tax_freshness_at' => $profile['freshness_at'] ?? null,
+            'tax_contract_version' => $profile['contract_version'] ?? null,
+            'tax_correlation_id' => $profile['correlation_id'] ?? null,
+            'tax_mode_snapshot' => $line['tax_mode_snapshot'] ?? 'standard_from_mikro',
+            'vat_rate_snapshot' => $rate,
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $itemCodes
+     * @return array<string, array<string, mixed>>
+     */
+    private function taxProfilesByItemCodes(
+        array $itemCodes,
+        bool $strict = false,
+        bool $useCache = true,
+        bool $manualRetry = false,
+    ): array {
+        $codes = collect($itemCodes)
+            ->map(fn (mixed $code): string => mb_strtoupper(trim((string) $code), 'UTF-8'))
+            ->filter()
+            ->unique()
+            ->sort()
+            ->values();
+        if ($codes->isEmpty()) {
+            return [];
+        }
+        if ($codes->count() > self::MAX_PART_LINES) {
+            throw new DomainException('MIKRO_TAX_PROFILE_BATCH_LIMIT_EXCEEDED');
+        }
+
+        $cacheKey = 'technical-service:tax-profile:'
+            .MikroResponseSchemaCatalog::STOCK_TAX_PROFILE_CONTRACT_VERSION.':'
+            .hash('sha256', json_encode($codes->all(), JSON_THROW_ON_ERROR));
+        if ($useCache && ! $manualRetry) {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached) && array_keys($cached) === $codes->all()) {
+                return $cached;
+            }
+        }
+
+        $result = [];
+        try {
+            $result = $manualRetry
+                ? $this->mikro->retryStockTaxProfiles($codes->all())
+                : $this->mikro->stockTaxProfiles($codes->all());
+            if (($result['success'] ?? false) !== true
+                || ($result['stale'] ?? false) === true
+                || ($result['fallback_used'] ?? false) === true) {
+                throw new DomainException((string) ($result['error_code'] ?? 'MIKRO_TAX_PROFILE_UNAVAILABLE'));
+            }
+
+            $expected = array_fill_keys($codes->all(), true);
+            $profiles = [];
+            foreach (($result['data'] ?? []) as $row) {
+                if (! is_array($row)) {
+                    throw new DomainException('MIKRO_TAX_PROFILE_SCHEMA_INCOMPLETE');
+                }
+                $code = mb_strtoupper(trim((string) ($row['item_code'] ?? '')), 'UTF-8');
+                if (! isset($expected[$code]) || isset($profiles[$code])) {
+                    throw new DomainException('MIKRO_TAX_PROFILE_SCHEMA_INCOMPLETE');
+                }
+                $profiles[$code] = $row;
+            }
+            foreach ($codes as $code) {
+                $profiles[$code] ??= $this->unavailableTaxProfile($code, 'MIKRO_TAX_PROFILE_ROW_MISSING', $result);
+            }
+            $profiles = $codes->mapWithKeys(fn (string $code): array => [$code => $profiles[$code]])->all();
+            if ($useCache && collect($profiles)->every(fn (array $profile): bool => in_array($profile['tax_status'] ?? null, ['verified', 'unresolved_basis'], true))) {
+                Cache::put($cacheKey, $profiles, self::TAX_PROFILE_CACHE_SECONDS);
+            }
+
+            return $profiles;
+        } catch (Throwable $exception) {
+            report($exception);
+            if ($strict) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'KDV doğrulanamadı. Ödeme ve sipariş hazırlığı tamamlanamaz.',
+                ]);
+            }
+
+            return $codes->mapWithKeys(fn (string $code): array => [
+                $code => $this->unavailableTaxProfile($code, (string) ($result['error_code'] ?? $exception->getMessage()), $result),
+            ])->all();
+        }
+    }
+
+    /** @param array<string, mixed> $meta @return array<string, mixed> */
+    private function unavailableTaxProfile(string $itemCode, string $errorCode, array $meta = []): array
+    {
+        return [
+            'item_code' => $itemCode,
+            'retail_tax_pointer' => null,
+            'retail_tax_rate' => null,
+            'wholesale_tax_pointer' => null,
+            'wholesale_tax_rate' => null,
+            'selected_tax_basis' => null,
+            'selected_tax_pointer' => null,
+            'selected_tax_rate' => null,
+            'tax_status' => ($meta['stale'] ?? false) === true ? 'stale' : 'unavailable',
+            'tax_resolution_source' => null,
+            'source' => 'mikro_api',
+            'freshness_at' => $meta['freshness_at'] ?? null,
+            'contract_version' => MikroResponseSchemaCatalog::STOCK_TAX_PROFILE_CONTRACT_VERSION,
+            'correlation_id' => $meta['correlation_id'] ?? null,
+            'error_code' => $errorCode !== '' ? $errorCode : 'MIKRO_TAX_PROFILE_UNAVAILABLE',
+        ];
+    }
+
+    /** @param array<int, array<string, mixed>> $lines @return array<string, mixed> */
+    private function lineTaxTotals(array $lines, string $currency, string $taxMode, int $fallbackGrossMinor): array
+    {
+        $grossMinor = $lines === []
+            ? $fallbackGrossMinor
+            : array_sum(array_map(fn (array $line): int => (int) ($line['line_total_minor'] ?? 0), $lines));
+        $unresolved = collect($lines)->contains(fn (array $line): bool => ($line['tax_status'] ?? null) === 'unresolved_basis');
+        $verified = $taxMode === 'none'
+            || ($lines !== [] && collect($lines)->every(
+                fn (array $line): bool => ($line['tax_status'] ?? null) === 'verified'
+                    && is_int($line['net_line_total_minor'] ?? null)
+                    && is_int($line['vat_line_total_minor'] ?? null),
+            ));
+        $status = $lines === []
+            ? ($taxMode === 'none' ? 'verified' : 'not_applicable')
+            : ($verified ? 'verified' : ($unresolved ? 'unresolved_basis' : 'unavailable'));
+        $netMinor = $verified
+            ? ($taxMode === 'none' ? $grossMinor : array_sum(array_column($lines, 'net_line_total_minor')))
+            : null;
+        $vatMinor = $verified ? $grossMinor - (int) $netMinor : null;
+        $rates = collect($lines)
+            ->pluck('selected_tax_rate')
+            ->filter(fn (mixed $rate): bool => $rate !== null)
+            ->map(fn (mixed $rate): string => (string) $rate)
+            ->unique()
+            ->values();
+        $mixedRates = $verified && $rates->count() > 1;
+        $cartVatRate = $verified && $rates->count() === 1 ? $rates->first() : ($taxMode === 'none' ? '0' : null);
+        $taxSource = $taxMode === 'none' ? 'commercial_matrix' : ($taxMode === 'standard_from_mikro' ? 'mikro_api' : null);
+        $taxLabel = match (true) {
+            $taxMode === 'none' => 'Yok / %0',
+            $status === 'verified' && $mixedRates => 'Satır bazında farklı oranlar · toplam fiyata dahil',
+            $status === 'verified' => '%'.str_replace('.', ',', (string) $cartVatRate).' · toplam fiyata dahil',
+            $status === 'unresolved_basis' => 'Mikro vergi temeli doğrulanmayı bekliyor',
+            default => $this->taxLabel($taxMode),
+        };
+
+        return [
+            'tax_status' => $status,
+            'tax_source' => $taxSource,
+            'tax_source_label' => $taxSource === 'mikro_api' ? 'Mikro API' : ($taxSource === 'commercial_matrix' ? 'Ticari karar matrisi' : null),
+            'tax_label' => $taxLabel,
+            'mixed_vat_rates' => $mixedRates,
+            'cart_vat_rate' => $cartVatRate,
+            'gross_total' => $this->scaledIntegerToDecimalString($grossMinor, 2),
+            'gross_total_label' => $this->moneyLabelFromMinor($grossMinor, $currency),
+            'net_total' => $netMinor === null ? null : $this->scaledIntegerToDecimalString($netMinor, 2),
+            'net_total_label' => $netMinor === null ? null : $this->moneyLabelFromMinor($netMinor, $currency),
+            'vat_total' => $vatMinor === null ? null : $this->scaledIntegerToDecimalString($vatMinor, 2),
+            'vat_total_label' => $vatMinor === null ? null : $this->moneyLabelFromMinor($vatMinor, $currency),
         ];
     }
 
@@ -2077,7 +2391,10 @@ class TechnicalServicePaymentOrderContextService
             $blockers['part_serial_selection_unverified'] = 'Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.';
         }
         if ($taxMode === 'standard_from_mikro'
-            && collect($lines)->contains(fn (array $line): bool => ! is_numeric($line['vat_rate_snapshot'] ?? null))) {
+            && collect($lines)->contains(fn (array $line): bool => ($line['tax_status'] ?? null) === 'unresolved_basis')) {
+            $blockers['tax_basis_unresolved'] = 'Mikro stok kartında perakende ve toptan KDV oranları farklı. Sipariş vergi temeli doğrulanmadan işlem tamamlanamaz.';
+        } elseif ($taxMode === 'standard_from_mikro'
+            && collect($lines)->contains(fn (array $line): bool => ($line['tax_status'] ?? null) !== 'verified')) {
             $blockers['vat_unverified'] = 'KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.';
         }
 
@@ -2181,6 +2498,45 @@ class TechnicalServicePaymentOrderContextService
                 'request_code' => $normalized['request_code'],
                 'root_mrn' => $normalized['root_mrn'],
                 'line_count' => count($normalized['lines'] ?? []),
+                'tax_projection' => [
+                    'status' => $normalized['tax_status'] ?? null,
+                    'source' => $normalized['tax_source'] ?? null,
+                    'source_label' => $normalized['tax_source_label'] ?? null,
+                    'label' => $normalized['tax_label'] ?? null,
+                    'mixed_vat_rates' => (bool) ($normalized['mixed_vat_rates'] ?? false),
+                    'gross_total' => $normalized['gross_total'] ?? null,
+                    'gross_total_label' => $normalized['gross_total_label'] ?? null,
+                    'net_total' => $normalized['net_total'] ?? null,
+                    'net_total_label' => $normalized['net_total_label'] ?? null,
+                    'vat_total' => $normalized['vat_total'] ?? null,
+                    'vat_total_label' => $normalized['vat_total_label'] ?? null,
+                ],
+                'line_tax_profiles' => collect($normalized['lines'] ?? [])->mapWithKeys(
+                    fn (array $line): array => [(string) $line['line_key'] => [
+                        'retail_tax_pointer' => $line['retail_tax_pointer'] ?? null,
+                        'retail_tax_rate' => $line['retail_tax_rate'] ?? null,
+                        'wholesale_tax_pointer' => $line['wholesale_tax_pointer'] ?? null,
+                        'wholesale_tax_rate' => $line['wholesale_tax_rate'] ?? null,
+                        'selected_tax_basis' => $line['selected_tax_basis'] ?? null,
+                        'selected_tax_pointer' => $line['selected_tax_pointer'] ?? null,
+                        'selected_tax_rate' => $line['selected_tax_rate'] ?? null,
+                        'selected_tax_rate_label' => $line['selected_tax_rate_label'] ?? null,
+                        'tax_status' => $line['tax_status'] ?? null,
+                        'tax_resolution_source' => $line['tax_resolution_source'] ?? null,
+                        'tax_source' => $line['tax_source'] ?? null,
+                        'tax_freshness_at' => $line['tax_freshness_at'] ?? null,
+                        'tax_contract_version' => $line['tax_contract_version'] ?? null,
+                        'tax_correlation_id' => $line['tax_correlation_id'] ?? null,
+                        'gross_unit_price' => $line['gross_unit_price'] ?? null,
+                        'gross_unit_price_label' => $line['gross_unit_price_label'] ?? null,
+                        'gross_line_total' => $line['gross_line_total'] ?? null,
+                        'gross_line_total_label' => $line['gross_line_total_label'] ?? null,
+                        'net_line_total' => $line['net_line_total'] ?? null,
+                        'net_line_total_label' => $line['net_line_total_label'] ?? null,
+                        'vat_line_total' => $line['vat_line_total'] ?? null,
+                        'vat_line_total_label' => $line['vat_line_total_label'] ?? null,
+                    ]],
+                )->all(),
                 'stock_snapshot' => $part === [] ? null : [
                     'on_hand' => $part['on_hand'] ?? null,
                     'reserved' => $part['reserved'] ?? null,
@@ -2255,12 +2611,18 @@ class TechnicalServicePaymentOrderContextService
             ? json_decode((string) $row->metadata, true)
             : (is_array($row->metadata ?? null) ? $row->metadata : []);
         $stockSnapshot = is_array($metadata['stock_snapshot'] ?? null) ? $metadata['stock_snapshot'] : [];
+        $taxProjection = is_array($metadata['tax_projection'] ?? null) ? $metadata['tax_projection'] : [];
+        $lineTaxProfiles = is_array($metadata['line_tax_profiles'] ?? null) ? $metadata['line_tax_profiles'] : [];
         $lines = DB::table(self::ITEM_TABLE)
             ->where('context_id', (int) $row->id)
             ->orderBy('position')
             ->orderBy('id')
             ->get()
-            ->map(function (object $line) use ($includeSelectionTokens, $row): array {
+            ->map(function (object $line) use ($includeSelectionTokens, $lineTaxProfiles, $row): array {
+                $tax = is_array($lineTaxProfiles[(string) $line->line_key] ?? null)
+                    ? $lineTaxProfiles[(string) $line->line_key]
+                    : [];
+                $taxNone = (string) $line->tax_mode_snapshot === 'none';
                 $projection = [
                     'id' => (int) $line->id,
                     'line_key' => (string) $line->line_key,
@@ -2312,6 +2674,28 @@ class TechnicalServicePaymentOrderContextService
                     'selected_part_serial' => $line->selected_part_serial,
                     'tax_mode_snapshot' => (string) $line->tax_mode_snapshot,
                     'vat_rate_snapshot' => is_numeric($line->vat_rate_snapshot) ? (float) $line->vat_rate_snapshot : null,
+                    'gross_unit_price' => $tax['gross_unit_price'] ?? (string) $line->unit_price,
+                    'gross_unit_price_label' => $tax['gross_unit_price_label'] ?? $this->moneyLabel((float) $line->unit_price, (string) $line->currency),
+                    'gross_line_total' => $tax['gross_line_total'] ?? (string) $line->line_total,
+                    'gross_line_total_label' => $tax['gross_line_total_label'] ?? $this->moneyLabel((float) $line->line_total, (string) $line->currency),
+                    'net_line_total' => $tax['net_line_total'] ?? ($taxNone ? (string) $line->line_total : null),
+                    'net_line_total_label' => $tax['net_line_total_label'] ?? ($taxNone ? $this->moneyLabel((float) $line->line_total, (string) $line->currency) : null),
+                    'vat_line_total' => $tax['vat_line_total'] ?? ($taxNone ? '0.00' : null),
+                    'vat_line_total_label' => $tax['vat_line_total_label'] ?? ($taxNone ? $this->moneyLabel(0, (string) $line->currency) : null),
+                    'retail_tax_pointer' => $tax['retail_tax_pointer'] ?? null,
+                    'retail_tax_rate' => $tax['retail_tax_rate'] ?? null,
+                    'wholesale_tax_pointer' => $tax['wholesale_tax_pointer'] ?? null,
+                    'wholesale_tax_rate' => $tax['wholesale_tax_rate'] ?? null,
+                    'selected_tax_basis' => $tax['selected_tax_basis'] ?? ($taxNone ? 'q_series_zero' : null),
+                    'selected_tax_pointer' => $tax['selected_tax_pointer'] ?? null,
+                    'selected_tax_rate' => $tax['selected_tax_rate'] ?? ($taxNone ? '0' : null),
+                    'selected_tax_rate_label' => $tax['selected_tax_rate_label'] ?? ($taxNone ? '%0' : null),
+                    'tax_status' => $tax['tax_status'] ?? ($taxNone ? 'verified' : 'unavailable'),
+                    'tax_resolution_source' => $tax['tax_resolution_source'] ?? ($taxNone ? 'technical_service_commercial_matrix' : null),
+                    'tax_source' => $tax['tax_source'] ?? ($taxNone ? 'commercial_matrix' : null),
+                    'tax_freshness_at' => $tax['tax_freshness_at'] ?? null,
+                    'tax_contract_version' => $tax['tax_contract_version'] ?? ($taxNone ? 'technical-service-commercial-matrix-v1' : null),
+                    'tax_correlation_id' => $tax['tax_correlation_id'] ?? null,
                 ];
                 if ($includeSelectionTokens
                     && in_array((string) $line->item_kind, ['part', 'accessory'], true)
@@ -2463,7 +2847,11 @@ class TechnicalServicePaymentOrderContextService
             'state_label' => $this->stateLabel((string) $row->state, (string) $row->context_type),
             'desired_mikro_series' => $row->desired_mikro_series,
             'tax_mode' => $row->tax_mode,
-            'tax_label' => $this->taxLabel((string) $row->tax_mode),
+            'tax_label' => $taxProjection['label'] ?? $this->taxLabel((string) $row->tax_mode),
+            'tax_status' => $taxProjection['status'] ?? ((string) $row->tax_mode === 'none' ? 'verified' : 'unavailable'),
+            'tax_source' => $taxProjection['source'] ?? ((string) $row->tax_mode === 'none' ? 'commercial_matrix' : null),
+            'tax_source_label' => $taxProjection['source_label'] ?? ((string) $row->tax_mode === 'none' ? 'Ticari karar matrisi' : null),
+            'mixed_vat_rates' => (bool) ($taxProjection['mixed_vat_rates'] ?? false),
             'vat_rate' => is_numeric($row->vat_rate) ? (float) $row->vat_rate : null,
             'future_mikro_write_state' => (string) $row->future_mikro_write_state,
             'future_mikro_write_label' => (string) $row->future_mikro_write_state === 'not_required'
@@ -2504,6 +2892,12 @@ class TechnicalServicePaymentOrderContextService
             'order_line_total_label' => $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
             'order_reference_total' => (float) $row->order_line_total,
             'order_reference_total_label' => $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
+            'gross_total' => $taxProjection['gross_total'] ?? (string) $row->order_line_total,
+            'gross_total_label' => $taxProjection['gross_total_label'] ?? $this->moneyLabel((float) $row->order_line_total, (string) $row->currency),
+            'net_total' => $taxProjection['net_total'] ?? ((string) $row->tax_mode === 'none' ? (string) $row->order_line_total : null),
+            'net_total_label' => $taxProjection['net_total_label'] ?? ((string) $row->tax_mode === 'none' ? $this->moneyLabel((float) $row->order_line_total, (string) $row->currency) : null),
+            'vat_total' => $taxProjection['vat_total'] ?? ((string) $row->tax_mode === 'none' ? '0.00' : null),
+            'vat_total_label' => $taxProjection['vat_total_label'] ?? ((string) $row->tax_mode === 'none' ? $this->moneyLabel(0, (string) $row->currency) : null),
             'collection_amount' => (float) $row->collection_amount,
             'collection_amount_label' => $this->moneyLabel((float) $row->collection_amount, (string) $row->currency),
             'future_order_trigger' => $row->future_order_trigger,
@@ -2579,18 +2973,30 @@ class TechnicalServicePaymentOrderContextService
                 .((string) ($partLine['unit_code'] ?? 'ADET')).' · '
                 .((string) ($partLine['item_code'] ?? '-')).' · '
                 .((string) ($partLine['item_name'] ?? '-'));
-            $lines[] = '   BİRİM TUTAR: '.$this->moneyLabel((float) ($partLine['unit_price'] ?? 0), (string) $context['currency']);
-            $lines[] = '   SATIR TOPLAMI: '.$this->moneyLabel((float) ($partLine['line_total'] ?? 0), (string) $context['currency']);
+            $lines[] = '   BİRİM TUTAR (KDV DAHİL): '.($partLine['gross_unit_price_label'] ?? $this->moneyLabel((float) ($partLine['unit_price'] ?? 0), (string) $context['currency']));
+            $lines[] = '   SATIR TOPLAMI (KDV DAHİL): '.($partLine['gross_line_total_label'] ?? $this->moneyLabel((float) ($partLine['line_total'] ?? 0), (string) $context['currency']));
+            if (($partLine['tax_status'] ?? null) === 'verified') {
+                $lines[] = '   KDV ORANI: '.($partLine['selected_tax_rate_label'] ?? '%0');
+                $lines[] = '   MATRAH: '.($partLine['net_line_total_label'] ?? '-');
+                $lines[] = '   KDV TUTARI: '.($partLine['vat_line_total_label'] ?? '-');
+            } else {
+                $lines[] = '   KDV: DOĞRULANMAYI BEKLİYOR';
+            }
             $lines[] = '';
         }
         $lines[] = 'PARÇA KALEMİ: '.count($partLines);
         $lines[] = 'TOPLAM ADET: '.$this->quantityLabel((float) ($context['total_quantity'] ?? 0));
-        $lines[] = 'SİPARİŞ/REFERANS TOPLAMI: '.$context['order_reference_total_label'];
-        $lines[] = 'TAHSİLAT TOPLAMI: '.$context['collection_amount_label'];
+        $lines[] = 'SİPARİŞ/REFERANS TOPLAMI (KDV DAHİL): '.$context['order_reference_total_label'];
+        $lines[] = 'MÜŞTERİDEN TAHSİL EDİLECEK: '.$context['collection_amount_label'];
+        if (($context['net_total_label'] ?? null) !== null && ($context['vat_total_label'] ?? null) !== null) {
+            $lines[] = 'KDV HARİÇ TOPLAM: '.$context['net_total_label'];
+            $lines[] = 'KDV TOPLAMI: '.$context['vat_total_label'];
+            $lines[] = 'KDV TOPLAMA DAHİLDİR.';
+        }
         $lines[] = 'TİCARİ DURUM: '.($context['commercial_mode'] === self::COMMERCIAL_FREE ? 'ÜCRETSİZ' : 'ÜCRETLİ');
         $lines[] = 'TESLİM: '.($context['delivery_mode'] === self::DELIVERY_HAND ? 'ELDEN' : 'SEVK');
         $lines[] = 'HEDEF SERİ: '.($context['desired_mikro_series'] ?? '-');
-        $lines[] = 'KDV: '.($context['tax_mode'] === 'none' ? 'YOK' : 'MİKRO STOK KARTI');
+        $lines[] = 'KDV: '.mb_strtoupper((string) ($context['tax_label'] ?? ($context['tax_mode'] === 'none' ? 'YOK' : 'DOĞRULANMAYI BEKLİYOR')), 'UTF-8');
         if ($context['delivery_mode'] === self::DELIVERY_HAND) {
             $lines[] = $context['commercial_mode'] === self::COMMERCIAL_FREE
                 ? 'TAHSİLAT: GEREKMİYOR'
@@ -2654,6 +3060,16 @@ class TechnicalServicePaymentOrderContextService
                 'source' => 'test_fixture',
                 'source_label' => 'Test verisi',
                 'freshness_at' => $freshness,
+                'tax_profile' => [
+                    'retail_tax_pointer' => 7,
+                    'retail_tax_rate' => '20',
+                    'wholesale_tax_pointer' => 7,
+                    'wholesale_tax_rate' => '20',
+                    'selected_tax_basis' => 'equal_rates',
+                    'selected_tax_pointer' => 7,
+                    'selected_tax_rate' => '20',
+                    'tax_status' => 'verified',
+                ],
             ],
             [
                 'item_code' => 'TS-PART-002',
@@ -2688,6 +3104,16 @@ class TechnicalServicePaymentOrderContextService
                 'source' => 'test_fixture',
                 'source_label' => 'Test verisi',
                 'freshness_at' => $freshness,
+                'tax_profile' => [
+                    'retail_tax_pointer' => 8,
+                    'retail_tax_rate' => '10',
+                    'wholesale_tax_pointer' => 8,
+                    'wholesale_tax_rate' => '10',
+                    'selected_tax_basis' => 'equal_rates',
+                    'selected_tax_pointer' => 8,
+                    'selected_tax_rate' => '10',
+                    'tax_status' => 'verified',
+                ],
             ],
         ];
         $needle = Str::lower(Str::ascii($query));
@@ -3530,6 +3956,39 @@ class TechnicalServicePaymentOrderContextService
     private function scaledIntegerToFloat(int $value, int $scale): float
     {
         return $value / (10 ** $scale);
+    }
+
+    private function percentageToScaledInteger(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (! is_scalar($value)) {
+            throw new DomainException('MIKRO_TAX_RATE_INVALID');
+        }
+        $normalized = trim((string) $value);
+        if (! preg_match('/^\d+(?:\.\d{1,'.self::TAX_RATE_SCALE.'})?$/', $normalized)) {
+            throw new DomainException('MIKRO_TAX_RATE_INVALID');
+        }
+        [$whole, $fraction] = array_pad(explode('.', $normalized, 2), 2, '');
+        if ((int) $whole > 100 || ((int) $whole === 100 && trim($fraction, '0') !== '')) {
+            throw new DomainException('MIKRO_TAX_RATE_INVALID');
+        }
+
+        return ((int) $whole * (10 ** self::TAX_RATE_SCALE))
+            + (int) str_pad($fraction, self::TAX_RATE_SCALE, '0');
+    }
+
+    private function moneyLabelFromMinor(int $minor, string $currency): string
+    {
+        $negative = $minor < 0;
+        $absolute = abs($minor);
+        $whole = intdiv($absolute, 100);
+        $fraction = str_pad((string) ($absolute % 100), 2, '0', STR_PAD_LEFT);
+
+        return ($negative ? '-' : '')
+            .number_format($whole, 0, ',', '.').','.$fraction.' '
+            .($currency === 'TRY' ? 'TL' : $currency);
     }
 
     private function moneyLabel(float $amount, string $currency): string
