@@ -13,6 +13,10 @@ final class IsolatedPostgreSqlEnvironment
 {
     public const CANONICAL_PORT = 15433;
 
+    public const CANONICAL_DATABASE = 'emaks92_eecfec2da752';
+
+    public const QUARANTINE_DATABASE_PREFIX = 'emaks92_eecfec2da752_wiped_';
+
     public const DATABASE_PREFIX = 'emaks_pr92_rel4g_test_';
 
     public const CONTAINER_PREFIX = 'emaks-pr92-rel4g-wp0a-db-';
@@ -59,6 +63,20 @@ final class IsolatedPostgreSqlEnvironment
     {
         $environment ??= self::currentEnvironment();
 
+        $database = $environment['DB_DATABASE'] ?? null;
+
+        if (! is_string($database) || $database === '') {
+            throw new RuntimeException('TEST_DATABASE_GUARD_BLOCKED_DATABASE_NAME_EMPTY');
+        }
+
+        if (hash_equals(self::CANONICAL_DATABASE, $database)) {
+            throw new RuntimeException('TEST_DATABASE_GUARD_BLOCKED_CANONICAL_UAT');
+        }
+
+        if (str_starts_with($database, self::QUARANTINE_DATABASE_PREFIX)) {
+            throw new RuntimeException('TEST_DATABASE_GUARD_BLOCKED_QUARANTINE_DATABASE');
+        }
+
         self::requireSame('testing', $environment['APP_ENV'] ?? null, 'app_environment');
         self::requireSame('pgsql', $environment['DB_CONNECTION'] ?? null, 'database_driver');
         self::requireSame('127.0.0.1', $environment['DB_HOST'] ?? null, 'database_host');
@@ -81,7 +99,6 @@ final class IsolatedPostgreSqlEnvironment
             throw new RuntimeException('rel4g_guard:nonce_invalid');
         }
 
-        $database = $environment['DB_DATABASE'] ?? null;
         $expectedDatabase = self::DATABASE_PREFIX.$nonce;
 
         self::requireSame($expectedDatabase, $database, 'database_name');

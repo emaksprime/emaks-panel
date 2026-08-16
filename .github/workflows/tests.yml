@@ -36,6 +36,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
+          extensions: pdo_pgsql
           tools: composer:v2
           coverage: none
 
@@ -75,8 +76,12 @@ jobs:
       - name: Build Assets
         run: npm run build
 
+      - name: Pull PostgreSQL 16 image
+        run: docker pull postgres:16-alpine
+
       - name: Tests
-        run: ./vendor/bin/phpunit --exclude-group=postgresql-isolation
+        shell: pwsh
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -TestPath tests -ExcludeGroup postgresql-isolation -TestTimeoutSeconds 1200
 
   postgresql-isolation:
     name: postgresql-isolation

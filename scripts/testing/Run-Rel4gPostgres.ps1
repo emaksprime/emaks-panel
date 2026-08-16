@@ -1,5 +1,14 @@
 [CmdletBinding()]
-param()
+param(
+    [string[]] $TestPath = @('tests/Feature/TechnicalServicePostgresIsolationTest.php'),
+
+    [string] $Filter = '',
+
+    [string[]] $ExcludeGroup = @(),
+
+    [ValidateRange(30, 1800)]
+    [int] $TestTimeoutSeconds = 600
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -16,6 +25,9 @@ $script:WorkerRegistry = $null
 $script:PhpBinary = $null
 $script:DockerBinary = $null
 $script:CleanupFailed = $false
+$script:DatabaseName = $null
+$script:RunStartedAtUtc = [DateTime]::UtcNow.ToString('o')
+$script:TestExitCode = $null
 
 $projectRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
 $removedDatabaseVariables = @(
@@ -150,6 +162,74 @@ function Get-CommandPath {
     }
 
     return $path
+}
+
+function Resolve-TestSelectionArguments {
+    if ($TestPath.Count -eq 0) {
+        throw 'test_selection_empty'
+    }
+
+    $testsRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($projectRoot, 'tests'))
+    $testsPrefix = $testsRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $arguments = @()
+
+    foreach ($path in $TestPath) {
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            throw 'test_selection_path_empty'
+        }
+
+        $resolved = [IO.Path]::GetFullPath([IO.Path]::Combine($projectRoot, $path))
+
+        if (($resolved -ne $testsRoot -and -not $resolved.StartsWith($testsPrefix, $comparison)) -or
+            -not (Test-Path -LiteralPath $resolved)) {
+            throw 'test_selection_outside_tests_or_missing'
+        }
+
+        $arguments += [IO.Path]::GetRelativePath($projectRoot, $resolved)
+    }
+
+    if ($Filter -ne '') {
+        if ($Filter.Length -gt 2000 -or $Filter -match '[\x00-\x1F]') {
+            throw 'test_filter_invalid'
+        }
+
+        $arguments = @('--filter', $Filter) + $arguments
+    }
+
+    foreach ($group in $ExcludeGroup) {
+        if ($group -notmatch '^[A-Za-z0-9_.-]+$') {
+            throw 'test_exclude_group_invalid'
+        }
+
+        $arguments = @('--exclude-group', $group) + $arguments
+    }
+
+    return $arguments
+}
+
+function New-ExactDisposableDatabase {
+    param([Parameter(Mandatory)][string] $DatabaseName)
+
+    $expected = 'emaks_pr92_rel4g_test_' + $script:Nonce
+
+    if ($DatabaseName -ne $expected -or $DatabaseName -notmatch '^emaks_pr92_rel4g_test_[a-f0-9]{12}$') {
+        throw 'disposable_database_identity_invalid'
+    }
+
+    $created = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+        'exec',
+        $script:ContainerId,
+        'sh',
+        '-ec',
+        'PGPASSWORD="$POSTGRES_PASSWORD" createdb --host=127.0.0.1 --username="$POSTGRES_USER" --owner="$POSTGRES_USER" "$1"',
+        'guard-createdb',
+        $DatabaseName
+    ) -TimeoutSeconds 30
+
+    if ($created.ExitCode -ne 0) {
+        throw 'disposable_database_create_failed'
+    }
 }
 
 function Assert-GitScope {
@@ -911,6 +991,7 @@ try {
     $script:ContainerName = 'emaks-pr92-rel4g-wp0a-db-' + $script:Nonce
     $script:NetworkName = 'emaks-pr92-rel4g-wp0a-net-' + $script:Nonce
     $databaseName = 'emaks_pr92_rel4g_test_' + $script:Nonce
+    $script:DatabaseName = $databaseName
     $databaseUser = 'rel4g_' + $script:Nonce
 
     $passwordBytes = [byte[]]::new(36)
@@ -924,7 +1005,7 @@ try {
     [IO.File]::WriteAllLines(
         $environmentFile,
         @(
-            ('POSTGRES_DB=' + $databaseName)
+            'POSTGRES_DB=postgres'
             ('POSTGRES_USER=' + $databaseUser)
             ('POSTGRES_PASSWORD=' + $databasePassword)
         ),
@@ -985,6 +1066,8 @@ try {
     $script:Stage = 'container_health'
     Wait-EphemeralDatabaseHealthy -ContainerId $script:ContainerId
     Assert-InContainerPostgreSqlConnection
+    $script:Stage = 'disposable_database_create'
+    New-ExactDisposableDatabase -DatabaseName $databaseName
     $dynamicPort = Assert-EphemeralDockerIsolation
 
     $childEnvironment = [ordered]@{
@@ -1081,20 +1164,22 @@ try {
 
     $script:Stage = 'focused_test'
     $junitFile = Join-Path $script:TemporaryDirectory 'phpunit-junit.xml'
+    $testSelectionArguments = Resolve-TestSelectionArguments
+    $phpUnitArguments = @(
+        'vendor/phpunit/phpunit/phpunit',
+        '--no-configuration',
+        '--bootstrap', 'tests/bootstrap.php',
+        '--colors=never',
+        '--do-not-cache-result',
+        '--log-junit', $junitFile,
+        '--fail-on-warning',
+        '--fail-on-risky',
+        '--fail-on-skipped',
+        '--fail-on-incomplete'
+    ) + $testSelectionArguments
+
     try {
-        $testResult = Invoke-BoundedProcess -FilePath $script:PhpBinary -ArgumentList @(
-            'vendor/phpunit/phpunit/phpunit',
-            '--no-configuration',
-            '--bootstrap', 'vendor/autoload.php',
-            '--colors=never',
-            '--do-not-cache-result',
-            '--log-junit', $junitFile,
-            '--fail-on-warning',
-            '--fail-on-risky',
-            '--fail-on-skipped',
-            '--fail-on-incomplete',
-            'tests/Feature/TechnicalServicePostgresIsolationTest.php'
-        ) -TimeoutSeconds 180 -Environment $childEnvironment -RemoveEnvironment $removedDatabaseVariables
+        $testResult = Invoke-BoundedProcess -FilePath $script:PhpBinary -ArgumentList $phpUnitArguments -TimeoutSeconds $TestTimeoutSeconds -Environment $childEnvironment -RemoveEnvironment $removedDatabaseVariables
     }
     catch {
         $runnerClass = if ($_.Exception.Message -in @('bounded_process_start_failed', 'bounded_process_timeout')) {
@@ -1109,6 +1194,7 @@ try {
 
     $script:Stage = 'focused_test_result_received'
     $testExitCode = [int] $testResult.ExitCode
+    $script:TestExitCode = $testExitCode
     $script:Stage = 'focused_test_exit_' + $testExitCode
 
     if ($testExitCode -ne 0) {
@@ -1165,7 +1251,7 @@ try {
         $skippedCount += [int] $suite.GetAttribute('skipped')
     }
 
-    if ($testCount -ne 5 -or $errorCount -ne 0 -or $failureCount -ne 0 -or $skippedCount -ne 0) {
+    if ($testCount -lt 1 -or $errorCount -ne 0 -or $failureCount -ne 0 -or $skippedCount -ne 0) {
         throw 'focused_test_count_mismatch'
     }
 
@@ -1193,6 +1279,16 @@ if (-not $runFailed -and -not $script:CleanupFailed) {
         $runFailed = $true
     }
 }
+
+$runEvidence = [ordered]@{
+    run_id = $script:Nonce
+    database_name = $script:DatabaseName
+    created_at = $script:RunStartedAtUtc
+    test_exit_code = $script:TestExitCode
+    cleanup = if ($script:CleanupFailed) { 'failed' } else { 'complete' }
+    result = if ($runFailed -or $script:CleanupFailed) { 'failed' } else { 'passed' }
+}
+Write-Output ('RUN_EVIDENCE: ' + ($runEvidence | ConvertTo-Json -Compress))
 
 if ($runFailed -or $script:CleanupFailed) {
     Write-Output ('HARNESS: FAIL stage=' + $script:Stage)
