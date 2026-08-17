@@ -227,7 +227,8 @@ class TechnicalServiceMessageDispatchLogService
             'id' => $dispatch->id,
             'status' => $dispatch->status,
             'status_label' => $this->dispatchStatusLabel($dispatch, $providerKey, $channel),
-            'status_badge_tone' => $this->statusBadgeTone($dispatch->status),
+            'status_detail' => $this->dispatchStatusDetail($dispatch),
+            'status_badge_tone' => $this->statusBadgeTone($dispatch->status, $dispatch),
             'provider_key' => $providerKey,
             'provider_label' => $this->dispatchProviderLabel($dispatch, $providerKey, $channel),
             'provider_missing_label' => $providerKey === null ? 'Eski kayıt / sağlayıcı bilgisi yok' : null,
@@ -294,6 +295,31 @@ class TechnicalServiceMessageDispatchLogService
         ];
     }
 
+    /** @return array<string, mixed> */
+    public function compactPaymentStatus(TechnicalServiceMessageDispatch $dispatch): array
+    {
+        $providerKey = $dispatch->provider_key
+            ?? data_get($dispatch->request_payload, 'provider_key')
+            ?? data_get($dispatch->request_payload, 'provider');
+        $channel = $dispatch->channel ?? data_get($dispatch->request_payload, 'channel');
+        $isLocalUatSuppressed = $this->isLocalUatSuppressed($dispatch);
+
+        return [
+            'dispatch_id' => (int) $dispatch->id,
+            'channel' => $channel,
+            'channel_label' => $this->channelLabel($channel),
+            'provider_key' => $providerKey,
+            'provider_label' => $this->dispatchProviderLabel($dispatch, $providerKey, $channel),
+            'status' => (string) $dispatch->status,
+            'business_state' => $isLocalUatSuppressed ? 'uat_not_sent' : (string) $dispatch->status,
+            'status_label' => $this->dispatchStatusLabel($dispatch, $providerKey, $channel),
+            'status_detail' => $this->dispatchStatusDetail($dispatch),
+            'status_badge_tone' => $this->statusBadgeTone($dispatch->status, $dispatch),
+            'attempt_count' => $this->displayAttemptCount($dispatch),
+            'max_attempts' => (int) $dispatch->max_attempts,
+        ];
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -315,7 +341,8 @@ class TechnicalServiceMessageDispatchLogService
             'id' => $dispatch->id,
             'status' => $dispatch->status,
             'status_label' => $this->dispatchStatusLabel($dispatch, $providerKey, $channel),
-            'status_badge_tone' => $this->statusBadgeTone($dispatch->status),
+            'status_detail' => $this->dispatchStatusDetail($dispatch),
+            'status_badge_tone' => $this->statusBadgeTone($dispatch->status, $dispatch),
             'provider_key' => $providerKey,
             'provider_label' => $this->dispatchProviderLabel($dispatch, $providerKey, $channel),
             'channel' => $channel,
@@ -539,11 +566,31 @@ class TechnicalServiceMessageDispatchLogService
 
     private function dispatchStatusLabel(TechnicalServiceMessageDispatch $dispatch, ?string $providerKey, ?string $channel): string
     {
+        if ($this->isLocalUatSuppressed($dispatch)) {
+            return "UAT'ta gönderilmedi";
+        }
+
         if ($this->isSystemOnlyDispatch($dispatch, $providerKey, $channel)) {
             return 'Sistem kaydı';
         }
 
         return $this->statusLabel($dispatch->status);
+    }
+
+    private function dispatchStatusDetail(TechnicalServiceMessageDispatch $dispatch): ?string
+    {
+        return $this->isLocalUatSuppressed($dispatch)
+            ? 'Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.'
+            : null;
+    }
+
+    private function isLocalUatSuppressed(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        return $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED
+            && $dispatch->provider_status === 'local_no_send'
+            && $dispatch->last_error_code === 'outbound_execution_mode_local'
+            && (int) $dispatch->attempt_count === 0
+            && blank($dispatch->provider_message_id);
     }
 
     private function channelLabel(?string $value): string
@@ -618,8 +665,12 @@ class TechnicalServiceMessageDispatchLogService
         return Str::of($value)->replace('_', ' ')->title()->toString();
     }
 
-    private function statusBadgeTone(?string $status): string
+    private function statusBadgeTone(?string $status, ?TechnicalServiceMessageDispatch $dispatch = null): string
     {
+        if ($dispatch instanceof TechnicalServiceMessageDispatch && $this->isLocalUatSuppressed($dispatch)) {
+            return 'warning';
+        }
+
         return match ($status) {
             TechnicalServiceMessageDispatch::STATUS_SENT,
             TechnicalServiceMessageDispatch::STATUS_TEST_SENT => 'success',

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartRequest;
@@ -10,16 +11,19 @@ use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
 use App\Services\Mikro\MikroApiClient;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServicePaymentOrderContextService;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Mockery;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
@@ -528,6 +532,110 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertFalse($projection['real_order_created']);
         $this->assertSame(1, $request->events()->where('event_type', 'mikro_test_order_simulation_recorded')->count());
         Http::assertNothingSent();
+    }
+
+    public function test_paid_part_order_projection_is_visible_without_technician(): void
+    {
+        $fixture = $this->paidPartProjectionFixture();
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize(
+            $fixture['request']->fresh(),
+            true,
+            false,
+            false,
+        );
+
+        $this->assertNull($payload['technical_service_technician']);
+        $this->assertSame($fixture['context_id'], data_get($payload, 'sale_and_payment.part_order_context.id'));
+        $this->assertSame($fixture['payment']->id, data_get($payload, 'sale_and_payment.part_order_payment.id'));
+        $this->assertSame('paid', data_get($payload, 'sale_and_payment.part_order_payment.status'));
+        $this->assertSame(3000.0, data_get($payload, 'sale_and_payment.part_order_payment.amount'));
+        $this->assertSame('S', data_get($payload, 'sale_and_payment.part_order_context.desired_mikro_series'));
+        $this->assertCount(2, data_get($payload, 'sale_and_payment.part_order_context.lines'));
+    }
+
+    public function test_main_detail_uses_existing_payment_order_context_without_business_writes(): void
+    {
+        $fixture = $this->paidPartProjectionFixture();
+        $before = $this->partProjectionCounts();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize(
+            $fixture['request']->fresh(),
+            true,
+            false,
+            false,
+        );
+
+        $this->assertSame($fixture['payment']->id, data_get($payload, 'sale_and_payment.part_order_context.payment_id'));
+        $this->assertSame($fixture['payment']->id, data_get($payload, 'sale_and_payment.part_order_payment.id'));
+        $this->assertSame($before, $this->partProjectionCounts());
+        Http::assertNothingSent();
+    }
+
+    public function test_existing_msim_and_finance_mail_are_projected_without_duplicates(): void
+    {
+        $fixture = $this->paidPartProjectionFixture();
+        $before = $this->partProjectionCounts();
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize(
+            $fixture['request']->fresh(),
+            true,
+            false,
+            false,
+        );
+        $payment = data_get($payload, 'sale_and_payment.part_order_payment');
+
+        $this->assertSame('sent', data_get($payment, 'receipt_notification_status'));
+        $this->assertSame($fixture['simulation_reference'], data_get($payment, 'mikro_order_simulation.simulation_reference'));
+        $this->assertFalse((bool) data_get($payment, 'mikro_order_simulation.real_order_created'));
+        $this->assertNull(data_get($payment, 'mikro_order_simulation.real_mikro_order_number'));
+        $this->assertSame($before, $this->partProjectionCounts());
+    }
+
+    public function test_suppressed_payment_messages_are_projected_as_uat_not_sent(): void
+    {
+        $fixture = $this->paidPartProjectionFixture();
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize(
+            $fixture['request']->fresh(),
+            true,
+            false,
+            false,
+        );
+        $channels = data_get($payload, 'sale_and_payment.part_order_payment.message_channels');
+
+        $this->assertSame(["UAT'ta gönderilmedi", "UAT'ta gönderilmedi"], [
+            data_get($channels, 'whatsapp.status_label'),
+            data_get($channels, 'sms.status_label'),
+        ]);
+        $this->assertSame('uat_not_sent', data_get($channels, 'whatsapp.business_state'));
+        $this->assertSame('uat_not_sent', data_get($channels, 'sms.business_state'));
+        $this->assertSame('Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.', data_get($channels, 'whatsapp.status_detail'));
+        $this->assertSame(0, data_get($payload, 'sale_and_payment.part_order_payment.message_send_count'));
+    }
+
+    public function test_dispatch_log_uses_informational_uat_suppression_semantics(): void
+    {
+        $fixture = $this->paidPartProjectionFixture();
+        $dispatch = TechnicalServiceMessageDispatch::query()->findOrFail($fixture['dispatch_ids'][0]);
+        $detail = app(TechnicalServiceMessageDispatchLogService::class)->detail($dispatch);
+
+        $this->assertSame("UAT'ta gönderilmedi", $detail['status_label']);
+        $this->assertSame('warning', $detail['status_badge_tone']);
+        $this->assertSame('Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.', $detail['status_detail']);
+        $this->assertNotSame('Başarısız', $detail['status_label']);
+        $this->assertNotSame('Bloklandı', $detail['status_label']);
+    }
+
+    public function test_list_serialization_does_not_load_part_order_projection(): void
+    {
+        $fixture = $this->paidPartProjectionFixture();
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize(
+            $fixture['request']->fresh(),
+            false,
+            false,
+            false,
+        );
+
+        $this->assertNull(data_get($payload, 'sale_and_payment.part_order_context'));
+        $this->assertNull(data_get($payload, 'sale_and_payment.part_order_payment'));
     }
 
     public function test_duplicate_paid_observation_creates_no_duplicate_context_or_earning(): void
@@ -2144,6 +2252,120 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         ], $overrides));
 
         return [$request, $session];
+    }
+
+    /**
+     * @return array{
+     *   request:TechnicalServiceRequest,
+     *   payment:TechnicalServiceMountPayment,
+     *   context_id:int,
+     *   simulation_reference:string,
+     *   dispatch_ids:array<int,int>
+     * }
+     */
+    private function paidPartProjectionFixture(): array
+    {
+        $this->ensureMikroSimulationTestTable();
+        [$request, $session] = $this->requestFixture();
+        $first = $this->stockItem($request, 'Gateway');
+        $second = $this->stockItem($request, 'Akıllı');
+        $input = $this->multiLineInput($request, [
+            ['stock_selection_token' => $first['selection_token'], 'quantity' => 1, 'unit_price' => 2000],
+            ['stock_selection_token' => $second['selection_token'], 'quantity' => 1, 'unit_price' => 1000, 'selected_part_serial' => 'TSP-2026-0001'],
+        ]);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 3000, 'TRY');
+        [$context, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, $input, 3000);
+        $this->observePaid($payment);
+
+        $simulationReference = 'MSIM-01M0TESTPARTPROJECTION000001';
+        $contextProjection = $this->service()->latestPartContext($request->fresh());
+        DB::table(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE)->insert([
+            'simulation_reference' => $simulationReference,
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $request->id,
+            'srv_request_id' => null,
+            'payment_order_context_id' => $context->id,
+            'canonical_payment_id' => $payment->id,
+            'context_revision' => $contextProjection['revision'],
+            'context_hash' => $contextProjection['context_hash'],
+            'provider_payment_reference' => 'IYZ-PAY-PROJECTION',
+            'desired_series' => 'S',
+            'order_kind' => 'part_sale',
+            'status' => 'simulated_written',
+            'payload_snapshot' => json_encode(['lines' => $contextProjection['lines']], JSON_THROW_ON_ERROR),
+            'payload_hash' => hash('sha256', 'part-projection-simulation'),
+            'idempotency_key' => 'part-projection-simulation-'.$payment->id,
+            'simulated_at' => now(),
+            'created_by' => $this->actor()->id,
+            'correlation_id' => (string) Str::uuid(),
+            'mikro_write_attempted' => false,
+            'real_mikro_order_number' => null,
+            'real_mikro_document_guid' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $payload = is_array($payment->fresh()->raw_payload) ? $payment->fresh()->raw_payload : [];
+        $payload['provider_mode'] = 'sandbox';
+        $payload['mikro_order_simulation'] = [
+            'simulation_reference' => $simulationReference,
+            'status' => 'simulated_written',
+            'status_label' => 'Mikro test sipariş simülasyonu kaydedildi',
+            'real_order_created' => false,
+            'real_order_message' => 'Gerçek Mikro siparişi oluşturulmadı.',
+            'desired_series' => 'S',
+            'mikro_write_attempted' => false,
+            'real_mikro_order_number' => null,
+            'real_mikro_document_guid' => null,
+        ];
+        $payment->forceFill([
+            'provider' => 'iyzico',
+            'provider_reference' => 'sandbox-projection-token',
+            'receipt_notification_status' => 'sent',
+            'receipt_notification_sent_at' => now(),
+            'raw_payload' => $payload,
+        ])->save();
+
+        $dispatchIds = collect(['whatsapp' => 'evo_whatsapp', 'sms' => 'nac_sms'])
+            ->map(function (string $provider, string $channel) use ($request, $payment): int {
+                return (int) TechnicalServiceMessageDispatch::query()->create([
+                    'technical_service_request_id' => $request->id,
+                    'request_id' => $request->id,
+                    'event' => 'payment_link_customer',
+                    'message_type' => 'payment_link_customer',
+                    'channel' => $channel,
+                    'provider_key' => $provider,
+                    'recipient_role' => 'customer',
+                    'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+                    'attempt_count' => 0,
+                    'max_attempts' => 1,
+                    'provider_status' => 'local_no_send',
+                    'last_error_code' => 'outbound_execution_mode_local',
+                    'last_error_message_redacted' => 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.',
+                    'metadata' => ['payment_id' => $payment->id],
+                ])->id;
+            })
+            ->values()
+            ->all();
+
+        return [
+            'request' => $request,
+            'payment' => $payment->fresh(),
+            'context_id' => (int) $context->id,
+            'simulation_reference' => $simulationReference,
+            'dispatch_ids' => $dispatchIds,
+        ];
+    }
+
+    /** @return array<string, int> */
+    private function partProjectionCounts(): array
+    {
+        return [
+            'contexts' => DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count(),
+            'items' => DB::table(TechnicalServicePaymentOrderContextService::ITEM_TABLE)->count(),
+            'payments' => TechnicalServiceMountPayment::query()->count(),
+            'simulations' => DB::table(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE)->count(),
+            'dispatches' => TechnicalServiceMessageDispatch::query()->count(),
+        ];
     }
 
     /** @return array<string, mixed> */

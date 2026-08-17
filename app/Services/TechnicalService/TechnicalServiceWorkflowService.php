@@ -18,6 +18,7 @@ use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\Messaging\TechnicalServiceMessageContextBuilder;
+use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
@@ -68,6 +69,7 @@ class TechnicalServiceWorkflowService
         TechnicalServiceMessageDispatch::STATUS_FAILED,
         TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
         TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
+        TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
     ];
 
     private const OPS_DOOR_PHOTO_FIELDS = [
@@ -82,6 +84,7 @@ class TechnicalServiceWorkflowService
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
         private readonly TechnicalServiceMessageTemplateService $messageTemplates,
         private readonly TechnicalServiceMessageContextBuilder $messageContextBuilder,
+        private readonly TechnicalServiceMessageDispatchLogService $messageDispatchLogs,
     ) {}
 
     public const WORKFLOW_STATUSES = [
@@ -146,7 +149,7 @@ class TechnicalServiceWorkflowService
     private array $mountPaymentsBySessionIdCache = [];
 
     /**
-     * @var array<int, array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null}>
+     * @var array<int, array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null,channels:array<string,array<string,mixed>>}>
      */
     private array $paymentLinkMessageStateCache = [];
 
@@ -1689,21 +1692,30 @@ class TechnicalServiceWorkflowService
                 }
 
                 $current = $this->paymentLinkMessageStateCache[$paymentId] ?? $this->emptyPaymentLinkMessageState();
-                if ($current['latest_dispatch_id'] !== null) {
-                    return;
+                $projection = $this->messageDispatchLogs->compactPaymentStatus($dispatch);
+                $channel = strtolower(trim((string) ($projection['channel'] ?? '')));
+                if ($channel !== '' && ! array_key_exists($channel, $current['channels'])) {
+                    $current['channels'][$channel] = $projection;
                 }
 
-                $this->paymentLinkMessageStateCache[$paymentId] = [
-                    'send_count' => max(1, (int) ($metadata['message_send_count'] ?? 0)),
-                    'last_message_sent_at' => $this->dateTimeString($dispatch->sent_at ?? $dispatch->queued_at ?? $dispatch->created_at),
-                    'latest_dispatch_id' => (int) $dispatch->id,
-                    'latest_dispatch_status' => (string) $dispatch->status,
-                ];
+                if ($current['latest_dispatch_id'] === null) {
+                    $isLocalUatSuppressed = ($projection['business_state'] ?? null) === 'uat_not_sent';
+                    $current['send_count'] = $isLocalUatSuppressed
+                        ? 0
+                        : max(1, (int) ($metadata['message_send_count'] ?? 0));
+                    $current['last_message_sent_at'] = $isLocalUatSuppressed
+                        ? null
+                        : $this->dateTimeString($dispatch->sent_at ?? $dispatch->queued_at ?? $dispatch->created_at);
+                    $current['latest_dispatch_id'] = (int) $dispatch->id;
+                    $current['latest_dispatch_status'] = (string) $dispatch->status;
+                }
+
+                $this->paymentLinkMessageStateCache[$paymentId] = $current;
             });
     }
 
     /**
-     * @return array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null}
+     * @return array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null,channels:array<string,array<string,mixed>>}
      */
     private function emptyPaymentLinkMessageState(): array
     {
@@ -1712,11 +1724,12 @@ class TechnicalServiceWorkflowService
             'last_message_sent_at' => null,
             'latest_dispatch_id' => null,
             'latest_dispatch_status' => null,
+            'channels' => [],
         ];
     }
 
     /**
-     * @return array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null}
+     * @return array{send_count:int,last_message_sent_at:string|null,latest_dispatch_id:int|null,latest_dispatch_status:string|null,channels:array<string,array<string,mixed>>}
      */
     public function paymentLinkMessageState(TechnicalServiceMountPayment $payment): array
     {
@@ -1889,7 +1902,11 @@ class TechnicalServiceWorkflowService
         $payload = array_merge($payload, $this->financialAliases($request));
         $payload['qr_source'] = $this->qrSourcePayload($request);
         $payload['product'] = $this->qrProductPayload($request);
-        $payload['sale_and_payment'] = $this->saleAndPaymentPayload($request, $includePaymentHistory);
+        $payload['sale_and_payment'] = $this->saleAndPaymentPayload(
+            $request,
+            $includePaymentHistory,
+            $includeHistory || $includePaymentHistory,
+        );
         $payload['documents'] = $this->documentPayload($request);
         $payload['operation_control'] = $this->operationControlPayload($request);
         $payload['assignment_blockers'] = $this->assignmentBlockers($request);
@@ -2778,8 +2795,11 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
-    private function saleAndPaymentPayload(TechnicalServiceRequest $request, bool $includePaymentHistory = true): array
-    {
+    private function saleAndPaymentPayload(
+        TechnicalServiceRequest $request,
+        bool $includePaymentHistory = true,
+        bool $includePartOrderContext = true,
+    ): array {
         $mountPayments = $this->mountCustomerPaymentSummaryPayload($request);
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $customerCharges = $this->customerChargeSummaryPayload($request);
@@ -2787,6 +2807,15 @@ class TechnicalServiceWorkflowService
         $paymentOwnership = $this->paymentOwnershipForRequest($request);
         $paidAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment, $mountPayments);
         $paymentSummary = $this->paymentSummaryPayload($request, $paymentStatus, $extraPayment, $customerCharges, $paidAmount, $mountPayments);
+        $partOrderContext = $includePartOrderContext
+            ? app(TechnicalServicePaymentOrderContextService::class)->latestPartContext($request)
+            : null;
+        $partOrderPaymentId = (int) ($partOrderContext['payment_id'] ?? 0);
+        $partOrderPayment = $partOrderPaymentId > 0
+            ? collect($customerCharges['rows'] ?? [])->first(
+                fn (array $row): bool => (int) ($row['id'] ?? 0) === $partOrderPaymentId,
+            )
+            : null;
 
         if (! $includePaymentHistory) {
             $mountPayments = Arr::except($mountPayments, ['rows', 'paid_rows', 'pending_rows', 'cancelled_rows']);
@@ -2817,9 +2846,8 @@ class TechnicalServiceWorkflowService
             'customer_charges' => $customerCharges,
             'payment_summary' => $paymentSummary,
             'technician_earning_message' => $this->technicianEarningMessagePayload($request),
-            'part_order_context' => $includePaymentHistory
-                ? app(TechnicalServicePaymentOrderContextService::class)->latestPartContext($request)
-                : null,
+            'part_order_context' => $partOrderContext,
+            'part_order_payment' => $partOrderPayment,
         ];
     }
 
@@ -3143,6 +3171,7 @@ class TechnicalServiceWorkflowService
             'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
             'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
                 ?? $messageState['last_message_sent_at'],
+            'message_channels' => $messageState['channels'],
             'selected_serial_ids' => is_array($payload['selected_serial_ids'] ?? null)
                 ? array_values($payload['selected_serial_ids'])
                 : [],
@@ -5183,6 +5212,7 @@ class TechnicalServiceWorkflowService
             'message_send_count' => max((int) ($payload['message_send_count'] ?? 0), $messageState['send_count']),
             'last_message_sent_at' => data_get($payload, 'message_send_history.'.(max(0, count((array) ($payload['message_send_history'] ?? [])) - 1).'.requested_at'))
                 ?? $messageState['last_message_sent_at'],
+            'message_channels' => $messageState['channels'],
             'source' => $payload['source'] ?? null,
             'readonly' => in_array($payment->status, [
                 TechnicalServiceMountPayment::STATUS_PAID,

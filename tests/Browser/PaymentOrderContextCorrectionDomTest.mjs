@@ -30,11 +30,14 @@ const inspectViewport = async (browser, name, viewport) => {
   await page.reload({ waitUntil: 'networkidle' })
   await page.getByTestId('load-context-correction-scenario').click()
 
-  const summary = page.getByTestId('part-order-context-summary')
+  const section = page.getByTestId('part-order-shipment-summary')
+  await section.waitFor({ state: 'visible' })
+  const summary = page.getByTestId('part-order-readonly-details')
+  await summary.getByText('Parça ve teslimat detayını aç', { exact: true }).click()
   await summary.waitFor({ state: 'visible' })
   const summaryText = await summary.innerText()
 
-  assert(summaryText.includes('Parçalar (2)'), `${name}: corrected context does not show two lines`)
+  assert(/parçalar \(2\)/i.test(summaryText), `${name}: corrected context does not show two lines`)
   assert(summaryText.includes('EE.BCK.STD.0010'), `${name}: first accepted line is missing`)
   assert(summaryText.includes('EP.YDP.002.015'), `${name}: second accepted line is missing`)
   assert(summaryText.includes('Tedarik: EMAKS Prime'), `${name}: supplier is not EMAKS Prime`)

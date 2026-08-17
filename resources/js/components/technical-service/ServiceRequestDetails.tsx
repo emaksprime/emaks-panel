@@ -1903,6 +1903,11 @@ export function ServiceRequestDetails({
   const setAssignmentInfoOpen = (open: boolean) => {
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const [partOrderInfoOpenByRequest, setPartOrderInfoOpenByRequest] = useState<Record<string, boolean>>({})
+  const partOrderInfoOpen = partOrderInfoOpenByRequest[request.id] ?? true
+  const setPartOrderInfoOpen = (open: boolean) => {
+    setPartOrderInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
   const [otherTechniciansModalOpenByRequest, setOtherTechniciansModalOpenByRequest] = useState<Record<string, boolean>>({})
   const [technicianSearchByRequest, setTechnicianSearchByRequest] = useState<Record<string, string>>({})
   const technicianSearch = technicianSearchByRequest[request.id] ?? ''
@@ -2288,6 +2293,48 @@ export function ServiceRequestDetails({
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
   const customerChargeSummary = saleAndPayment?.customer_charges ?? null
   const latestPartOrderContext = saleAndPayment?.part_order_context ?? null
+  const partOrderPayment = saleAndPayment?.part_order_payment ?? null
+  const partOrderSimulation = partOrderPayment?.mikro_order_simulation ?? null
+  const partOrderMessageChannels = partOrderPayment?.message_channels ?? {}
+  const latestPartRequest = partRequests[0] ?? null
+  const showPartOrderShipmentSection = Boolean(
+    latestPartOrderContext?.payment_purpose === 'part_charge'
+      || partOrderPayment
+      || partRequests.length > 0,
+  )
+  const partOrderLines = latestPartOrderContext?.lines ?? (latestPartOrderContext?.part ? [latestPartOrderContext.part] : [])
+  const partOrderLineCount = latestPartOrderContext?.line_count ?? partOrderLines.length
+  const partDeliveryRecipient = latestPartOrderContext?.shipping?.recipient_name
+    ?? latestPartOrderContext?.shipping?.name_or_title
+    ?? latestPartOrderContext?.delivery_target_label
+    ?? null
+  const partDeliveryAddress = [
+    latestPartOrderContext?.shipping?.address,
+    latestPartOrderContext?.shipping?.district,
+    latestPartOrderContext?.shipping?.city,
+    latestPartOrderContext?.shipping?.postal_code,
+  ].filter((value): value is string => Boolean(value && value.trim())).join(' · ')
+  const partShipmentStatusLabel = latestPartOrderContext?.delivery_status === 'delivered'
+    ? 'Teslim edildi'
+    : latestPartOrderContext?.delivery_status === 'cancelled'
+      ? 'İptal edildi'
+      : latestPartOrderContext?.delivery_status === 'shipped'
+        ? 'Sevk edildi'
+        : latestPartOrderContext?.delivery_status === 'ready_to_ship'
+          ? 'Sevke hazır'
+          : latestPartOrderContext?.delivery_status === 'preparing'
+            ? 'Hazırlanıyor'
+            : latestPartOrderContext?.shipment_required
+              ? 'Kargo hazırlığı bekliyor'
+              : latestPartOrderContext?.delivery_status_label ?? 'Teslimat kaydı yok'
+  const hepsiJetStatusLabel = latestPartOrderContext?.future_carrier_state === 'label_created'
+    ? 'Fiş oluşturuldu'
+    : latestPartOrderContext?.future_carrier_state === 'waiting_future_integration'
+      ? 'Entegrasyon kapalı'
+      : latestPartOrderContext?.shipment_required
+        ? 'Hazırlık bekliyor'
+        : null
+  const technicianDeliveryWaiting = latestPartOrderContext?.delivery_target === 'technician' && !hasAssignedTechnician
   const mountPaymentRecords = saleAndPayment?.mount_payments?.rows ?? []
   const paymentHistoryRecords = [...mountPaymentRecords, ...(customerChargeSummary?.rows ?? [])]
     .filter((payment, index, rows) => rows.findIndex((candidate) => String(candidate.id) === String(payment.id)) === index)
@@ -8076,6 +8123,153 @@ errors.lastName = 'Soyad alanı zorunludur.'
           ) : null}
         </DetailPanel>
 
+        {showPartOrderShipmentSection ? (
+          <DetailPanel
+            title="PARÇA / SİPARİŞ VE TESLİMAT"
+            summary={partOrderPayment?.status === 'paid'
+              ? `Ödeme alındı · ${partOrderPayment.amount_label ?? formatMoneyValue(partOrderPayment.amount ?? 0)}`
+              : `${partOrderLineCount || partRequests.length} parça kaydı · ${partShipmentStatusLabel}`}
+            tone="payment"
+            open={partOrderInfoOpen}
+            onOpenChange={setPartOrderInfoOpen}
+          >
+            <div data-testid="part-order-shipment-summary" className="grid min-w-0 gap-4">
+              <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {partOrderPayment ? (
+                  <MiniMetric
+                    label={partOrderPayment.status === 'paid' ? 'Ödeme alındı' : 'Ödeme durumu'}
+                    value={partOrderPayment.status === 'paid'
+                      ? partOrderPayment.amount_label ?? formatMoneyValue(partOrderPayment.amount ?? 0)
+                      : partOrderPayment.status_label ?? '-'}
+                    hint={`${partOrderPayment.provider_display_label ?? partOrderPayment.provider_label ?? partOrderPayment.provider ?? '-'} · Payment #${partOrderPayment.id ?? '-'}`}
+                  />
+                ) : null}
+                {latestPartOrderContext?.desired_mikro_series ? (
+                  <MiniMetric
+                    label="Sipariş"
+                    value={`Sipariş ${latestPartOrderContext.desired_mikro_series} serisiyle oluşturulacaktır.`}
+                    hint={partOrderSimulation ? 'Mikro test sipariş simülasyonu kaydedildi.' : latestPartOrderContext.future_mikro_write_label ?? undefined}
+                  />
+                ) : null}
+                <MiniMetric label="Teslimat" value={partShipmentStatusLabel} hint={latestPartOrderContext?.delivery_mode_label ?? latestPartRequest?.status_label ?? undefined} />
+                {partOrderPayment?.receipt_notification_status ? (
+                  <MiniMetric
+                    label="Muhasebe"
+                    value={partOrderPayment.receipt_notification_status === 'sent' ? 'Muhasebe maili gönderildi' : 'Muhasebe maili bekliyor'}
+                  />
+                ) : null}
+              </div>
+
+              {technicianDeliveryWaiting ? (
+                <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                  Teslim alıcısı için usta ataması bekleniyor. Aksiyon sahibi: OPS.
+                </p>
+              ) : null}
+
+              <details data-testid="part-order-readonly-details" className="min-w-0 border-t border-slate-200 pt-3 text-sm text-slate-700">
+                <summary className="cursor-pointer font-semibold text-slate-950">Parça ve teslimat detayını aç</summary>
+                <div className="mt-3 grid min-w-0 gap-4">
+                  {partOrderLines.length > 0 ? (
+                    <div className="grid min-w-0 gap-2">
+                      <p className="text-xs font-semibold uppercase text-slate-500">Parçalar ({partOrderLineCount})</p>
+                      {partOrderLines.map((line) => (
+                        <div key={String(line.line_key ?? line.item_code)} className="grid min-w-0 gap-1 border-b border-slate-100 pb-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                          <span className="min-w-0 break-words"><strong>{line.item_code ?? '-'}</strong> · {line.item_name ?? '-'}</span>
+                          <span className="whitespace-normal sm:text-right">{line.quantity ?? 0} {line.unit_code ?? ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : partRequests.length > 0 ? (
+                    <div className="grid gap-1">
+                      <p className="text-xs font-semibold uppercase text-slate-500">Parça talepleri ({partRequests.length})</p>
+                      {partRequests.slice(0, 4).map((partRequest) => (
+                        <p key={String(partRequest.id)} className="break-words"><strong>{partRequest.part_code ?? '-'}</strong> · {partRequest.part_name} · {partRequest.status_label}</p>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {latestPartOrderContext ? (
+                    <div className="grid min-w-0 gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
+                      <span>Tedarik: <strong>{latestPartOrderContext.part_supplier_label ?? '-'}</strong></span>
+                      <span>Ticari durum: <strong>{latestPartOrderContext.commercial_mode_label ?? '-'}</strong></span>
+                      <span>Teslim: <strong>{latestPartOrderContext.delivery_mode_label ?? '-'}</strong></span>
+                      <span>Alıcı: <strong>{partDeliveryRecipient ?? '-'}</strong></span>
+                      <span>Hedef seri: <strong>{latestPartOrderContext.desired_mikro_series ?? 'Yok'}</strong></span>
+                      <span>KDV: <strong>{latestPartOrderContext.tax_label ?? '-'}</strong></span>
+                      <span>Tahsilat: <strong>{latestPartOrderContext.payment_status_label ?? '-'}</strong></span>
+                      {latestPartOrderContext.related_product_serial ? <span className="break-all">Servis verilen ürün seri no: <strong>{latestPartOrderContext.related_product_serial}</strong></span> : null}
+                      {hepsiJetStatusLabel ? <span>HepsiJet: <strong>{hepsiJetStatusLabel}</strong></span> : null}
+                      <span>Tutar: <strong>{latestPartOrderContext.gross_total_label ?? latestPartOrderContext.order_line_total_label ?? '-'}</strong></span>
+                    </div>
+                  ) : null}
+
+                  {(latestPartOrderContext?.readiness?.blockers ?? []).map((blocker) => (
+                    <p key={blocker} className="font-semibold text-amber-800">{blocker}</p>
+                  ))}
+
+                  {partDeliveryAddress ? (
+                    <details className="min-w-0 border-t border-slate-100 pt-2">
+                      <summary className="cursor-pointer font-semibold">Teslimat adresini göster</summary>
+                      <p className="mt-2 break-words">{partDeliveryAddress}</p>
+                    </details>
+                  ) : null}
+
+                  {partOrderSimulation ? (
+                    <div className="grid min-w-0 gap-1 border-t border-slate-100 pt-2">
+                      <p className="font-semibold">Mikro test sipariş simülasyonu kaydedildi.</p>
+                      <p>Gerçek Mikro siparişi oluşturulmadı.</p>
+                      <p className="break-all text-xs text-slate-500">Test referansı: {partOrderSimulation.simulation_reference ?? '-'}</p>
+                    </div>
+                  ) : null}
+
+                  {(['whatsapp', 'sms'] as const).map((channel) => {
+                    const messageState = partOrderMessageChannels[channel]
+
+                    if (!messageState) {
+                      return null
+                    }
+
+                    return (
+                      <div key={channel} data-testid={`part-order-message-${channel}`} className="grid gap-1 border-t border-amber-100 pt-2 text-sm text-amber-950">
+                        <p><strong>{messageState.channel_label ?? (channel === 'whatsapp' ? 'WhatsApp' : 'SMS')}:</strong> {messageState.status_label ?? '-'}</p>
+                        {messageState.status_detail ? <p className="text-xs text-amber-800">{messageState.status_detail}</p> : null}
+                      </div>
+                    )
+                  })}
+
+                  {partOrderPayment ? renderPaymentProviderReferences(partOrderPayment) : null}
+
+                  {latestPartOrderContext?.delivery_mode === 'hand_delivery' && latestPartOrderContext.delivery_status !== 'delivered' ? (
+                    <div className="flex flex-wrap justify-end">
+                      <Button type="button" size="sm" variant="outline" disabled={orderContextStateUpdating} onClick={() => void handleOrderContextStateUpdate('record_delivery')}>
+                        {orderContextStateUpdating ? 'Kaydediliyor...' : 'Elden teslim edildi'}
+                      </Button>
+                    </div>
+                  ) : null}
+                  {latestPartOrderContext?.delivery_mode === 'hand_delivery' && latestPartOrderContext.commercial_mode === 'paid' ? (
+                    <details className="border-t border-slate-100 pt-2 text-xs">
+                      <summary className="cursor-pointer font-semibold">Ödeme durumunu düzelt</summary>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+                        <select id="part-hand-payment-status" defaultValue={latestPartOrderContext.payment_status ?? 'pending'} className="h-9 rounded-md border border-slate-200 bg-white px-2">
+                          <option value="paid">Ödeme alındı</option>
+                          <option value="pending">Ödeme bekleniyor</option>
+                          <option value="cancelled">İptal</option>
+                        </select>
+                        <Input value={orderContextStatusReason} onChange={(event) => setOrderContextStatusReason(event.target.value)} placeholder="Değişiklik nedeni" />
+                        <Button type="button" size="sm" disabled={orderContextStateUpdating} onClick={() => {
+                          const field = document.getElementById('part-hand-payment-status') as HTMLSelectElement | null
+                          void handleOrderContextStateUpdate('set_payment_status', (field?.value ?? 'pending') as 'pending' | 'paid' | 'cancelled')
+                        }}>Kaydet</Button>
+                      </div>
+                    </details>
+                  ) : null}
+                  {latestPartOrderContext?.finance_review_required ? <p className="font-semibold text-rose-700">Teslim sonrası iptal için finans incelemesi gerekiyor.</p> : null}
+                </div>
+              </details>
+            </div>
+          </DetailPanel>
+        ) : null}
+
         <DetailPanel
           title="Usta / Çilingir Atama"
           summary="Usta seçimi, yol hakedişi ve servis bilgileri"
@@ -8204,70 +8398,6 @@ errors.lastName = 'Soyad alanı zorunludur.'
             {assignSuccess ? (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
                 {assignSuccess}
-              </div>
-            ) : null}
-            {latestPartOrderContext?.payment_purpose === 'part_charge' ? (
-              <div data-testid="part-order-context-summary" className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <p className="font-semibold">Parçalar ({latestPartOrderContext.line_count ?? latestPartOrderContext.lines?.length ?? (latestPartOrderContext.part ? 1 : 0)})</p>
-                    <p className="mt-1 text-xs text-violet-800">
-                      {(latestPartOrderContext.lines ?? []).length > 0
-                        ? (latestPartOrderContext.lines ?? []).map((line) => `${line.item_code ?? '-'} · ${line.item_name ?? '-'}`).join(' | ')
-                        : `${latestPartOrderContext.part?.item_code ? `${latestPartOrderContext.part.item_code} · ` : ''}${latestPartOrderContext.part?.item_name ?? '-'}`}
-                    </p>
-                  </div>
-                  <Badge variant="outline">{latestPartOrderContext.payment_status_label ?? latestPartOrderContext.state_label ?? '-'}</Badge>
-                </div>
-                <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-                  <span>Tedarik: <strong>{latestPartOrderContext.part_supplier_label ?? '-'}</strong></span>
-                  <span>Ticari durum: <strong>{latestPartOrderContext.commercial_mode_label ?? '-'}</strong></span>
-                  <span>Teslim: <strong>{latestPartOrderContext.delivery_mode_label ?? '-'}</strong></span>
-                  <span>Alıcı: <strong>{latestPartOrderContext.delivery_target_label ?? '-'}</strong></span>
-                  <span>Hedef seri: <strong>{latestPartOrderContext.desired_mikro_series ?? 'Yok'}</strong></span>
-                  <span>KDV: <strong>{latestPartOrderContext.tax_label ?? '-'}</strong></span>
-                  <span>Tahsilat: <strong>{latestPartOrderContext.payment_status_label ?? '-'}</strong></span>
-                  <span>Tutar: <strong>{latestPartOrderContext.collection_required ? latestPartOrderContext.collection_amount_label : latestPartOrderContext.order_line_total_label}</strong></span>
-                  {latestPartOrderContext.payment_status_source_label ? <span>Kaynak: <strong>{latestPartOrderContext.payment_status_source_label}</strong></span> : null}
-                </div>
-                {(latestPartOrderContext.lines ?? []).length > 0 ? (
-                  <div className="grid gap-2">
-                    {(latestPartOrderContext.lines ?? []).map((line) => (
-                      <div key={String(line.line_key ?? line.item_code)} className="flex flex-wrap justify-between gap-2 rounded-md border border-violet-100 bg-white px-3 py-2 text-xs">
-                        <span><strong>{line.item_code}</strong> · {line.item_name} · {line.quantity} {line.unit_code ?? ''}</span>
-                        <span>{line.unit_price_label ?? formatMoneyValue(line.unit_price)} · <strong>{line.line_total_label ?? formatMoneyValue(line.line_total)}</strong></span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                {(latestPartOrderContext.readiness?.blockers ?? []).map((blocker) => (
-                  <p key={blocker} className="font-semibold text-amber-800">{blocker}</p>
-                ))}
-                {latestPartOrderContext.delivery_mode === 'hand_delivery' && latestPartOrderContext.delivery_status !== 'delivered' ? (
-                  <div className="flex flex-wrap justify-end">
-                    <Button type="button" size="sm" variant="outline" disabled={orderContextStateUpdating} onClick={() => void handleOrderContextStateUpdate('record_delivery')}>
-                      {orderContextStateUpdating ? 'Kaydediliyor...' : 'Elden teslim edildi'}
-                    </Button>
-                  </div>
-                ) : null}
-                {latestPartOrderContext.delivery_mode === 'hand_delivery' && latestPartOrderContext.commercial_mode === 'paid' ? (
-                  <details className="rounded-md border border-violet-100 bg-white p-2 text-xs">
-                    <summary className="cursor-pointer font-semibold">Ödeme durumunu düzelt</summary>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
-                      <select id="part-hand-payment-status" defaultValue={latestPartOrderContext.payment_status ?? 'pending'} className="h-9 rounded-md border border-slate-200 bg-white px-2">
-                        <option value="paid">Ödeme alındı</option>
-                        <option value="pending">Ödeme bekleniyor</option>
-                        <option value="cancelled">İptal</option>
-                      </select>
-                      <Input value={orderContextStatusReason} onChange={(event) => setOrderContextStatusReason(event.target.value)} placeholder="Değişiklik nedeni" />
-                      <Button type="button" size="sm" disabled={orderContextStateUpdating} onClick={() => {
-                        const field = document.getElementById('part-hand-payment-status') as HTMLSelectElement | null
-                        void handleOrderContextStateUpdate('set_payment_status', (field?.value ?? 'pending') as 'pending' | 'paid' | 'cancelled')
-                      }}>Kaydet</Button>
-                    </div>
-                  </details>
-                ) : null}
-                {latestPartOrderContext.finance_review_required ? <p className="font-semibold text-rose-700">Teslim sonrası iptal için finans incelemesi gerekiyor.</p> : null}
               </div>
             ) : null}
             {shouldShowPartCreateAction ? (
@@ -9414,7 +9544,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
               </div>
             ) : (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600">
-                Servis atanınca onay, destek, yedek parça ve fiyat talepleri burada görünür.
+                Servis atanınca usta onayı, destek ve fiyat talepleri burada görünür.
               </div>
             )}
           </DetailPanel>

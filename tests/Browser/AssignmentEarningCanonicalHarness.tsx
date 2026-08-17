@@ -1223,6 +1223,200 @@ const sandboxPaidSimulationRequest = (): ServiceRequest => {
   }
 }
 
+const postPaidPartProjectionRequest = (): ServiceRequest => {
+  const base = sandboxPaidSimulationRequest()
+  const sourceContext = base.saleAndPayment?.part_order_context
+  const sourcePayment = base.saleAndPayment?.mount_payments?.latest
+
+  if (!sourceContext || !sourcePayment) {
+    throw new Error('Post-paid part projection fixture is incomplete.')
+  }
+
+  const lines = (sourceContext.lines ?? []).map((line, index) => {
+    const grossLineTotal = index === 0 ? 2000 : 1000
+    const netLineTotal = index === 0 ? 1666.67 : 833.33
+    const vatLineTotal = index === 0 ? 333.33 : 166.67
+
+    return {
+      ...line,
+      unit_price: grossLineTotal,
+      unit_price_label: `${index === 0 ? '2.000' : '1.000'},00 TL`,
+      gross_unit_price: grossLineTotal,
+      gross_unit_price_label: `${index === 0 ? '2.000' : '1.000'},00 TL`,
+      line_total: grossLineTotal,
+      line_total_label: `${index === 0 ? '2.000' : '1.000'},00 TL`,
+      gross_line_total: grossLineTotal,
+      gross_line_total_label: `${index === 0 ? '2.000' : '1.000'},00 TL`,
+      net_line_total: netLineTotal,
+      net_line_total_label: `${index === 0 ? '1.666,67' : '833,33'} TL`,
+      vat_line_total: vatLineTotal,
+      vat_line_total_label: `${index === 0 ? '333,33' : '166,67'} TL`,
+    }
+  })
+  const context: ServiceRequestPaymentOrderContext = {
+    ...sourceContext,
+    id: 9810,
+    payment_id: 205,
+    revision: 11,
+    context_hash: 'b'.repeat(64),
+    state: 'paid_waiting_mikro_write',
+    state_label: 'Ödeme alındı; Mikro yazımı için ayrı onay bekleniyor',
+    desired_mikro_series: 'S',
+    delivery_target: 'billing_address',
+    delivery_target_label: 'Fatura adresi',
+    delivery_mode: 'shipment',
+    delivery_mode_label: 'Sevk',
+    delivery_status: 'pending',
+    delivery_status_label: 'Kargo hazırlığı bekliyor',
+    shipment_required: true,
+    future_carrier_state: 'waiting_future_integration',
+    future_carrier_label: 'HepsiJet entegrasyonu kapalı',
+    shipping: {
+      recipient_name: 'Deneme Müşteri',
+      recipient_phone: '9053****633',
+      address: 'Uzun teslimat adresi No: 21 Daire: 4',
+      city: 'Denizli',
+      district: 'Pamukkale',
+      postal_code: '20000',
+    },
+    part_supplier: 'emaks_prime',
+    part_supplier_label: 'EMAKS Prime',
+    commercial_mode: 'paid',
+    commercial_mode_label: 'Ücretli',
+    collection_allocation: 'retain_company',
+    collection_allocation_label: 'Şirkette bırakılacak',
+    payment_status: 'paid',
+    payment_status_label: 'Ödeme alındı',
+    payment_status_source: 'provider',
+    payment_status_source_label: 'Iyzico Sandbox',
+    collection_amount: 3000,
+    collection_amount_label: '3.000,00 TL',
+    order_line_total: 3000,
+    order_line_total_label: '3.000,00 TL',
+    order_reference_total: 3000,
+    order_reference_total_label: '3.000,00 TL',
+    gross_total: 3000,
+    gross_total_label: '3.000,00 TL',
+    net_total: 2500,
+    net_total_label: '2.500,00 TL',
+    vat_total: 500,
+    vat_total_label: '500,00 TL',
+    lines,
+    line_count: 2,
+    total_quantity: 2,
+    total_quantity_label: '2',
+    related_product_serial: 'W720FWS03E250621A00475',
+  }
+  const payment: ServiceRequestExtraMountPayment = {
+    ...sourcePayment,
+    id: 205,
+    request_code: 'MRN-2608DD140002',
+    root_mrn: 'MRN-2608DD140002',
+    amount: 3000,
+    amount_label: '3.000,00 TL',
+    provider_display_label: 'Iyzico Sandbox',
+    order_context: context,
+    receipt_notification_status: 'sent',
+    receipt_notification_error: null,
+    receipt_notification_sent_at: '2026-08-17T12:45:00+03:00',
+    can_retry_receipt_notification: false,
+    message_send_count: 0,
+    last_message_sent_at: null,
+    message_channels: {
+      whatsapp: {
+        dispatch_id: 608,
+        channel: 'whatsapp',
+        channel_label: 'WhatsApp',
+        provider_key: 'evolution_api',
+        provider_label: 'Evolution',
+        status: 'suppressed',
+        business_state: 'uat_not_sent',
+        status_label: "UAT'ta gönderilmedi",
+        status_detail: 'Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.',
+        status_badge_tone: 'warning',
+        attempt_count: 0,
+        max_attempts: 1,
+      },
+      sms: {
+        dispatch_id: 609,
+        channel: 'sms',
+        channel_label: 'SMS',
+        provider_key: 'nac_sms',
+        provider_label: 'NAC SMS',
+        status: 'suppressed',
+        business_state: 'uat_not_sent',
+        status_label: "UAT'ta gönderilmedi",
+        status_detail: 'Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.',
+        status_badge_tone: 'warning',
+        attempt_count: 0,
+        max_attempts: 1,
+      },
+    },
+    mikro_order_simulation: {
+      ...sourcePayment.mikro_order_simulation,
+      id: 1,
+      simulation_reference: 'MSIM-01M07G2VG0PBWJ2RJSTXMN72SP',
+      status: 'simulated_written',
+      status_label: 'Mikro test sipariş simülasyonu kaydedildi',
+      real_order_created: false,
+      real_order_message: 'Gerçek Mikro siparişi oluşturulmadı.',
+      desired_series: 'S',
+      context_revision: 11,
+      context_hash: 'b'.repeat(64),
+      mikro_write_attempted: false,
+      real_mikro_order_number: null,
+      real_mikro_document_guid: null,
+    },
+  }
+
+  return {
+    ...base,
+    mrn: 'MRN-2608DD140002',
+    technician: 'Atanmadı',
+    technicianId: null,
+    technicianPhone: null,
+    technicianProfile: null,
+    technicianPaymentAmount: 0,
+    travelFeeAmount: 0,
+    assignmentOffer: null,
+    settlement: null,
+    technicianJobCard: null,
+    status: 'Yeni',
+    workflowStatus: 'Yeni Talep',
+    saleAndPayment: {
+      ...base.saleAndPayment,
+      part_order_context: context,
+      part_order_payment: payment,
+      customer_charges: {
+        rows: [payment],
+        latest: payment,
+        total_service_amount: 0,
+        total_part_amount: 3000,
+        total_amount: 3000,
+        paid_service_amount: 0,
+        paid_part_amount: 3000,
+        paid_total_amount: 3000,
+        pending_total_amount: 0,
+      },
+      mount_payments: {
+        rows: [],
+        paid_rows: [],
+        pending_rows: [],
+        cancelled_rows: [],
+        latest: null,
+        paid_total_amount: 0,
+        paid_total_amount_label: '0,00 TL',
+        pending_total_amount: 0,
+        pending_total_amount_label: '0,00 TL',
+        has_paid: false,
+        has_pending: false,
+        has_cancelled: false,
+      },
+      technician_earning_message: null,
+    },
+  }
+}
+
 const sandboxPendingCreateRequest = (): ServiceRequest => {
   const base = sandboxPaidSimulationRequest()
   const sourceContext = base.saleAndPayment?.part_order_context
@@ -1682,6 +1876,21 @@ function Harness() {
           setRequest(sandboxPaidSimulationRequest())
         }}
       >Sandbox ödenmiş simülasyon senaryosunu yükle</button>
+      <button
+        type="button"
+        data-testid="load-post-paid-part-projection-scenario"
+        onClick={() => {
+          state.paymentCreateCount = 0
+          state.paymentOrderStateUpdateCount = 0
+          state.receiptRetryCount = 0
+          state.boardRefetchCount = 0
+          state.scrollResetCount = 0
+          setPaymentCreateCount(0)
+          setPaymentOrderStateUpdateCount(0)
+          setReceiptRetryCount(0)
+          setRequest(postPaidPartProjectionRequest())
+        }}
+      >Ödenmiş parça ana detay senaryosunu yükle</button>
       <button
         type="button"
         data-testid="load-sandbox-pending-create-scenario"

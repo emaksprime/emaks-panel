@@ -1125,6 +1125,7 @@ export type ServiceRequestSaleAndPayment = {
   payment_summary?: ServiceRequestPaymentSummary | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
   part_order_context?: ServiceRequestPaymentOrderContext | null
+  part_order_payment?: ServiceRequestExtraMountPayment | null
 }
 
 export type ServiceRequestAssignmentPaymentModel = {
@@ -1473,6 +1474,20 @@ export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext &
   can_cancel?: boolean
   message_send_count?: number | null
   last_message_sent_at?: string | null
+  message_channels?: Record<string, {
+    dispatch_id?: number | string | null
+    channel?: string | null
+    channel_label?: string | null
+    provider_key?: string | null
+    provider_label?: string | null
+    status?: string | null
+    business_state?: string | null
+    status_label?: string | null
+    status_detail?: string | null
+    status_badge_tone?: string | null
+    attempt_count?: number | null
+    max_attempts?: number | null
+  }>
   receipt_notification_status?: string | null
   receipt_notification_error?: string | null
   receipt_notification_sent_at?: string | null

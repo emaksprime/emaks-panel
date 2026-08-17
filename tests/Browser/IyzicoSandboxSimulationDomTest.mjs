@@ -146,8 +146,6 @@ const inspectViewport = async (browser, name, viewport) => {
   assert(dialogText.includes('2.000,00 TL'), `${name}: canonical gross total is missing`)
   assert(!dialogText.includes('2.000,00 TL + KDV'), `${name}: VAT was added to gross total`)
   const pageText = (await page.locator('body').innerText()).trim()
-  assert(pageText.includes('EE.BCK.STD.0010'), `${name}: first local line is missing`)
-  assert(pageText.includes('EP.YDP.002.015'), `${name}: second local line is missing`)
   assert(!/Sipariş No:\s*S\d+/i.test(pageText), `${name}: fake Mikro order number is visible`)
 
   const retry = outcome.getByRole('button', { name: 'Muhasebe mailini tekrar dene', exact: true })
@@ -163,6 +161,11 @@ const inspectViewport = async (browser, name, viewport) => {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), `${name}: page has horizontal overflow`)
 
   await dialog.getByRole('button', { name: 'Kapat', exact: true }).click()
+  const partDetails = page.getByTestId('part-order-readonly-details')
+  await partDetails.getByText('Parça ve teslimat detayını aç', { exact: true }).click()
+  const partDetailsText = await partDetails.innerText()
+  assert(partDetailsText.includes('EE.BCK.STD.0010'), `${name}: first local line is missing`)
+  assert(partDetailsText.includes('EP.YDP.002.015'), `${name}: second local line is missing`)
   await page.getByTestId('load-sandbox-pending-create-scenario').click()
   await page.locator('button').filter({ hasText: /^(Ödeme Al|Yeni ek ödeme al)$/ }).last().click()
   const pendingDialog = page.getByRole('dialog', { name: /^(Ödeme Al|Yeni ek ödeme al)$/ })
