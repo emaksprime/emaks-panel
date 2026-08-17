@@ -4696,6 +4696,115 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         );
     }
 
+    public function test_quarantined_ambiguous_dispatch_is_not_claimable(): void
+    {
+        Http::fake();
+        $dispatch = $this->quarantinedAmbiguousDispatch();
+        $before = $dispatch->only([
+            'status',
+            'attempt_count',
+            'provider_message_id',
+            'sent_at',
+            'failed_at',
+            'metadata',
+        ]);
+
+        $dryRun = app(TechnicalServiceMessageDispatchProcessor::class)->dryRun([
+            'dispatch_id' => $dispatch->id,
+            'limit' => 1,
+        ]);
+        $processed = app(TechnicalServiceMessageDispatchProcessor::class)->processOne($dispatch->id);
+
+        $this->assertSame(0, $dryRun['count']);
+        $this->assertTrue((bool) ($processed['skipped'] ?? false));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $processed['status']);
+        $this->assertSame($before, $dispatch->fresh()->only(array_keys($before)));
+        Http::assertNothingSent();
+    }
+
+    public function test_quarantined_ambiguous_dispatch_does_not_block_sender_readiness(): void
+    {
+        Http::fake();
+        $dispatch = $this->quarantinedAmbiguousDispatch();
+
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $readiness = $settings->manualE2EReadiness();
+
+        $this->assertSame(0, $readiness['pending_external_count']);
+        $this->assertSame(0, $readiness['unsafe_external_count']);
+        $this->assertSame(1, $readiness['quarantined_ambiguous_count']);
+        $this->assertContains(
+            'historical_ambiguous_dispatch_quarantined',
+            collect($readiness['warnings'])->pluck('code')->all(),
+        );
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        $this->assertSame(1, $dispatch->fresh()->attempt_count);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+        Http::assertNothingSent();
+    }
+
+    public function test_actionable_ambiguous_dispatch_blocks_sender_readiness(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+        $settings->update(['real_send_enabled' => false]);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'actionable_ambiguous_readiness_blocker',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'target_phone' => '905000000001',
+            'idempotency_key' => 'actionable-ambiguous-readiness-blocker',
+        ]);
+        $dispatch->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+            'attempt_count' => 1,
+            'provider_status' => 'accepted_without_pkgid',
+            'last_error_code' => 'accepted_without_pkgid',
+            'metadata' => [
+                ...((array) $dispatch->metadata),
+                'provider_send_attempted' => true,
+                'external_provider_call' => true,
+            ],
+        ])->saveQuietly();
+
+        try {
+            $settings->update(['real_send_enabled' => true]);
+            $this->fail('Claim edilebilir belirsiz dispatch sender readiness kapısını bloklamalıydı.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString(
+                'actionable external backlog sıfır kalmalı',
+                (string) data_get($exception->errors(), 'real_send_enabled.0'),
+            );
+        }
+
+        $current = $settings->payload();
+        $this->assertFalse((bool) data_get($current, 'global.real_send_enabled'));
+        $this->assertTrue((bool) data_get($current, 'global.queue_paused'));
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->fresh()->status);
+        Http::assertNothingSent();
+    }
+
+    public function test_accepted_without_pkgid_is_never_automatically_retried(): void
+    {
+        Http::fake(fn () => Http::response(['data' => ['pkgID' => 999999]], 200));
+        $dispatch = $this->quarantinedAmbiguousDispatch();
+        $processor = app(TechnicalServiceMessageDispatchProcessor::class);
+
+        $this->assertSame(0, $processor->process(['limit' => 10])['count']);
+        $this->assertSame(0, $processor->process(['limit' => 10])['count']);
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENDING, $dispatch->status);
+        $this->assertSame(1, $dispatch->attempt_count);
+        $this->assertNull($dispatch->provider_message_id);
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'normal_outbound_replay_blocked'));
+        Http::assertNothingSent();
+    }
+
     public function test_normal_local_event_sends_when_real_send_enabled_and_historical_rows_stay_suppressed(): void
     {
         config(['services.evolution.allow_unit_test_http_fake' => true]);
@@ -5584,6 +5693,42 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'payload' => ['body' => 'REL-4D safe fake message'],
             ...$overrides,
         ], $overrides['actor'] ?? null);
+    }
+
+    private function quarantinedAmbiguousDispatch(): TechnicalServiceMessageDispatch
+    {
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'historical_ambiguous_quarantined',
+            'message_type' => 'appointment_updated_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'target_phone' => '905000000001',
+            'idempotency_key' => 'historical-ambiguous-quarantined-'.Str::lower(Str::random(8)),
+        ]);
+        $claimHash = hash('sha256', 'historical-ambiguous-quarantined-'.$dispatch->id);
+        $dispatch->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_SENDING,
+            'attempt_count' => 1,
+            'provider_status' => 'accepted_without_pkgid',
+            'provider_message_id' => null,
+            'sent_at' => null,
+            'failed_at' => null,
+            'last_error_code' => 'accepted_without_pkgid',
+            'last_error_message_redacted' => 'Provider kabul yanıtında pkgID yok; sonuç belirsiz ve tekrar gönderim kapalı.',
+            'metadata' => [
+                ...((array) $dispatch->metadata),
+                'normal_processor_claim_hash' => $claimHash,
+                'normal_outbound_authoritative_claim_hash' => $claimHash,
+                'normal_outbound_finalized_claim_hash' => $claimHash,
+                'normal_outbound_finalized_at' => now()->toIso8601String(),
+                'provider_send_attempted' => true,
+                'external_provider_call' => true,
+                'normal_outbound_replay_blocked' => true,
+                'normal_outbound_outcome' => 'ambiguous_no_retry',
+            ],
+        ])->saveQuietly();
+
+        return $dispatch->fresh();
     }
 
     /**

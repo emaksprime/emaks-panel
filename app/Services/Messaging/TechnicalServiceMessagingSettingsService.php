@@ -23,6 +23,7 @@ use Closure;
 use DateTimeZone;
 use DomainException;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -1096,26 +1097,21 @@ class TechnicalServiceMessagingSettingsService
             ],
         ];
 
-        $pendingStatuses = [
-            TechnicalServiceMessageDispatch::STATUS_QUEUED,
-            TechnicalServiceMessageDispatch::STATUS_SENDING,
-            TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
-        ];
-        $pending = $this->pendingExternalDispatchCount();
+        $pendingDispatches = $this->pendingExternalDispatches();
+        $pending = $pendingDispatches->count();
         $unsafe = $this->unsafeExternalDispatchCount();
-        $nonAllowlistedPending = TechnicalServiceMessageDispatch::query()
-            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
-            ->whereIn('status', $pendingStatuses)
-            ->whereNotIn('target_phone', $allowlist ?: ['__scoped_uat_allowlist_missing__'])
+        $quarantinedAmbiguous = $this->quarantinedAmbiguousExternalDispatchCount();
+        $nonAllowlistedPending = $pendingDispatches
+            ->reject(fn (TechnicalServiceMessageDispatch $dispatch): bool => in_array(
+                (string) $dispatch->target_phone,
+                $allowlist,
+                true,
+            ))
             ->count();
-        $duplicatePending = TechnicalServiceMessageDispatch::query()
-            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
-            ->whereIn('status', $pendingStatuses)
-            ->whereNotNull('idempotency_key')
-            ->select('idempotency_key')
+        $duplicatePending = $pendingDispatches
+            ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => filled($dispatch->idempotency_key))
             ->groupBy('idempotency_key')
-            ->havingRaw('COUNT(*) > 1')
-            ->get()
+            ->filter(fn (Collection $dispatches): bool => $dispatches->count() > 1)
             ->count();
         $manualWorker = $this->manualE2EWorkerLeaseStatus();
         $broadWorker = $this->outboundWorkerLeaseStatus();
@@ -1192,6 +1188,7 @@ class TechnicalServiceMessagingSettingsService
             'sandbox_payment_provider' => $sandboxPaymentProvider,
             'pending_external_count' => $pending,
             'unsafe_external_count' => $unsafe,
+            'quarantined_ambiguous_count' => $quarantinedAmbiguous,
             'non_allowlisted_pending_count' => $nonAllowlistedPending,
             'duplicate_pending_count' => $duplicatePending,
             'manual_worker_state' => (string) ($manualWorker['state'] ?? 'none'),
@@ -6499,7 +6496,12 @@ class TechnicalServiceMessagingSettingsService
                 'global_live_ready' => (bool) $scoped['global_live_ready'],
                 'global_live_blocker_count' => (int) $scoped['global_live_blocker_count'],
                 'blockers' => (array) $scoped['blockers'],
-                'warnings' => [],
+                'warnings' => (int) $inputs['quarantined_ambiguous_count'] > 0
+                    ? [[
+                        'code' => 'historical_ambiguous_dispatch_quarantined',
+                        'message' => 'Tarihî belirsiz gönderim kaydı karantinada. Otomatik tekrar gönderilmeyecek.',
+                    ]]
+                    : [],
                 'portal_origins' => (array) $inputs['portal_origins'],
                 'evo_ready' => (bool) $inputs['evo_ready'],
                 'nac_ready' => (bool) $inputs['nac_ready'],
@@ -6517,6 +6519,7 @@ class TechnicalServiceMessagingSettingsService
                 'email_allowlist_masks' => (array) $inputs['email_allowlist_masks'],
                 'pending_external_count' => (int) $inputs['pending_external_count'],
                 'unsafe_external_count' => (int) $inputs['unsafe_external_count'],
+                'quarantined_ambiguous_count' => (int) $inputs['quarantined_ambiguous_count'],
                 'non_allowlisted_pending_count' => (int) $inputs['non_allowlisted_pending_count'],
                 'duplicate_pending_count' => (int) $inputs['duplicate_pending_count'],
                 'worker_lock_available' => (string) $inputs['manual_worker_state'] === 'none',
@@ -6577,42 +6580,32 @@ class TechnicalServiceMessagingSettingsService
             $blockers[] = ['code' => 'nac_not_ready', 'message' => 'Manual E2E için NAC Direct Laravel test readiness tamamlanmalı.'];
         }
 
-        $pendingStatuses = [
-            TechnicalServiceMessageDispatch::STATUS_QUEUED,
-            TechnicalServiceMessageDispatch::STATUS_SENDING,
-            TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
-        ];
         $providers = ['evo_whatsapp', 'nac_sms'];
-        $pending = TechnicalServiceMessageDispatch::query()
-            ->whereIn('provider_key', $providers)
-            ->where(function ($query) use ($pendingStatuses): void {
-                $query->whereIn('status', $pendingStatuses)
-                    ->orWhere(function ($query): void {
-                        $query->where('status', TechnicalServiceMessageDispatch::STATUS_CANCELLED)
-                            ->where('attempt_count', '>', 0)
-                            ->whereNull('provider_message_id')
-                            ->whereNull('sent_at')
-                            ->whereNull('failed_at');
-                    });
-            })
-            ->count();
+        $pendingDispatches = $this->pendingExternalDispatches()
+            ->concat(
+                TechnicalServiceMessageDispatch::query()
+                    ->whereIn('provider_key', $providers)
+                    ->where('status', TechnicalServiceMessageDispatch::STATUS_CANCELLED)
+                    ->where('attempt_count', '>', 0)
+                    ->whereNull('provider_message_id')
+                    ->whereNull('sent_at')
+                    ->whereNull('failed_at')
+                    ->get(),
+            )
+            ->reject(fn (TechnicalServiceMessageDispatch $dispatch): bool => $this->isDurableAmbiguousNormalOutboundDispatch($dispatch))
+            ->unique('id')
+            ->values();
+        $pending = $pendingDispatches->count();
         if ($pending > 0) {
             $blockers[] = ['code' => 'pending_provider_dispatch', 'message' => 'Manual E2E açılmadan önce external provider kuyruğu boş olmalı.'];
         }
 
-        $unsafe = TechnicalServiceMessageDispatch::query()
-            ->whereIn('provider_key', $providers)
-            ->where(function ($query) use ($pendingStatuses): void {
-                $query->whereIn('status', $pendingStatuses)
-                    ->orWhere(function ($query): void {
-                        $query->where('status', TechnicalServiceMessageDispatch::STATUS_CANCELLED)
-                            ->where('attempt_count', '>', 0)
-                            ->whereNull('provider_message_id')
-                            ->whereNull('sent_at')
-                            ->whereNull('failed_at');
-                    });
-            })
-            ->whereNotIn('target_phone', $allowlist ?: ['__manual_e2e_allowlist_missing__'])
+        $unsafe = $pendingDispatches
+            ->reject(fn (TechnicalServiceMessageDispatch $dispatch): bool => in_array(
+                (string) $dispatch->target_phone,
+                $allowlist,
+                true,
+            ))
             ->count();
         if ($unsafe > 0) {
             $blockers[] = ['code' => 'unsafe_provider_dispatch', 'message' => 'Allowlist dışı pending provider dispatch bulundu.'];
@@ -6670,6 +6663,12 @@ class TechnicalServiceMessagingSettingsService
         }
         if ((bool) $portalOrigins['manual_e2e']['loopback']) {
             $publicWarnings[] = ['code' => 'manual_e2e_portal_loopback', 'message' => 'Loopback portal yalnız geliştirici önizlemesidir; telefon erişimine hazır sayılmaz.'];
+        }
+        if ($this->quarantinedAmbiguousExternalDispatchCount() > 0) {
+            $publicWarnings[] = [
+                'code' => 'historical_ambiguous_dispatch_quarantined',
+                'message' => 'Tarihî belirsiz gönderim kaydı karantinada. Otomatik tekrar gönderilmeyecek.',
+            ];
         }
 
         $channelPolicies = collect((array) ($settings['message_types'] ?? []))
@@ -9285,6 +9284,7 @@ SQL,
         $worker = $this->outboundWorkerLeaseStatus();
         $pending = $this->pendingExternalDispatchCount();
         $unsafe = $this->unsafeExternalDispatchCount();
+        $quarantinedAmbiguous = $this->quarantinedAmbiguousExternalDispatchCount();
         $releaseSha = $this->runtimeReleaseSha();
         $blockers = [];
 
@@ -9362,6 +9362,12 @@ SQL,
                 ? 'Production operasyon modu'
                 : 'Canlı API Testi — yalnız Manual E2E',
             'blockers' => $blockers,
+            'warnings' => $quarantinedAmbiguous > 0
+                ? [[
+                    'code' => 'historical_ambiguous_dispatch_quarantined',
+                    'message' => 'Tarihî belirsiz gönderim kaydı karantinada. Otomatik tekrar gönderilmeyecek.',
+                ]]
+                : [],
             'evo_ready' => $evoReady,
             'nac_ready' => $nacReady,
             'queue_worker_ready' => $production ? $workerHealthy : true,
@@ -9372,6 +9378,7 @@ SQL,
             'manual_e2e_origin_ready' => (bool) ($portalOrigins['manual_e2e']['ready'] ?? false),
             'pending_external_count' => $pending,
             'unsafe_external_count' => $unsafe,
+            'quarantined_ambiguous_count' => $quarantinedAmbiguous,
             'manual_e2e_frozen' => $manualFrozen,
             'normal_outbound_claim_clear' => $normalClaimClear,
             'normal_queue_closed' => $normalQueueClosed,
@@ -9663,6 +9670,12 @@ SQL,
 
     private function pendingExternalDispatchCount(): int
     {
+        return $this->pendingExternalDispatches()->count();
+    }
+
+    /** @return Collection<int, TechnicalServiceMessageDispatch> */
+    private function pendingExternalDispatches(): Collection
+    {
         return TechnicalServiceMessageDispatch::query()
             ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
             ->whereIn('status', [
@@ -9670,10 +9683,18 @@ SQL,
                 TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED,
                 TechnicalServiceMessageDispatch::STATUS_SENDING,
             ])
-            ->count();
+            ->get()
+            ->reject(fn (TechnicalServiceMessageDispatch $dispatch): bool => $this->isDurableAmbiguousNormalOutboundDispatch($dispatch))
+            ->values();
     }
 
     private function unsafeExternalDispatchCount(): int
+    {
+        return $this->unsafeExternalDispatches()->count();
+    }
+
+    /** @return Collection<int, TechnicalServiceMessageDispatch> */
+    private function unsafeExternalDispatches(): Collection
     {
         return TechnicalServiceMessageDispatch::query()
             ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
@@ -9687,6 +9708,22 @@ SQL,
                             ->whereNull('failed_at');
                     });
             })
+            ->get()
+            ->reject(fn (TechnicalServiceMessageDispatch $dispatch): bool => $this->isDurableAmbiguousNormalOutboundDispatch($dispatch))
+            ->values();
+    }
+
+    private function quarantinedAmbiguousExternalDispatchCount(): int
+    {
+        return TechnicalServiceMessageDispatch::query()
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENDING)
+            ->where('attempt_count', '>', 0)
+            ->whereNull('provider_message_id')
+            ->whereNull('sent_at')
+            ->whereNull('failed_at')
+            ->get()
+            ->filter(fn (TechnicalServiceMessageDispatch $dispatch): bool => $this->isDurableAmbiguousNormalOutboundDispatch($dispatch))
             ->count();
     }
 
