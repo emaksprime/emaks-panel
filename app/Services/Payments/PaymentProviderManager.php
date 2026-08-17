@@ -4,7 +4,9 @@ namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -32,15 +34,22 @@ class PaymentProviderManager
         private readonly TechnicalServicePaymentProviderReconciliationService $reconciliationService,
     ) {}
 
-    public function createPayment(TechnicalServiceMountPayment $payment): array
+    /**
+     * @param  array{provider_family:string,provider_mode:string,provider_transport:string,provider_environment:string,provider_identity:string,profile_fingerprint:string}|null  $resolvedProfile
+     */
+    public function createPayment(TechnicalServiceMountPayment $payment, ?array $resolvedProfile = null): array
     {
         $this->messagingSettings->assertProviderHttpOutsideTransaction();
-        $provider = $this->canonicalProviderKey($this->providerName());
-        $providerMode = $this->providerModeForFamily($provider);
+        $profile = $this->validatedCreateProfile($resolvedProfile ?? $this->resolvedCreateProfile());
+        $provider = $profile['provider_family'];
+        $providerMode = $profile['provider_mode'];
         $scopedProvider = $this->messagingSettings->canonicalScopedLocalUatProviderIdentity(
             $provider,
             $providerMode,
         );
+        $this->stampProviderDecision($payment, $provider, $providerMode, $profile);
+        $payment = $payment->refresh();
+        $businessIdentityBefore = $this->messagingSettings->canonicalPaymentBusinessIdentity($payment)['identity_hash'];
         $claim = $this->messagingSettings->claimScopedLocalUatSandboxPaymentEffect(
             $payment,
             TechnicalServiceMessagingSettingsService::SCOPED_EFFECT_PAYMENT_CREATE,
@@ -64,7 +73,7 @@ class PaymentProviderManager
         }
 
         if (! $claim['required']) {
-            return $this->createCanonicalPayment($payment, $provider);
+            return $this->createCanonicalPayment($payment, $provider, $providerMode, $businessIdentityBefore);
         }
 
         try {
@@ -73,15 +82,21 @@ class PaymentProviderManager
                 $this->messagingSettings->beginScopedLocalUatEffectDispatch($claim['claim_nonce']);
                 $payment = $payment->refresh();
             }
-            $this->stampProviderDecision($payment, $provider, $providerMode);
             $this->messagingSettings->assertProviderHttpOutsideTransaction();
             $this->providerForName($scopedProvider)->createPayment($payment->refresh());
+            $payment = $this->assertProviderCreateAttached(
+                $payment->refresh(),
+                $provider,
+                $providerMode,
+                $businessIdentityBefore,
+            );
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->completeScopedLocalUatEffect($claim['claim_nonce']);
             }
 
             return $this->existingPaymentResponse($payment->refresh(), self::CREATE_OUTCOME_NEW_PENDING);
         } catch (Throwable $exception) {
+            $this->recordProviderCreateFailure($payment, $exception);
             if (is_string($claim['claim_nonce'])) {
                 $this->messagingSettings->failScopedLocalUatEffect($claim['claim_nonce'], $exception);
             }
@@ -190,7 +205,13 @@ class PaymentProviderManager
                     && (string) ($entry['status'] ?? '') === 'failed');
 
         if (! $auditedScopedFailure && ! $auditedCanonicalFailure && ! $preservedTerminalAudit) {
-            $fresh->delete();
+            $this->markProviderCreateOutcome(
+                $fresh,
+                'provider_effect_ambiguous',
+                false,
+                true,
+                'Canonical create audit kesinleştirilemedi; yerel ödeme sahibi korundu.',
+            );
         }
     }
 
@@ -297,8 +318,12 @@ class PaymentProviderManager
      *
      * @return array{payment_id:int,provider_reference:string|null,payment_url:string|null,status:string,outcome:string}
      */
-    private function createCanonicalPayment(TechnicalServiceMountPayment $payment, string $provider): array
-    {
+    private function createCanonicalPayment(
+        TechnicalServiceMountPayment $payment,
+        string $provider,
+        string $providerMode,
+        string $businessIdentityBefore,
+    ): array {
         $claim = $this->claimCanonicalPaymentCreate($payment, $provider);
         if ($claim['duplicate_payment_id'] !== null) {
             $canonical = TechnicalServiceMountPayment::query()->findOrFail($claim['duplicate_payment_id']);
@@ -308,9 +333,14 @@ class PaymentProviderManager
 
         try {
             $payment = TechnicalServiceMountPayment::query()->findOrFail((int) $payment->getKey());
-            $this->stampProviderDecision($payment, $provider);
             $this->messagingSettings->assertProviderHttpOutsideTransaction();
             $this->providerForName($provider)->createPayment($payment->refresh());
+            $payment = $this->assertProviderCreateAttached(
+                $payment->refresh(),
+                $provider,
+                $providerMode,
+                $businessIdentityBefore,
+            );
             $payment = $this->completeCanonicalPaymentCreate(
                 $payment,
                 $claim['idempotency_hash'],
@@ -320,6 +350,7 @@ class PaymentProviderManager
 
             return $this->existingPaymentResponse($payment, self::CREATE_OUTCOME_NEW_PENDING);
         } catch (Throwable $exception) {
+            $this->recordProviderCreateFailure($payment, $exception);
             $this->failCanonicalPaymentCreate($payment, $claim['idempotency_hash'], $exception);
 
             throw $exception;
@@ -392,8 +423,17 @@ class PaymentProviderManager
                 ->values();
             if ($terminalCandidates->isNotEmpty()) {
                 $terminalCandidate = $terminalCandidates->last();
+                $operationsReviewRequired = $terminalCandidates->contains(
+                    fn (TechnicalServiceMountPayment $candidate): bool => (bool) data_get(
+                        $candidate->raw_payload,
+                        'payment_create_outcome.operations_review_required',
+                        false,
+                    ),
+                );
                 $retryAuthority = $this->terminalRetryAuthority($locked);
-                if (! $terminalCandidate instanceof TechnicalServiceMountPayment || $retryAuthority === null) {
+                if (! $terminalCandidate instanceof TechnicalServiceMountPayment
+                    || $operationsReviewRequired
+                    || $retryAuthority === null) {
                     $terminalCandidate ??= $terminalCandidates->first();
                     if (! $terminalCandidate instanceof TechnicalServiceMountPayment) {
                         throw new ConflictHttpException('TERMINAL_PAYMENT_NOT_REUSABLE: Terminal ödeme authority çözülemedi.');
@@ -588,6 +628,10 @@ class PaymentProviderManager
     /** @return array{schema_version:int,source:string,reason:string,requested_by_user_id:int,requested_at:string}|null */
     private function terminalRetryAuthority(TechnicalServiceMountPayment $payment): ?array
     {
+        if ((bool) data_get($payment->raw_payload, 'payment_create_outcome.operations_review_required', false)) {
+            return null;
+        }
+
         $retry = data_get($payment->raw_payload, 'canonical_payment_terminal_retry');
         if (! is_array($retry)
             || (int) ($retry['schema_version'] ?? 0) !== 1
@@ -663,6 +707,10 @@ class PaymentProviderManager
 
     private function isActionablePending(TechnicalServiceMountPayment $payment): bool
     {
+        $providerCreateState = (string) data_get($payment->raw_payload, 'payment_create_outcome.state', '');
+        if ($providerCreateState !== '' && $providerCreateState !== 'provider_success_attached') {
+            return false;
+        }
         if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING
             || trim((string) $payment->provider_reference) === ''
             || trim((string) $payment->payment_url) === '') {
@@ -863,6 +911,98 @@ class PaymentProviderManager
         return $this->modeResolver->environment();
     }
 
+    /**
+     * Resolve the immutable create profile once before identity, claims, or provider I/O.
+     *
+     * @return array{provider_family:string,provider_mode:string,provider_transport:string,provider_environment:string,provider_identity:string,profile_fingerprint:string}
+     */
+    public function resolvedCreateProfile(): array
+    {
+        $provider = $this->canonicalProviderKey($this->providerName());
+        $providerMode = $this->providerModeForFamily($provider);
+        if ($provider === 'iyzico' && $providerMode === 'live' && app()->environment('local', 'testing')) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_LIVE_FORBIDDEN: Local/UAT ortamında live ödeme sağlayıcısı kullanılamaz.');
+        }
+        $providerTransport = $provider === 'fake'
+            ? 'fake_local'
+            : $this->transportResolver->activeTransport();
+        $providerIdentity = $this->messagingSettings->canonicalScopedLocalUatProviderIdentity(
+            $provider,
+            $providerMode,
+        );
+        $profile = [
+            'provider_family' => $provider,
+            'provider_mode' => $providerMode,
+            'provider_transport' => $providerTransport,
+            'provider_environment' => $this->environment(),
+            'provider_identity' => $providerIdentity,
+        ];
+
+        return [
+            ...$profile,
+            'profile_fingerprint' => hash('sha256', json_encode(
+                $profile,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+            )),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $profile
+     * @return array{provider_family:string,provider_mode:string,provider_transport:string,provider_environment:string,provider_identity:string,profile_fingerprint:string}
+     */
+    private function validatedCreateProfile(array $profile): array
+    {
+        $provider = $this->canonicalProviderKey((string) ($profile['provider_family'] ?? ''));
+        $providerMode = strtolower(trim((string) ($profile['provider_mode'] ?? '')));
+        $providerTransport = strtolower(trim((string) ($profile['provider_transport'] ?? '')));
+        $providerEnvironment = strtolower(trim((string) ($profile['provider_environment'] ?? '')));
+        $providerIdentity = strtolower(trim((string) ($profile['provider_identity'] ?? '')));
+        $profileFingerprint = strtolower(trim((string) ($profile['profile_fingerprint'] ?? '')));
+
+        if (! in_array($providerMode, ['local', 'sandbox', 'live'], true)
+            || $providerTransport === ''
+            || $providerEnvironment === ''
+            || $providerIdentity === ''
+            || ! preg_match('/^[a-f0-9]{64}$/', $profileFingerprint)) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_PROFILE_INVALID: Provider create profili eksik veya geçersiz.');
+        }
+        if ($provider === 'fake' && $providerMode !== 'local') {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_PROFILE_INVALID: Fake provider yalnız local modda çalışabilir.');
+        }
+        if ($provider === 'iyzico' && ! in_array($providerMode, ['sandbox', 'live'], true)) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_PROFILE_INVALID: Iyzico provider modu canonical değil.');
+        }
+        if ($provider === 'iyzico' && $providerMode === 'live' && app()->environment('local', 'testing')) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_LIVE_FORBIDDEN: Local/UAT ortamında live ödeme sağlayıcısı kullanılamaz.');
+        }
+
+        $expectedIdentity = $this->messagingSettings->canonicalScopedLocalUatProviderIdentity(
+            $provider,
+            $providerMode,
+        );
+        $fingerprintPayload = [
+            'provider_family' => $provider,
+            'provider_mode' => $providerMode,
+            'provider_transport' => $providerTransport,
+            'provider_environment' => $providerEnvironment,
+            'provider_identity' => $expectedIdentity,
+        ];
+        $expectedFingerprint = hash('sha256', json_encode(
+            $fingerprintPayload,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+        ));
+        if (! hash_equals($expectedIdentity, $providerIdentity)
+            || ! hash_equals($expectedFingerprint, $profileFingerprint)) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_PROFILE_DRIFT: Provider create profili çözüm sonrasında değişti.');
+        }
+
+        return [
+            ...$fingerprintPayload,
+            'profile_fingerprint' => $expectedFingerprint,
+        ];
+    }
+
     private function configuredProviderName(): string
     {
         return $this->modeResolver->activeProviderName();
@@ -909,32 +1049,166 @@ class PaymentProviderManager
         };
     }
 
-    private function stampProviderDecision(TechnicalServiceMountPayment $payment, string $provider, ?string $providerMode = null): void
-    {
+    /** @param array<string, mixed>|null $resolvedProfile */
+    private function stampProviderDecision(
+        TechnicalServiceMountPayment $payment,
+        string $provider,
+        ?string $providerMode = null,
+        ?array $resolvedProfile = null,
+    ): void {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $provider = $this->canonicalProviderKey($provider);
-        $transport = $provider === 'fake'
+        $profile = $resolvedProfile === null
+            ? null
+            : $this->validatedCreateProfile($resolvedProfile);
+        $providerMode = $profile['provider_mode'] ?? $providerMode ?? $this->providerModeForFamily($provider);
+        $transport = $profile['provider_transport'] ?? ($provider === 'fake'
             ? 'fake_local'
-            : $this->transportResolver->activeTransport();
-        $providerMode = $providerMode ?? $this->providerModeForFamily($provider);
-        $this->messagingSettings->canonicalScopedLocalUatProviderIdentity($provider, $providerMode);
+            : $this->transportResolver->activeTransport());
+        $environment = $profile['provider_environment'] ?? $this->environment();
+        $providerIdentity = $profile['provider_identity']
+            ?? $this->messagingSettings->canonicalScopedLocalUatProviderIdentity($provider, $providerMode);
+
+        if ($profile !== null && ($profile['provider_family'] !== $provider || $profile['provider_mode'] !== $providerMode)) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_PROFILE_DRIFT: Provider create profili payment kararıyla eşleşmiyor.');
+        }
 
         $payload['provider_decision'] = [
             'provider' => $provider,
             'provider_mode' => $providerMode,
             'provider_transport' => $transport,
-            'environment' => $this->environment(),
+            'environment' => $environment,
+            'provider_identity' => $providerIdentity,
+            'profile_fingerprint' => $profile['profile_fingerprint'] ?? null,
             'real_provider_enabled' => $this->modeResolver->realProviderEnabled(),
             'decided_at' => now()->toIso8601String(),
         ];
         $payload['provider_mode'] = $payload['provider_decision']['provider_mode'];
         $payload['provider_transport'] = $transport;
-        $payload['provider_environment'] = $this->environment();
+        $payload['provider_environment'] = $environment;
+        if ($profile !== null) {
+            $payload['provider_profile_fingerprint'] = $profile['profile_fingerprint'];
+        }
 
         $payment->forceFill([
             'provider' => $provider,
             'raw_payload' => $payload,
         ])->save();
+    }
+
+    private function assertProviderCreateAttached(
+        TechnicalServiceMountPayment $payment,
+        string $provider,
+        string $providerMode,
+        string $businessIdentityBefore,
+    ): TechnicalServiceMountPayment {
+        $fresh = $payment->refresh();
+        $businessIdentityAfter = $this->messagingSettings->canonicalPaymentBusinessIdentity($fresh)['identity_hash'];
+        if (! hash_equals($businessIdentityBefore, $businessIdentityAfter)) {
+            throw new ConflictHttpException('PAYMENT_BUSINESS_IDENTITY_DRIFT: Provider sonucu canonical ödeme kimliğini değiştirdi.');
+        }
+
+        $paymentUrl = trim((string) $fresh->payment_url);
+        try {
+            $trustedUrl = $provider === 'iyzico'
+                ? PartnerPortalPublicUrl::trustedPaymentProviderUrl($paymentUrl)
+                : PartnerPortalPublicUrl::rebaseLegacyUrl($paymentUrl);
+        } catch (InvalidArgumentException $exception) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_URL_INVALID: Sağlayıcı güvenli bir ödeme bağlantısı döndürmedi.', $exception);
+        }
+        if ($trustedUrl === null || trim((string) $fresh->provider_reference) === '') {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_URL_INVALID: Sağlayıcı ödeme bağlantısı veya referansı eksik.');
+        }
+        $host = strtolower((string) parse_url($trustedUrl, PHP_URL_HOST));
+        if ($provider === 'iyzico' && $providerMode === 'sandbox' && $host !== 'sandbox.iyzi.link') {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_URL_INVALID: Iyzico Sandbox bağlantı hostu canonical değil.');
+        }
+        if ($provider === 'iyzico' && $providerMode === 'live' && app()->environment('local', 'testing')) {
+            throw new ConflictHttpException('PAYMENT_PROVIDER_LIVE_FORBIDDEN: Local/UAT ortamında live ödeme bağlantısı kullanılamaz.');
+        }
+
+        return $this->markProviderCreateOutcome(
+            $fresh,
+            'provider_success_attached',
+            false,
+            false,
+            null,
+            $businessIdentityBefore,
+            $businessIdentityAfter,
+        );
+    }
+
+    private function recordProviderCreateFailure(
+        TechnicalServiceMountPayment $payment,
+        Throwable $exception,
+    ): void {
+        $fresh = $payment->fresh();
+        if (! $fresh instanceof TechnicalServiceMountPayment) {
+            return;
+        }
+
+        $message = $exception->getMessage();
+        $providerReturnedIdentity = trim((string) $fresh->provider_reference) !== ''
+            || trim((string) $fresh->payment_url) !== '';
+        $urlInvalid = str_starts_with($message, 'PAYMENT_PROVIDER_URL_INVALID:');
+        $ambiguous = $providerReturnedIdentity || $this->exceptionChainContains($exception, ConnectionException::class);
+        $state = $urlInvalid
+            ? 'provider_success_url_invalid'
+            : ($ambiguous ? 'provider_effect_ambiguous' : 'provider_rejected');
+        $reviewRequired = $urlInvalid || $ambiguous;
+
+        $this->markProviderCreateOutcome(
+            $fresh,
+            $state,
+            ! $reviewRequired,
+            $reviewRequired,
+            $reviewRequired
+                ? 'Sağlayıcı etkisi kesinleştirilemedi; yeni dış işlem operasyon kontrolü olmadan başlatılamaz.'
+                : 'Iyzico Sandbox ödeme bağlantısı hazırlanamadı.',
+        );
+    }
+
+    private function markProviderCreateOutcome(
+        TechnicalServiceMountPayment $payment,
+        string $state,
+        bool $retryAllowed,
+        bool $operationsReviewRequired,
+        ?string $message,
+        ?string $businessIdentityBefore = null,
+        ?string $businessIdentityAfter = null,
+    ): TechnicalServiceMountPayment {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['payment_create_outcome'] = array_filter([
+            'schema_version' => 1,
+            'state' => $state,
+            'retry_allowed' => $retryAllowed,
+            'operations_review_required' => $operationsReviewRequired,
+            'message' => $message,
+            'business_identity_before' => $businessIdentityBefore,
+            'business_identity_after' => $businessIdentityAfter,
+            'recorded_at' => now()->toIso8601String(),
+        ], static fn (mixed $value): bool => $value !== null);
+        $updates = ['raw_payload' => $payload];
+        if ($state !== 'provider_success_attached'
+            && $payment->status === TechnicalServiceMountPayment::STATUS_PENDING) {
+            $updates['status'] = TechnicalServiceMountPayment::STATUS_FAILED;
+        }
+        $payment->forceFill($updates)->save();
+
+        return $payment->fresh();
+    }
+
+    private function exceptionChainContains(Throwable $exception, string $class): bool
+    {
+        $current = $exception;
+        do {
+            if ($current instanceof $class) {
+                return true;
+            }
+            $current = $current->getPrevious();
+        } while ($current instanceof Throwable);
+
+        return false;
     }
 
     private function paymentModeForExistingPayment(TechnicalServiceMountPayment $payment): ?string

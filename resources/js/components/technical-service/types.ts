@@ -846,6 +846,7 @@ export type ServiceRequestFinancePaymentRecord = ServiceRequestPaymentPartContex
   provider_mode?: string | null
   provider_payment_reference?: string | null
   provider_transaction_reference?: string | null
+  provider_host_reference?: string | null
   provider_receipt_reference?: string | null
   canonical_url?: string | null
   payment_url?: string | null
@@ -1430,6 +1431,7 @@ export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext &
   provider_reference?: string | null
   provider_payment_reference?: string | null
   provider_transaction_reference?: string | null
+  provider_host_reference?: string | null
   provider_receipt_reference?: string | null
   provider_status?: string | null
   provider_last_synced_at?: string | null
@@ -1451,6 +1453,10 @@ export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext &
   payment_action_kind?: 'fake_complete' | 'open_provider_url' | 'none' | string | null
   payment_action_label?: string | null
   payment_action_disabled_reason?: string | null
+  payment_create_state?: 'provider_not_called' | 'provider_rejected' | 'provider_success_url_invalid' | 'provider_effect_ambiguous' | 'provider_success_attached' | string | null
+  payment_create_message?: string | null
+  payment_create_retry_allowed?: boolean
+  payment_create_operations_review_required?: boolean
   copy_disabled_reason?: string | null
   fake_approve_url?: string | null
   paid_at?: string | null
@@ -1467,6 +1473,27 @@ export type ServiceRequestExtraMountPayment = ServiceRequestPaymentPartContext &
   can_cancel?: boolean
   message_send_count?: number | null
   last_message_sent_at?: string | null
+  receipt_notification_status?: string | null
+  receipt_notification_error?: string | null
+  receipt_notification_sent_at?: string | null
+  can_retry_receipt_notification?: boolean
+  mikro_order_simulation?: {
+    id?: number | string | null
+    simulation_reference?: string | null
+    status?: string | null
+    status_label?: string | null
+    real_order_created?: boolean
+    real_order_message?: string | null
+    desired_series?: string | null
+    order_kind?: string | null
+    context_revision?: number | null
+    context_hash?: string | null
+    payload_hash?: string | null
+    simulated_at?: string | null
+    mikro_write_attempted?: boolean
+    real_mikro_order_number?: string | null
+    real_mikro_document_guid?: string | null
+  } | null
   selected_serial_ids?: Array<number | string>
   order_context?: ServiceRequestPaymentOrderContext | null
 }
@@ -1766,6 +1793,7 @@ export type ServiceRequestExtraMountPaymentPayload = {
   terminal_retry_reason?: string | null
   fresh_payment_requested?: boolean
   order_context?: {
+    expected_context_id?: number | null
     expected_context_hash?: string | null
     expected_revision?: number | null
     billing_source?: 'mrn_customer' | 'manual_billing_draft' | string

@@ -20,6 +20,7 @@ type HarnessState = {
   modalMountCount: number
   paymentCreateCount: number
   paymentOrderStateUpdateCount: number
+  receiptRetryCount: number
   failNextSave: boolean
   lastSavePayload: {
     labor_amount: number
@@ -1084,6 +1085,232 @@ const paymentImpactRequest = (): ServiceRequest => {
 
 const persistedPartContextStorageKey = 'payment-order-context-dom-canonical'
 
+const sandboxPaidSimulationRequest = (): ServiceRequest => {
+  const context: ServiceRequestPaymentOrderContext = {
+    id: 9806,
+    payment_id: 9906,
+    request_id: initialRequest.id,
+    root_request_id: initialRequest.id,
+    srv_request_id: null,
+    payment_purpose: 'part_charge',
+    purpose_label: 'Parça ödemesi',
+    context_type: 'part_sale',
+    state: 'paid_waiting_mikro_write',
+    state_label: 'Ödeme alındı; Mikro yazımı için ayrı onay bekleniyor',
+    desired_mikro_series: 'S',
+    tax_mode: 'standard_from_mikro',
+    tax_label: '%20 · toplam fiyata dahil',
+    tax_status: 'verified',
+    tax_source: 'mikro_api',
+    tax_source_label: 'Mikro API',
+    vat_rate: 20,
+    future_mikro_write_state: 'not_authorized',
+    future_mikro_write_label: 'Mikro yazımı bu aşamada kapalı',
+    billing: { name_or_title: 'Test Müşteri', address: 'Test adresi', city: 'İstanbul', district: 'Kadıköy' },
+    shipping_same_as_billing: true,
+    shipping: { recipient_name: 'Test Müşteri', recipient_phone: '9053****633', address: 'Test adresi', city: 'İstanbul', district: 'Kadıköy' },
+    delivery_mode: 'shipment',
+    delivery_mode_label: 'Sevk',
+    shipment_required: true,
+    payment_link_required: true,
+    collection_required: true,
+    payment_status: 'paid',
+    payment_status_label: 'Ödeme alındı',
+    payment_collection_mode: 'payment_link',
+    collection_amount: 2000,
+    collection_amount_label: '2.000,00 TL',
+    gross_total: 2000,
+    gross_total_label: '2.000,00 TL',
+    net_total: 1666.66,
+    net_total_label: '1.666,66 TL',
+    vat_total: 333.34,
+    vat_total_label: '333,34 TL',
+    currency: 'TRY',
+    related_product_serial: initialRequest.serialNumber,
+    lines: [
+      {
+        line_key: 'EE.BCK.STD.0010', item_code: 'EE.BCK.STD.0010', item_name: 'PHILIPS SUNUM STANDI',
+        selection_token: 'stand-one-token', item_kind: 'accessory', classification_source: 'mikro_stock_type',
+        classification_contract_version: 'technical-service-part-classification-v2', stock_source: 'mikro', stock_source_label: 'Mikro API',
+        physical_stock_verified: true, physical_stock_state: 'positive', physical_stock_total: 83, physical_stock_total_label: '83',
+        physical_stock_contract_version: 'technical-service-part-physical-stock-v1', stock_status_label: 'Stokta: 83 ADET',
+        stock_freshness_at: '2026-08-16T19:20:00+03:00', serial_tracking_state: 'not_required', availability_verified: true,
+        quantity: 1, unit_code: 'ADET', unit_price: 1000, unit_price_label: '1.000,00 TL', line_total: 1000,
+        line_total_label: '1.000,00 TL', gross_unit_price: 1000, gross_unit_price_label: '1.000,00 TL',
+        gross_line_total: 1000, gross_line_total_label: '1.000,00 TL', selected_tax_rate: 20,
+        selected_tax_rate_label: '%20', net_line_total: 833.33, net_line_total_label: '833,33 TL',
+        vat_line_total: 166.67, vat_line_total_label: '166,67 TL',
+      },
+      {
+        line_key: 'EP.YDP.002.015', item_code: 'EP.YDP.002.015', item_name: 'YEDEK PARÇA',
+        selection_token: 'part-two-token', item_kind: 'part', classification_source: 'mikro_stock_type',
+        classification_contract_version: 'technical-service-part-classification-v2', stock_source: 'mikro', stock_source_label: 'Mikro API',
+        physical_stock_verified: true, physical_stock_state: 'positive', physical_stock_total: 12, physical_stock_total_label: '12',
+        physical_stock_contract_version: 'technical-service-part-physical-stock-v1', stock_status_label: 'Stokta: 12 ADET',
+        stock_freshness_at: '2026-08-16T19:20:00+03:00', serial_tracking_state: 'not_required', availability_verified: true,
+        quantity: 1, unit_code: 'ADET', unit_price: 1000, unit_price_label: '1.000,00 TL', line_total: 1000,
+        line_total_label: '1.000,00 TL', gross_unit_price: 1000, gross_unit_price_label: '1.000,00 TL',
+        gross_line_total: 1000, gross_line_total_label: '1.000,00 TL', selected_tax_rate: 20,
+        selected_tax_rate_label: '%20', net_line_total: 833.33, net_line_total_label: '833,33 TL',
+        vat_line_total: 166.67, vat_line_total_label: '166,67 TL',
+      },
+    ],
+    line_count: 2,
+    total_quantity: 2,
+    total_quantity_label: '2',
+    context_hash: 'e'.repeat(64),
+    revision: 6,
+    description2_preview: 'MÜŞTERİDEN TAHSİL EDİLECEK: 2.000,00 TL\nKDV TOPLAMA DAHİLDİR.\nHEDEF SERİ: S',
+    mikro_write_execution_count: 0,
+    carrier_execution_count: 0,
+  }
+  const payment: ServiceRequestExtraMountPayment = {
+    id: 9906,
+    request_id: initialRequest.id,
+    request_code: initialRequest.mrn,
+    root_mrn: initialRequest.mrn,
+    status: 'paid',
+    status_label: 'Ödendi',
+    amount: 2000,
+    amount_label: '2.000,00 TL',
+    currency: 'TRY',
+    provider: 'iyzico',
+    provider_mode: 'sandbox',
+    provider_transport: 'direct_laravel',
+    provider_reference: 'sandbox-link-token',
+    provider_payment_reference: 'IYZ-PAY-9906',
+    provider_transaction_reference: 'IYZ-TRX-9906',
+    provider_host_reference: 'IYZ-HOST-9906',
+    provider_receipt_reference: null,
+    provider_status: 'sold',
+    purpose: 'part_charge',
+    purpose_label: 'Parça ödemesi',
+    source: 'operation_order_context_payment',
+    readonly: true,
+    paid_at: '2026-08-16T19:30:00+03:00',
+    order_context: context,
+    receipt_notification_status: 'failed',
+    receipt_notification_error: 'SMTP kabulü alınamadı.',
+    can_retry_receipt_notification: true,
+    mikro_order_simulation: {
+      id: 1,
+      simulation_reference: 'MSIM-01DOMSANDBOXSIMULATION1',
+      status: 'simulated_written',
+      status_label: 'Mikro test sipariş simülasyonu kaydedildi',
+      real_order_created: false,
+      real_order_message: 'Gerçek Mikro siparişi oluşturulmadı.',
+      desired_series: 'S',
+      context_revision: 6,
+      context_hash: 'e'.repeat(64),
+      mikro_write_attempted: false,
+      real_mikro_order_number: null,
+      real_mikro_document_guid: null,
+    },
+  }
+
+  return {
+    ...initialRequest,
+    saleAndPayment: {
+      ...initialRequest.saleAndPayment,
+      history_loaded: true,
+      part_order_context: context,
+      mount_payments: {
+        rows: [payment], paid_rows: [payment], pending_rows: [], cancelled_rows: [], latest: payment,
+        latest_paid: payment, paid_total_amount: 2000, paid_total_amount_label: '2.000,00 TL',
+        pending_total_amount: 0, pending_total_amount_label: '0,00 TL', has_paid: true, has_pending: false, has_cancelled: false,
+      },
+    },
+  }
+}
+
+const sandboxPendingCreateRequest = (): ServiceRequest => {
+  const base = sandboxPaidSimulationRequest()
+  const sourceContext = base.saleAndPayment?.part_order_context
+
+  if (!sourceContext) {
+    throw new Error('Sandbox pending fixture context missing.')
+  }
+
+  const context: ServiceRequestPaymentOrderContext = {
+    ...sourceContext,
+    payment_id: null,
+    state: 'draft',
+    state_label: 'Ödeme bağlantısı hazırlanabilir',
+    payment_status: 'pending',
+    payment_status_label: 'Ödeme bekleniyor',
+    readiness: {
+      ready: true,
+      order_ready: true,
+      payment_ready: true,
+      blocker_codes: [],
+      blockers: [],
+    },
+  }
+
+  return {
+    ...base,
+    mrn: 'MRN-DOM-IYZICO-CREATE',
+    saleAndPayment: {
+      ...base.saleAndPayment,
+      payment_provider: 'Iyzico Sandbox',
+      history_loaded: true,
+      part_order_context: context,
+      mount_payments: {
+        rows: [], paid_rows: [], pending_rows: [], cancelled_rows: [], latest: null,
+        paid_total_amount: 0, paid_total_amount_label: '0,00 TL',
+        pending_total_amount: 0, pending_total_amount_label: '0,00 TL',
+        has_paid: false, has_pending: false, has_cancelled: false,
+      },
+    },
+  }
+}
+
+const sandboxAmbiguousCreateRequest = (): ServiceRequest => {
+  const base = sandboxPendingCreateRequest()
+  const context = base.saleAndPayment?.part_order_context
+  const failedPayment: ServiceRequestExtraMountPayment = {
+    id: 9911,
+    request_id: base.id,
+    request_code: base.mrn,
+    root_mrn: base.mrn,
+    status: 'failed',
+    status_label: 'Hazırlanamadı',
+    amount: 2000,
+    amount_label: '2.000,00 TL',
+    currency: 'TRY',
+    provider: 'iyzico',
+    provider_mode: 'sandbox',
+    provider_transport: 'direct_laravel',
+    purpose: 'part_charge',
+    purpose_label: 'Parça ödemesi',
+    source: 'operation_order_context_payment',
+    payment_create_state: 'provider_effect_ambiguous',
+    payment_create_message: 'Sağlayıcı bağlantıyı oluşturdu ancak Panel kaydı kesinleştirilemedi. Yeni işlem başlatmadan önce operasyon kontrolü gerekir.',
+    payment_create_retry_allowed: false,
+    payment_create_operations_review_required: true,
+    can_open: false,
+    can_copy: false,
+    can_send: false,
+    can_check: false,
+    can_cancel: false,
+    order_context: context,
+  }
+
+  return {
+    ...base,
+    mrn: 'MRN-DOM-IYZICO-AMBIGUOUS',
+    saleAndPayment: {
+      ...base.saleAndPayment,
+      mount_payments: {
+        rows: [failedPayment], paid_rows: [], pending_rows: [], cancelled_rows: [], latest: failedPayment,
+        paid_total_amount: 0, paid_total_amount_label: '0,00 TL',
+        pending_total_amount: 0, pending_total_amount_label: '0,00 TL',
+        has_paid: false, has_pending: false, has_cancelled: false,
+      },
+    },
+  }
+}
+
 function initialHarnessRequest(): ServiceRequest {
   const persisted = window.sessionStorage.getItem(persistedPartContextStorageKey)
 
@@ -1120,6 +1347,7 @@ const state: HarnessState = {
   modalMountCount: 0,
   paymentCreateCount: 0,
   paymentOrderStateUpdateCount: 0,
+  receiptRetryCount: 0,
   failNextSave: false,
   lastSavePayload: null,
   lastSavedSnapshot: null,
@@ -1218,6 +1446,8 @@ function Harness() {
   const [failNextSave, setFailNextSave] = useState(false)
   const [paymentCreateCount, setPaymentCreateCount] = useState(0)
   const [paymentOrderStateUpdateCount, setPaymentOrderStateUpdateCount] = useState(0)
+  const [receiptRetryCount, setReceiptRetryCount] = useState(0)
+  const [paymentCreateInFlight, setPaymentCreateInFlight] = useState(false)
   const [lastPaymentCreatePayload, setLastPaymentCreatePayload] = useState<HarnessState['lastPaymentCreatePayload']>(null)
   const saveLock = useRef(false)
   const paymentCreateLock = useRef(false)
@@ -1355,6 +1585,43 @@ function Harness() {
       <button type="button" data-testid="load-no-part-scenario" onClick={() => setRequest(partContextRequest('none'))}>Parçasız senaryoyu yükle</button>
       <button
         type="button"
+        data-testid="load-sandbox-paid-simulation-scenario"
+        onClick={() => {
+          state.receiptRetryCount = 0
+          state.boardRefetchCount = 0
+          state.scrollResetCount = 0
+          setReceiptRetryCount(0)
+          setRequest(sandboxPaidSimulationRequest())
+        }}
+      >Sandbox ödenmiş simülasyon senaryosunu yükle</button>
+      <button
+        type="button"
+        data-testid="load-sandbox-pending-create-scenario"
+        onClick={() => {
+          state.paymentCreateCount = 0
+          state.lastPaymentCreatePayload = null
+          state.boardRefetchCount = 0
+          state.scrollResetCount = 0
+          setPaymentCreateCount(0)
+          setLastPaymentCreatePayload(null)
+          setPaymentCreateInFlight(false)
+          setRequest(sandboxPendingCreateRequest())
+        }}
+      >Sandbox pending oluşturma senaryosunu yükle</button>
+      <button
+        type="button"
+        data-testid="load-sandbox-ambiguous-create-scenario"
+        onClick={() => {
+          state.paymentCreateCount = 0
+          state.lastPaymentCreatePayload = null
+          setPaymentCreateCount(0)
+          setLastPaymentCreatePayload(null)
+          setPaymentCreateInFlight(false)
+          setRequest(sandboxAmbiguousCreateRequest())
+        }}
+      >Sandbox belirsiz etki senaryosunu yükle</button>
+      <button
+        type="button"
         data-testid="load-stale-srv-route-scenario"
         onClick={() => {
           state.saveCount = 0
@@ -1403,6 +1670,7 @@ function Harness() {
       <output data-testid="financial-modal-mount-count" className="sr-only">{modalMountId}</output>
       <output data-testid="payment-order-create-count" className="sr-only">{paymentCreateCount}</output>
       <output data-testid="payment-order-state-update-count" className="sr-only">{paymentOrderStateUpdateCount}</output>
+      <output data-testid="finance-receipt-retry-count" className="sr-only">{receiptRetryCount}</output>
       <output data-testid="payment-order-last-payload" className="sr-only">{JSON.stringify(lastPaymentCreatePayload)}</output>
       <section className="grid max-w-md gap-4 p-4" aria-label="Board technician location fixtures">
         <div data-testid="assignment-dynamic-board-card">
@@ -1419,6 +1687,7 @@ function Harness() {
         request={request}
         events={[]}
         loading={false}
+        extraPaymentCreateLoading={paymentCreateInFlight}
         displayMrn={request.mrn}
         technicianSuggestions={technicianSuggestions}
         selectedTechnicianId={selectedTechnicianId}
@@ -1658,13 +1927,91 @@ function Harness() {
           }
 
           paymentCreateLock.current = true
+          setPaymentCreateInFlight(true)
           state.paymentCreateCount += 1
           state.lastPaymentCreatePayload = payload
           setPaymentCreateCount(state.paymentCreateCount)
           setLastPaymentCreatePayload(payload)
 
           try {
-            await new Promise((resolve) => window.setTimeout(resolve, 50))
+            await new Promise((resolve) => window.setTimeout(resolve, request.mrn === 'MRN-DOM-IYZICO-CREATE' ? 250 : 50))
+
+            if (request.mrn === 'MRN-DOM-IYZICO-CREATE') {
+              const currentContext = request.saleAndPayment?.part_order_context
+
+              if (!currentContext
+                || Number(payload.order_context?.expected_context_id) !== Number(currentContext.id)
+                || Number(payload.order_context?.expected_revision) !== Number(currentContext.revision)
+                || payload.order_context?.expected_context_hash !== currentContext.context_hash) {
+                throw new Error('PAYMENT_CONTEXT_CONFLICT')
+              }
+
+              const paymentId = 9910
+              const paymentUrl = 'https://sandbox.iyzi.link/canonical-dom-pending-token'
+              const nextContext: ServiceRequestPaymentOrderContext = {
+                ...currentContext,
+                payment_id: paymentId,
+                state: 'payment_link_pending',
+                state_label: 'Ödeme bekleniyor',
+                payment_status: 'pending',
+                payment_status_label: 'Ödeme bekleniyor',
+              }
+              const pendingPayment: ServiceRequestExtraMountPayment = {
+                id: paymentId,
+                request_id: request.id,
+                request_code: request.mrn,
+                root_mrn: request.mrn,
+                status: 'pending',
+                status_label: 'Bekliyor',
+                amount: 2000,
+                amount_label: '2.000,00 TL',
+                currency: 'TRY',
+                provider: 'iyzico',
+                provider_mode: 'sandbox',
+                provider_transport: 'direct_laravel',
+                provider_reference: 'canonical-dom-pending-token',
+                canonical_url: paymentUrl,
+                payment_url: paymentUrl,
+                copy_url: paymentUrl,
+                purpose: 'part_charge',
+                purpose_label: 'Parça ödemesi',
+                source: 'operation_order_context_payment',
+                payment_create_state: 'provider_success_attached',
+                payment_create_message: 'Ödeme bağlantısı hazır.',
+                payment_create_retry_allowed: false,
+                payment_create_operations_review_required: false,
+                can_open: true,
+                can_copy: true,
+                can_send: false,
+                can_check: true,
+                can_cancel: false,
+                can_open_payment_url: true,
+                can_copy_payment_url: true,
+                can_cancel_payment: false,
+                is_external_provider: true,
+                payment_action_kind: 'open_provider_url',
+                order_context: nextContext,
+              }
+
+              setRequest((current) => ({
+                ...current,
+                saleAndPayment: {
+                  ...current.saleAndPayment,
+                  part_order_context: nextContext,
+                  history_loaded: true,
+                  mount_payments: {
+                    rows: [pendingPayment], paid_rows: [], pending_rows: [pendingPayment], cancelled_rows: [], latest: pendingPayment,
+                    latest_pending: pendingPayment,
+                    paid_total_amount: 0, paid_total_amount_label: '0,00 TL',
+                    pending_total_amount: 2000, pending_total_amount_label: '2.000,00 TL',
+                    has_paid: false, has_pending: true, has_cancelled: false,
+                  },
+                },
+              }))
+
+              return
+            }
+
             const purpose = payload.purpose === 'part_charge' ? 'part_charge' : 'mount_collection'
             const orderInput = payload.order_context ?? {}
             const supplier = orderInput.part_supplier ?? null
@@ -1977,7 +2324,49 @@ function Harness() {
             }))
           } finally {
             paymentCreateLock.current = false
+            setPaymentCreateInFlight(false)
           }
+        }}
+        onMountPaymentSync={async (paymentId, options) => {
+          if (!options?.retryReceipt) {
+            return
+          }
+
+          state.receiptRetryCount += 1
+          setReceiptRetryCount(state.receiptRetryCount)
+          await new Promise((resolve) => window.setTimeout(resolve, 40))
+          const markSent = (payment: ServiceRequestExtraMountPayment | null | undefined) => (
+            payment && String(payment.id) === String(paymentId)
+              ? {
+                  ...payment,
+                  receipt_notification_status: 'sent',
+                  receipt_notification_error: null,
+                  receipt_notification_sent_at: '2026-08-16T19:31:00+03:00',
+                  can_retry_receipt_notification: false,
+                }
+              : payment
+          )
+          setRequest((current) => {
+            const payments = current.saleAndPayment?.mount_payments
+
+            if (!payments) {
+              return current
+            }
+
+            return {
+              ...current,
+              saleAndPayment: {
+                ...current.saleAndPayment,
+                mount_payments: {
+                  ...payments,
+                  rows: (payments.rows ?? []).map((payment) => markSent(payment) as ServiceRequestExtraMountPayment),
+                  paid_rows: (payments.paid_rows ?? []).map((payment) => markSent(payment) as ServiceRequestExtraMountPayment),
+                  latest: markSent(payments.latest) ?? null,
+                  latest_paid: markSent(payments.latest_paid) ?? null,
+                },
+              },
+            }
+          })
         }}
         onPaymentOrderContextStateUpdate={async (contextId, payload) => {
           state.paymentOrderStateUpdateCount += 1

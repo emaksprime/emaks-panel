@@ -4187,7 +4187,10 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleMountPaymentSync = async (paymentId: number | string) => {
+  const handleMountPaymentSync = async (
+    paymentId: number | string,
+    options?: { retryReceipt?: boolean },
+  ) => {
     if (!selectedId) {
       return
     }
@@ -4195,7 +4198,8 @@ export function TechnicalServiceOperationCenter() {
     setExtraPaymentCreateError(null)
 
     try {
-      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/status?sync_provider=1`)
+      const actionQuery = options?.retryReceipt ? 'retry_receipt=1' : 'sync_provider=1'
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/status?${actionQuery}`)
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
       if (!updatedRequest) {

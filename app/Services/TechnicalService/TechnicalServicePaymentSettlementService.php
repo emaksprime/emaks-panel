@@ -287,6 +287,17 @@ class TechnicalServicePaymentSettlementService
             $payload,
             ['provider_receipt_reference', 'receipt_no', 'dekont_no'],
         ) ?: $payment->provider_receipt_reference;
+        $providerHostReference = $this->nestedPaymentReferenceFromPayload($payload, [
+            'provider_host_reference',
+            'host_reference',
+            'hostReference',
+            'provider_response_redacted.hostReference',
+            'provider_response_redacted.data.hostReference',
+            'provider_response_redacted.payments.0.hostReference',
+        ]);
+        if ($providerHostReference !== null) {
+            $rawPayload['provider_host_reference'] = $providerHostReference;
+        }
         $manualSettlement = ($payload['source'] ?? null) === 'manual_part_payment_confirmation';
 
         $payment->forceFill([
@@ -331,6 +342,7 @@ class TechnicalServicePaymentSettlementService
 
         $this->applyRequestPaymentApproval($payment);
         $this->orderContexts->markPaidWithinTransaction($payment);
+        $this->orderContexts->persistMikroOrderSimulationWithinTransaction($payment);
         $this->receiptNotificationService->persistPaidReceiptIntentWithinTransaction($payment);
 
         return $payment->fresh();
@@ -541,6 +553,22 @@ class TechnicalServicePaymentSettlementService
     {
         foreach ($keys as $key) {
             $value = $payload[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  array<int, string>  $keys
+     */
+    private function nestedPaymentReferenceFromPayload(array $payload, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            $value = str_contains($key, '.') ? data_get($payload, $key) : ($payload[$key] ?? null);
             if (is_scalar($value) && trim((string) $value) !== '') {
                 return trim((string) $value);
             }

@@ -13,12 +13,16 @@ use App\Models\User;
 use App\Services\Mikro\MikroApiClient;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServicePaymentOrderContextService;
+use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Mockery;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
 
 class TechnicalServicePaymentOrderContextTest extends TestCase
@@ -373,6 +377,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
             'terminal_retry_reason' => 'Eski sağlayıcı oturumu güncel yerel profile ait değil.',
             'order_context' => [
                 ...$this->billingInput(),
+                'expected_context_id' => (int) $preview['id'],
                 'expected_context_hash' => $preview['context_hash'],
                 'expected_revision' => $preview['revision'],
             ],
@@ -386,7 +391,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
         $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $oldPayment->fresh()->status);
         $this->assertSame(2, TechnicalServiceMountPayment::query()->where('technical_service_request_id', $request->id)->count());
-        $this->assertSame(2, DB::table(TechnicalServicePaymentOrderContextService::TABLE)
+        $this->assertSame(1, DB::table(TechnicalServicePaymentOrderContextService::TABLE)
             ->where('technical_service_request_id', $request->id)
             ->where('payment_purpose', 'mount_collection')
             ->count());
@@ -458,6 +463,70 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertSame(0, $snapshot['mikro_write_execution_count']);
         $this->assertSame(0, $snapshot['carrier_execution_count']);
         $this->assertTrue($snapshot['shipment_required']);
+        Http::assertNothingSent();
+    }
+
+    public function test_paid_s_shipment_creates_one_durable_mikro_simulation_without_real_order_or_write(): void
+    {
+        $this->ensureMikroSimulationTestTable();
+        [$request, $session] = $this->requestFixture();
+        $gateway = $this->stockItem($request, 'Gateway');
+        $motor = $this->stockItem($request, 'Akıllı');
+        $input = $this->multiLineInput($request, [
+            ['stock_selection_token' => $gateway['selection_token'], 'quantity' => 1, 'unit_price' => 1000],
+            [
+                'stock_selection_token' => $motor['selection_token'],
+                'quantity' => 1,
+                'unit_price' => 1000,
+                'selected_part_serial' => 'TSP-2026-0001',
+            ],
+        ]);
+        $preview = $this->service()->preview($request, 'part_charge', $input, 2000, 'TRY');
+        [, $payment] = $this->pendingContext($request, $session, 'part_charge', $preview, $input, 2000);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['provider_mode'] = 'sandbox';
+        $payment->forceFill([
+            'provider' => 'iyzico',
+            'provider_reference' => 'sandbox-simulation-token',
+            'raw_payload' => $payload,
+        ])->save();
+        $settlementPayload = [
+            'source' => 'provider_reconciliation',
+            'provider' => 'iyzico',
+            'provider_reference' => 'sandbox-simulation-token',
+            'provider_payment_reference' => 'IYZ-PAY-SIM-1',
+            'provider_transaction_reference' => 'IYZ-TRX-SIM-1',
+            'provider_response_redacted' => [
+                'hostReference' => 'IYZ-HOST-SIM-1',
+            ],
+        ];
+
+        $settlement = app(TechnicalServicePaymentSettlementService::class);
+        $first = $settlement->markPaid($payment->fresh(), $settlementPayload);
+        $second = $settlement->markPaid($first->fresh(), $settlementPayload);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $second->status);
+        $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE, 1);
+        $simulation = DB::table(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE)->sole();
+        $snapshot = json_decode((string) $simulation->payload_snapshot, true, 512, JSON_THROW_ON_ERROR);
+        $projection = data_get($second->raw_payload, 'mikro_order_simulation');
+
+        $this->assertMatchesRegularExpression('/^MSIM-[0-9A-HJKMNP-TV-Z]{26}$/', (string) $simulation->simulation_reference);
+        $this->assertSame('S', $simulation->desired_series);
+        $this->assertSame('simulated_written', $simulation->status);
+        $this->assertFalse((bool) $simulation->mikro_write_attempted);
+        $this->assertNull($simulation->real_mikro_order_number);
+        $this->assertNull($simulation->real_mikro_document_guid);
+        $this->assertSame('2000.00', data_get($snapshot, 'totals.gross_total'));
+        $this->assertSame('1742.42', data_get($snapshot, 'totals.net_total'));
+        $this->assertSame('257.58', data_get($snapshot, 'totals.vat_total'));
+        $this->assertCount(2, data_get($snapshot, 'lines'));
+        $this->assertSame(['TS-PART-001', 'TS-PART-002'], array_column(data_get($snapshot, 'lines'), 'item_code'));
+        $this->assertSame('IYZ-PAY-SIM-1', data_get($snapshot, 'payment.provider_payment_reference'));
+        $this->assertSame('IYZ-HOST-SIM-1', data_get($snapshot, 'payment.provider_host_reference'));
+        $this->assertSame($simulation->simulation_reference, $projection['simulation_reference']);
+        $this->assertFalse($projection['real_order_created']);
+        $this->assertSame(1, $request->events()->where('event_type', 'mikro_test_order_simulation_recorded')->count());
         Http::assertNothingSent();
     }
 
@@ -1207,6 +1276,97 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         $this->assertSame((int) $prepared['context']->id, $projection['id']);
         $this->assertCount(2, $projection['lines']);
         $this->assertDatabaseCount(TechnicalServicePaymentOrderContextService::ITEM_TABLE, 2);
+    }
+
+    public function test_payment_create_reuses_exact_context_id_revision_and_hash_without_new_revision(): void
+    {
+        [$request, , $context, $input] = $this->preparedSinglePartContext();
+        $beforeCount = DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count();
+
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$input,
+            'expected_context_id' => (int) $context->id,
+            'expected_context_hash' => (string) $context->context_hash,
+            'expected_revision' => (int) $context->revision,
+        ], 500, 'TRY', $this->actor(), false);
+
+        $this->assertFalse($prepared['created']);
+        $this->assertSame((int) $context->id, (int) $prepared['context']->id);
+        $this->assertSame((int) $context->revision, (int) $prepared['context']->revision);
+        $this->assertSame((string) $context->context_hash, (string) $prepared['context']->context_hash);
+        $this->assertSame($beforeCount, DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count());
+    }
+
+    public function test_stale_context_id_returns_409_before_payment_or_provider_work(): void
+    {
+        [$request, , $context, $input] = $this->preparedSinglePartContext();
+
+        try {
+            $this->service()->prepare($request, 'part_charge', [
+                ...$input,
+                'expected_context_id' => (int) $context->id + 1000,
+                'expected_context_hash' => (string) $context->context_hash,
+                'expected_revision' => (int) $context->revision,
+            ], 500, 'TRY', $this->actor(), false);
+            $this->fail('Stale context ID accepted olmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+            $this->assertStringContainsString('PAYMENT_CONTEXT_CONFLICT', $exception->getMessage());
+        }
+
+        $this->assertDatabaseCount('technical_service_mount_payments', 0);
+    }
+
+    public function test_terminal_retry_reuses_context_and_replaces_only_payment_pointer(): void
+    {
+        [$request, $session, $context, $input] = $this->preparedSinglePartContext();
+        $oldPayment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 500,
+            'currency' => 'TRY',
+            'raw_payload' => ['source' => 'operation_order_context_payment', 'provider_mode' => 'local'],
+        ]);
+        $this->service()->attachPayment($context, $oldPayment);
+        $oldPayment->forceFill(['status' => TechnicalServiceMountPayment::STATUS_FAILED])->save();
+        $beforeCount = DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count();
+
+        $prepared = $this->service()->prepare($request, 'part_charge', [
+            ...$input,
+            'expected_context_id' => (int) $context->id,
+            'expected_context_hash' => (string) $context->context_hash,
+            'expected_revision' => (int) $context->revision,
+        ], 500, 'TRY', $this->actor(), true, 'Sağlayıcı bağlantısı başarısız oldu');
+        $replacement = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 500,
+            'currency' => 'TRY',
+            'raw_payload' => [
+                'source' => 'operation_order_context_payment',
+                'provider_mode' => 'local',
+                'canonical_payment_terminal_retry' => [
+                    'schema_version' => 1,
+                    'source' => 'ops_explicit_terminal_retry',
+                    'reason' => 'Sağlayıcı bağlantısı başarısız oldu',
+                    'requested_by_user_id' => $this->actor()->id,
+                    'requested_at' => now()->toIso8601String(),
+                ],
+            ],
+        ]);
+        $this->service()->attachPayment($prepared['context'], $replacement);
+        $stored = DB::table(TechnicalServicePaymentOrderContextService::TABLE)->where('id', $context->id)->firstOrFail();
+
+        $this->assertSame($beforeCount, DB::table(TechnicalServicePaymentOrderContextService::TABLE)->count());
+        $this->assertSame((int) $context->revision, (int) $stored->revision);
+        $this->assertSame((string) $context->context_hash, (string) $stored->context_hash);
+        $this->assertSame((string) $context->desired_mikro_series, (string) $stored->desired_mikro_series);
+        $this->assertSame((int) $replacement->id, (int) $stored->technical_service_mount_payment_id);
+        $this->assertSame((int) $oldPayment->id, (int) data_get($replacement->fresh()->raw_payload, 'replaces_terminal_payment_id'));
     }
 
     public function test_same_item_addition_increments_quantity_without_duplicate_line(): void
@@ -2210,6 +2370,39 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
         ], 500, 'TRY', $this->actor(), false);
 
         return [$request, $session, $prepared['context'], $input, $preview];
+    }
+
+    private function ensureMikroSimulationTestTable(): void
+    {
+        if (Schema::hasTable(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE)) {
+            return;
+        }
+
+        Schema::create(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE, function (Blueprint $table): void {
+            $table->id();
+            $table->string('simulation_reference', 40)->unique();
+            $table->unsignedBigInteger('technical_service_request_id');
+            $table->unsignedBigInteger('root_request_id');
+            $table->unsignedBigInteger('srv_request_id')->nullable();
+            $table->unsignedBigInteger('payment_order_context_id');
+            $table->unsignedBigInteger('canonical_payment_id')->unique();
+            $table->unsignedInteger('context_revision');
+            $table->string('context_hash', 64);
+            $table->string('provider_payment_reference', 160)->nullable();
+            $table->string('desired_series', 8);
+            $table->string('order_kind', 48);
+            $table->string('status', 48);
+            $table->jsonb('payload_snapshot');
+            $table->string('payload_hash', 64);
+            $table->string('idempotency_key', 160)->unique();
+            $table->timestampTz('simulated_at');
+            $table->unsignedBigInteger('created_by')->nullable();
+            $table->uuid('correlation_id');
+            $table->boolean('mikro_write_attempted')->default(false);
+            $table->string('real_mikro_order_number', 120)->nullable();
+            $table->uuid('real_mikro_document_guid')->nullable();
+            $table->timestampsTz();
+        });
     }
 
     /** @return array{0:object,1:TechnicalServiceMountPayment} */

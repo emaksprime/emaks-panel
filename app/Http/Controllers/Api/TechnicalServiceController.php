@@ -35,6 +35,7 @@ use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\Payments\TechnicalServicePaymentReceiptNotificationService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
@@ -1124,6 +1125,10 @@ class TechnicalServiceController extends Controller
         if (str_contains($message, 'PENDING_WITHOUT_SUCCESSFUL_SESSION_NOT_REUSABLE')) {
             return 'Ödeme sağlayıcısı güvenli bir bağlantı oturumu döndürmedi. Eski kayıt tekrar kullanılmayacak; bu işlem için yeni bağlantı oluşturun.';
         }
+        if (str_contains($message, 'PAYMENT_PROVIDER_URL_INVALID')
+            || str_contains($message, 'PAYMENT_BUSINESS_IDENTITY_DRIFT')) {
+            return 'Sağlayıcı bağlantıyı oluşturdu ancak Panel kaydı kesinleştirilemedi. Yeni işlem başlatmadan önce operasyon kontrolü gerekir.';
+        }
         if (str_contains($message, 'PUBLIC_ORIGIN_')) {
             return 'Ödeme bağlantısı için public/LAN adresi hazır değil. Teknik Servis Admin > Entegrasyonlar ayarını kontrol edin.';
         }
@@ -1416,14 +1421,15 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $providerProfile = $paymentProviderManager->resolvedCreateProfile();
+        $providerFamily = $providerProfile['provider_family'];
+        $providerMode = $providerProfile['provider_mode'];
         $preparedContext = null;
         if ($isOrderContextPurpose) {
             $actor = $request->user();
             abort_unless($actor instanceof User, 401);
             $orderContextInput = is_array($validated['order_context'] ?? null) ? $validated['order_context'] : [];
             $freshPaymentRequested = (bool) ($validated['fresh_payment_requested'] ?? false);
-            $providerFamily = $paymentProviderManager->providerName();
-            $providerMode = $providerFamily === 'fake' ? 'local' : $paymentProviderSettings->providerMode();
             if ($freshPaymentRequested) {
                 $retryPlan = $orderContexts->paymentRetryPlan(
                     $technicalServiceRequest,
@@ -1545,7 +1551,7 @@ class TechnicalServiceController extends Controller
             }
         }
 
-        if ($paymentProviderManager->providerName() !== 'fake') {
+        if ($providerFamily !== 'fake') {
             $paymentProviderSettings->assertCompanyRecipientAddressReady();
         }
         $companyRecipient = $paymentProviderSettings->companyRecipientForPayment();
@@ -1557,7 +1563,18 @@ class TechnicalServiceController extends Controller
         $selectedSerialIds = $validSerialIds->sort()->values()->all();
         $paymentPayload = [
             'source' => $source,
-            'provider_environment' => $paymentProviderManager->environment(),
+            'provider_family' => $providerFamily,
+            'provider_mode' => $providerMode,
+            'provider_transport' => $providerProfile['provider_transport'],
+            'provider_environment' => $providerProfile['provider_environment'],
+            'provider_profile_fingerprint' => $providerProfile['profile_fingerprint'],
+            'payment_create_outcome' => [
+                'schema_version' => 1,
+                'state' => 'provider_not_called',
+                'retry_allowed' => false,
+                'operations_review_required' => false,
+                'recorded_at' => now()->toIso8601String(),
+            ],
             'technical_service_request_id' => $technicalServiceRequest->id,
             'root_request_id' => $technicalServiceRequest->parent_request_id ?: $technicalServiceRequest->id,
             'mrn' => $technicalServiceRequest->mrn,
@@ -1604,7 +1621,7 @@ class TechnicalServiceController extends Controller
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
             'technical_service_request_id' => $technicalServiceRequest->id,
-            'provider' => $paymentProviderManager->providerName(),
+            'provider' => $providerFamily,
             'provider_reference' => null,
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => $totalAmount,
@@ -1617,7 +1634,7 @@ class TechnicalServiceController extends Controller
         }
         $createOutcome = PaymentProviderManager::CREATE_OUTCOME_NEW_PENDING;
         try {
-            $createResult = $paymentProviderManager->createPayment($payment);
+            $createResult = $paymentProviderManager->createPayment($payment, $providerProfile);
             $createOutcome = $paymentProviderManager->createOutcome($createResult);
             $canonicalPayment = $paymentProviderManager->canonicalPaymentFromCreateResult($createResult);
             if ($contextId !== null && (int) $canonicalPayment->id !== (int) $payment->id) {
@@ -1627,9 +1644,6 @@ class TechnicalServiceController extends Controller
             }
             $payment = $canonicalPayment;
         } catch (Throwable $exception) {
-            if ($contextId !== null) {
-                $orderContexts->releaseFailedPayment($contextId, $payment);
-            }
             $paymentProviderManager->discardFailedCreatePaymentUnlessAudited($payment);
 
             throw ValidationException::withMessages([
@@ -1735,11 +1749,20 @@ class TechnicalServiceController extends Controller
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServiceMountPayment $payment,
         PaymentProviderManager $paymentProviderManager,
-        TechnicalServicePaymentProviderReconciliationService $reconciliationService
+        TechnicalServicePaymentProviderReconciliationService $reconciliationService,
+        TechnicalServicePaymentReceiptNotificationService $receiptNotificationService,
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
 
-        if ($request->boolean('sync_provider')) {
+        if ($request->boolean('retry_receipt') && $request->boolean('sync_provider')) {
+            throw ValidationException::withMessages([
+                'payment' => 'Ödeme kontrolü ile muhasebe maili yeniden denemesi aynı istekte çalıştırılamaz.',
+            ]);
+        }
+
+        if ($request->boolean('retry_receipt')) {
+            $payment = $receiptNotificationService->retryFailedReceipt($payment)->refresh();
+        } elseif ($request->boolean('sync_provider')) {
             try {
                 $paymentProviderManager->syncPayment($payment);
             } catch (Throwable $exception) {

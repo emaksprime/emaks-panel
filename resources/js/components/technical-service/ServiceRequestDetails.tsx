@@ -294,7 +294,7 @@ type ServiceRequestDetailsProps = {
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload & { terminal_retry_reason?: string | null }) => void | Promise<void>
   onPaymentOrderContextStateUpdate?: (contextId: number | string, payload: { expected_revision: number, action: 'record_delivery' | 'set_payment_status' | 'remove_line', payment_status?: 'pending' | 'paid' | 'cancelled' | null, reason?: string | null, line_key?: string | null }) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
-  onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
+  onMountPaymentSync?: (paymentId: number | string, options?: { retryReceipt?: boolean }) => void | Promise<void>
   onMountPaymentSendContext?: (paymentId: number | string) => Promise<PaymentLinkSendContext>
   onMountPaymentSend?: (paymentId: number | string, payload: PaymentLinkSendPayload) => Promise<PaymentLinkSendResult | void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ earning_snapshot?: ServiceRequestCanonicalEarningSnapshot | null, message_preview?: string | null, message_text?: string, whatsapp_url?: string, copy_text?: string, duplicate_noop?: boolean, corrective_resend?: boolean, dispatch?: ServiceRequestTechnicianEarningMessageDispatch, dispatches?: ServiceRequestTechnicianEarningMessageDispatch[] } | void>
@@ -2294,6 +2294,7 @@ export function ServiceRequestDetails({
     .sort((left, right) => Number(right.id ?? 0) - Number(left.id ?? 0))
   const paidMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'paid')
   const pendingMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'pending')
+  const failedMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'failed')
   const cancelledMountPaymentRecords = paymentHistoryRecords.filter((payment) => payment.status === 'cancelled')
   const latestPendingMountPayment = pendingMountPaymentRecords[0] ?? null
   const latestPaidMountPayment = paidMountPaymentRecords[0] ?? null
@@ -2957,17 +2958,24 @@ export function ServiceRequestDetails({
   const cancelledOnlinePaymentLink = cancelledMountPaymentRecords.length > 0
   const historyTerminalPaymentRetryRequired = cancelledMountPaymentRecords.some(isSameLogicalPayment)
     && !pendingMountPaymentRecords.some(isSameLogicalPayment)
+  const paymentCreateOperationsReviewRequired = failedMountPaymentRecords.some((payment) => (
+    isSameLogicalPayment(payment) && payment.payment_create_operations_review_required === true
+  ))
   const paymentRetry = activeOrderContextPreview?.payment_retry ?? null
-  const freshPaymentActionRequired = paymentRetry?.fresh_link_required === true || historyTerminalPaymentRetryRequired
+  const freshPaymentActionRequired = !paymentCreateOperationsReviewRequired
+    && (paymentRetry?.fresh_link_required === true || historyTerminalPaymentRetryRequired)
   const terminalPaymentRetryRequired = paymentRetry?.fresh_link_required === true
     ? paymentRetry.reason_required === true
     : historyTerminalPaymentRetryRequired
   const terminalPaymentRetryReason = terminalPaymentRetryReasons[String(request.id)] ?? ''
-  const hasPaymentHistory = pendingOnlinePaymentLink || paidOnlinePaymentLink || cancelledOnlinePaymentLink
+  const hasPaymentHistory = pendingOnlinePaymentLink || paidOnlinePaymentLink || cancelledOnlinePaymentLink || failedMountPaymentRecords.length > 0
   const paymentLinkActionLabel = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
   const paymentLinkModalTitle = hasPaymentHistory ? 'Yeni ek ödeme al' : 'Ödeme Al'
+  const sandboxPaymentProfileSelected = String(saleAndPayment?.payment_provider ?? '').toLocaleLowerCase('tr-TR').includes('sandbox')
   const paymentLinkSubmitLabel = extraPaymentCreateLoading
-    ? (activeOrderContextPreview?.payment_link_required === false || activeOrderContextPreview?.readiness?.ready === false ? 'Kaydediliyor...' : 'Ödeme bağlantısı hazırlanıyor...')
+    ? (activeOrderContextPreview?.payment_link_required === false || activeOrderContextPreview?.readiness?.ready === false
+      ? 'Kaydediliyor...'
+      : sandboxPaymentProfileSelected ? 'Sandbox ödeme bağlantısı hazırlanıyor...' : 'Ödeme bağlantısı hazırlanıyor...')
     : activeOrderContextPreview?.readiness?.ready === false
       ? 'Parça taslağını kaydet'
       : activeOrderContextPreview?.payment_link_required === false
@@ -3009,6 +3017,7 @@ export function ServiceRequestDetails({
     onExtraMountPaymentCreate
     && (!usesPaymentOrderContext || Boolean(activeOrderContextPreview?.context_hash && activeOrderContextPreview.revision))
     && !activeOrderContextPreviewLoading
+    && !paymentCreateOperationsReviewRequired
     && (!terminalPaymentRetryRequired || terminalPaymentRetryReason.trim().length >= 3)
   )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
@@ -3989,7 +3998,8 @@ errors.lastName = 'Soyad alanı zorunludur.'
       note: routeFeeNote.trim() || null,
       order_context: paymentPurpose === 'mount_collection' || paymentPurpose === 'part_charge'
         ? {
-            ...paymentOrderContextInput,
+          ...paymentOrderContextInput,
+            expected_context_id: activeOrderContextPreview?.id == null ? null : Number(activeOrderContextPreview.id),
             expected_context_hash: activeOrderContextPreview?.context_hash ?? null,
             expected_revision: activeOrderContextPreview?.revision ?? null,
           }
@@ -4094,6 +4104,25 @@ errors.lastName = 'Soyad alanı zorunludur.'
       setRouteFeeEditorMessage('Ödeme durumu kontrol edildi.')
     } catch (caught) {
       setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme durumu kontrol edilemedi.')
+    } finally {
+      setPaymentSyncInFlight(null)
+    }
+  }
+  const handleReceiptRetry = async (payment: ServiceRequestExtraMountPayment) => {
+    if (!payment.id || !onMountPaymentSync) {
+      setPaymentCancelError('Yeniden denenecek muhasebe maili belirlenemedi.')
+
+      return
+    }
+
+    setPaymentSyncInFlight(payment.id)
+    setPaymentCancelError(null)
+
+    try {
+      await onMountPaymentSync(payment.id, { retryReceipt: true })
+      setRouteFeeEditorMessage('Muhasebe maili yeniden denendi.')
+    } catch (caught) {
+      setPaymentCancelError(caught instanceof Error ? caught.message : 'Muhasebe maili yeniden denenemedi.')
     } finally {
       setPaymentSyncInFlight(null)
     }
@@ -5166,6 +5195,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                     <Badge variant="secondary">{payment.status_label ?? 'Ödendi'}</Badge>
                   </div>
                   {renderPaymentBusinessContext(payment)}
+                  {renderPaidPaymentOutcome(payment)}
                   <p>{payment.paid_at ? `Ödeme zamanı: ${dateTimeOrEmpty(payment.paid_at, '-')}` : 'Ödeme zamanı kaydı yok'}</p>
                   {renderPaymentProviderReferences(payment)}
                   {paymentLinkCopyUrl(payment) ? (
@@ -5191,12 +5221,34 @@ errors.lastName = 'Soyad alanı zorunludur.'
                     <Badge variant="outline">Bekliyor</Badge>
                   </div>
                   {renderPaymentBusinessContext(payment)}
+                  {String(payment.provider_mode ?? '').toLowerCase() === 'sandbox' ? (
+                    <p data-testid="sandbox-payment-pending-status" className="font-semibold text-amber-900">
+                      Sandbox ödeme bağlantısı hazır · Ödeme bekleniyor
+                    </p>
+                  ) : null}
                   {paymentLinkCopyUrl(payment) ? <p className="break-all text-amber-900">{paymentLinkCopyUrl(payment)}</p> : null}
                   {payment.payment_action_kind === 'open_provider_url' ? (
                     <p className="text-amber-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
                   ) : null}
                   {renderPaymentProviderReferences(payment)}
                   {renderPendingPaymentLinkActions(payment, 'payment-modal')}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {failedMountPaymentRecords.length > 0 ? (
+            <div className="grid gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-950">
+              <p className="font-semibold">Hazırlanamayan bağlantılar</p>
+              {failedMountPaymentRecords.map((payment) => (
+                <div key={String(payment.id ?? payment.amount)} className="grid gap-1 rounded-lg border border-rose-100 bg-white/80 p-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
+                    <Badge variant="outline">Hazırlanamadı</Badge>
+                  </div>
+                  <p>{payment.payment_create_message ?? 'Iyzico Sandbox ödeme bağlantısı hazırlanamadı.'}</p>
+                  {payment.payment_create_operations_review_required ? (
+                    <p className="font-semibold">Operasyon kontrolü gerekli</p>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -5803,6 +5855,11 @@ errors.lastName = 'Soyad alanı zorunludur.'
               ) : null}
               {activeOrderContextPreview ? (
                 <>
+                  {activeOrderContextPreview.desired_mikro_series ? (
+                    <p className="font-semibold text-blue-950">
+                      Sipariş {activeOrderContextPreview.desired_mikro_series} serisiyle oluşturulacaktır.
+                    </p>
+                  ) : null}
                   <div className="grid gap-1 rounded-md border border-blue-200 bg-white p-2 sm:grid-cols-2">
                     <span>Mikro sipariş hazırlığı: <strong>Bekliyor</strong></span>
                     <span>{activeOrderContextPreview.future_mikro_write_label ?? 'Mikro yazımı bu aşamada kapalı'}</span>
@@ -5888,6 +5945,11 @@ errors.lastName = 'Soyad alanı zorunludur.'
                 />
               ) : null}
             </label>
+          ) : null}
+          {paymentCreateOperationsReviewRequired ? (
+            <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-950">
+              Bu kayıt için önceki sahipsiz sandbox bağlantıları tespit edildi. Yeni dış işlem için operasyon onayı gerekir.
+            </p>
           ) : null}
           <div className="flex flex-wrap justify-end gap-2">
             <Button
@@ -6656,6 +6718,10 @@ errors.lastName = 'Soyad alanı zorunludur.'
         value: paymentProviderReferenceValue(payment?.provider_transaction_reference),
       },
       {
+        label: 'Host referansı',
+        value: paymentProviderReferenceValue(payment?.provider_host_reference),
+      },
+      {
         label: 'Dekont referansı',
         value: paymentProviderReferenceValue(payment?.provider_receipt_reference),
       },
@@ -6718,10 +6784,24 @@ errors.lastName = 'Soyad alanı zorunludur.'
   }
 
   function renderPaymentProviderReferences(payment: ServiceRequestExtraMountPayment | null | undefined) {
+    const simulation = payment?.mikro_order_simulation ?? null
+
     return (
       <details data-testid="payment-technical-details" className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] leading-relaxed text-slate-700">
-        <summary className="cursor-pointer font-semibold text-slate-900">Teknik ödeme detayları</summary>
+        <summary className="cursor-pointer font-semibold text-slate-900">Muhasebe / Teknik Detaylar</summary>
         <div className="mt-2 grid gap-1">
+          {simulation ? (
+            <div className="mb-1 grid gap-0.5 rounded-md border border-violet-100 bg-violet-50 px-2 py-1 text-violet-950 sm:grid-cols-[150px_minmax(0,1fr)]">
+              <span className="font-medium text-violet-700">Test sipariş detayını gör</span>
+              <span>{simulation.simulation_reference ?? '-'}</span>
+              <span className="font-medium text-violet-700">Hedef seri</span>
+              <span>{simulation.desired_series ?? '-'}</span>
+              <span className="font-medium text-violet-700">Context revizyon/hash</span>
+              <span className="break-all">{simulation.context_revision ?? '-'} / {simulation.context_hash ?? '-'}</span>
+              <span className="font-medium text-violet-700">Gerçek Mikro kaydı</span>
+              <span>{simulation.real_order_message ?? 'Gerçek Mikro siparişi oluşturulmadı.'}</span>
+            </div>
+          ) : null}
           {paymentProviderReferenceRows(payment).map((row) => (
             <div key={row.label} className="grid gap-0.5 sm:grid-cols-[150px_minmax(0,1fr)]">
               <span className="font-medium text-slate-500">{row.label}</span>
@@ -6735,6 +6815,62 @@ errors.lastName = 'Soyad alanı zorunludur.'
           ) : null}
         </div>
       </details>
+    )
+  }
+
+  function renderPaidPaymentOutcome(payment: ServiceRequestExtraMountPayment) {
+    const simulation = payment.mikro_order_simulation ?? null
+    const desiredSeries = simulation?.desired_series ?? payment.order_context?.desired_mikro_series ?? null
+    const receiptStatus = String(payment.receipt_notification_status ?? '').trim()
+    const receiptSent = receiptStatus === 'sent'
+    const receiptFailed = ['failed', 'mailer_not_configured', 'recipient_not_configured'].includes(receiptStatus)
+    const receiptMessage = receiptSent
+      ? 'Muhasebe maili gönderildi'
+      : receiptStatus === 'recipient_not_configured'
+        ? 'Muhasebe maili alıcısı yapılandırılmadı'
+        : receiptFailed
+          ? 'Muhasebe maili gönderilemedi'
+          : receiptStatus === 'queued' || receiptStatus === 'provider_unknown'
+            ? 'Muhasebe maili işleniyor'
+            : null
+
+    return (
+      <div data-testid={`paid-payment-outcome-${payment.id ?? 'unknown'}`} className="grid gap-2 rounded-md border border-emerald-100 bg-emerald-50/60 px-2 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">Ödeme alındı</Badge>
+          {String(payment.provider_mode ?? '').toLowerCase() === 'sandbox' ? (
+            <Badge data-testid="payment-sandbox-badge" variant="outline">Iyzico Sandbox</Badge>
+          ) : null}
+        </div>
+        {desiredSeries ? (
+          <p className="font-semibold text-emerald-950">Sipariş {desiredSeries} serisiyle oluşturulacaktır.</p>
+        ) : null}
+        {simulation ? (
+          <div data-testid="mikro-order-simulation-status" className="grid gap-0.5 text-violet-950">
+            <p className="font-semibold">Mikro test sipariş simülasyonu kaydedildi</p>
+            <p>{simulation.real_order_message ?? 'Gerçek Mikro siparişi oluşturulmadı.'}</p>
+            <p>Test referansı: <strong>{simulation.simulation_reference ?? '-'}</strong></p>
+          </div>
+        ) : null}
+        {receiptMessage ? (
+          <div data-testid="finance-receipt-status" className={receiptSent ? 'text-emerald-900' : receiptFailed ? 'text-rose-800' : 'text-slate-700'}>
+            <p className="font-semibold">{receiptMessage}</p>
+            {payment.receipt_notification_error ? <p>{payment.receipt_notification_error}</p> : null}
+            {payment.can_retry_receipt_notification ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="mt-1"
+                disabled={paymentSyncInFlight === payment.id}
+                onClick={() => void handleReceiptRetry(payment)}
+              >
+                {paymentSyncInFlight === payment.id ? 'Yeniden deneniyor...' : 'Muhasebe mailini tekrar dene'}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     )
   }
 

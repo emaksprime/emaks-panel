@@ -17,6 +17,15 @@ class TechnicalServicePaymentActionPresenter
         $providerDecision = is_array($payload['provider_decision'] ?? null) ? $payload['provider_decision'] : [];
         $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
         $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
+        $paymentCreateOutcome = is_array($payload['payment_create_outcome'] ?? null)
+            ? $payload['payment_create_outcome']
+            : [];
+        $receiptClaim = is_array($payload['payment_receipt_notification_claim'] ?? null)
+            ? $payload['payment_receipt_notification_claim']
+            : [];
+        $mikroSimulation = is_array($payload['mikro_order_simulation'] ?? null)
+            ? $payload['mikro_order_simulation']
+            : null;
         $provider = strtolower((string) ($payment->provider ?? ''));
         $providerMode = strtolower((string) (
             $payload['provider_mode']
@@ -51,15 +60,25 @@ class TechnicalServicePaymentActionPresenter
         $isPending = $payment->status === TechnicalServiceMountPayment::STATUS_PENDING;
         $isPaid = $payment->status === TechnicalServiceMountPayment::STATUS_PAID;
         $isCancelled = $payment->status === TechnicalServiceMountPayment::STATUS_CANCELLED;
+        $paymentCreateState = trim((string) ($paymentCreateOutcome['state'] ?? ''));
+        $providerCreateActionable = $paymentCreateState === '' || $paymentCreateState === 'provider_success_attached';
+        $operationsReviewRequired = (bool) ($paymentCreateOutcome['operations_review_required'] ?? false);
+        $retryCreateAllowed = (bool) ($paymentCreateOutcome['retry_allowed'] ?? false) && ! $operationsReviewRequired;
+        $paymentCreateMessage = match ($paymentCreateState) {
+            'provider_rejected' => 'Iyzico Sandbox ödeme bağlantısı hazırlanamadı.',
+            'provider_success_url_invalid', 'provider_effect_ambiguous' => 'Sağlayıcı bağlantıyı oluşturdu ancak Panel kaydı kesinleştirilemedi. Yeni işlem başlatmadan önce operasyon kontrolü gerekir.',
+            'provider_success_attached' => 'Ödeme bağlantısı hazır.',
+            default => null,
+        };
         $syncWaiting = $isIyzicoProvider && $isPending && $payment->provider_reference !== null;
-        $canCopy = $paymentUrl !== '';
+        $canCopy = $providerCreateActionable && $paymentUrl !== '';
         $canFakeComplete = $isFakeProvider && $isPending && $fakeApproveUrl !== null;
-        $canOpenProviderUrl = ! $isFakeProvider && $isPending && $paymentUrl !== '';
-        $canOpen = $isPending && $paymentUrl !== '';
-        $canCopyPending = $isPending && $paymentUrl !== '';
-        $canSend = $isPending && $paymentUrl !== '' && (float) $payment->amount > 0;
-        $canCheck = $isPending && $isIyzicoProvider && trim((string) $payment->provider_reference) !== '';
-        $canCancel = $isPending;
+        $canOpenProviderUrl = ! $isFakeProvider && $isPending && $providerCreateActionable && $paymentUrl !== '';
+        $canOpen = $isPending && $providerCreateActionable && $paymentUrl !== '';
+        $canCopyPending = $isPending && $providerCreateActionable && $paymentUrl !== '';
+        $canSend = $isPending && $providerCreateActionable && $paymentUrl !== '' && (float) $payment->amount > 0;
+        $canCheck = $isPending && $providerCreateActionable && $isIyzicoProvider && trim((string) $payment->provider_reference) !== '';
+        $canCancel = $isPending && $providerCreateActionable;
         $actionKind = 'none';
         $actionLabel = null;
         $disabledReason = null;
@@ -104,6 +123,7 @@ class TechnicalServicePaymentActionPresenter
             'provider_reference' => $payment->provider_reference,
             'provider_payment_reference' => $payment->provider_payment_reference,
             'provider_transaction_reference' => $payment->provider_transaction_reference,
+            'provider_host_reference' => $payload['provider_host_reference'] ?? null,
             'provider_receipt_reference' => $payment->provider_receipt_reference,
             'provider_status' => $providerStatus,
             'provider_last_synced_at' => $payment->provider_last_synced_at?->toISOString(),
@@ -128,7 +148,17 @@ class TechnicalServicePaymentActionPresenter
             'payment_action_disabled_reason' => $disabledReason,
             'copy_disabled_reason' => $copyDisabledReason,
             'public_url_blocker_code' => $publicUrlBlockerCode,
+            'payment_create_state' => $paymentCreateState !== '' ? $paymentCreateState : null,
+            'payment_create_message' => $paymentCreateMessage,
+            'payment_create_retry_allowed' => $retryCreateAllowed,
+            'payment_create_operations_review_required' => $operationsReviewRequired,
             'fake_approve_url' => $canFakeComplete ? $fakeApproveUrl : null,
+            'receipt_notification_status' => $payment->receipt_notification_status,
+            'receipt_notification_error' => $payment->receipt_notification_error,
+            'receipt_notification_sent_at' => $payment->receipt_notification_sent_at?->toISOString(),
+            'can_retry_receipt_notification' => $isPaid
+                && (bool) ($receiptClaim['retry_available'] ?? false),
+            'mikro_order_simulation' => $mikroSimulation,
         ];
     }
 

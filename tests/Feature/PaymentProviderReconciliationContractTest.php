@@ -22,11 +22,19 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
 
 class PaymentProviderReconciliationContractTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('r', 32))]);
+    }
 
     public function test_build_sync_status_payload_contains_payment_mrn_serial_customer_and_excludes_secret(): void
     {
@@ -327,7 +335,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertSame('smtp_payment_receipt', $receiptDispatch->provider_key);
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $receiptDispatch->status);
         $this->assertSame(1, $receiptDispatch->attempt_count);
-        $this->assertSame(1, $receiptDispatch->max_attempts);
+        $this->assertSame(2, $receiptDispatch->max_attempts);
         $this->assertFalse((bool) data_get($receiptDispatch->metadata, 'automatic_retry_allowed'));
 
         $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_sent')->count());
@@ -420,6 +428,190 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertNull($cancelledPayment->fresh()->receipt_notification_status);
     }
 
+    public function test_finance_receipt_contains_canonical_lines_tax_shipping_and_mikro_simulation_without_secrets(): void
+    {
+        Mail::fake();
+        $this->enablePaymentNotification('payment-audit@example.test');
+        $this->configureReadySmtpProfile();
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SANDBOX-MAIL-1',
+            'serial_number' => 'W720FWS03E250621A00475',
+            'customer_name' => 'Sandbox Finans Müşteri',
+        ]);
+        $contextHash = str_repeat('a', 64);
+        $payment = $this->mountPaymentForRequest($request, [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-full-mail-token-very-secret',
+            'amount' => 2000,
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'request_code' => $request->mrn,
+                'root_mrn' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+                'provider_mode' => 'sandbox',
+                'order_context' => [
+                    'revision' => 6,
+                    'context_hash' => $contextHash,
+                    'desired_mikro_series' => 'S',
+                    'delivery_mode' => 'shipment',
+                    'related_product_serial' => $request->serial_number,
+                    'billing' => [
+                        'name_or_title' => 'Sandbox Finans Müşteri',
+                        'tax_identity' => '11111111111',
+                        'address' => 'Fatura Sokak No:1',
+                        'city' => 'Denizli',
+                        'district' => 'Pamukkale',
+                    ],
+                    'shipping' => [
+                        'recipient_name' => 'Teslim Alan',
+                        'recipient_phone' => '5550000002',
+                        'address' => 'Sevk Sokak No:2',
+                        'city' => 'Denizli',
+                        'district' => 'Pamukkale',
+                    ],
+                    'lines' => [
+                        [
+                            'item_code' => 'EE.BCK.STD.0010',
+                            'item_name' => 'PHILIPS SUNUM STANDI',
+                            'quantity' => 1,
+                            'unit_code' => 'ADET',
+                            'gross_unit_price' => '1000.00',
+                            'gross_line_total' => '1000.00',
+                            'selected_tax_rate' => '20',
+                            'net_line_total' => '833.33',
+                            'vat_line_total' => '166.67',
+                        ],
+                        [
+                            'item_code' => 'EP.YDP.002.015',
+                            'item_name' => 'YEDEK PARÇA',
+                            'quantity' => 1,
+                            'unit_code' => 'ADET',
+                            'gross_unit_price' => '1000.00',
+                            'gross_line_total' => '1000.00',
+                            'selected_tax_rate' => '20',
+                            'net_line_total' => '833.33',
+                            'vat_line_total' => '166.67',
+                        ],
+                    ],
+                    'gross_total' => '2000.00',
+                    'net_total' => '1666.66',
+                    'vat_total' => '333.34',
+                    'description2_preview' => 'MÜŞTERİDEN TAHSİL EDİLECEK: 2.000,00 TL',
+                ],
+                'mikro_order_simulation' => [
+                    'simulation_reference' => 'MSIM-01TESTFINANCEMAIL',
+                    'status' => 'simulated_written',
+                    'desired_series' => 'S',
+                    'context_revision' => 6,
+                    'context_hash' => $contextHash,
+                    'real_order_message' => 'Gerçek Mikro siparişi oluşturulmadı.',
+                ],
+                'api_key' => 'api-key-must-not-leak',
+                'secret_key' => 'secret-key-must-not-leak',
+            ],
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $response = [
+            'ok' => true,
+            'provider' => 'iyzico',
+            'operation' => 'sync_status',
+            'provider_token' => $payment->provider_reference,
+            'provider_status' => 'sold',
+            'conversation_id' => 'payment:'.$payment->id,
+            'provider_response_redacted' => [
+                'status' => 'success',
+                'conversationId' => 'payment:'.$payment->id,
+                'paymentId' => 'IYZ-PAY-2000',
+                'hostReference' => 'IYZ-HOST-2000',
+                'data' => [
+                    'token' => $payment->provider_reference,
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 1,
+                    'price' => '2000.00',
+                    'currencyCode' => 'TRY',
+                ],
+                'itemTransactions' => [
+                    ['paymentTransactionId' => 'IYZ-TRX-2000'],
+                ],
+            ],
+        ];
+
+        $service = app(TechnicalServicePaymentProviderReconciliationService::class);
+        $paid = $service->handleProviderStatusResponse($payment, $response);
+        $service->handleProviderStatusResponse($paid->fresh(), $response);
+
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, function (TechnicalServicePaymentAuditMail $mail): bool {
+            $mail->build();
+            $rendered = $mail->render();
+
+            return $mail->subject === '[SANDBOX][S] Ödeme alındı · MRN-SANDBOX-MAIL-1 · Mikro test sipariş simülasyonu'
+                && str_contains($rendered, 'ORTAM')
+                && str_contains($rendered, 'EE.BCK.STD.0010')
+                && str_contains($rendered, 'EP.YDP.002.015')
+                && str_contains($rendered, '1.666,66 TL')
+                && str_contains($rendered, '333,34 TL')
+                && str_contains($rendered, 'MSIM-01TESTFINANCEMAIL')
+                && str_contains($rendered, 'IYZ-PAY-2000')
+                && str_contains($rendered, 'IYZ-TRX-2000')
+                && str_contains($rendered, 'IYZ-HOST-2000')
+                && str_contains($rendered, 'GERÇEK MİKRO SİPARİŞİ OLUŞTURULMADI')
+                && ! str_contains($rendered, 'iyzico-full-mail-token-very-secret')
+                && ! str_contains($rendered, 'api-key-must-not-leak')
+                && ! str_contains($rendered, 'secret-key-must-not-leak');
+        });
+        $this->assertSame('IYZ-HOST-2000', data_get($paid->fresh()->raw_payload, 'provider_host_reference'));
+    }
+
+    public function test_missing_finance_recipient_records_typed_non_retryable_blocker_without_smtp(): void
+    {
+        Mail::fake();
+        $this->enablePaymentNotification('');
+        $this->configureReadySmtpProfile();
+        $payment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'recipient-missing-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'recipient-missing-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'paymentId' => 'IYZ-PAY-NO-RECIPIENT',
+                    'data' => [
+                        'token' => 'recipient-missing-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertSame('recipient_not_configured', $result->receipt_notification_status);
+        $this->assertFalse((bool) data_get($result->raw_payload, 'payment_receipt_notification_claim.retry_available'));
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'related_id' => $payment->id,
+            'status' => TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED,
+            'attempt_count' => 0,
+            'max_attempts' => 0,
+            'last_error_code' => 'recipient_not_configured',
+        ]);
+        Mail::assertNothingSent();
+    }
+
     public function test_payment_notification_blocks_when_smtp_profile_is_missing(): void
     {
         Mail::fake();
@@ -474,7 +666,9 @@ class PaymentProviderReconciliationContractTest extends TestCase
             public function sendPaymentAuditMail(array $recipients, TechnicalServicePaymentAuditMail $mail): void
             {
                 $this->calls++;
-                throw new \RuntimeException('SMTP failed password=super-secret gateway_token=abc123');
+                if ($this->calls === 1) {
+                    throw new \RuntimeException('SMTP failed password=super-secret gateway_token=abc123');
+                }
             }
         };
         $this->app->instance(TechnicalServiceMailTransportSettingsService::class, $transport);
@@ -529,8 +723,30 @@ class PaymentProviderReconciliationContractTest extends TestCase
             ->sole();
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_FAILED, $failedDispatch->status);
         $this->assertSame(1, $failedDispatch->attempt_count);
+        $this->assertSame(2, $failedDispatch->max_attempts);
         $this->assertFalse((bool) data_get($failedDispatch->metadata, 'automatic_retry_allowed'));
         $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_failed')->count());
+
+        $retried = app(TechnicalServicePaymentReceiptNotificationService::class)
+            ->retryFailedReceipt($result->fresh());
+
+        $this->assertSame(2, $transport->calls);
+        $this->assertSame('sent', $retried->receipt_notification_status);
+        $this->assertNotNull($retried->receipt_notification_sent_at);
+        $this->assertSame(2, $failedDispatch->fresh()->attempt_count);
+        $this->assertFalse((bool) data_get(
+            $retried->raw_payload,
+            'payment_receipt_notification_claim.retry_available',
+        ));
+
+        try {
+            app(TechnicalServicePaymentReceiptNotificationService::class)
+                ->retryFailedReceipt($retried->fresh());
+            $this->fail('Başarılı muhasebe maili ikinci kez kuyruğa alınmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('payment_receipt_retry_not_available', $exception->getMessage());
+        }
+        $this->assertSame(2, $transport->calls);
     }
 
     public function test_paid_transition_and_receipt_intent_commit_atomically_and_remain_durable(): void
@@ -604,7 +820,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
             'channel' => 'email',
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
             'attempt_count' => 0,
-            'max_attempts' => 1,
+            'max_attempts' => 2,
         ]);
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()
             ->where('message_type', 'payment_receipt_notification')

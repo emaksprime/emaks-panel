@@ -27,21 +27,32 @@ class TechnicalServicePaymentReceiptNotificationService
     /**
      * @param  array<string, mixed>  $providerResponse
      */
-    public function notifyTrustedPaid(TechnicalServiceMountPayment $payment, array $providerResponse = []): TechnicalServiceMountPayment
-    {
-        $intent = DB::transaction(function () use ($payment): ?TechnicalServiceMessageDispatch {
+    public function notifyTrustedPaid(
+        TechnicalServiceMountPayment $payment,
+        array $providerResponse = [],
+        bool $retryFailed = false,
+    ): TechnicalServiceMountPayment {
+        $intent = DB::transaction(function () use ($payment, $retryFailed): ?TechnicalServiceMessageDispatch {
             $locked = TechnicalServiceMountPayment::query()
                 ->whereKey($payment->getKey())
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            return $this->persistPaidReceiptIntentWithinTransaction($locked);
+            return $this->persistPaidReceiptIntentWithinTransaction($locked, $retryFailed);
         });
         if (! $intent instanceof TechnicalServiceMessageDispatch) {
             return $payment->fresh() ?? $payment;
         }
 
         return $this->processReceiptIntent($intent, $providerResponse);
+    }
+
+    /** @param array<string, mixed> $providerResponse */
+    public function retryFailedReceipt(
+        TechnicalServiceMountPayment $payment,
+        array $providerResponse = [],
+    ): TechnicalServiceMountPayment {
+        return $this->notifyTrustedPaid($payment, $providerResponse, true);
     }
 
     /**
@@ -51,6 +62,7 @@ class TechnicalServicePaymentReceiptNotificationService
      */
     public function persistPaidReceiptIntentWithinTransaction(
         TechnicalServiceMountPayment $payment,
+        bool $retryFailed = false,
     ): ?TechnicalServiceMessageDispatch {
         if (DB::transactionLevel() < 1) {
             throw new ConflictHttpException('payment_receipt_intent_requires_transaction: Receipt intent paid transition transactionı içinde yazılmalıdır.');
@@ -71,9 +83,7 @@ class TechnicalServicePaymentReceiptNotificationService
                 return null;
             }
             $recipients = $this->normalizedReceiptRecipients($this->settings->paymentNotificationRecipients());
-            if ($recipients === []) {
-                return null;
-            }
+            $recipientMissing = $recipients === [];
             $recipientFingerprints = $this->recipientFingerprints($recipients);
             $dispatch = TechnicalServiceMessageDispatch::query()->create([
                 'event' => self::RECEIPT_EVENT,
@@ -89,12 +99,17 @@ class TechnicalServicePaymentReceiptNotificationService
                 'template_version' => 1,
                 'payload_hash' => $identityHash,
                 'idempotency_key' => $idempotencyKey,
-                'channel_policy' => 'single_claim_no_blind_retry',
+                'channel_policy' => 'single_claim_explicit_retry',
                 'test_mode' => ! app()->environment('production'),
-                'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+                'status' => $recipientMissing
+                    ? TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED
+                    : TechnicalServiceMessageDispatch::STATUS_QUEUED,
                 'attempt_count' => 0,
-                'max_attempts' => 1,
-                'queued_at' => now(),
+                'max_attempts' => $recipientMissing ? 0 : 2,
+                'queued_at' => $recipientMissing ? null : now(),
+                'failed_at' => $recipientMissing ? now() : null,
+                'last_error_code' => $recipientMissing ? 'recipient_not_configured' : null,
+                'last_error_message_redacted' => $recipientMissing ? 'Muhasebe e-posta alıcısı yapılandırılmadı.' : null,
                 'triggered_by' => 'payment_paid_transaction',
                 'metadata' => [
                     'schema_version' => 2,
@@ -105,6 +120,7 @@ class TechnicalServicePaymentReceiptNotificationService
                     'payment_purpose_fingerprint' => hash('sha256', $identity['payment_purpose']),
                     'paid_transition_fingerprint' => $identity['paid_transition_fingerprint'],
                     'automatic_retry_allowed' => false,
+                    'recipient_not_configured' => $recipientMissing,
                 ],
                 'request_payload' => [
                     'event' => self::RECEIPT_EVENT,
@@ -114,8 +130,12 @@ class TechnicalServicePaymentReceiptNotificationService
             ]);
         } else {
             $this->assertReceiptDispatchAuthority($dispatch, $payment, $identityHash);
-            $recipients = $this->storedReceiptRecipients($dispatch);
+            $recipientMissing = (bool) data_get($dispatch->metadata, 'recipient_not_configured', false);
+            $recipients = $recipientMissing ? [] : $this->storedReceiptRecipients($dispatch);
             $recipientFingerprints = $this->recipientFingerprints($recipients);
+            if ($retryFailed) {
+                $dispatch = $this->requeueFailedReceiptWithinTransaction($dispatch, $payment);
+            }
         }
 
         $payload['payment_receipt_notification_claim'] = [
@@ -125,6 +145,7 @@ class TechnicalServicePaymentReceiptNotificationService
             'dispatch_id' => (int) $dispatch->getKey(),
             'recipient_fingerprints' => $recipientFingerprints,
             'automatic_retry_allowed' => false,
+            'retry_available' => $this->receiptRetryAvailable($dispatch),
         ];
         $payment->forceFill([
             'raw_payload' => $payload,
@@ -267,7 +288,11 @@ class TechnicalServicePaymentReceiptNotificationService
             $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
             $payload['payment_receipt_notification_claim'] = array_replace(
                 (array) ($payload['payment_receipt_notification_claim'] ?? []),
-                ['status' => $paymentStatus, 'completed_at' => now()->toIso8601String()],
+                [
+                    'status' => $paymentStatus,
+                    'completed_at' => now()->toIso8601String(),
+                    'retry_available' => $this->receiptRetryAvailable($dispatch),
+                ],
             );
             $payment->forceFill([
                 'raw_payload' => $payload,
@@ -394,11 +419,58 @@ class TechnicalServicePaymentReceiptNotificationService
 
     private function paymentReceiptStatus(TechnicalServiceMessageDispatch $dispatch): string
     {
+        if ((bool) data_get($dispatch->metadata, 'recipient_not_configured', false)) {
+            return 'recipient_not_configured';
+        }
+
         return match ($dispatch->status) {
             TechnicalServiceMessageDispatch::STATUS_QUEUED => 'queued',
             TechnicalServiceMessageDispatch::STATUS_SENDING => 'provider_unknown',
+            TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED => 'mailer_not_configured',
             default => (string) $dispatch->status,
         };
+    }
+
+    private function receiptRetryAvailable(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        if ((bool) data_get($dispatch->metadata, 'recipient_not_configured', false)) {
+            return false;
+        }
+
+        return in_array($dispatch->status, [
+            TechnicalServiceMessageDispatch::STATUS_FAILED,
+            TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED,
+        ], true)
+            && (int) $dispatch->attempt_count < (int) $dispatch->max_attempts;
+    }
+
+    private function requeueFailedReceiptWithinTransaction(
+        TechnicalServiceMessageDispatch $dispatch,
+        TechnicalServiceMountPayment $payment,
+    ): TechnicalServiceMessageDispatch {
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
+            throw new ConflictHttpException('payment_receipt_retry_requires_paid: Yalnız ödenmiş kaydın muhasebe maili yeniden denenebilir.');
+        }
+        if (! $this->receiptRetryAvailable($dispatch)) {
+            throw new ConflictHttpException('payment_receipt_retry_not_available: Muhasebe maili yeniden denemeye uygun değil.');
+        }
+
+        $metadata = is_array($dispatch->metadata) ? $dispatch->metadata : [];
+        $metadata['manual_retry_requested_at'] = now()->toIso8601String();
+        $metadata['manual_retry_count'] = max(0, (int) ($metadata['manual_retry_count'] ?? 0)) + 1;
+
+        $dispatch->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'queued_at' => now(),
+            'sending_started_at' => null,
+            'failed_at' => null,
+            'provider_status' => 'manual_retry_queued',
+            'last_error_code' => null,
+            'last_error_message_redacted' => null,
+            'metadata' => $metadata,
+        ])->save();
+
+        return $dispatch->fresh();
     }
 
     /**
@@ -409,11 +481,17 @@ class TechnicalServicePaymentReceiptNotificationService
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $request = $payment->technicalServiceRequest;
+        $orderContext = is_array($payload['order_context'] ?? null) ? $payload['order_context'] : [];
+        $simulation = is_array($payload['mikro_order_simulation'] ?? null) ? $payload['mikro_order_simulation'] : [];
+        $billing = is_array($orderContext['billing'] ?? null) ? $orderContext['billing'] : [];
+        $shipping = is_array($orderContext['shipping'] ?? null) ? $orderContext['shipping'] : [];
 
         return [
             'mrn' => $this->stringValue(Arr::get($payload, 'request_code')) ?: $request?->mrn,
             'root_mrn' => $this->stringValue(Arr::get($payload, 'root_mrn')) ?: $request?->root_mrn,
+            'srv' => $this->stringValue(Arr::get($payload, 'service_code')),
             'serial_no' => $this->stringValue(Arr::get($payload, 'serial_number')) ?: $request?->serial_number,
+            'related_product_serial' => $this->stringValue($orderContext['related_product_serial'] ?? null),
             'customer_name' => $this->stringValue(Arr::get($payload, 'customer_name')) ?: $request?->customer_name,
             'customer_phone' => $this->stringValue(Arr::get($payload, 'customer_phone')) ?: $request?->customer_phone,
             'amount' => number_format((float) $payment->amount, 2, ',', '.'),
@@ -421,13 +499,116 @@ class TechnicalServicePaymentReceiptNotificationService
             'paid_at' => ($payment->paid_at ?? now())->timezone(config('app.timezone'))->format('Y-m-d H:i:s'),
             'provider' => ucfirst((string) ($payment->provider ?: 'iyzico')),
             'provider_mode' => $this->providerMode($payload),
-            'provider_reference' => $payment->provider_reference,
+            'provider_reference' => $this->maskedReference($payment->provider_reference),
             'provider_payment_reference' => $payment->provider_payment_reference,
             'provider_transaction_reference' => $payment->provider_transaction_reference,
+            'provider_host_reference' => $this->stringValue($payload['provider_host_reference'] ?? null),
             'provider_receipt_reference' => $payment->provider_receipt_reference,
             'provider_status' => $this->providerStatus($payment, $providerResponse),
+            'billing' => $this->mailParty($billing, true),
+            'shipping' => $this->mailParty($shipping, false),
+            'delivery_mode' => $this->deliveryModeLabel($orderContext['delivery_mode'] ?? null),
+            'lines' => $this->mailLines($orderContext['lines'] ?? []),
+            'gross_total' => $this->moneyLabel($orderContext['gross_total'] ?? $payment->amount),
+            'net_total' => $this->moneyLabel($orderContext['net_total'] ?? null),
+            'vat_total' => $this->moneyLabel($orderContext['vat_total'] ?? null),
+            'desired_series' => $this->stringValue($simulation['desired_series'] ?? $orderContext['desired_mikro_series'] ?? null),
+            'simulation_reference' => $this->stringValue($simulation['simulation_reference'] ?? null),
+            'simulation_status' => $this->stringValue($simulation['status'] ?? null),
+            'context_revision' => is_numeric($simulation['context_revision'] ?? $orderContext['revision'] ?? null)
+                ? (int) ($simulation['context_revision'] ?? $orderContext['revision'])
+                : null,
+            'context_hash' => $this->stringValue($simulation['context_hash'] ?? $orderContext['context_hash'] ?? null),
+            'description2' => $this->stringValue($orderContext['description2_preview'] ?? null),
+            'mikro_write_attempted' => false,
+            'real_mikro_order_number' => null,
+            'real_mikro_document_guid' => null,
             'note' => 'Bu bildirim provider reconciliation sonucu oluşturulmuştur.',
         ];
+    }
+
+    /** @return array<string, string|null> */
+    private function mailParty(array $party, bool $billing): array
+    {
+        $name = $this->stringValue($party['name_or_title'] ?? null)
+            ?: $this->stringValue($party['legal_title'] ?? null)
+            ?: trim(implode(' ', array_filter([
+                $this->stringValue($party['first_name'] ?? null),
+                $this->stringValue($party['last_name'] ?? null),
+            ])));
+
+        return [
+            'name' => $name !== '' ? $name : ($this->stringValue($party['recipient_name'] ?? null) ?: null),
+            'identity' => $billing ? $this->stringValue($party['tax_identity'] ?? null) : null,
+            'tax_office' => $billing ? $this->stringValue($party['tax_office'] ?? null) : null,
+            'phone' => $this->stringValue($party['phone'] ?? $party['recipient_phone'] ?? null),
+            'email' => $this->stringValue($party['email'] ?? null),
+            'address' => $this->stringValue($party['address'] ?? null),
+            'city' => $this->stringValue($party['city'] ?? null),
+            'district' => $this->stringValue($party['district'] ?? null),
+            'postal_code' => $this->stringValue($party['postal_code'] ?? null),
+        ];
+    }
+
+    /** @return array<int, array<string, string|null>> */
+    private function mailLines(mixed $lines): array
+    {
+        if (! is_array($lines)) {
+            return [];
+        }
+
+        return collect($lines)
+            ->filter(fn (mixed $line): bool => is_array($line))
+            ->map(fn (array $line): array => [
+                'item_code' => $this->stringValue($line['item_code'] ?? null),
+                'item_name' => $this->stringValue($line['item_name'] ?? null),
+                'quantity' => is_numeric($line['quantity'] ?? null) ? $this->decimalLabel($line['quantity']) : null,
+                'unit_code' => $this->stringValue($line['unit_code'] ?? null),
+                'gross_unit_price' => $this->moneyLabel($line['gross_unit_price'] ?? $line['unit_price'] ?? null),
+                'gross_line_total' => $this->moneyLabel($line['gross_line_total'] ?? $line['line_total'] ?? null),
+                'vat_rate' => is_numeric($line['selected_tax_rate'] ?? null)
+                    ? '%'.$this->decimalLabel($line['selected_tax_rate'])
+                    : null,
+                'net_line_total' => $this->moneyLabel($line['net_line_total'] ?? null),
+                'vat_line_total' => $this->moneyLabel($line['vat_line_total'] ?? null),
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function deliveryModeLabel(mixed $value): ?string
+    {
+        return match (strtolower(trim((string) $value))) {
+            'shipment' => 'Sevk',
+            'hand_delivery' => 'Elden teslim',
+            'technician_delivery' => 'Usta teslimi',
+            default => $this->stringValue($value),
+        };
+    }
+
+    private function moneyLabel(mixed $value): ?string
+    {
+        return is_numeric($value) ? number_format((float) $value, 2, ',', '.').' TL' : null;
+    }
+
+    private function decimalLabel(mixed $value): string
+    {
+        $formatted = number_format((float) $value, 4, ',', '.');
+
+        return rtrim(rtrim($formatted, '0'), ',');
+    }
+
+    private function maskedReference(?string $reference): ?string
+    {
+        $reference = trim((string) $reference);
+        if ($reference === '') {
+            return null;
+        }
+        if (strlen($reference) <= 10) {
+            return substr($reference, 0, 2).'***'.substr($reference, -2);
+        }
+
+        return substr($reference, 0, 6).'***'.substr($reference, -4);
     }
 
     /**

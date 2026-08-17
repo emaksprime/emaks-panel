@@ -159,6 +159,19 @@ class TechnicalServicePaymentProviderGateway
 
     private function description(?string $requestCode, ?string $serialNo, TechnicalServiceMountPayment $payment): string
     {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $orderContext = is_array($payload['order_context'] ?? null) ? $payload['order_context'] : [];
+        $lines = is_array($orderContext['lines'] ?? null) ? $orderContext['lines'] : [];
+        if ($lines !== []) {
+            $parts = array_filter([
+                'EMAKS Prime Teknik Servis',
+                $requestCode ? 'MRN '.$requestCode : null,
+                count($lines).' ürün',
+            ]);
+
+            return mb_substr(implode(' · ', $parts), 0, 250);
+        }
+
         $parts = array_filter([
             'EMAKS Teknik Servis',
             $requestCode ? 'MRN '.$requestCode : null,

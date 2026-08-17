@@ -31,7 +31,11 @@ class PaymentProviderGatewayContractTest extends TestCase
     {
         parent::setUp();
 
-        config(['services.partner_portal.public_url' => 'http://10.0.28.64:8000']);
+        config([
+            'app.key' => 'base64:'.base64_encode(str_repeat('a', 32)),
+            'services.partner_portal.public_url' => 'http://10.0.28.64:8000',
+            'services.public_urls.trusted_payment_provider_origins' => ['https://sandbox.iyzi.link'],
+        ]);
     }
 
     public function test_payment_provider_defaults_to_fake_mode(): void
@@ -120,6 +124,37 @@ class PaymentProviderGatewayContractTest extends TestCase
         $this->assertFalse($payload['dry_run']);
         $this->assertFalse($payload['no_send']);
         $this->assertFalse($payload['allow_provider_send']);
+    }
+
+    public function test_multi_line_order_context_uses_compact_supported_link_description_without_basket_fields(): void
+    {
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-IYZ-LINK-LINES']);
+        $payment = $this->mountPaymentForRequest($request, [
+            'amount' => 2000,
+            'raw_payload' => [
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+                'source' => 'operation_order_context_payment',
+                'order_context' => [
+                    'lines' => [
+                        ['item_code' => 'EE.BCK.STD.0010', 'item_name' => 'PHILIPS SUNUM STANDI'],
+                        ['item_code' => 'EP.YDP.002.015', 'item_name' => 'YEDEK PARÇA'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $payload = app(TechnicalServicePaymentProviderGateway::class)
+            ->buildRequest(PaymentProviderGatewayRequest::OPERATION_CREATE_LINK, $payment)
+            ->toArray();
+
+        $this->assertSame('2000.00', $payload['amount']);
+        $this->assertSame('EMAKS Prime Teknik Servis · MRN MRN-IYZ-LINK-LINES · 2 ürün', $payload['description']);
+        $this->assertArrayNotHasKey('basketItems', $payload);
+        $this->assertArrayNotHasKey('items', $payload);
+        $this->assertCount(2, data_get($payment->raw_payload, 'order_context.lines'));
     }
 
     public function test_payment_provider_gateway_builds_n8n_payload_without_secret(): void
@@ -293,7 +328,7 @@ class PaymentProviderGatewayContractTest extends TestCase
         $client = new RecordingPaymentProviderGatewayClient(PaymentProviderGatewayResponse::fromArray([
             'ok' => true,
             'provider_token' => 'direct-bound-token',
-            'payment_url' => 'https://pay.example.test/direct-bound-token',
+            'payment_url' => 'https://sandbox.iyzi.link/direct-bound-token',
             'provider_status' => 'ACTIVE',
             'provider_response_redacted' => [],
         ]));
@@ -482,7 +517,7 @@ class PaymentProviderGatewayContractTest extends TestCase
         $client = new RecordingPaymentProviderGatewayClient(PaymentProviderGatewayResponse::fromArray([
             'ok' => true,
             'provider_token' => 'iyzico-created-token',
-            'payment_url' => 'https://pay.example.test/iyzico-created-token',
+            'payment_url' => 'https://sandbox.iyzi.link/iyzico-created-token',
             'provider_status' => 'ACTIVE',
             'provider_response_redacted' => [
                 'status' => 'success',
@@ -498,9 +533,126 @@ class PaymentProviderGatewayContractTest extends TestCase
         $payment->refresh();
         $this->assertSame('iyzico', $payment->provider);
         $this->assertSame('iyzico-created-token', $payment->provider_reference);
-        $this->assertSame('https://pay.example.test/iyzico-created-token', $payment->payment_url);
+        $this->assertSame('https://sandbox.iyzi.link/iyzico-created-token', $payment->payment_url);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
         $this->assertArrayHasKey('provider_gateway', $payment->raw_payload);
+    }
+
+    public function test_provider_mode_is_resolved_before_business_identity_and_remains_stable(): void
+    {
+        $client = new RecordingPaymentProviderGatewayClient(PaymentProviderGatewayResponse::fromArray([
+            'ok' => true,
+            'provider_token' => 'stable-identity-token',
+            'payment_url' => 'https://sandbox.iyzi.link/stable-identity-token',
+            'provider_status' => 'ACTIVE',
+            'provider_response_redacted' => [],
+        ]));
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->configureReadyRealProvider();
+
+        $payment = $this->mountPayment(['provider' => 'fake']);
+        app(PaymentProviderManager::class)->createPayment($payment);
+        $payment->refresh();
+
+        $this->assertTrue($client->called);
+        $this->assertSame('iyzico', $payment->provider);
+        $this->assertSame('sandbox', data_get($payment->raw_payload, 'provider_mode'));
+        $this->assertSame('provider_success_attached', data_get($payment->raw_payload, 'payment_create_outcome.state'));
+        $this->assertSame(
+            data_get($payment->raw_payload, 'payment_create_outcome.business_identity_before'),
+            data_get($payment->raw_payload, 'payment_create_outcome.business_identity_after'),
+        );
+        $this->assertSame(
+            data_get($payment->raw_payload, 'provider_profile_fingerprint'),
+            data_get($payment->raw_payload, 'provider_decision.profile_fingerprint'),
+        );
+    }
+
+    public function test_resolved_provider_profile_cannot_drift_before_provider_network(): void
+    {
+        $client = new RecordingPaymentProviderGatewayClient;
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->configureReadyRealProvider();
+        $manager = app(PaymentProviderManager::class);
+        $profile = $manager->resolvedCreateProfile();
+        $profile['provider_mode'] = 'live';
+
+        try {
+            $manager->createPayment($this->mountPayment(['provider' => 'iyzico']), $profile);
+            $this->fail('Çözülmüş provider profili network öncesi immutable kalmalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('PAYMENT_PROVIDER_LIVE_FORBIDDEN', $exception->getMessage());
+        }
+
+        $this->assertFalse($client->called);
+    }
+
+    public function test_provider_success_with_unsafe_url_keeps_durable_failed_payment_owner(): void
+    {
+        $client = new RecordingPaymentProviderGatewayClient(PaymentProviderGatewayResponse::fromArray([
+            'ok' => true,
+            'provider_token' => 'unsafe-host-token',
+            'payment_url' => 'https://untrusted.example.test/unsafe-host-token',
+            'provider_status' => 'ACTIVE',
+            'provider_response_redacted' => [],
+        ]));
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->configureReadyRealProvider();
+        $payment = $this->mountPayment(['provider' => 'iyzico']);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Unsafe provider URL actionable pending olmamalıydı.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('PAYMENT_PROVIDER_URL_INVALID', $exception->getMessage());
+        }
+
+        $payment->refresh();
+        $this->assertTrue($payment->exists);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
+        $this->assertSame('provider_success_url_invalid', data_get($payment->raw_payload, 'payment_create_outcome.state'));
+        $this->assertTrue((bool) data_get($payment->raw_payload, 'payment_create_outcome.operations_review_required'));
+    }
+
+    public function test_provider_rejection_keeps_durable_payment_history(): void
+    {
+        $client = new RecordingPaymentProviderGatewayClient(PaymentProviderGatewayResponse::fromArray([
+            'ok' => false,
+            'error_code' => 'sandbox_rejected',
+            'error_message' => 'Sandbox request rejected.',
+            'provider_response_redacted' => [],
+        ]));
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->configureReadyRealProvider();
+        $payment = $this->mountPayment(['provider' => 'iyzico']);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($payment);
+            $this->fail('Provider rejection exception üretmeliydi.');
+        } catch (TechnicalServicePaymentProviderClientException) {
+        }
+
+        $payment->refresh();
+        $this->assertTrue($payment->exists);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_FAILED, $payment->status);
+        $this->assertSame('provider_rejected', data_get($payment->raw_payload, 'payment_create_outcome.state'));
+        $this->assertTrue((bool) data_get($payment->raw_payload, 'payment_create_outcome.retry_allowed'));
+    }
+
+    public function test_local_uat_cannot_select_live_provider_before_network(): void
+    {
+        $client = new RecordingPaymentProviderGatewayClient;
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->configureReadyRealProvider(['payments.gateway.mode' => 'live']);
+
+        try {
+            app(PaymentProviderManager::class)->createPayment($this->mountPayment(['provider' => 'iyzico']));
+            $this->fail('Local/UAT live provider seçimini transport öncesi engellemeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertStringContainsString('PAYMENT_PROVIDER_LIVE_FORBIDDEN', $exception->getMessage());
+        }
+
+        $this->assertFalse($client->called);
     }
 
     public function test_n8n_dry_run_response_does_not_mark_payment_paid(): void
@@ -882,7 +1034,7 @@ class RecordingPaymentProviderGatewayClient implements PaymentProviderGatewayCli
             'provider' => 'iyzico',
             'operation' => $request->operation(),
             'provider_token' => 'test-token',
-            'payment_url' => 'https://pay.example.test/test-token',
+            'payment_url' => 'https://sandbox.iyzi.link/test-token',
             'provider_response_redacted' => [],
         ]);
     }

@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
 class TechnicalServicePaymentOrderContextService
@@ -24,6 +25,8 @@ class TechnicalServicePaymentOrderContextService
     public const TABLE = 'technical_service_payment_order_contexts';
 
     public const ITEM_TABLE = 'technical_service_payment_order_context_items';
+
+    public const MIKRO_SIMULATION_TABLE = 'technical_service_mikro_order_simulations';
 
     public const PURPOSE_MOUNT_COLLECTION = 'mount_collection';
 
@@ -70,6 +73,8 @@ class TechnicalServicePaymentOrderContextService
     private const PHYSICAL_STOCK_SCALE = 6;
 
     private const PHYSICAL_STOCK_WAREHOUSES = [1, 5];
+
+    private const MIKRO_SIMULATION_SCHEMA_VERSION = 1;
 
     public function __construct(
         private readonly MikroApiClient $mikro,
@@ -437,6 +442,7 @@ class TechnicalServicePaymentOrderContextService
         );
         $expectedHash = trim((string) ($input['expected_context_hash'] ?? ''));
         $expectedRevision = (int) ($input['expected_revision'] ?? 0);
+        $expectedContextId = (int) ($input['expected_context_id'] ?? 0);
         $idempotentExistingPayment = in_array((string) data_get($preview, 'payment_retry.state'), [
             'reuse_pending',
             'already_paid',
@@ -445,7 +451,11 @@ class TechnicalServicePaymentOrderContextService
             && $expectedRevision <= (int) $preview['revision'];
         if ($expectedHash === ''
             || ! hash_equals((string) $preview['context_hash'], $expectedHash)
-            || ($expectedRevision !== (int) $preview['revision'] && ! $idempotentExistingPayment)) {
+            || ($expectedRevision !== (int) $preview['revision'] && ! $idempotentExistingPayment)
+            || ($expectedContextId > 0 && $expectedContextId !== (int) ($preview['id'] ?? 0))) {
+            if ($expectedContextId > 0) {
+                throw new ConflictHttpException('PAYMENT_CONTEXT_CONFLICT: Sipariş hazırlığı başka bir revizyonla güncellendi.');
+            }
             throw ValidationException::withMessages([
                 'order_context' => 'Sipariş hazırlığı değişti. Güncel önizlemeyi kontrol edip tekrar deneyin.',
             ]);
@@ -671,7 +681,11 @@ class TechnicalServicePaymentOrderContextService
         }
         $expectedHash = trim((string) ($input['expected_context_hash'] ?? ''));
         $expectedRevision = (int) ($input['expected_revision'] ?? 0);
+        $expectedContextId = (int) ($input['expected_context_id'] ?? 0);
         if ($expectedHash === '' || ! hash_equals($normalized['context_hash'], $expectedHash)) {
+            if ($expectedContextId > 0) {
+                throw new ConflictHttpException('PAYMENT_CONTEXT_CONFLICT: Sipariş hazırlığı içeriği güncel canonical bağlamla eşleşmiyor.');
+            }
             throw ValidationException::withMessages([
                 'order_context' => 'Sipariş hazırlığı değişti. Güncel önizlemeyi kontrol edip tekrar deneyin.',
             ]);
@@ -711,6 +725,7 @@ class TechnicalServicePaymentOrderContextService
             $purpose,
             $normalized,
             $expectedRevision,
+            $expectedContextId,
             $actor,
             $allowTerminalRetry,
         ): array {
@@ -723,6 +738,16 @@ class TechnicalServicePaymentOrderContextService
             $exact = $rows->last(fn (object $row): bool => hash_equals((string) $row->context_hash, $normalized['context_hash']));
             $latestRevision = (int) ($rows->max('revision') ?? 0);
 
+            if ($expectedContextId > 0) {
+                $expectedContext = $rows->first(fn (object $row): bool => (int) $row->id === $expectedContextId);
+                if (! $expectedContext
+                    || (int) $expectedContext->revision !== $expectedRevision
+                    || ! hash_equals((string) $expectedContext->context_hash, $normalized['context_hash'])) {
+                    throw new ConflictHttpException('PAYMENT_CONTEXT_CONFLICT: İstenen context ID/revision/hash current canonical bağlamla eşleşmiyor.');
+                }
+                $exact = $expectedContext;
+            }
+
             if ($exact && is_numeric($exact->technical_service_mount_payment_id)) {
                 $payment = TechnicalServiceMountPayment::query()
                     ->whereKey((int) $exact->technical_service_mount_payment_id)
@@ -733,7 +758,9 @@ class TechnicalServicePaymentOrderContextService
                         TechnicalServiceMountPayment::STATUS_PENDING,
                         TechnicalServiceMountPayment::STATUS_PAID,
                     ], true)) {
-                    if ($expectedRevision <= 0 || $expectedRevision > (int) $exact->revision) {
+                    if ($expectedRevision <= 0
+                        || ($expectedContextId > 0 && $expectedRevision !== (int) $exact->revision)
+                        || ($expectedContextId <= 0 && $expectedRevision > (int) $exact->revision)) {
                         throw ValidationException::withMessages([
                             'order_context' => 'Sipariş hazırlığı revizyonu güncellendi. Önizlemeyi yenileyin.',
                         ]);
@@ -751,6 +778,19 @@ class TechnicalServicePaymentOrderContextService
                     throw ValidationException::withMessages([
                         'terminal_retry_reason' => 'Önceki bağlantı terminal durumda. Açıklamalı yeni bağlantı oluşturun.',
                     ]);
+                }
+                if ($payment instanceof TechnicalServiceMountPayment
+                    && in_array($payment->status, [
+                        TechnicalServiceMountPayment::STATUS_CANCELLED,
+                        TechnicalServiceMountPayment::STATUS_FAILED,
+                        TechnicalServiceMountPayment::STATUS_EXPIRED,
+                    ], true)
+                    && $allowTerminalRetry) {
+                    if ($expectedRevision !== (int) $exact->revision) {
+                        throw new ConflictHttpException('PAYMENT_CONTEXT_CONFLICT: Terminal retry current context revizyonuyla eşleşmiyor.');
+                    }
+
+                    return ['context' => $exact, 'payment' => null, 'created' => false];
                 }
             }
 
@@ -849,9 +889,27 @@ class TechnicalServicePaymentOrderContextService
             }
             if (is_numeric($lockedContext->technical_service_mount_payment_id)
                 && (int) $lockedContext->technical_service_mount_payment_id !== (int) $lockedPayment->id) {
-                throw ValidationException::withMessages([
-                    'order_context' => 'Sipariş hazırlığı başka bir ödeme bağlantısına bağlıdır.',
-                ]);
+                $previousPayment = TechnicalServiceMountPayment::query()
+                    ->whereKey((int) $lockedContext->technical_service_mount_payment_id)
+                    ->lockForUpdate()
+                    ->first();
+                $retry = data_get($lockedPayment->raw_payload, 'canonical_payment_terminal_retry');
+                $terminalReplacementAllowed = $previousPayment instanceof TechnicalServiceMountPayment
+                    && in_array($previousPayment->status, [
+                        TechnicalServiceMountPayment::STATUS_CANCELLED,
+                        TechnicalServiceMountPayment::STATUS_FAILED,
+                        TechnicalServiceMountPayment::STATUS_EXPIRED,
+                    ], true)
+                    && is_array($retry)
+                    && (string) ($retry['source'] ?? '') === 'ops_explicit_terminal_retry'
+                    && mb_strlen(trim((string) ($retry['reason'] ?? ''))) >= 3;
+                if (! $terminalReplacementAllowed) {
+                    throw new ConflictHttpException('PAYMENT_CONTEXT_CONFLICT: Sipariş hazırlığı başka bir ödeme bağlantısına bağlıdır.');
+                }
+
+                $payload = is_array($lockedPayment->raw_payload) ? $lockedPayment->raw_payload : [];
+                $payload['replaces_terminal_payment_id'] = (int) $previousPayment->id;
+                $lockedPayment->forceFill(['raw_payload' => $payload])->save();
             }
 
             DB::table(self::TABLE)->where('id', $lockedContext->id)->update([
@@ -977,12 +1035,263 @@ class TechnicalServicePaymentOrderContextService
     }
 
     /** @return array<string, mixed>|null */
+    public function persistMikroOrderSimulationWithinTransaction(TechnicalServiceMountPayment $payment): ?array
+    {
+        if (DB::transactionLevel() < 1) {
+            throw new DomainException('mikro_order_simulation_requires_transaction: Simülasyon paid geçişi transactionı içinde yazılmalıdır.');
+        }
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID) {
+            return null;
+        }
+
+        $paymentPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $orderContext = is_array($paymentPayload['order_context'] ?? null) ? $paymentPayload['order_context'] : null;
+        if (($paymentPayload['source'] ?? null) !== 'operation_order_context_payment'
+            || ! is_array($orderContext)
+            || ($orderContext['desired_mikro_series'] ?? null) !== 'S'
+            || ($orderContext['shipment_required'] ?? false) !== true
+            || ($orderContext['payment_link_required'] ?? false) !== true) {
+            return null;
+        }
+
+        $contextId = filter_var($orderContext['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $contextRevision = filter_var($orderContext['revision'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $contextHash = trim((string) ($orderContext['context_hash'] ?? ''));
+        $lines = is_array($orderContext['lines'] ?? null) ? array_values($orderContext['lines']) : [];
+        if ($contextId === false
+            || $contextRevision === false
+            || preg_match('/^[a-f0-9]{64}$/', $contextHash) !== 1
+            || $lines === []) {
+            throw new DomainException('mikro_order_simulation_context_invalid: Paid S sevk bağlamı canonical context kimliği ve satırları gerektirir.');
+        }
+
+        $contextRow = DB::table(self::TABLE)
+            ->where('id', $contextId)
+            ->lockForUpdate()
+            ->first();
+        if (! $contextRow
+            || (int) $contextRow->technical_service_mount_payment_id !== (int) $payment->id
+            || (int) $contextRow->revision !== $contextRevision
+            || ! hash_equals((string) $contextRow->context_hash, $contextHash)
+            || (string) $contextRow->state !== 'paid_waiting_mikro_write'
+            || (string) $contextRow->desired_mikro_series !== 'S'
+            || ! (bool) $contextRow->shipment_required) {
+            throw new DomainException('mikro_order_simulation_context_mismatch: Paid payment ile canonical S sevk bağlamı eşleşmiyor.');
+        }
+
+        $canonicalLines = array_map(fn (array $line): array => $this->mikroSimulationLine($line), $lines);
+        $grossTotal = $this->strictSimulationMoney($orderContext['gross_total'] ?? $orderContext['collection_amount'] ?? null);
+        if ($grossTotal !== $this->strictSimulationMoney($payment->getRawOriginal('amount') ?? $payment->amount)) {
+            throw new DomainException('mikro_order_simulation_amount_mismatch: Payment tutarı canonical brüt toplamla eşleşmiyor.');
+        }
+
+        $snapshot = [
+            'schema_version' => self::MIKRO_SIMULATION_SCHEMA_VERSION,
+            'environment' => 'test_simulation',
+            'request' => [
+                'request_id' => (int) $contextRow->technical_service_request_id,
+                'root_request_id' => (int) $contextRow->root_request_id,
+                'srv_request_id' => is_numeric($contextRow->srv_request_id) ? (int) $contextRow->srv_request_id : null,
+                'mrn' => $paymentPayload['request_code'] ?? $paymentPayload['mrn'] ?? null,
+                'root_mrn' => $paymentPayload['root_mrn'] ?? null,
+                'srv' => $paymentPayload['service_code'] ?? null,
+                'related_product_serial' => $orderContext['related_product_serial'] ?? null,
+            ],
+            'billing' => $this->mikroSimulationParty($orderContext['billing'] ?? null, [
+                'source', 'billing_type', 'customer_code', 'first_name', 'last_name', 'legal_title',
+                'name_or_title', 'phone', 'email', 'tax_identity', 'tax_office', 'address', 'city',
+                'district', 'postal_code',
+            ]),
+            'shipping' => $this->mikroSimulationParty($orderContext['shipping'] ?? null, [
+                'recipient_name', 'recipient_phone', 'address', 'city', 'district', 'postal_code',
+            ]),
+            'delivery_mode' => $orderContext['delivery_mode'] ?? null,
+            'desired_series' => 'S',
+            'lines' => $canonicalLines,
+            'totals' => [
+                'currency' => strtoupper((string) ($payment->currency ?: 'TRY')),
+                'gross_total' => $grossTotal,
+                'net_total' => $this->nullableSimulationMoney($orderContext['net_total'] ?? null),
+                'vat_total' => $this->nullableSimulationMoney($orderContext['vat_total'] ?? null),
+            ],
+            'description2' => $orderContext['description2_preview'] ?? null,
+            'payment' => [
+                'canonical_payment_id' => (int) $payment->id,
+                'provider' => $payment->provider,
+                'provider_mode' => $paymentPayload['provider_mode'] ?? $paymentPayload['provider_environment'] ?? null,
+                'provider_payment_reference' => $payment->provider_payment_reference,
+                'provider_transaction_reference' => $payment->provider_transaction_reference,
+                'provider_host_reference' => $paymentPayload['provider_host_reference'] ?? null,
+                'provider_receipt_reference' => $payment->provider_receipt_reference,
+                'paid_at' => $payment->paid_at?->toIso8601String(),
+            ],
+            'context' => [
+                'id' => $contextId,
+                'revision' => $contextRevision,
+                'hash' => $contextHash,
+            ],
+            'mikro_write_attempted' => false,
+            'real_mikro_order_number' => null,
+            'real_mikro_document_guid' => null,
+        ];
+        $payloadHash = hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $idempotencyKey = hash('sha256', implode('|', [
+            'mikro-test-order-simulation-v1',
+            (string) $payment->id,
+            (string) $contextId,
+            (string) $contextRevision,
+            $contextHash,
+            'S',
+        ]));
+
+        $simulation = DB::table(self::MIKRO_SIMULATION_TABLE)
+            ->where('canonical_payment_id', $payment->id)
+            ->lockForUpdate()
+            ->first();
+        if (! $simulation) {
+            $now = now();
+            $simulationId = DB::table(self::MIKRO_SIMULATION_TABLE)->insertGetId([
+                'simulation_reference' => 'MSIM-'.Str::ulid(),
+                'technical_service_request_id' => (int) $contextRow->technical_service_request_id,
+                'root_request_id' => (int) $contextRow->root_request_id,
+                'srv_request_id' => is_numeric($contextRow->srv_request_id) ? (int) $contextRow->srv_request_id : null,
+                'payment_order_context_id' => $contextId,
+                'canonical_payment_id' => (int) $payment->id,
+                'context_revision' => $contextRevision,
+                'context_hash' => $contextHash,
+                'provider_payment_reference' => $payment->provider_payment_reference,
+                'desired_series' => 'S',
+                'order_kind' => 'paid_part_shipment',
+                'status' => 'simulated_written',
+                'payload_snapshot' => json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'payload_hash' => $payloadHash,
+                'idempotency_key' => $idempotencyKey,
+                'simulated_at' => $now,
+                'created_by' => is_numeric($contextRow->created_by) ? (int) $contextRow->created_by : null,
+                'correlation_id' => Str::isUuid((string) $contextRow->correlation_id) ? (string) $contextRow->correlation_id : (string) Str::uuid(),
+                'mikro_write_attempted' => false,
+                'real_mikro_order_number' => null,
+                'real_mikro_document_guid' => null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $simulation = DB::table(self::MIKRO_SIMULATION_TABLE)->where('id', $simulationId)->firstOrFail();
+
+            $request = TechnicalServiceRequest::query()->findOrFail((int) $contextRow->technical_service_request_id);
+            $request->events()->create([
+                'event_type' => 'mikro_test_order_simulation_recorded',
+                'title' => 'Mikro test sipariş simülasyonu kaydedildi',
+                'note' => 'Gerçek Mikro siparişi oluşturulmadı.',
+                'from_status' => $request->workflow_status,
+                'to_status' => $request->workflow_status,
+                'author_user_id' => is_numeric($contextRow->created_by) ? (int) $contextRow->created_by : null,
+                'metadata' => [
+                    'simulation_reference' => $simulation->simulation_reference,
+                    'payment_id' => (int) $payment->id,
+                    'order_context_id' => $contextId,
+                    'context_revision' => $contextRevision,
+                    'context_hash' => $contextHash,
+                    'desired_series' => 'S',
+                    'mikro_write_attempted' => false,
+                    'real_mikro_order_number' => null,
+                    'real_mikro_document_guid' => null,
+                ],
+            ]);
+        } elseif (! hash_equals((string) $simulation->idempotency_key, $idempotencyKey)
+            || ! hash_equals((string) $simulation->payload_hash, $payloadHash)
+            || (bool) $simulation->mikro_write_attempted
+            || filled($simulation->real_mikro_order_number)
+            || filled($simulation->real_mikro_document_guid)) {
+            throw new DomainException('mikro_order_simulation_identity_mismatch: Existing simulation canonical payment/context snapshot ile eşleşmiyor.');
+        }
+
+        $projection = $this->mikroSimulationProjection($simulation);
+        if (($paymentPayload['mikro_order_simulation'] ?? null) !== $projection) {
+            $paymentPayload['mikro_order_simulation'] = $projection;
+            $payment->forceFill(['raw_payload' => $paymentPayload])->save();
+        }
+
+        return $projection;
+    }
+
+    /** @return array<string, mixed>|null */
     public function paymentProjection(TechnicalServiceMountPayment $payment): ?array
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $snapshot = $payload['order_context'] ?? null;
 
         return is_array($snapshot) ? $snapshot : null;
+    }
+
+    /** @param array<string, mixed> $line @return array<string, mixed> */
+    private function mikroSimulationLine(array $line): array
+    {
+        $itemCode = trim((string) ($line['item_code'] ?? ''));
+        $itemName = trim((string) ($line['item_name'] ?? ''));
+        if ($itemCode === '' || $itemName === '' || ! is_numeric($line['quantity'] ?? null)) {
+            throw new DomainException('mikro_order_simulation_line_invalid: Simulation satırı canonical stok kimliği ve adet gerektirir.');
+        }
+
+        return [
+            'line_id' => is_numeric($line['id'] ?? null) ? (int) $line['id'] : null,
+            'line_key' => $line['line_key'] ?? null,
+            'item_code' => $itemCode,
+            'item_name' => $itemName,
+            'quantity' => (string) $line['quantity'],
+            'unit_code' => $line['unit_code'] ?? null,
+            'gross_unit_price' => $this->strictSimulationMoney($line['gross_unit_price'] ?? $line['unit_price'] ?? null),
+            'gross_line_total' => $this->strictSimulationMoney($line['gross_line_total'] ?? $line['line_total'] ?? null),
+            'selected_tax_rate' => is_numeric($line['selected_tax_rate'] ?? null) ? (string) $line['selected_tax_rate'] : null,
+            'net_line_total' => $this->nullableSimulationMoney($line['net_line_total'] ?? null),
+            'vat_line_total' => $this->nullableSimulationMoney($line['vat_line_total'] ?? null),
+            'selected_part_serial' => filled($line['selected_part_serial'] ?? null) ? (string) $line['selected_part_serial'] : null,
+        ];
+    }
+
+    /** @param array<int, string> $allowed @return array<string, mixed>|null */
+    private function mikroSimulationParty(mixed $party, array $allowed): ?array
+    {
+        if (! is_array($party)) {
+            return null;
+        }
+
+        return array_intersect_key($party, array_flip($allowed));
+    }
+
+    private function strictSimulationMoney(mixed $value): string
+    {
+        if (! is_numeric($value)) {
+            throw new DomainException('mikro_order_simulation_money_invalid: Simulation canonical decimal tutar gerektirir.');
+        }
+
+        return number_format(round((float) $value, 2), 2, '.', '');
+    }
+
+    private function nullableSimulationMoney(mixed $value): ?string
+    {
+        return $value === null || $value === '' ? null : $this->strictSimulationMoney($value);
+    }
+
+    /** @return array<string, mixed> */
+    private function mikroSimulationProjection(object $simulation): array
+    {
+        return [
+            'id' => (int) $simulation->id,
+            'simulation_reference' => (string) $simulation->simulation_reference,
+            'status' => (string) $simulation->status,
+            'status_label' => 'Mikro test sipariş simülasyonu kaydedildi',
+            'real_order_created' => false,
+            'real_order_message' => 'Gerçek Mikro siparişi oluşturulmadı.',
+            'desired_series' => (string) $simulation->desired_series,
+            'order_kind' => (string) $simulation->order_kind,
+            'context_revision' => (int) $simulation->context_revision,
+            'context_hash' => (string) $simulation->context_hash,
+            'payload_hash' => (string) $simulation->payload_hash,
+            'simulated_at' => (string) $simulation->simulated_at,
+            'mikro_write_attempted' => false,
+            'real_mikro_order_number' => null,
+            'real_mikro_document_guid' => null,
+        ];
     }
 
     /** @return array<string, mixed> */
