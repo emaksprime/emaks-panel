@@ -583,6 +583,21 @@ class TechnicalServiceMessageDispatchLogService
         if ($businessState === 'sender_not_running') {
             return 'Gönderim servisi çalışmıyor';
         }
+        if ($businessState === 'test_recipient_missing') {
+            return 'Test yönlendirme numarası tanımlı değil';
+        }
+
+        if ((bool) $dispatch->test_redirect_applied) {
+            return match ($dispatch->status) {
+                TechnicalServiceMessageDispatch::STATUS_QUEUED => 'Test numarasına gönderim kuyruğunda',
+                TechnicalServiceMessageDispatch::STATUS_SENT,
+                TechnicalServiceMessageDispatch::STATUS_TEST_SENT => 'Test numarasına gönderildi',
+                TechnicalServiceMessageDispatch::STATUS_FAILED,
+                TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR,
+                TechnicalServiceMessageDispatch::STATUS_TEST_FAILED => 'Test numarasına gönderilemedi',
+                default => $this->statusLabel($dispatch->status),
+            };
+        }
 
         if ($this->isSystemOnlyDispatch($dispatch, $providerKey, $channel)) {
             return 'Sistem kaydı';
@@ -598,6 +613,7 @@ class TechnicalServiceMessageDispatchLogService
             'settings_disabled' => 'Mesaj gönderimi sunucu ayarlarından kapatıldı.',
             'provider_not_ready' => 'Mesaj sağlayıcısının bağlantı veya kimlik bilgisi hazır değil.',
             'sender_not_running' => 'Mesaj gönderim servisi çalışmadığı için kayıt kuyrukta bekliyor.',
+            'test_recipient_missing' => 'Gerçek alıcıya gönderim yapılmadı.',
             default => null,
         };
     }
@@ -610,6 +626,9 @@ class TechnicalServiceMessageDispatchLogService
         if ($dispatch->last_error_code === 'message_send_settings_disabled'
             || $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED) {
             return 'settings_disabled';
+        }
+        if ($dispatch->last_error_code === 'test_recipient_routing_missing') {
+            return 'test_recipient_missing';
         }
         if (in_array($dispatch->last_error_code, ['outbound_provider_set_not_ready', 'provider_not_ready'], true)) {
             return 'provider_not_ready';

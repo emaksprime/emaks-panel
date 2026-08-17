@@ -41,6 +41,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'messaging_enabled' => ['sometimes', 'required', 'boolean'],
             'real_send_enabled' => ['sometimes', 'required', 'boolean'],
             'test_mode_enabled' => ['sometimes', 'required', 'boolean'],
+            'test_recipient_routing_enabled' => ['sometimes', 'required', 'boolean'],
             'manual_e2e_ttl_seconds' => ['sometimes', 'required', 'integer', 'min:60', 'max:14400'],
             'manual_e2e_allowlisted_phones' => ['sometimes', 'array'],
             'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],

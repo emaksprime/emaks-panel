@@ -68,7 +68,7 @@ class TechnicalServiceMessageIdempotencyService
             $values['channel'] ?? 'channel',
             $values['provider_key'] ?? 'provider',
             $values['recipient_role'] ?? $values['target_type'] ?? 'recipient',
-            $values['effective_target_phone_hash'] ?? $values['recipient_phone_hash'] ?? 'no-phone',
+            $values['recipient_phone_hash'] ?? $values['effective_target_phone_hash'] ?? 'no-phone',
             $values['business_event_id'] ?? $values['appointment_id'] ?? 'no-event',
             $values['template_key'] ?? 'no-template',
             $values['template_version'] ?? 'no-version',

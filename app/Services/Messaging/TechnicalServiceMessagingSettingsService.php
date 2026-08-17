@@ -109,6 +109,7 @@ class TechnicalServiceMessagingSettingsService
         'manual_e2e_enabled',
         'real_send_enabled',
         'test_mode_enabled',
+        'test_recipient_routing_enabled',
         'queue_paused',
         'ops_whatsapp_enabled',
         'ops_whatsapp_phone',
@@ -199,6 +200,7 @@ class TechnicalServiceMessagingSettingsService
     private const ACTIVE_RUN_LOCKED_FIELDS = [
         'messaging_enabled',
         'test_mode_enabled',
+        'test_recipient_routing_enabled',
         'test_phone',
         'shared_test_phone',
         'customer_test_phone',
@@ -3786,6 +3788,7 @@ class TechnicalServiceMessagingSettingsService
             'messaging_enabled',
             'real_send_enabled',
             'test_mode_enabled',
+            'test_recipient_routing_enabled',
             'allow_browser_smoke_send',
             'allow_test_fixture_send',
             'ops_whatsapp_enabled',
@@ -5984,28 +5987,40 @@ class TechnicalServiceMessagingSettingsService
             return $input;
         }
         $testMode = (bool) ($settings['test_mode_enabled'] ?? false);
+        $testRecipientRouting = (bool) ($settings['test_recipient_routing_enabled'] ?? false);
         $originalPhone = $this->normalizePhone((string) (
             $input['recipient_phone']
                 ?? $input['target_phone']
                 ?? $input['effective_target_phone']
                 ?? ''
         ));
-        $targetPhone = $testMode
-            ? $this->testPhoneForRole($settings, $role)
-            : $originalPhone;
+        $targetPhone = $testRecipientRouting
+            ? $this->testPhoneForChannel($settings, $channel)
+            : ($testMode ? $this->testPhoneForRole($settings, $role) : $originalPhone);
+        $routingApplied = ($testRecipientRouting || $testMode) && $targetPhone !== '';
 
+        $input['recipient_phone'] = $originalPhone;
         $input['target_phone'] = $targetPhone;
         $input['effective_target_phone'] = $targetPhone;
-        $input['test_mode'] = $testMode;
-        $input['test_redirect_applied'] = $testMode && $targetPhone !== '';
+        $input['test_mode'] = $testRecipientRouting || $testMode;
+        $input['test_redirect_applied'] = $routingApplied;
         if (is_array($input['payload'] ?? null)) {
-            $input['payload']['test_redirect_applied'] = $input['test_redirect_applied'];
+            if (! $testRecipientRouting) {
+                $input['payload']['test_redirect_applied'] = $input['test_redirect_applied'];
+            } else {
+                unset($input['payload']['test_redirect_applied']);
+            }
             $input['payload']['target_role'] = $role;
         }
         $input['metadata'] = [
             ...$metadata,
-            'test_recipient_role' => $testMode ? $role : null,
-            'test_recipient_authority' => $testMode ? 'admin_role_settings' : null,
+            'test_recipient_role' => ($testRecipientRouting || $testMode) ? $role : null,
+            'test_recipient_authority' => $testRecipientRouting
+                ? 'admin_channel_settings'
+                : ($testMode ? 'admin_role_settings' : null),
+            'test_routing_enabled' => $testRecipientRouting,
+            'test_routing_channel' => $testRecipientRouting ? $channel : null,
+            'test_routing_profile' => $testRecipientRouting ? self::LOCAL_MANUAL_ACCEPTANCE_PROFILE : null,
         ];
 
         return $input;
@@ -6075,6 +6090,7 @@ class TechnicalServiceMessagingSettingsService
             ->first(fn (string $phone): bool => $phone !== $legacyTestPhone)
             ?? $legacyTestPhone;
         $settings['test_phone'] = $legacyTestPhone;
+        $settings['test_recipient_routing_enabled'] = (bool) ($settings['test_recipient_routing_enabled'] ?? false);
         $settings['customer_test_phone'] = $this->normalizePhone((string) (
             $hasStoredCustomerTestPhone
                 ? ($settings['customer_test_phone'] ?? '')
@@ -6159,6 +6175,7 @@ class TechnicalServiceMessagingSettingsService
             'messaging_enabled' => false,
             'real_send_enabled' => false,
             'test_mode_enabled' => true,
+            'test_recipient_routing_enabled' => false,
             'test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
             'customer_test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
             'technician_ops_test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
@@ -6798,6 +6815,19 @@ class TechnicalServiceMessagingSettingsService
                 }
             }
         }
+        if ((bool) $settings['messaging_enabled']
+            && (bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
+            foreach ([
+                'test_phone' => $this->testPhoneForChannel($settings, 'whatsapp'),
+                'nac_sms.test_phone' => $this->testPhoneForChannel($settings, 'sms'),
+            ] as $field => $phone) {
+                if (! $this->validPhone($phone)) {
+                    throw ValidationException::withMessages([
+                        $field => 'Test yönlendirme açıkken kanalın test telefonu geçerli olmalı.',
+                    ]);
+                }
+            }
+        }
 
         $manualPortalOrigin = trim((string) ($settings['manual_e2e_partner_portal_origin'] ?? ''));
         $normalizedManualPortalOrigin = PartnerPortalPublicUrl::normalizeOrigin($manualPortalOrigin);
@@ -7164,6 +7194,8 @@ class TechnicalServiceMessagingSettingsService
         $providerSecretConfigured = $evoDirect['credentials_ready'];
         $testPhoneConfigured = $this->validPhone((string) ($settings['customer_test_phone'] ?? ''))
             && $this->validPhone((string) ($settings['technician_ops_test_phone'] ?? ''));
+        $testRecipientRoutingConfigured = $this->validPhone($this->testPhoneForChannel($settings, 'whatsapp'))
+            && $this->validPhone($this->testPhoneForChannel($settings, 'sms'));
         $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
         $activeProviderDefinition = self::PROVIDERS[$activeProvider];
         $activeProviderEnabled = $this->providerEnabled($activeProvider, $settings);
@@ -7192,6 +7224,10 @@ class TechnicalServiceMessagingSettingsService
         }
         if (! $testPhoneConfigured) {
             $disabledReasons[] = 'Test telefonu eksik.';
+        }
+        if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)
+            && ! $testRecipientRoutingConfigured) {
+            $disabledReasons[] = 'Kanal bazlı test yönlendirme telefonu eksik.';
         }
         if ($activeProvider === 'evo_whatsapp' && ! $evoDirect['ready']) {
             $disabledReasons[] = 'Evo Direct API base URL/instance/API key eksik.';
@@ -7229,6 +7265,7 @@ class TechnicalServiceMessagingSettingsService
         $canSendReal = (bool) $settings['messaging_enabled']
             && (bool) $settings['real_send_enabled']
             && (! (bool) $settings['test_mode_enabled'] || $testPhoneConfigured)
+            && (! (bool) ($settings['test_recipient_routing_enabled'] ?? false) || $testRecipientRoutingConfigured)
             && $realAllowedTypes !== []
             && $activeProviderRealReady
             && $queueReady;
@@ -7238,6 +7275,8 @@ class TechnicalServiceMessagingSettingsService
             'real_send_enabled' => (bool) $settings['real_send_enabled'],
             'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
             'test_phone_configured' => $testPhoneConfigured,
+            'test_recipient_routing_enabled' => (bool) ($settings['test_recipient_routing_enabled'] ?? false),
+            'test_recipient_routing_configured' => $testRecipientRoutingConfigured,
             'provider_webhook_configured' => $webhookConfigured,
             'provider_secret_configured' => $providerSecretConfigured,
             'evo_direct_api_enabled' => $evoDirect['enabled'],
@@ -7292,6 +7331,13 @@ class TechnicalServiceMessagingSettingsService
 
         if (! (bool) $settings['real_send_enabled']) {
             return 'blocked_real_send_disabled';
+        }
+
+        if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
+            return $this->validPhone($this->testPhoneForChannel($settings, 'whatsapp'))
+                && $this->validPhone($this->testPhoneForChannel($settings, 'sms'))
+                    ? 'test_recipient_routing'
+                    : 'blocked_missing_test_recipient';
         }
 
         if ((bool) $settings['test_mode_enabled']) {
@@ -7470,6 +7516,9 @@ class TechnicalServiceMessagingSettingsService
             'real_send_enabled' => (bool) ($settings['real_send_enabled'] ?? false),
             'queue_paused' => (bool) ($settings['queue_paused'] ?? true),
             'test_mode_enabled' => (bool) ($settings['test_mode_enabled'] ?? false),
+            'test_recipient_routing_enabled' => (bool) ($settings['test_recipient_routing_enabled'] ?? false),
+            'whatsapp_test_recipient_fingerprint' => hash('sha256', $this->testPhoneForChannel($settings, 'whatsapp')),
+            'sms_test_recipient_fingerprint' => hash('sha256', $this->testPhoneForChannel($settings, 'sms')),
             'customer_test_phone_fingerprint' => hash('sha256', (string) ($settings['customer_test_phone'] ?? '')),
             'technician_ops_test_phone_fingerprint' => hash('sha256', (string) ($settings['technician_ops_test_phone'] ?? '')),
             'max_auto_retries' => (int) ($settings['max_auto_retries'] ?? -1),
@@ -7638,12 +7687,23 @@ class TechnicalServiceMessagingSettingsService
         }
 
         $target = $this->normalizePhone($targetPhone);
+        if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
+            $expectedTestRecipient = $this->testPhoneForChannel($settings, $channel);
+            if (! $this->validPhone($expectedTestRecipient)
+                || ! hash_equals($expectedTestRecipient, $target)) {
+                return $this->executionBlock(
+                    'test_recipient_routing_missing',
+                    'Test yönlendirme numarası tanımlı değil. Gerçek alıcıya gönderim yapılmadı.',
+                );
+            }
+        }
         $allowlist = array_values(array_filter(array_map(
             fn (mixed $phone): string => $this->normalizePhone((string) $phone),
             (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
         )));
         if ($target === ''
-            || ((bool) ($settings['test_mode_enabled'] ?? false)
+            || (! (bool) ($settings['test_recipient_routing_enabled'] ?? false)
+                && (bool) ($settings['test_mode_enabled'] ?? false)
                 && ! in_array($target, $allowlist, true))) {
             return $this->executionBlock('normal_local_recipient_blocked', 'Dispatch recipient test allowlist dışında.');
         }
@@ -7783,6 +7843,13 @@ class TechnicalServiceMessagingSettingsService
             'messaging_enabled' => (bool) $settings['messaging_enabled'],
             'real_send_enabled' => (bool) $settings['real_send_enabled'],
             'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
+            'test_recipient_routing_enabled' => (bool) ($settings['test_recipient_routing_enabled'] ?? false),
+            'whatsapp_test_recipient_masked' => $this->maskPhone($this->testPhoneForChannel($settings, 'whatsapp')),
+            'sms_test_recipient_masked' => $this->maskPhone($this->testPhoneForChannel($settings, 'sms')),
+            'whatsapp_test_recipient_source' => 'global.shared_test_phone',
+            'sms_test_recipient_source' => (bool) data_get($settings, 'nac_sms.use_shared_test_phone', true)
+                ? 'global.shared_test_phone'
+                : 'nac_sms.test_phone',
             'manual_e2e_enabled' => (bool) ($settings['manual_e2e_enabled'] ?? false),
             'manual_e2e_active_run_id' => $manualE2e['active_run_id'],
             'manual_e2e_started_at' => $manualE2e['started_at'],
@@ -10079,6 +10146,22 @@ SQL,
         }
 
         return $digits;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private function testPhoneForChannel(array $settings, string $channel): string
+    {
+        if ($channel === 'whatsapp') {
+            return $this->normalizePhone((string) ($settings['test_phone'] ?? ''));
+        }
+
+        if ($channel !== 'sms') {
+            return '';
+        }
+
+        return (bool) data_get($settings, 'nac_sms.use_shared_test_phone', true)
+            ? $this->normalizePhone((string) ($settings['test_phone'] ?? ''))
+            : $this->normalizePhone((string) data_get($settings, 'nac_sms.test_phone', ''));
     }
 
     /** @param array<string, mixed> $settings */

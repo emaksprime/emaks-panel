@@ -5675,6 +5675,385 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         }
     }
 
+    public function test_whatsapp_test_routing_uses_configured_test_recipient(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_phone' => '905311111111',
+            'target_phone' => '905311111111',
+            'payload' => ['body' => 'WhatsApp channel routing test.'],
+        ]);
+
+        $this->assertSame('905311111111', $dispatch->original_phone);
+        $this->assertSame('905466666601', $dispatch->target_phone);
+        $this->assertTrue($dispatch->test_redirect_applied);
+        $this->assertSame('whatsapp', data_get($dispatch->metadata, 'test_routing_channel'));
+        $this->assertSame('LOCAL_MANUAL_ACCEPTANCE', data_get($dispatch->metadata, 'test_routing_profile'));
+        $this->assertSame(
+            'Test numarasına gönderim kuyruğunda',
+            app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($dispatch)['status_label'],
+        );
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_sms_test_routing_uses_configured_test_recipient(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_phone' => '905322222222',
+            'target_phone' => '905322222222',
+            'payload' => ['body' => 'SMS channel routing test.'],
+        ]);
+
+        $this->assertSame('905322222222', $dispatch->original_phone);
+        $this->assertSame('905466666602', $dispatch->target_phone);
+        $this->assertTrue($dispatch->test_redirect_applied);
+        $this->assertSame('sms', data_get($dispatch->metadata, 'test_routing_channel'));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_test_routing_preserves_original_recipient(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+        $idempotency = app(TechnicalServiceMessageIdempotencyService::class);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'recipient_phone' => '905333333333',
+            'target_phone' => '905344444444',
+            'payload' => ['body' => 'Original recipient audit test.'],
+        ]);
+
+        $this->assertSame('905333333333', $dispatch->original_phone);
+        $this->assertSame($idempotency->phoneHash('905333333333'), $dispatch->recipient_phone_hash);
+        $this->assertSame('9053***333', $dispatch->recipient_phone_mask);
+        $this->assertSame('9054***601', $dispatch->effective_target_phone_mask);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_provider_receives_only_effective_test_recipient(): void
+    {
+        config(['services.evolution.allow_unit_test_http_fake' => true]);
+        Http::fake(fn ($request) => str_contains($request->url(), 'nac.example.test')
+            ? Http::response(['err' => null, 'data' => ['pkgID' => 661122]], 200)
+            : Http::response(['messageId' => 'EVO-CHANNEL-ROUTING'], 200));
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        $whatsapp = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_phone' => '905311111111',
+            'payload' => ['body' => 'Provider target WhatsApp test.'],
+        ]);
+        $sms = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_phone' => '905322222222',
+            'payload' => ['body' => 'Provider target SMS test.'],
+        ]);
+
+        $this->assertSame(2, app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 2,
+            'outbound_worker_owner' => $owner,
+        ])['count']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $whatsapp->fresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $sms->fresh()->status);
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), '/message/sendText/')
+            && $request['number'] === '905466666601');
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), 'nac.example.test')
+            && $request['number'] === 905466666602);
+        Http::assertNotSent(fn ($request): bool => in_array((string) $request['number'], [
+            '905311111111',
+            '905322222222',
+        ], true));
+        $this->assertSame(
+            'Test numarasına gönderildi',
+            app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($whatsapp->fresh())['status_label'],
+        );
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_local_environment_does_not_suppress_test_routed_message(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_phone' => '905311111111',
+            'payload' => ['body' => 'Local routing remains actionable.'],
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertNull($dispatch->last_error_code);
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_missing_test_recipient_fails_closed_before_provider(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+        $this->clearStoredSmsTestRecipient();
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_phone' => '905322222222',
+            'payload' => ['body' => 'Missing SMS test recipient.'],
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->status);
+        $this->assertSame('test_recipient_routing_missing', $dispatch->last_error_code);
+        $this->assertSame('905322222222', $dispatch->original_phone);
+        $this->assertNull($dispatch->target_phone);
+        $projection = app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($dispatch);
+        $this->assertSame('Test yönlendirme numarası tanımlı değil', $projection['status_label']);
+        $this->assertSame('Gerçek alıcıya gönderim yapılmadı.', $projection['status_detail']);
+        Http::assertNothingSent();
+        $this->assertFalse($settings->heartbeatOutboundWorkerLease($owner));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_missing_test_recipient_never_falls_back_to_real_recipient(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+        $this->clearStoredSmsTestRecipient();
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_phone' => '905322222222',
+            'target_phone' => '905322222222',
+            'payload' => ['body' => 'No real-recipient fallback.'],
+        ]);
+
+        $this->assertNull($dispatch->target_phone);
+        $this->assertNull($dispatch->effective_target_phone_hash);
+        $this->assertSame('905322222222', $dispatch->original_phone);
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_idempotency_uses_original_recipient_not_test_number(): void
+    {
+        $idempotency = app(TechnicalServiceMessageIdempotencyService::class);
+        $base = [
+            'request_id' => 88,
+            'message_type' => 'payment_link_customer',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'recipient_role' => 'customer',
+            'effective_target_phone_hash' => $idempotency->phoneHash('905466666601'),
+            'business_event_id' => 'payment-205-paid-v1',
+            'template_key' => 'payment_link_customer',
+            'template_version' => 3,
+            'payload_hash' => hash('sha256', 'same-body'),
+        ];
+
+        $first = $idempotency->idempotencyKey([
+            ...$base,
+            'recipient_phone_hash' => $idempotency->phoneHash('905311111111'),
+        ]);
+        $second = $idempotency->idempotencyKey([
+            ...$base,
+            'recipient_phone_hash' => $idempotency->phoneHash('905322222222'),
+        ]);
+        $sameOriginalNewTestTarget = $idempotency->idempotencyKey([
+            ...$base,
+            'recipient_phone_hash' => $idempotency->phoneHash('905311111111'),
+            'effective_target_phone_hash' => $idempotency->phoneHash('905466666699'),
+        ]);
+
+        $this->assertNotSame($first, $second);
+        $this->assertSame($first, $sameOriginalNewTestTarget);
+    }
+
+    public function test_different_customers_on_same_test_number_remain_distinct(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+        $base = [
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'business_event_id' => 'same-business-event',
+            'payload' => ['body' => 'Same provider payload.'],
+        ];
+
+        $first = $this->enqueueDispatch([...$base, 'recipient_phone' => '905311111111']);
+        $second = $this->enqueueDispatch([...$base, 'recipient_phone' => '905322222222']);
+
+        $this->assertSame('905466666601', $first->target_phone);
+        $this->assertSame('905466666601', $second->target_phone);
+        $this->assertNotSame($first->idempotency_key, $second->idempotency_key);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $first->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $second->status);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_historical_dispatch_558_is_not_replayed(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $historical = $this->quarantinedAmbiguousDispatch();
+        $before = $historical->getRawOriginal();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ]);
+
+        $this->assertSame(0, $result['count']);
+        $this->assertSame($before, $historical->fresh()->getRawOriginal());
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_historical_dispatch_608_and_609_are_not_replayed(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $historical = collect([
+            ['provider_key' => 'evo_whatsapp', 'channel' => 'whatsapp'],
+            ['provider_key' => 'nac_sms', 'channel' => 'sms'],
+        ])->map(function (array $channel): TechnicalServiceMessageDispatch {
+            $dispatch = $this->enqueueDispatch([
+                ...$channel,
+                'event' => 'part_fee_payment_link_customer',
+                'message_type' => 'part_fee_payment_link_customer',
+                'recipient_phone' => '905311111111',
+                'payload' => ['body' => 'Historical local/UAT suppressed record.'],
+            ]);
+            $dispatch->forceFill([
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+                'attempt_count' => 0,
+                'queued_at' => null,
+                'next_attempt_at' => null,
+                'provider_status' => 'local_no_send',
+                'last_error_code' => 'outbound_execution_mode_local',
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'provider_send_attempted' => false,
+                    'external_provider_call' => false,
+                    'historical_replay_blocked' => true,
+                ],
+            ])->saveQuietly();
+
+            return $dispatch->fresh();
+        });
+        $before = $historical->mapWithKeys(fn (TechnicalServiceMessageDispatch $dispatch): array => [
+            $dispatch->id => $dispatch->getRawOriginal(),
+        ])->all();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)->process([
+            'limit' => 10,
+            'outbound_worker_owner' => $owner,
+        ]);
+
+        $this->assertSame(0, $result['count']);
+        foreach ($historical as $dispatch) {
+            $this->assertSame($before[$dispatch->id], $dispatch->fresh()->getRawOriginal());
+        }
+        Http::assertNothingSent();
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_disabling_test_routing_restores_normal_recipient_resolution(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+        $settings->update(['test_recipient_routing_enabled' => false]);
+        $owner = $this->restartLocalManualAcceptanceWorker($settings, $owner);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_phone' => '905311111111',
+            'payload' => ['body' => 'Normal recipient resolution restored.'],
+        ]);
+
+        $this->assertSame('905311111111', $dispatch->target_phone);
+        $this->assertFalse($dispatch->test_redirect_applied);
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'test_routing_enabled'));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_provider_and_template_settings_are_not_mutated(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $before = $settings->payload();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+        $after = $settings->payload();
+
+        $this->assertSame($before['providers'], $after['providers']);
+        $this->assertSame($before['message_types'], $after['message_types']);
+        $this->assertSame($before['evo_whatsapp'], $after['evo_whatsapp']);
+        $this->assertSame(
+            Arr::except($before['nac_sms'], ['test_phone', 'test_phone_masked', 'use_shared_test_phone']),
+            Arr::except($after['nac_sms'], ['test_phone', 'test_phone_masked', 'use_shared_test_phone']),
+        );
+        $this->assertTrue((bool) data_get($after, 'global.test_recipient_routing_enabled'));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_only_one_dedicated_sender_owner_remains(): void
+    {
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext();
+        $owner = $this->enableChannelTestRecipientRouting($settings, $owner);
+
+        try {
+            $settings->registerOutboundWorkerLease(
+                'second-test-routing-sender-owner',
+                now()->toImmutable(),
+                now()->addMinute()->toImmutable(),
+            );
+            $this->fail('İkinci dedicated sender owner reddedilmeliydi.');
+        } catch (ConflictHttpException $exception) {
+            $this->assertSame('Başka bir normal outbound sender owner zaten aktif.', $exception->getMessage());
+        }
+
+        $this->assertTrue($settings->normalOutboundWorkerMayProcess($owner));
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
     private function enqueueDispatch(array $overrides = []): TechnicalServiceMessageDispatch
     {
         $metadata = is_array($overrides['metadata'] ?? null) ? $overrides['metadata'] : [];
@@ -5729,6 +6108,37 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         ])->saveQuietly();
 
         return $dispatch->fresh();
+    }
+
+    private function enableChannelTestRecipientRouting(
+        TechnicalServiceMessagingSettingsService $settings,
+        string $owner,
+    ): string {
+        $settings->update([
+            'test_mode_enabled' => false,
+            'test_recipient_routing_enabled' => true,
+            'shared_test_phone' => '905466666601',
+            'nac_sms' => [
+                'use_shared_test_phone' => false,
+                'test_phone' => '905466666602',
+            ],
+        ]);
+
+        return $this->restartLocalManualAcceptanceWorker($settings, $owner);
+    }
+
+    private function clearStoredSmsTestRecipient(): void
+    {
+        foreach ([
+            [TechnicalServiceMessagingSettingsService::PAGE_CODE, TechnicalServiceMessagingSettingsService::ROOT_KEY],
+            [TechnicalServiceMessagingSettingsService::LIFECYCLE_PAGE_CODE, TechnicalServiceMessagingSettingsService::LIFECYCLE_ROOT_KEY],
+        ] as [$pageCode, $root]) {
+            $page = PageConfig::query()->where('page_code', $pageCode)->firstOrFail();
+            $layout = (array) $page->layout_json;
+            Arr::set($layout, $root.'.nac_sms.use_shared_test_phone', false);
+            Arr::set($layout, $root.'.nac_sms.test_phone', null);
+            $page->forceFill(['layout_json' => $layout])->save();
+        }
     }
 
     /**
