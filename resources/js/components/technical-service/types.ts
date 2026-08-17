@@ -1340,6 +1340,9 @@ export type ServiceRequestPaymentOrderContext = {
   delivery_mode_label?: string | null
   delivery_status?: 'pending' | 'delivered' | 'cancelled' | string | null
   delivery_status_label?: string | null
+  shipment_record_exists?: boolean
+  shipment_status?: string | null
+  shipment_status_label?: string | null
   payment_collection_mode?: 'none' | 'manual' | 'payment_link' | string | null
   payment_status?: 'not_required' | 'pending' | 'paid' | 'cancelled' | string | null
   payment_status_label?: string | null

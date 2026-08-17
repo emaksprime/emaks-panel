@@ -32,6 +32,10 @@ class TechnicalServicePaymentOrderContextService
 
     public const PURPOSE_PART_CHARGE = 'part_charge';
 
+    public const PURPOSE_SERVICE_CHARGE = 'service_charge';
+
+    public const PURPOSE_ROUTE_FEE = 'route_fee';
+
     public const SUPPLIER_EMAKS = 'emaks_prime';
 
     public const SUPPLIER_TECHNICIAN = 'technician';
@@ -62,6 +66,8 @@ class TechnicalServicePaymentOrderContextService
 
     private const DESCRIPTION2_VERSION = 1;
 
+    private const SERVICE_DESCRIPTION2_VERSION = 2;
+
     private const PART_DESCRIPTION2_VERSION = 3;
 
     private const ITEM_CLASSIFICATION_VERSION = 'technical-service-part-classification-v2';
@@ -80,6 +86,41 @@ class TechnicalServicePaymentOrderContextService
 
     private const MIKRO_SIMULATION_SCHEMA_VERSION = 1;
 
+    private const SERVICE_ITEM_CONTRACT_VERSION = 'technical-service-purpose-service-item-v1';
+
+    private const SERVICE_ITEMS = [
+        self::PURPOSE_MOUNT_COLLECTION => [
+            'item_code' => 'W-MONTAJ-1',
+            'expected_item_name' => 'MONTAJ HİZMETİ',
+            'line_type' => 'service',
+            'shipment_required' => false,
+        ],
+        self::PURPOSE_SERVICE_CHARGE => [
+            'item_code' => 'W-MONTAJ-2',
+            'expected_item_name' => 'SERVİS HİZMETİ',
+            'line_type' => 'service',
+            'shipment_required' => false,
+        ],
+        'extra_service' => [
+            'item_code' => 'W-MONTAJ-2',
+            'expected_item_name' => 'SERVİS HİZMETİ',
+            'line_type' => 'service',
+            'shipment_required' => false,
+        ],
+        self::PURPOSE_ROUTE_FEE => [
+            'item_code' => 'W-MONTAJ-3',
+            'expected_item_name' => 'YOL ÜCRETİ',
+            'line_type' => 'service',
+            'shipment_required' => false,
+        ],
+        'route_difference' => [
+            'item_code' => 'W-MONTAJ-3',
+            'expected_item_name' => 'YOL ÜCRETİ',
+            'line_type' => 'service',
+            'shipment_required' => false,
+        ],
+    ];
+
     public function __construct(
         private readonly MikroApiClient $mikro,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
@@ -94,6 +135,21 @@ class TechnicalServicePaymentOrderContextService
             ['key' => 'route_difference', 'label' => 'Yol farkı'],
             ['key' => self::PURPOSE_MOUNT_COLLECTION, 'label' => 'Montaj ücreti tahsilatı'],
             ['key' => self::PURPOSE_PART_CHARGE, 'label' => 'Parça ödemesi'],
+        ];
+    }
+
+    /** @return array{item_code:string,expected_item_name:string,line_type:string,shipment_required:bool,contract_version:string} */
+    public function serviceItemContract(string $purpose): array
+    {
+        $purpose = strtolower(trim($purpose));
+        $definition = self::SERVICE_ITEMS[$purpose] ?? null;
+        if (! is_array($definition)) {
+            throw new DomainException('technical_service_service_item_purpose_unsupported');
+        }
+
+        return [
+            ...$definition,
+            'contract_version' => self::SERVICE_ITEM_CONTRACT_VERSION,
         ];
     }
 
@@ -677,7 +733,9 @@ class TechnicalServicePaymentOrderContextService
         if ($taxBlockerCodes !== []) {
             $taxBlockerMessage = in_array('tax_basis_unresolved', $taxBlockerCodes, true)
                 ? 'Mikro stok kartında perakende ve toptan KDV oranları farklı. Sipariş vergi temeli doğrulanmadan işlem tamamlanamaz.'
-                : 'KDV doğrulanamadı. Ödeme ve sipariş hazırlığı tamamlanamaz.';
+                : ($purpose === self::PURPOSE_MOUNT_COLLECTION
+                    ? 'Mikro hizmet kartı doğrulanamadı.'
+                    : 'KDV doğrulanamadı. Ödeme ve sipariş hazırlığı tamamlanamaz.');
 
             throw ValidationException::withMessages([
                 'order_context' => $taxBlockerMessage,
@@ -851,7 +909,11 @@ class TechnicalServicePaymentOrderContextService
                 $idempotencyKey,
                 $actor,
             ));
-            $this->insertContextLines($id, $normalized['lines'] ?? [], $actor);
+            $this->insertContextLines(
+                $id,
+                $purpose === self::PURPOSE_PART_CHARGE ? ($normalized['lines'] ?? []) : [],
+                $actor,
+            );
             $context = DB::table(self::TABLE)->where('id', $id)->first();
 
             $request->events()->create([
@@ -1050,10 +1112,12 @@ class TechnicalServicePaymentOrderContextService
 
         $paymentPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $orderContext = is_array($paymentPayload['order_context'] ?? null) ? $paymentPayload['order_context'] : null;
+        $mountServiceContext = is_array($orderContext)
+            && (string) ($orderContext['context_type'] ?? '') === 'mount_service';
         if (($paymentPayload['source'] ?? null) !== 'operation_order_context_payment'
             || ! is_array($orderContext)
             || ($orderContext['desired_mikro_series'] ?? null) !== 'S'
-            || ($orderContext['shipment_required'] ?? false) !== true
+            || (($orderContext['shipment_required'] ?? false) !== true && ! $mountServiceContext)
             || ($orderContext['payment_link_required'] ?? false) !== true) {
             return null;
         }
@@ -1079,8 +1143,8 @@ class TechnicalServicePaymentOrderContextService
             || ! hash_equals((string) $contextRow->context_hash, $contextHash)
             || (string) $contextRow->state !== 'paid_waiting_mikro_write'
             || (string) $contextRow->desired_mikro_series !== 'S'
-            || ! (bool) $contextRow->shipment_required) {
-            throw new DomainException('mikro_order_simulation_context_mismatch: Paid payment ile canonical S sevk bağlamı eşleşmiyor.');
+            || (! (bool) $contextRow->shipment_required && (string) $contextRow->context_type !== 'mount_service')) {
+            throw new DomainException('mikro_order_simulation_context_mismatch: Paid payment ile canonical S sipariş bağlamı eşleşmiyor.');
         }
 
         $canonicalLines = array_map(fn (array $line): array => $this->mikroSimulationLine($line), $lines);
@@ -1165,7 +1229,7 @@ class TechnicalServicePaymentOrderContextService
                 'context_hash' => $contextHash,
                 'provider_payment_reference' => $payment->provider_payment_reference,
                 'desired_series' => 'S',
-                'order_kind' => 'paid_part_shipment',
+                'order_kind' => $mountServiceContext ? 'mount_service' : 'paid_part_shipment',
                 'status' => 'simulated_written',
                 'payload_snapshot' => json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 'payload_hash' => $payloadHash,
@@ -2051,6 +2115,7 @@ class TechnicalServicePaymentOrderContextService
         $deliveryTarget = null;
         $shipping = null;
         $quantity = 1.0;
+        $providedAmountMinor = $this->decimalToScaledInteger(number_format($amount, 2, '.', ''), 2, 'amount', 0, 999999999999);
 
         if ($purpose === self::PURPOSE_PART_CHARGE) {
             if ($relatedProductSerial === '') {
@@ -2105,6 +2170,11 @@ class TechnicalServicePaymentOrderContextService
             }
         }
 
+        if ($purpose === self::PURPOSE_MOUNT_COLLECTION) {
+            $lines = [$this->purposeServiceLine($purpose, $providedAmountMinor, $currency)];
+            $part = $lines[0];
+        }
+
         $decision = $this->commercialDecision($purpose, $partSupplier, $commercialMode, $deliveryMode);
         $shipmentRequired = (bool) $decision['shipment_required'];
         $futureCarrierState = $shipmentRequired ? 'waiting_future_integration' : 'not_required';
@@ -2116,17 +2186,18 @@ class TechnicalServicePaymentOrderContextService
         $taxMode = (string) $decision['tax_mode'];
         $futureOrderTrigger = $decision['future_order_trigger'];
 
-        $providedAmountMinor = $this->decimalToScaledInteger(number_format($amount, 2, '.', ''), 2, 'amount', 0, 999999999999);
         if ($partSupplier === self::SUPPLIER_TECHNICIAN && is_array($part)) {
             $lines = [$this->technicianPartLine($part, $providedAmountMinor, $currency)];
             $part = $lines[0];
         }
-        $orderLineTotalMinor = $partSupplier === self::SUPPLIER_EMAKS
+        $orderLineTotalMinor = $lines !== []
             ? array_sum(array_column($lines, 'line_total_minor'))
             : $providedAmountMinor;
-        if ($partSupplier === self::SUPPLIER_EMAKS && $providedAmountMinor !== $orderLineTotalMinor) {
+        if ($lines !== [] && $providedAmountMinor !== $orderLineTotalMinor) {
             throw ValidationException::withMessages([
-                'amount' => 'Parça toplamı değişti. Sunucu tarafından hesaplanan güncel toplamı kullanın.',
+                'amount' => $purpose === self::PURPOSE_MOUNT_COLLECTION
+                    ? 'Montaj hizmet tutarı değişti. Sunucu tarafından hesaplanan güncel toplamı kullanın.'
+                    : 'Parça toplamı değişti. Sunucu tarafından hesaplanan güncel toplamı kullanın.',
             ]);
         }
 
@@ -2161,7 +2232,7 @@ class TechnicalServicePaymentOrderContextService
         $paymentStatusSource = 'system';
         $descriptionVersion = $purpose === self::PURPOSE_PART_CHARGE
             ? self::PART_DESCRIPTION2_VERSION
-            : self::DESCRIPTION2_VERSION;
+            : self::SERVICE_DESCRIPTION2_VERSION;
         $readiness = $this->partReadiness($partSupplier, $lines, $taxMode);
         $lines = array_map(function (array $line): array {
             unset(
@@ -2271,7 +2342,7 @@ class TechnicalServicePaymentOrderContextService
             'shipment_required' => $shipmentRequired,
             'future_carrier_state' => $futureCarrierState,
             'future_carrier_label' => $shipmentRequired
-                ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak'
+                ? 'Entegrasyon kapalı'
                 : 'Sevkiyat yok',
             'readiness' => $readiness,
             'mikro_write_execution_count' => 0,
@@ -2669,6 +2740,110 @@ class TechnicalServicePaymentOrderContextService
         ];
     }
 
+    /** @return array<string, mixed> */
+    private function purposeServiceLine(string $purpose, int $grossMinor, string $currency): array
+    {
+        $contract = $this->serviceItemContract($purpose);
+        $itemCode = $contract['item_code'];
+        $expectedName = $contract['expected_item_name'];
+        $fixtureTransport = app()->environment('testing')
+            && (bool) config('services.technical_service.payment_order_context_test_stock', false);
+
+        if ($fixtureTransport) {
+            $item = [
+                'item_code' => $itemCode,
+                'item_name' => $expectedName,
+                'unit_code' => 'ADET',
+                'freshness_at' => now()->toIso8601String(),
+                'contract_fingerprint' => 'typed-service-item-fixture-v1',
+                'tax_profile' => [
+                    'retail_tax_pointer' => 7,
+                    'retail_tax_rate' => '20',
+                    'wholesale_tax_pointer' => 7,
+                    'wholesale_tax_rate' => '20',
+                    'selected_tax_basis' => 'equal_rates',
+                    'selected_tax_pointer' => 7,
+                    'selected_tax_rate' => '20',
+                    'tax_status' => 'verified',
+                ],
+            ];
+        } else {
+            try {
+                $response = $this->mikro->searchStocks($itemCode);
+            } catch (Throwable $exception) {
+                report($exception);
+
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'Mikro hizmet kartı doğrulanamadı.',
+                ]);
+            }
+
+            if (($response['success'] ?? $response['ok'] ?? false) !== true
+                || ($response['stale'] ?? false) === true
+                || ($response['fallback_used'] ?? false) === true) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'Mikro hizmet kartı doğrulanamadı.',
+                ]);
+            }
+
+            $matches = collect($response['data'] ?? $response['rows'] ?? $response['result'] ?? [])
+                ->filter(fn (mixed $row): bool => is_array($row)
+                    && mb_strtoupper(trim((string) ($row['item_code'] ?? '')), 'UTF-8') === $itemCode)
+                ->values();
+            $item = $matches->count() === 1 ? $matches->first() : null;
+            if (! is_array($item)
+                || $this->normalizedServiceItemName($item['item_name'] ?? null) !== $this->normalizedServiceItemName($expectedName)) {
+                throw ValidationException::withMessages([
+                    'order_context.lines' => 'Mikro hizmet kartı doğrulanamadı.',
+                ]);
+            }
+            $item['freshness_at'] = $response['freshness_at'] ?? now()->toIso8601String();
+            $item['contract_fingerprint'] = $response['contract_fingerprint'] ?? null;
+        }
+
+        return [
+            'line_key' => hash('sha256', self::SERVICE_ITEM_CONTRACT_VERSION.'|'.$purpose.'|'.$itemCode),
+            'item_code' => $itemCode,
+            'item_name' => trim((string) $item['item_name']),
+            'item_short_name' => null,
+            'item_kind' => 'service',
+            'line_type' => 'service',
+            'classification_source' => 'payment_purpose_service_item_mapping',
+            'classification_contract_version' => self::SERVICE_ITEM_CONTRACT_VERSION,
+            'quantity' => 1.0,
+            'unit_code' => trim((string) ($item['unit_code'] ?? '')) ?: 'ADET',
+            'unit_price_minor' => $grossMinor,
+            'unit_price' => $this->scaledIntegerToFloat($grossMinor, 2),
+            'line_total_minor' => $grossMinor,
+            'line_total' => $this->scaledIntegerToFloat($grossMinor, 2),
+            'currency' => $currency,
+            'warehouse_code' => null,
+            'stock_source' => 'mikro',
+            'stock_source_label' => 'Mikro API',
+            'stock_freshness_at' => (string) $item['freshness_at'],
+            'mikro_contract_fingerprint' => $item['contract_fingerprint'] ?? null,
+            'availability_verified' => false,
+            'physical_stock_verified' => false,
+            'physical_stock_state' => 'not_applicable',
+            'physical_stock_total_snapshot' => null,
+            'on_hand' => null,
+            'reserved' => null,
+            'available' => null,
+            'serial_tracking_state' => 'not_required',
+            'serial_tracking_required' => false,
+            'selected_part_serial' => null,
+            'fixture_tax_profile' => $fixtureTransport ? $item['tax_profile'] : null,
+            'tax_mode_snapshot' => 'standard_from_mikro_service_item',
+            'vat_rate_snapshot' => null,
+            'shipment_required' => false,
+        ];
+    }
+
+    private function normalizedServiceItemName(mixed $name): string
+    {
+        return mb_strtoupper(preg_replace('/\s+/u', ' ', trim((string) $name)) ?? '', 'UTF-8');
+    }
+
     /** @param array<int, array<string, mixed>> $lines @return array<int, array<string, mixed>> */
     private function applyLineTaxProfiles(
         array $lines,
@@ -2698,26 +2873,36 @@ class TechnicalServicePaymentOrderContextService
             ]), $lines);
         }
 
-        if ($taxMode !== 'standard_from_mikro') {
+        if (! in_array($taxMode, ['standard_from_mikro', 'standard_from_mikro_service_item'], true)) {
             return $lines;
         }
 
         $fixtureTransport = app()->environment('testing')
             && (bool) config('services.technical_service.payment_order_context_test_stock', false);
-        $profiles = $fixtureTransport
-            ? collect($lines)->mapWithKeys(function (array $line): array {
-                $profile = is_array($line['fixture_tax_profile'] ?? null) ? $line['fixture_tax_profile'] : [];
+        try {
+            $profiles = $fixtureTransport
+                ? collect($lines)->mapWithKeys(function (array $line): array {
+                    $profile = is_array($line['fixture_tax_profile'] ?? null) ? $line['fixture_tax_profile'] : [];
 
-                return [(string) $line['item_code'] => [
-                    ...$profile,
-                    'tax_resolution_source' => 'typed_test_fixture',
-                    'source' => 'test_fixture',
-                    'freshness_at' => now()->toIso8601String(),
-                    'contract_version' => 'typed-test-tax-profile-v1',
-                    'correlation_id' => null,
-                ]];
-            })->all()
-            : $this->taxProfilesByItemCodes(array_column($lines, 'item_code'), $strict, ! $strict, $manualRetry);
+                    return [(string) $line['item_code'] => [
+                        ...$profile,
+                        'tax_resolution_source' => 'typed_test_fixture',
+                        'source' => 'test_fixture',
+                        'freshness_at' => now()->toIso8601String(),
+                        'contract_version' => 'typed-test-tax-profile-v1',
+                        'correlation_id' => null,
+                    ]];
+                })->all()
+                : $this->taxProfilesByItemCodes(array_column($lines, 'item_code'), $strict, ! $strict, $manualRetry);
+        } catch (ValidationException $exception) {
+            if ($taxMode !== 'standard_from_mikro_service_item') {
+                throw $exception;
+            }
+
+            throw ValidationException::withMessages([
+                'order_context.lines' => 'Mikro hizmet kartı doğrulanamadı.',
+            ]);
+        }
 
         return array_map(function (array $line) use ($profiles): array {
             $code = mb_strtoupper(trim((string) ($line['item_code'] ?? '')), 'UTF-8');
@@ -2906,7 +3091,9 @@ class TechnicalServicePaymentOrderContextService
             ->values();
         $mixedRates = $verified && $rates->count() > 1;
         $cartVatRate = $verified && $rates->count() === 1 ? $rates->first() : ($taxMode === 'none' ? '0' : null);
-        $taxSource = $taxMode === 'none' ? 'commercial_matrix' : ($taxMode === 'standard_from_mikro' ? 'mikro_api' : null);
+        $taxSource = $taxMode === 'none'
+            ? 'commercial_matrix'
+            : (in_array($taxMode, ['standard_from_mikro', 'standard_from_mikro_service_item'], true) ? 'mikro_api' : null);
         $taxLabel = match (true) {
             $taxMode === 'none' => 'Yok / %0',
             $status === 'verified' && $mixedRates => 'Satır bazında farklı oranlar · toplam fiyata dahil',
@@ -2934,42 +3121,36 @@ class TechnicalServicePaymentOrderContextService
     /** @param array<int, array<string, mixed>> $lines @return array<string, mixed> */
     private function partReadiness(?string $supplier, array $lines, string $taxMode): array
     {
-        if ($supplier !== self::SUPPLIER_EMAKS) {
-            return [
-                'ready' => true,
-                'order_ready' => true,
-                'payment_ready' => true,
-                'blocker_codes' => [],
-                'blockers' => [],
-            ];
-        }
-
         $blockers = [];
-        if (collect($lines)->contains(fn (array $line): bool => ! (bool) ($line['physical_stock_verified'] ?? $line['availability_verified'] ?? false))) {
-            $blockers['physical_stock_unverified'] = 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.';
+        if ($supplier === self::SUPPLIER_EMAKS) {
+            if (collect($lines)->contains(fn (array $line): bool => ! (bool) ($line['physical_stock_verified'] ?? $line['availability_verified'] ?? false))) {
+                $blockers['physical_stock_unverified'] = 'Mikro stok bilgisi doğrulanamadı. Stok doğrulanmadan işlem tamamlanamaz.';
+            }
+            if (collect($lines)->contains(fn (array $line): bool => (bool) ($line['physical_stock_verified'] ?? $line['availability_verified'] ?? false)
+                && is_numeric($line['physical_stock_total_snapshot'] ?? null)
+                && (float) $line['physical_stock_total_snapshot'] <= 0)) {
+                $blockers['physical_stock_empty'] = 'Seçilen parçalardan en az biri stokta bulunmuyor.';
+            }
+            if (collect($lines)->contains(fn (array $line): bool => is_numeric($line['physical_stock_total_snapshot'] ?? null)
+                && (float) ($line['quantity'] ?? 0) > (float) $line['physical_stock_total_snapshot'])) {
+                $blockers['physical_stock_quantity_exceeded'] = 'Seçilen parça adedi doğrulanmış fiziksel stok miktarını aşıyor.';
+            }
+            if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? 'unverified') === 'unverified')) {
+                $blockers['serial_tracking_unverified'] = 'Parça seri takip kuralı doğrulanmadan ödeme ve sipariş hazırlığı tamamlanamaz.';
+            }
+            if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? null) === 'required'
+                && blank($line['selected_part_serial'] ?? null))) {
+                $blockers['part_serial_selection_unverified'] = 'Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.';
+            }
         }
-        if (collect($lines)->contains(fn (array $line): bool => (bool) ($line['physical_stock_verified'] ?? $line['availability_verified'] ?? false)
-            && is_numeric($line['physical_stock_total_snapshot'] ?? null)
-            && (float) $line['physical_stock_total_snapshot'] <= 0)) {
-            $blockers['physical_stock_empty'] = 'Seçilen parçalardan en az biri stokta bulunmuyor.';
-        }
-        if (collect($lines)->contains(fn (array $line): bool => is_numeric($line['physical_stock_total_snapshot'] ?? null)
-            && (float) ($line['quantity'] ?? 0) > (float) $line['physical_stock_total_snapshot'])) {
-            $blockers['physical_stock_quantity_exceeded'] = 'Seçilen parça adedi doğrulanmış fiziksel stok miktarını aşıyor.';
-        }
-        if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? 'unverified') === 'unverified')) {
-            $blockers['serial_tracking_unverified'] = 'Parça seri takip kuralı doğrulanmadan ödeme ve sipariş hazırlığı tamamlanamaz.';
-        }
-        if (collect($lines)->contains(fn (array $line): bool => ($line['serial_tracking_state'] ?? null) === 'required'
-            && blank($line['selected_part_serial'] ?? null))) {
-            $blockers['part_serial_selection_unverified'] = 'Bu parça seri numarasıyla takip ediliyor. Güncel parça seri seçimi doğrulanmadan ödeme/sipariş hazırlığı tamamlanamaz.';
-        }
-        if ($taxMode === 'standard_from_mikro'
+        if (in_array($taxMode, ['standard_from_mikro', 'standard_from_mikro_service_item'], true)
             && collect($lines)->contains(fn (array $line): bool => ($line['tax_status'] ?? null) === 'unresolved_basis')) {
             $blockers['tax_basis_unresolved'] = 'Mikro stok kartında perakende ve toptan KDV oranları farklı. Sipariş vergi temeli doğrulanmadan işlem tamamlanamaz.';
-        } elseif ($taxMode === 'standard_from_mikro'
+        } elseif (in_array($taxMode, ['standard_from_mikro', 'standard_from_mikro_service_item'], true)
             && collect($lines)->contains(fn (array $line): bool => ($line['tax_status'] ?? null) !== 'verified')) {
-            $blockers['vat_unverified'] = 'KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.';
+            $blockers['vat_unverified'] = $taxMode === 'standard_from_mikro_service_item'
+                ? 'KDV bilgisi Mikro hizmet kartından doğrulanmadan montaj tahsilatı tamamlanamaz.'
+                : 'KDV bilgisi Mikro stok kartından doğrulanmadan ücretli sevk hazırlığı tamamlanamaz.';
         }
 
         return [
@@ -2992,8 +3173,13 @@ class TechnicalServicePaymentOrderContextService
     ): array {
         $billing = $normalized['billing'];
         $shipping = is_array($normalized['shipping']) ? $normalized['shipping'] : [];
-        $newLineAuthority = is_array($normalized['lines'] ?? null) && $normalized['lines'] !== [];
-        $part = ! $newLineAuthority && is_array($normalized['part']) ? $normalized['part'] : [];
+        $newLineAuthority = $purpose === self::PURPOSE_PART_CHARGE
+            && is_array($normalized['lines'] ?? null)
+            && $normalized['lines'] !== [];
+        $primaryLine = is_array($normalized['lines'][0] ?? null) ? $normalized['lines'][0] : [];
+        $part = $newLineAuthority
+            ? []
+            : ($primaryLine !== [] ? $primaryLine : (is_array($normalized['part']) ? $normalized['part'] : []));
 
         return [
             'technical_service_request_id' => $request->id,
@@ -3068,10 +3254,11 @@ class TechnicalServicePaymentOrderContextService
             'revision' => $revision,
             'created_by' => $actor?->getAuthIdentifier(),
             'metadata' => json_encode([
-                'schema_version' => $newLineAuthority ? 2 : 1,
+                'schema_version' => $purpose === self::PURPOSE_MOUNT_COLLECTION ? 3 : ($newLineAuthority ? 2 : 1),
                 'request_code' => $normalized['request_code'],
                 'root_mrn' => $normalized['root_mrn'],
                 'line_count' => count($normalized['lines'] ?? []),
+                'service_line' => $purpose === self::PURPOSE_MOUNT_COLLECTION ? ($primaryLine ?: null) : null,
                 'tax_projection' => [
                     'status' => $normalized['tax_status'] ?? null,
                     'source' => $normalized['tax_source'] ?? null,
@@ -3333,6 +3520,13 @@ class TechnicalServicePaymentOrderContextService
             })
             ->values()
             ->all();
+        $serviceLine = (string) $row->payment_purpose === self::PURPOSE_MOUNT_COLLECTION
+            && is_array($metadata['service_line'] ?? null)
+                ? $metadata['service_line']
+                : null;
+        if ($lines === [] && is_array($serviceLine)) {
+            $lines = [$serviceLine];
+        }
         $billing = [
             'source' => (string) $row->billing_source,
             'billing_type' => $row->billing_type ?: 'individual',
@@ -3363,7 +3557,8 @@ class TechnicalServicePaymentOrderContextService
         $schemaVersion = (int) ($metadata['schema_version'] ?? 0);
         $hasLineAuthority = (string) $row->payment_purpose === self::PURPOSE_PART_CHARGE
             && $schemaVersion >= 2;
-        $legacyPart = filled($row->item_name_snapshot)
+        $legacyPart = (string) $row->payment_purpose === self::PURPOSE_PART_CHARGE
+            && filled($row->item_name_snapshot)
             ? [
                 'line_key' => hash('sha256', mb_strtoupper((string) ($row->item_code ?: $row->item_name_snapshot), 'UTF-8')),
                 'item_code' => $row->item_code,
@@ -3398,7 +3593,9 @@ class TechnicalServicePaymentOrderContextService
             $lines = [$legacyPart];
         }
         $part = $lines[0] ?? null;
-        $readiness = $hasLineAuthority
+        $readiness = (string) $row->payment_purpose === self::PURPOSE_MOUNT_COLLECTION
+            ? $this->partReadiness(null, $lines, (string) $row->tax_mode)
+            : ($hasLineAuthority
             ? ($lines === []
                 ? [
                     'ready' => false,
@@ -3419,7 +3616,9 @@ class TechnicalServicePaymentOrderContextService
                 'blocker_codes' => [],
                 'blockers' => [],
                 'legacy_context' => true,
-            ];
+            ]);
+        $shipmentRecordExists = (bool) $row->shipment_required
+            && is_numeric($row->technical_service_part_request_id);
 
         return [
             'id' => (int) $row->id,
@@ -3467,6 +3666,11 @@ class TechnicalServicePaymentOrderContextService
             'delivery_mode_label' => (string) $row->delivery_mode === self::DELIVERY_SHIPMENT ? 'Sevk' : ((string) $row->delivery_mode === self::DELIVERY_HAND ? 'Elden' : 'Yok'),
             'delivery_status' => $row->delivery_status,
             'delivery_status_label' => $this->deliveryStatusLabel((string) $row->delivery_status),
+            'shipment_record_exists' => $shipmentRecordExists,
+            'shipment_status' => $shipmentRecordExists ? (string) $row->delivery_status : null,
+            'shipment_status_label' => $shipmentRecordExists
+                ? $this->deliveryStatusLabel((string) $row->delivery_status)
+                : ((bool) $row->shipment_required ? 'Kargo kaydı henüz oluşturulmadı' : null),
             'payment_collection_mode' => $row->payment_collection_mode,
             'payment_status' => $row->payment_status,
             'payment_status_label' => $this->paymentStatusLabel((string) $row->payment_status),
@@ -3498,7 +3702,7 @@ class TechnicalServicePaymentOrderContextService
             'shipment_required' => (bool) $row->shipment_required,
             'future_carrier_state' => (string) $row->future_carrier_state,
             'future_carrier_label' => (bool) $row->shipment_required
-                ? 'Kargo hazırlığı bekliyor; HepsiJet entegrasyonu çalıştırılmayacak'
+                ? 'Entegrasyon kapalı'
                 : 'Sevkiyat yok',
             'readiness' => $readiness,
             'description2_preview' => (string) $row->description2_preview,
@@ -3534,15 +3738,26 @@ class TechnicalServicePaymentOrderContextService
         $requestCode = (string) $context['request_code'];
         $billing = $context['billing'];
         if ($context['context_type'] === 'mount_service') {
+            $serviceLine = is_array($context['lines'][0] ?? null) ? $context['lines'][0] : [];
+
             return implode("\n", [
                 'MRN/SRV: '.$requestCode,
-                'HİZMET: MONTAJ',
+                'TAHSİLAT AMACI: MONTAJ ÖDEMESİ',
+                'HİZMET KALEMİ:',
+                trim((string) ($serviceLine['item_code'] ?? '')).' - '.trim((string) ($serviceLine['item_name'] ?? '')),
+                'ADET: '.$this->quantityLabel((float) ($serviceLine['quantity'] ?? 1)),
+                'BİRİM TUTAR (KDV DAHİL): '.($serviceLine['gross_unit_price_label'] ?? '-'),
+                'BRÜT TOPLAM: '.($serviceLine['gross_line_total_label'] ?? $context['gross_total_label'] ?? '-'),
+                'KDV ORANI: '.($serviceLine['selected_tax_rate_label'] ?? '-'),
+                'NET: '.($serviceLine['net_line_total_label'] ?? '-'),
+                'KDV TUTARI: '.($serviceLine['vat_line_total_label'] ?? '-'),
+                'MÜŞTERİ BRÜT TAHSİLATI: '.($context['gross_total_label'] ?? '-'),
                 'ÜRÜN: '.trim((string) ($request->product_model ?: $request->product_name)),
                 'SERİ NO: '.((string) ($context['related_product_serial'] ?? '-')),
                 'FATURA MÜŞTERİSİ: '.$billing['name_or_title'],
                 'SEVKİYAT: YOK',
                 'HEDEF SERİ: S',
-                'KDV: MİKRO HİZMET KARTI',
+                'KDV TOPLAMA DAHİLDİR.',
             ]);
         }
 
@@ -4428,6 +4643,9 @@ class TechnicalServicePaymentOrderContextService
             'part' => $purpose === self::PURPOSE_PART_CHARGE
                 ? null
                 : $this->partIdentity(is_array($context['part'] ?? null) ? $context['part'] : null),
+            'service_line' => $purpose === self::PURPOSE_MOUNT_COLLECTION
+                ? $this->serviceLineIdentity(is_array($context['lines'][0] ?? null) ? $context['lines'][0] : null)
+                : null,
             'lines' => $purpose === self::PURPOSE_PART_CHARGE
                 ? collect($context['lines'] ?? [])
                     ->sortBy('line_key')
@@ -4481,6 +4699,31 @@ class TechnicalServicePaymentOrderContextService
             'stock_source' => $part['stock_source'] ?? null,
             'serial_tracking_required' => (bool) ($part['serial_tracking_required'] ?? false),
             'selected_part_serial' => $part['selected_part_serial'] ?? null,
+        ];
+    }
+
+    /** @param array<string, mixed>|null $line @return array<string, mixed>|null */
+    private function serviceLineIdentity(?array $line): ?array
+    {
+        if ($line === null) {
+            return null;
+        }
+
+        return [
+            'item_code' => $line['item_code'] ?? null,
+            'item_name' => $line['item_name'] ?? null,
+            'line_type' => $line['line_type'] ?? null,
+            'quantity' => number_format((float) ($line['quantity'] ?? 0), 3, '.', ''),
+            'unit_code' => $line['unit_code'] ?? null,
+            'gross_unit_price' => $line['gross_unit_price'] ?? null,
+            'gross_line_total' => $line['gross_line_total'] ?? null,
+            'selected_tax_basis' => $line['selected_tax_basis'] ?? null,
+            'selected_tax_pointer' => $line['selected_tax_pointer'] ?? null,
+            'vat_rate_snapshot' => $line['vat_rate_snapshot'] ?? null,
+            'net_line_total' => $line['net_line_total'] ?? null,
+            'vat_line_total' => $line['vat_line_total'] ?? null,
+            'currency' => $line['currency'] ?? null,
+            'tax_contract_version' => $line['tax_contract_version'] ?? null,
         ];
     }
 

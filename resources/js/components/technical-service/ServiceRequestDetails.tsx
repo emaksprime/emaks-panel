@@ -951,35 +951,16 @@ const getOpsDefaultOpenSections = (context: OpsDetailSectionContext): Set<OpsDet
   return new Set([activeSection])
 }
 
-const opsSectionClass = (section: OpsDetailSectionKey, activeSection: OpsDetailSectionKey | null): string => {
-  if (section === activeSection) {
-    return 'order-30'
-  }
-
-  if (!activeSection) {
-    const passiveOrder: Record<OpsDetailSectionKey, string> = {
-      product: 'order-30',
-      customer: 'order-35',
-      assignment: 'order-40',
-      fieldCompletion: 'order-60',
-      operation: 'order-70',
-      finalCheck: 'order-75',
-      invoiceSerials: 'order-80',
-      history: 'order-[90]',
-    }
-
-    return passiveOrder[section]
-  }
-
+const opsSectionClass = (section: OpsDetailSectionKey): string => {
   const order: Record<OpsDetailSectionKey, string> = {
-    operation: 'order-40',
-    assignment: 'order-45',
-    fieldCompletion: 'order-50',
-    finalCheck: 'order-55',
-    product: 'order-60',
-    customer: 'order-65',
-    invoiceSerials: 'order-70',
-    history: 'order-[90]',
+    operation: 'order-30',
+    assignment: 'order-40',
+    fieldCompletion: 'order-70',
+    finalCheck: 'order-75',
+    product: 'order-80',
+    customer: 'order-[85]',
+    invoiceSerials: 'order-[90]',
+    history: 'order-[100]',
   }
 
   return order[section]
@@ -1876,7 +1857,6 @@ export function ServiceRequestDetails({
     workflowStatus: request.workflowStatus,
     kanbanColumn: request.kanbanColumn,
   }
-  const activeOpsSection = getOpsActiveSection(opsSectionContext)
   const defaultOpenOpsSections = getOpsDefaultOpenSections(opsSectionContext)
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
   const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? defaultOpenOpsSections.has('invoiceSerials')
@@ -1904,7 +1884,7 @@ export function ServiceRequestDetails({
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [partOrderInfoOpenByRequest, setPartOrderInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const partOrderInfoOpen = partOrderInfoOpenByRequest[request.id] ?? true
+  const partOrderInfoOpen = partOrderInfoOpenByRequest[request.id] ?? false
   const setPartOrderInfoOpen = (open: boolean) => {
     setPartOrderInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -2296,7 +2276,6 @@ export function ServiceRequestDetails({
   const partOrderPayment = saleAndPayment?.part_order_payment ?? null
   const partOrderSimulation = partOrderPayment?.mikro_order_simulation ?? null
   const partOrderMessageChannels = partOrderPayment?.message_channels ?? {}
-  const latestPartRequest = partRequests[0] ?? null
   const showPartOrderShipmentSection = Boolean(
     latestPartOrderContext?.payment_purpose === 'part_charge'
       || partOrderPayment
@@ -2314,26 +2293,30 @@ export function ServiceRequestDetails({
     latestPartOrderContext?.shipping?.city,
     latestPartOrderContext?.shipping?.postal_code,
   ].filter((value): value is string => Boolean(value && value.trim())).join(' · ')
-  const partShipmentStatusLabel = latestPartOrderContext?.delivery_status === 'delivered'
-    ? 'Teslim edildi'
-    : latestPartOrderContext?.delivery_status === 'cancelled'
-      ? 'İptal edildi'
-      : latestPartOrderContext?.delivery_status === 'shipped'
-        ? 'Sevk edildi'
-        : latestPartOrderContext?.delivery_status === 'ready_to_ship'
-          ? 'Sevke hazır'
-          : latestPartOrderContext?.delivery_status === 'preparing'
-            ? 'Hazırlanıyor'
-            : latestPartOrderContext?.shipment_required
-              ? 'Kargo hazırlığı bekliyor'
-              : latestPartOrderContext?.delivery_status_label ?? 'Teslimat kaydı yok'
-  const hepsiJetStatusLabel = latestPartOrderContext?.future_carrier_state === 'label_created'
-    ? 'Fiş oluşturuldu'
-    : latestPartOrderContext?.future_carrier_state === 'waiting_future_integration'
-      ? 'Entegrasyon kapalı'
-      : latestPartOrderContext?.shipment_required
-        ? 'Hazırlık bekliyor'
-        : null
+  const partShipmentStatusLabel = latestPartOrderContext?.shipment_record_exists
+    ? latestPartOrderContext.shipment_status_label ?? latestPartOrderContext.delivery_status_label ?? 'Kargo durumu bilinmiyor'
+    : latestPartOrderContext?.shipment_required
+      ? 'Kargo kaydı henüz oluşturulmadı'
+      : latestPartOrderContext?.delivery_status_label ?? 'Teslimat kaydı yok'
+  const hepsiJetStatusLabel = latestPartOrderContext?.future_carrier_label
+    ?? (latestPartOrderContext?.future_carrier_state === 'label_created'
+      ? 'Fiş oluşturuldu'
+      : latestPartOrderContext?.future_carrier_state === 'waiting_future_integration'
+        ? 'HepsiJet entegrasyonu kapalı'
+        : null)
+  const partOrderPaidLabel = partOrderPayment?.status === 'paid'
+    ? partOrderPayment.amount_label ?? formatMoneyValue(partOrderPayment.amount ?? 0)
+    : null
+  const partOrderCollapsedSummary = [
+    `${partOrderLineCount || partRequests.length} parça`,
+    partOrderPaidLabel ? `${partOrderPaidLabel} ödendi` : partOrderPayment?.status_label,
+    latestPartOrderContext?.desired_mikro_series ? `Hedef seri ${latestPartOrderContext.desired_mikro_series}` : null,
+    latestPartOrderContext?.delivery_mode_label ? `Teslim: ${latestPartOrderContext.delivery_mode_label}` : null,
+  ].filter((value): value is string => Boolean(value)).join(' · ')
+  const partOrderSecondarySummary = [
+    partOrderSimulation ? 'Mikro test simülasyonu kaydedildi' : null,
+    partOrderPayment?.receipt_notification_status === 'sent' ? 'Muhasebe maili gönderildi' : null,
+  ].filter((value): value is string => Boolean(value)).join(' · ')
   const technicianDeliveryWaiting = latestPartOrderContext?.delivery_target === 'technician' && !hasAssignedTechnician
   const mountPaymentRecords = saleAndPayment?.mount_payments?.rows ?? []
   const paymentHistoryRecords = [...mountPaymentRecords, ...(customerChargeSummary?.rows ?? [])]
@@ -7636,7 +7619,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         ) : null}
 
         {shouldRenderWarrantySection ? (
-          <section className="order-23 grid gap-3 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
+          <section className="order-[65] grid gap-3 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Seri garanti durumu</p>
@@ -7659,7 +7642,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         ) : null}
 
         {canShowServicePartPaymentAction ? (
-        <section data-testid="service-part-payment-action" className="order-24 grid gap-3 rounded-3xl border border-blue-100 bg-blue-50/80 p-4 text-sm text-blue-950 shadow-sm lg:p-5">
+        <section data-testid="service-part-payment-action" className="order-[66] grid gap-3 rounded-3xl border border-blue-100 bg-blue-50/80 p-4 text-sm text-blue-950 shadow-sm lg:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Servis/parça ödeme linki</p>
@@ -7703,7 +7686,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         {paymentLinkSendDialog}
 
         {serialQueryOpen ? (
-          <section className="order-25 grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">
+          <section className="order-[67] grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Seri No Sorgu</p>
@@ -7740,7 +7723,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           tone="product"
           open={productInfoOpen}
           onOpenChange={setProductInfoOpen}
-          className={opsSectionClass('product', activeOpsSection)}
+          className={opsSectionClass('product')}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {optionalMetricValue(productInfo?.product_name ?? request.product) ? <MiniMetric label="Ürün" value={optionalMetricValue(productInfo?.product_name ?? request.product)} /> : null}
@@ -7768,7 +7751,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           tone="customer"
           open={customerInfoOpen}
           onOpenChange={setCustomerInfoOpen}
-          className={opsSectionClass('customer', activeOpsSection)}
+          className={opsSectionClass('customer')}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {optionalMetricValue(request.customer) ? <MiniMetric label="Müşteri" value={optionalMetricValue(request.customer)} /> : null}
@@ -7809,7 +7792,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           panelRef={operationInfoRef}
           sectionTarget="operation"
           highlighted={highlightedNextActionTarget === 'operation'}
-          className={opsSectionClass('operation', activeOpsSection)}
+          className={opsSectionClass('operation')}
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             {routeQuote || hasStoredRouteCost ? (
@@ -8123,152 +8106,6 @@ errors.lastName = 'Soyad alanı zorunludur.'
           ) : null}
         </DetailPanel>
 
-        {showPartOrderShipmentSection ? (
-          <DetailPanel
-            title="PARÇA / SİPARİŞ VE TESLİMAT"
-            summary={partOrderPayment?.status === 'paid'
-              ? `Ödeme alındı · ${partOrderPayment.amount_label ?? formatMoneyValue(partOrderPayment.amount ?? 0)}`
-              : `${partOrderLineCount || partRequests.length} parça kaydı · ${partShipmentStatusLabel}`}
-            tone="payment"
-            open={partOrderInfoOpen}
-            onOpenChange={setPartOrderInfoOpen}
-          >
-            <div data-testid="part-order-shipment-summary" className="grid min-w-0 gap-4">
-              <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {partOrderPayment ? (
-                  <MiniMetric
-                    label={partOrderPayment.status === 'paid' ? 'Ödeme alındı' : 'Ödeme durumu'}
-                    value={partOrderPayment.status === 'paid'
-                      ? partOrderPayment.amount_label ?? formatMoneyValue(partOrderPayment.amount ?? 0)
-                      : partOrderPayment.status_label ?? '-'}
-                    hint={`${partOrderPayment.provider_display_label ?? partOrderPayment.provider_label ?? partOrderPayment.provider ?? '-'} · Payment #${partOrderPayment.id ?? '-'}`}
-                  />
-                ) : null}
-                {latestPartOrderContext?.desired_mikro_series ? (
-                  <MiniMetric
-                    label="Sipariş"
-                    value={`Sipariş ${latestPartOrderContext.desired_mikro_series} serisiyle oluşturulacaktır.`}
-                    hint={partOrderSimulation ? 'Mikro test sipariş simülasyonu kaydedildi.' : latestPartOrderContext.future_mikro_write_label ?? undefined}
-                  />
-                ) : null}
-                <MiniMetric label="Teslimat" value={partShipmentStatusLabel} hint={latestPartOrderContext?.delivery_mode_label ?? latestPartRequest?.status_label ?? undefined} />
-                {partOrderPayment?.receipt_notification_status ? (
-                  <MiniMetric
-                    label="Muhasebe"
-                    value={partOrderPayment.receipt_notification_status === 'sent' ? 'Muhasebe maili gönderildi' : 'Muhasebe maili bekliyor'}
-                  />
-                ) : null}
-              </div>
-
-              {technicianDeliveryWaiting ? (
-                <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
-                  Teslim alıcısı için usta ataması bekleniyor. Aksiyon sahibi: OPS.
-                </p>
-              ) : null}
-
-              <details data-testid="part-order-readonly-details" className="min-w-0 border-t border-slate-200 pt-3 text-sm text-slate-700">
-                <summary className="cursor-pointer font-semibold text-slate-950">Parça ve teslimat detayını aç</summary>
-                <div className="mt-3 grid min-w-0 gap-4">
-                  {partOrderLines.length > 0 ? (
-                    <div className="grid min-w-0 gap-2">
-                      <p className="text-xs font-semibold uppercase text-slate-500">Parçalar ({partOrderLineCount})</p>
-                      {partOrderLines.map((line) => (
-                        <div key={String(line.line_key ?? line.item_code)} className="grid min-w-0 gap-1 border-b border-slate-100 pb-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                          <span className="min-w-0 break-words"><strong>{line.item_code ?? '-'}</strong> · {line.item_name ?? '-'}</span>
-                          <span className="whitespace-normal sm:text-right">{line.quantity ?? 0} {line.unit_code ?? ''}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : partRequests.length > 0 ? (
-                    <div className="grid gap-1">
-                      <p className="text-xs font-semibold uppercase text-slate-500">Parça talepleri ({partRequests.length})</p>
-                      {partRequests.slice(0, 4).map((partRequest) => (
-                        <p key={String(partRequest.id)} className="break-words"><strong>{partRequest.part_code ?? '-'}</strong> · {partRequest.part_name} · {partRequest.status_label}</p>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  {latestPartOrderContext ? (
-                    <div className="grid min-w-0 gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
-                      <span>Tedarik: <strong>{latestPartOrderContext.part_supplier_label ?? '-'}</strong></span>
-                      <span>Ticari durum: <strong>{latestPartOrderContext.commercial_mode_label ?? '-'}</strong></span>
-                      <span>Teslim: <strong>{latestPartOrderContext.delivery_mode_label ?? '-'}</strong></span>
-                      <span>Alıcı: <strong>{partDeliveryRecipient ?? '-'}</strong></span>
-                      <span>Hedef seri: <strong>{latestPartOrderContext.desired_mikro_series ?? 'Yok'}</strong></span>
-                      <span>KDV: <strong>{latestPartOrderContext.tax_label ?? '-'}</strong></span>
-                      <span>Tahsilat: <strong>{latestPartOrderContext.payment_status_label ?? '-'}</strong></span>
-                      {latestPartOrderContext.related_product_serial ? <span className="break-all">Servis verilen ürün seri no: <strong>{latestPartOrderContext.related_product_serial}</strong></span> : null}
-                      {hepsiJetStatusLabel ? <span>HepsiJet: <strong>{hepsiJetStatusLabel}</strong></span> : null}
-                      <span>Tutar: <strong>{latestPartOrderContext.gross_total_label ?? latestPartOrderContext.order_line_total_label ?? '-'}</strong></span>
-                    </div>
-                  ) : null}
-
-                  {(latestPartOrderContext?.readiness?.blockers ?? []).map((blocker) => (
-                    <p key={blocker} className="font-semibold text-amber-800">{blocker}</p>
-                  ))}
-
-                  {partDeliveryAddress ? (
-                    <details className="min-w-0 border-t border-slate-100 pt-2">
-                      <summary className="cursor-pointer font-semibold">Teslimat adresini göster</summary>
-                      <p className="mt-2 break-words">{partDeliveryAddress}</p>
-                    </details>
-                  ) : null}
-
-                  {partOrderSimulation ? (
-                    <div className="grid min-w-0 gap-1 border-t border-slate-100 pt-2">
-                      <p className="font-semibold">Mikro test sipariş simülasyonu kaydedildi.</p>
-                      <p>Gerçek Mikro siparişi oluşturulmadı.</p>
-                      <p className="break-all text-xs text-slate-500">Test referansı: {partOrderSimulation.simulation_reference ?? '-'}</p>
-                    </div>
-                  ) : null}
-
-                  {(['whatsapp', 'sms'] as const).map((channel) => {
-                    const messageState = partOrderMessageChannels[channel]
-
-                    if (!messageState) {
-                      return null
-                    }
-
-                    return (
-                      <div key={channel} data-testid={`part-order-message-${channel}`} className="grid gap-1 border-t border-amber-100 pt-2 text-sm text-amber-950">
-                        <p><strong>{messageState.channel_label ?? (channel === 'whatsapp' ? 'WhatsApp' : 'SMS')}:</strong> {messageState.status_label ?? '-'}</p>
-                        {messageState.status_detail ? <p className="text-xs text-amber-800">{messageState.status_detail}</p> : null}
-                      </div>
-                    )
-                  })}
-
-                  {partOrderPayment ? renderPaymentProviderReferences(partOrderPayment) : null}
-
-                  {latestPartOrderContext?.delivery_mode === 'hand_delivery' && latestPartOrderContext.delivery_status !== 'delivered' ? (
-                    <div className="flex flex-wrap justify-end">
-                      <Button type="button" size="sm" variant="outline" disabled={orderContextStateUpdating} onClick={() => void handleOrderContextStateUpdate('record_delivery')}>
-                        {orderContextStateUpdating ? 'Kaydediliyor...' : 'Elden teslim edildi'}
-                      </Button>
-                    </div>
-                  ) : null}
-                  {latestPartOrderContext?.delivery_mode === 'hand_delivery' && latestPartOrderContext.commercial_mode === 'paid' ? (
-                    <details className="border-t border-slate-100 pt-2 text-xs">
-                      <summary className="cursor-pointer font-semibold">Ödeme durumunu düzelt</summary>
-                      <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
-                        <select id="part-hand-payment-status" defaultValue={latestPartOrderContext.payment_status ?? 'pending'} className="h-9 rounded-md border border-slate-200 bg-white px-2">
-                          <option value="paid">Ödeme alındı</option>
-                          <option value="pending">Ödeme bekleniyor</option>
-                          <option value="cancelled">İptal</option>
-                        </select>
-                        <Input value={orderContextStatusReason} onChange={(event) => setOrderContextStatusReason(event.target.value)} placeholder="Değişiklik nedeni" />
-                        <Button type="button" size="sm" disabled={orderContextStateUpdating} onClick={() => {
-                          const field = document.getElementById('part-hand-payment-status') as HTMLSelectElement | null
-                          void handleOrderContextStateUpdate('set_payment_status', (field?.value ?? 'pending') as 'pending' | 'paid' | 'cancelled')
-                        }}>Kaydet</Button>
-                      </div>
-                    </details>
-                  ) : null}
-                  {latestPartOrderContext?.finance_review_required ? <p className="font-semibold text-rose-700">Teslim sonrası iptal için finans incelemesi gerekiyor.</p> : null}
-                </div>
-              </details>
-            </div>
-          </DetailPanel>
-        ) : null}
 
         <DetailPanel
           title="Usta / Çilingir Atama"
@@ -8279,7 +8116,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           panelRef={assignmentInfoRef}
           sectionTarget="assignment"
           highlighted={highlightedNextActionTarget === 'assignment'}
-          className={opsSectionClass('assignment', activeOpsSection)}
+          className={opsSectionClass('assignment')}
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="max-w-3xl text-sm text-slate-600">
@@ -9058,429 +8895,6 @@ errors.lastName = 'Soyad alanı zorunludur.'
               </div>
               </div>
             </details>
-            <div
-              data-testid="technical-service-financial-workspace"
-              className="order-20 grid scroll-mt-6 gap-3 rounded-2xl border border-teal-200 bg-white p-4"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-bold text-slate-950">FİNANS VE HAKEDİŞ</p>
-                  <p className="mt-1 text-xs text-slate-600">
-                    {earningSummaryTechnicianName} · {displayOrEmpty(financeSummary?.scope?.request_code ?? request.mrn, '-')}
-                  </p>
-                </div>
-                {financialScopeOptions.length > 1 ? (
-                  <div data-testid="financial-scope-selector" className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1" aria-label="Finans kapsamı">
-                    {financialScopeOptions.map((option) => (
-                      <Button
-                        key={option.key}
-                        type="button"
-                        size="sm"
-                        variant={financialScope === option.key ? 'default' : 'ghost'}
-                        aria-pressed={financialScope === option.key}
-                        onClick={() => setFinancialScopeByRequest((current) => ({ ...current, [requestStateKey]: option.key }))}
-                      >
-                        {option.label}
-                      </Button>
-                    ))}
-                  </div>
-                ) : financialScopeOptions[0] ? (
-                  <Badge data-testid="financial-scope-static" variant="outline">{financialScopeOptions[0].label}</Badge>
-                ) : null}
-              </div>
-
-              {financialWorkspaceLoading && !selectedFinancialPayload ? (
-                <div data-testid="financial-workspace-loading" className="grid gap-2 rounded-xl border border-dashed border-teal-200 bg-teal-50 p-3 text-xs font-semibold text-teal-900">
-                  Finans özeti yükleniyor...
-                </div>
-              ) : null}
-              {financialWorkspaceError ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
-                  {financialWorkspaceError}
-                </div>
-              ) : null}
-
-              {selectedFinancialPayload ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge variant={selectedFinancialResultState === 'definitive' ? 'positive' : 'warning'}>{selectedFinancialResultLabel}</Badge>
-                    <Badge variant="outline">Hakediş: {isCurrentFinancialScope ? locksmithPayoutStatusLabel : selectedFinancialPayout?.payout_status_label ?? 'Kök toplam'}</Badge>
-                    {isCurrentFinancialScope && companyPaymentDecisionPayload?.pending_decision_count ? (
-                      <Badge variant="warning">{companyPaymentDecisionPayload.pending_decision_count} karar bekliyor</Badge>
-                    ) : null}
-                    {financeSummary?.generated_at ? <span className="text-slate-500">Güncellendi: {dateTimeOrEmpty(financeSummary.generated_at, '-')}</span> : null}
-                  </div>
-
-                  {financialBlockedReason ? (
-                    <div data-testid="financial-result-blocked" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
-                      <span>{financialBlockedReason}</span>
-                      {isCurrentFinancialScope && provisionalNetProfitLabel ? <span>Taslak karşılaştırma: {provisionalNetProfitLabel}</span> : null}
-                    </div>
-                  ) : null}
-
-                  {!financialBlockedReason && !earningBaseDraftDirty && isCurrentFinancialScope && hasRouteEarningSuggestion ? (
-                    <div data-testid="route-earning-suggestion" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
-                      <div className="grid gap-1">
-                        <strong>Yeni yol hakedişi önerisi: {formatMoneyValue(routeSuggestionAmount)}</strong>
-                        <span>Mevcut onaylı yol hakedişi: {formatMoneyValue(persistedEarningRouteAmount)}</span>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          if (routeSuggestionAmount !== null) {
-                            updateAssignmentEarningDraft({ routeFeeAmount: String(routeSuggestionAmount) })
-                          }
-                        }}
-                      >
-                        Hakedişte kullan
-                      </Button>
-                    </div>
-                  ) : null}
-
-                  {earningBaseDraftDirty && isCurrentFinancialScope ? (
-                    <div data-testid="earning-draft-compact-diff" className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 sm:grid-cols-3">
-                      <p className="font-semibold sm:col-span-3">Kaydedilmemiş değişiklik</p>
-                      <span>İşçilik: <strong>{formatMoneyValue(persistedEarningLaborAmount)} → {formatMoneyValue(earningLaborAmount)}</strong></span>
-                      <span>Yol: <strong>{formatMoneyValue(persistedEarningRouteAmount)} → {formatMoneyValue(earningRouteAmount)}</strong></span>
-                      <span>Toplam: <strong>{activeFinanceLocksmithPayout?.total_amount_label ?? totalTechnicianCostLabel} → {formatMoneyValue(earningTotalAmount)}</strong></span>
-                    </div>
-                  ) : null}
-
-                  {isCurrentFinancialScope && companyPaymentAwaitingAssignment ? (
-                    <div data-testid="company-payment-assignment-reconciliation-pending" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-                      <p className="font-semibold">Tahsilat dağılımı atamadan sonra hesaplanacak</p>
-                      <p className="mt-1 text-xs">Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır. Bu durum usta atamasını engellemez.</p>
-                    </div>
-                  ) : isCurrentFinancialScope && companyPaymentEligibleItems.length > 0 ? (
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
-                      <div>
-                        <p className="font-semibold">{companyPaymentEligibleItems.length} tahsilat için dağıtım kararı bekliyor.</p>
-                        <p className="mt-1 text-xs">{companyPaymentDecisionPayload?.pending_decision_amount_label ?? 'Tutar backend tarafından hesaplanıyor'} · {companyPaymentEligibleItems.length} ödeme</p>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => document.querySelector('[data-testid="company-payment-decisions-earning"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                      >
-                        Karar alanına git
-                      </Button>
-                    </div>
-                  ) : null}
-
-                  {isCurrentFinancialScope && routeCollectionMatchRows.length > 0 ? (
-                    <div data-testid="route-collection-matching" className="grid gap-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-xs text-cyan-950">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm font-semibold">Yol tahsilatı eşleştirmesi</p>
-                        <span>Aktif usta: <strong>{displayOrEmpty(activeFinanceLocksmithPayout?.technician_name, 'Atama bekliyor')}</strong></span>
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-                        <MiniMetric label="Onaylı yol hakedişi" value={routeCollectionMatching?.earning_amount_label ?? '0 TL'} />
-                        <MiniMetric label="Tahsil edilen yol" value={routeCollectionMatching?.collection_amount_label ?? '0 TL'} />
-                        <MiniMetric label="Hakedişte karşılanan" value={routeCollectionMatching?.covered_amount_label ?? '0 TL'} />
-                        {routeCollectionResidualAmount > 0 ? <MiniMetric label="Dağıtıma kalan tutar" value={routeCollectionMatching?.residual_allocatable_amount_label ?? formatMoneyValue(routeCollectionResidualAmount)} /> : null}
-                        {routeCollectionCompanyTopUpAmount > 0 ? <MiniMetric label="Şirketin tamamlayacağı fark" value={routeCollectionMatching?.company_top_up_amount_label ?? formatMoneyValue(routeCollectionCompanyTopUpAmount)} /> : null}
-                      </div>
-                      <div className="grid gap-2">
-                        {routeCollectionMatchRows.map((row) => (
-                          <div key={String(row.payment_id)} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cyan-200 bg-white px-3 py-2">
-                            <strong>Payment #{row.payment_id}</strong>
-                            <span>Ödenen: {row.paid_amount_label ?? formatMoneyValue(row.paid_amount)}</span>
-                            <span>Karşılanan: {row.covered_amount_label ?? formatMoneyValue(row.covered_amount)}</span>
-                            {Number(row.residual_allocatable_amount ?? 0) > 0 ? (
-                              <span>Dağıtıma kalan tutar: {row.residual_allocatable_amount_label ?? formatMoneyValue(row.residual_allocatable_amount)}</span>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div data-testid="financial-primary-cards" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <MiniMetric label={isRootFinancialScope ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'} value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
-                    <MiniMetric label="Usta toplam hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
-                    <MiniMetric label="Hakediş ödeme kaynağı" value={selectedFinancialPayout?.technician_payment_source_label ?? 'Belirlenmedi'} />
-                    <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
-                  </div>
-
-                  {isRootFinancialScope && selectedFinancialCollection ? (
-                    <div data-testid="root-customer-collection-breakdown" className="flex flex-wrap gap-x-4 gap-y-1 rounded-xl border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-950">
-                      <span>Hizmet tahsilatı: <strong>{selectedFinancialCollection.service_total_amount_label ?? '0 TL'}</strong></span>
-                      <span>Parça tahsilatı: <strong>{selectedFinancialCollection.part_amount_label ?? '0 TL'}</strong></span>
-                      {(selectedFinancialCollection.part_amount ?? 0) > 0 ? <span>Parça tahsilatı operasyon farkına dahil değildir.</span> : null}
-                    </div>
-                  ) : null}
-
-                  {selectedIncludedCollectionSources.length > 0 ? (
-                    <div data-testid="collection-summary-sources" className="grid gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <strong>Toplama dahil tahsilatlar</strong>
-                        <span>Kaynak toplamı: {selectedFinancialCollection?.included_source_total_label ?? '0 TL'}</span>
-                      </div>
-                      {selectedIncludedCollectionSources.map((source) => (
-                        <div key={`${source.source_type}-${source.source_reference}`} data-testid={`included-collection-source-${source.payment_id ?? source.source_reference}`} className="grid gap-2 rounded-md bg-white/80 px-2 py-1.5">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span>{source.source_label} · {source.purpose_label ?? 'Tahsilat'} · {source.status_label}</span>
-                            <strong>{source.amount_label}</strong>
-                          </div>
-                          {renderPaymentEarningImpact(source.earning_impact, source.payment_id)}
-                        </div>
-                      ))}
-                      {selectedFinancialCollection?.reconciliation_ok === false ? (
-                        <p data-testid="collection-reconciliation-error" className="font-semibold text-rose-700">
-                          Finans özeti canonical tahsilat kaynaklarıyla eşleşmiyor.
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {selectedFinancialPaymentHistory?.context_notice ? (
-                    <div data-testid="related-payment-context-notice" className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-950">
-                      {selectedFinancialPaymentHistory.context_notice}
-                    </div>
-                  ) : null}
-
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-                      <summary className="cursor-pointer font-semibold text-slate-950">Tahsilat kırılımı</summary>
-                      <div className="mt-3 grid gap-1 sm:grid-cols-2">
-                        <span>Montaj: <strong>{selectedFinancialCollection?.mount_amount_label ?? '0 TL'}</strong></span>
-                        <span>Servis: <strong>{selectedFinancialCollection?.service_amount_label ?? '0 TL'}</strong></span>
-                        <span>Ek servis: <strong>{selectedFinancialCollection?.extra_amount_label ?? '0 TL'}</strong></span>
-                        <span>Yol: <strong>{selectedFinancialCollection?.route_amount_label ?? '0 TL'}</strong></span>
-                        <span>Parça (ayrı): <strong>{selectedFinancialCollection?.part_amount_label ?? '0 TL'}</strong></span>
-                        {(selectedFinancialCollection?.unclassified_amount ?? 0) > 0 ? (
-                          <span className="text-amber-800">Sınıflandırılmamış: <strong>{selectedFinancialCollection?.unclassified_amount_label}</strong></span>
-                        ) : null}
-                      </div>
-                    </details>
-                    <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-                      <summary className="cursor-pointer font-semibold text-slate-950">Hakediş kırılımı</summary>
-                      <div className="mt-3 grid gap-1 sm:grid-cols-2">
-                        <span>İşçilik: <strong>{selectedFinancialPayout?.labor_amount_label ?? '0 TL'}</strong></span>
-                        <span>Yol: <strong>{selectedFinancialPayout?.route_fee_amount_label ?? '0 TL'}</strong></span>
-                        {(selectedFinancialPayout?.company_payment_breakdown ?? [])
-                          .filter((line) => Number(line.amount ?? 0) > 0)
-                          .map((line) => (
-                            <span key={String(line.line_id ?? line.payment_id ?? line.purpose)}>{line.purpose_label ?? 'Ek hakediş'}: <strong>{line.amount_label ?? formatMoneyValue(line.amount)}</strong></span>
-                          ))}
-                        <span>Toplam: <strong>{selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
-                        <span>Ustaya ödenen: <strong>{selectedFinancialPayout?.technician_paid_amount_label ?? '0 TL'}</strong></span>
-                        <span>Kalan: <strong>{selectedFinancialPayout?.technician_remaining_amount_label ?? selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
-                      </div>
-                    </details>
-                  </div>
-
-                  {selectedFinancialPaymentHistory && selectedFinancialPaymentHistory.total_count > 0 ? (
-                    <section data-testid="financial-payment-records" className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-                      <h4 className="font-semibold text-slate-950">Ödeme geçmişi</h4>
-                      {selectedFinancialPaymentHistory.paid_rows.length > 0 ? (
-                        <details data-testid="payment-history-paid" open className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-2">
-                          <summary className="cursor-pointer font-semibold text-emerald-950">Tahsil edilen ödemeler ({selectedFinancialPaymentHistory.paid_count})</summary>
-                          <div className="mt-2 grid gap-2">
-                            {selectedFinancialPaymentHistory.paid_rows.map((payment) => renderFinancialPaymentRecord(payment))}
-                          </div>
-                        </details>
-                      ) : null}
-                      {selectedFinancialPaymentHistory.pending_rows.length > 0 ? (
-                        <details data-testid="payment-history-pending" open className="rounded-lg border border-blue-200 bg-blue-50/50 p-2">
-                          <summary className="cursor-pointer font-semibold text-blue-950">Bekleyen ödeme linkleri ({selectedFinancialPaymentHistory.pending_count})</summary>
-                          <div className="mt-2 grid gap-2">
-                            {selectedFinancialPaymentHistory.pending_rows.map((payment) => renderFinancialPaymentRecord(payment))}
-                          </div>
-                        </details>
-                      ) : null}
-                      {selectedFinancialPaymentHistory.historical_groups.length > 0 ? (
-                        <details data-testid="payment-history-historical" className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                          <summary className="cursor-pointer font-semibold text-slate-950">İptal/başarısız denemeler ({selectedFinancialPaymentHistory.historical_count})</summary>
-                          <div className="mt-2 grid gap-2">
-                            {selectedFinancialPaymentHistory.historical_groups.map((group) => (
-                              <details key={group.key} className="rounded-lg border border-slate-200 bg-white p-2">
-                                <summary className="cursor-pointer">
-                                  <span className="font-semibold">{group.relation_label}</span>
-                                  <span className="ml-2 text-slate-500">Son durum: {group.latest_status_label ?? '-'}</span>
-                                  <span className="ml-2 text-slate-500">{group.attempt_count_label}</span>
-                                </summary>
-                                <div className="mt-2 grid gap-2">
-                                  {group.rows.map((payment) => renderFinancialPaymentRecord(payment, true))}
-                                </div>
-                              </details>
-                            ))}
-                          </div>
-                        </details>
-                      ) : null}
-                    </section>
-                  ) : null}
-
-                  {isRootFinancialScope && earningBreakdown?.rows ? (
-                    <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-                      <summary className="cursor-pointer font-semibold text-slate-950">Teknik detay / Geçmiş</summary>
-                      <div className="mt-3 grid gap-2">
-                        {earningBreakdown.rows.map((row) => (
-                          <div key={`${row.id}-${row.mrn}`} className="grid gap-2 rounded-lg bg-slate-50 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_100px_100px_120px_100px]">
-                            <span className="min-w-0 truncate font-semibold">{row.display_mrn ?? row.mrn} · {displayOrEmpty(row.technician_name, 'Usta yok')}</span>
-                            <span>İşçilik: {row.labor_amount_label}</span>
-                            <span>Yol: {row.route_fee_amount_label}</span>
-                            <span>Şirket: {row.company_payment_amount_label}</span>
-                            <strong>Toplam: {row.total_amount_label}</strong>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  ) : null}
-                </>
-              ) : null}
-              {technicianEarningMessageError ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
-                  {technicianEarningMessageError}
-                </div>
-              ) : null}
-              {assignmentOfferUpdateError ? (
-                <div data-testid="earning-save-error" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
-                  {assignmentOfferUpdateError}
-                </div>
-              ) : null}
-              {assignmentOfferUpdateSuccess ? (
-                <div data-testid="earning-save-success" className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
-                  {assignmentOfferUpdateSuccess}
-                </div>
-              ) : null}
-              {!isCancelledOrReviewContext && isCurrentFinancialScope ? (
-              <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <div className="grid gap-3 sm:grid-cols-[180px_180px_minmax(0,1fr)]">
-                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                    İşçilik hakedişi
-                    <Input
-                      data-testid="earning-labor-input"
-                      type="number"
-                      inputMode="decimal"
-                      min="0"
-                      step="1"
-                      value={earningLaborInput}
-                      onChange={(event) => updateAssignmentEarningDraft({ laborAmount: event.target.value })}
-                      placeholder={persistedEarningLaborAmount !== null ? String(persistedEarningLaborAmount) : '0'}
-                    />
-                  </label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                    Yol hakedişi
-                    <Input
-                      data-testid="earning-route-input"
-                      type="number"
-                      inputMode="decimal"
-                      min="0"
-                      step="1"
-                      value={earningRouteInput}
-                      onChange={(event) => updateAssignmentEarningDraft({ routeFeeAmount: event.target.value })}
-                      placeholder={persistedEarningRouteAmount !== null ? String(persistedEarningRouteAmount) : '0'}
-                    />
-                  </label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                    Hakediş notu / mesaj
-                    <Input
-                      data-testid="earning-note-input"
-                      value={earningOperationNote}
-                      onChange={(event) => updateAssignmentEarningDraft({ operationNote: event.target.value })}
-                      placeholder="Ustaya gönderilecek mesaj için operasyon notu"
-                    />
-                  </label>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge data-testid="earning-draft-state" variant={earningDraftDirty ? 'warning' : 'positive'}>
-                    {earningDraftDirty ? 'Taslak — henüz kaydedilmedi' : 'Canonical hakediş kaydedildi'}
-                  </Badge>
-                  {persistedEarningSnapshot?.persisted_at ? (
-                    <span className="text-xs font-medium text-slate-500">Son kayıt: {dateTimeOrEmpty(persistedEarningSnapshot.persisted_at, '-')}</span>
-                  ) : null}
-                </div>
-                <div className="grid gap-2 sm:grid-cols-4">
-                  <MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />
-                  <MiniMetric label="Yol" value={formatMoneyValue(earningRouteAmount)} />
-                  <MiniMetric label={additionalEarningMetricLabel} value={formatMoneyValue(persistedCompanyPaymentAmount + draftCompanyPaymentAmount)} />
-                  <MiniMetric label="Toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
-                </div>
-                {renderCompanyPaymentDecisionSection('earning')}
-                {(technicianJobCard?.ops_support_url || technicianJobCard?.preview_url) ? (
-                  <div data-testid="earning-secondary-toolbar" className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2">
-                    {technicianJobCard?.ops_support_url ? (
-                      <Button asChild type="button" size="sm" variant="outline">
-                        <a href={technicianJobCard.ops_support_url} target="_blank" rel="noreferrer">
-                          <Wrench className="mr-1 h-4 w-4" />
-                          Usta İş Kartını OPS Olarak Yönet
-                        </a>
-                      </Button>
-                    ) : null}
-                    {technicianJobCard?.preview_url ? (
-                      <Button asChild type="button" size="sm" variant="outline">
-                        <a href={technicianJobCard.preview_url} target="_blank" rel="noreferrer">
-                          <Eye className="mr-1 h-4 w-4" />
-                          Usta Portalını Önizle
-                        </a>
-                      </Button>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="text-xs font-medium text-slate-500">İş kartı aksiyonları usta ataması tamamlandığında kullanılabilir.</p>
-                )}
-                {displayedEarningMessageText ? (
-                  <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
-                    <summary className="cursor-pointer font-semibold">
-                      {earningDraftDirty ? 'Taslak hakediş mesajını göster' : 'Hakediş mesajını göster'}
-                    </summary>
-                    <pre
-                      data-testid="earning-message-preview"
-                      data-earning-snapshot-hash={persistedEarningSnapshotHash}
-                      className="mt-3 whitespace-pre-wrap break-words font-sans"
-                    >
-                      {displayedEarningMessageText}
-                    </pre>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => void copyReferenceValue(displayedEarningMessageText, 'Hakediş mesajı kopyalandı.', 'hakediş mesajını')}>
-                        Mesajı kopyala
-                      </Button>
-                      {displayedEarningWhatsappUrl ? (
-                        <Button asChild type="button" size="sm" variant="outline">
-                          <a href={displayedEarningWhatsappUrl} target="_blank" rel="noreferrer">
-                            WhatsApp Aç
-                          </a>
-                        </Button>
-                      ) : null}
-                    </div>
-                  </details>
-                ) : null}
-                {correctiveEarningResendRequired ? (
-                  <div data-testid="earning-corrective-resend-notice" data-corrective-channels="whatsapp,sms" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-                    <p className="font-semibold">Düzeltici yeniden gönderim gerekli</p>
-                    <p className="mt-1">Neden: {COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON}</p>
-                    <p className="mt-1">Kanallar: WhatsApp ve SMS</p>
-                  </div>
-                ) : null}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-slate-500">
-                    {earningDraftDirty
-                      ? 'Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.'
-                      : canonicalEarningAssignmentReady
-                      ? 'Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu aksiyon canonical atama hakedişini ayrıca kuyruğa alır.'
-                      : 'Hakediş mesajı ancak seçili usta için Servise Ata tamamlandıktan sonra gönderilebilir.'}
-                  </p>
-                  <Button
-                    data-testid="earning-send-button"
-                    data-earning-snapshot-hash={persistedEarningSnapshotHash}
-                    type="button"
-                    variant="outline"
-                    onClick={() => void handleTechnicianEarningMessageCreate()}
-                    disabled={!canSendTechnicianEarning || technicianEarningMessageLoading}
-                  >
-                    {technicianEarningMessageLoading
-                      ? 'Hazırlanıyor...'
-                      : correctiveEarningResendRequired
-                        ? 'Düzeltici hakediş mesajını gönder'
-                        : 'Hakediş bilgisini gönder'}
-                  </Button>
-                </div>
-              </div>
-              ) : null}
-            </div>
             {!isCancelledOrReviewContext && combinedAssignmentBlockerMessages.length > 0 ? (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                 <p className="font-semibold">Atama için tamamlanması gerekenler</p>
@@ -9549,6 +8963,578 @@ errors.lastName = 'Soyad alanı zorunludur.'
             )}
           </DetailPanel>
 
+        {showPartOrderShipmentSection ? (
+          <DetailPanel
+            title="PARÇA / SİPARİŞ / TESLİMAT"
+            summary={partOrderCollapsedSummary || 'Parça ve teslimat kaydı'}
+            tone="payment"
+            open={partOrderInfoOpen}
+            onOpenChange={setPartOrderInfoOpen}
+            className="order-50"
+          >
+            <div data-testid="part-order-shipment-summary" className="grid min-w-0 gap-3">
+              {partOrderSecondarySummary ? (
+                <p className="break-words text-xs font-semibold text-slate-600">{partOrderSecondarySummary}</p>
+              ) : null}
+
+              <div className="flex min-w-0 flex-wrap gap-x-4 gap-y-2 border-t border-slate-200 pt-3 text-sm text-slate-700">
+                {partOrderPayment ? (
+                  <span>
+                    Ödeme alındı: <strong>{partOrderPaidLabel ?? partOrderPayment.status_label ?? '-'}</strong>
+                    {' · '}
+                    {partOrderPayment.provider_display_label ?? partOrderPayment.provider_label ?? partOrderPayment.provider ?? '-'}
+                    {' · '}
+                    Payment #{partOrderPayment.id ?? '-'}
+                  </span>
+                ) : null}
+                {latestPartOrderContext?.desired_mikro_series ? (
+                  <span>Sipariş <strong>{latestPartOrderContext.desired_mikro_series}</strong> serisiyle oluşturulacaktır.</span>
+                ) : null}
+                {latestPartOrderContext?.delivery_mode_label ? (
+                  <span>Teslim şekli: <strong>{latestPartOrderContext.delivery_mode_label}</strong></span>
+                ) : null}
+                {latestPartOrderContext?.shipment_required ? <span>Kargo: <strong>{partShipmentStatusLabel}</strong></span> : null}
+                {hepsiJetStatusLabel ? <span>HepsiJet: <strong>{hepsiJetStatusLabel}</strong></span> : null}
+                {partOrderPayment?.receipt_notification_status ? (
+                  <span>Muhasebe: <strong>{partOrderPayment.receipt_notification_status === 'sent' ? 'Mail gönderildi' : 'Mail bekliyor'}</strong></span>
+                ) : null}
+              </div>
+
+              {technicianDeliveryWaiting ? (
+                <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                  Teslim alıcısı için usta ataması bekleniyor. Aksiyon sahibi: OPS.
+                </p>
+              ) : null}
+
+              <details data-testid="part-order-readonly-details" className="min-w-0 border-t border-slate-200 pt-3 text-sm text-slate-700">
+                <summary className="cursor-pointer font-semibold text-slate-950">Parça ve teslimat detayını aç</summary>
+                <div className="mt-3 grid min-w-0 gap-4">
+                  {partOrderLines.length > 0 ? (
+                    <div className="grid min-w-0 gap-2">
+                      <p className="text-xs font-semibold uppercase text-slate-500">Parçalar ({partOrderLineCount})</p>
+                      {partOrderLines.map((line) => (
+                        <div key={String(line.line_key ?? line.item_code)} className="grid min-w-0 gap-1 border-b border-slate-100 pb-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                          <span className="min-w-0 break-words"><strong>{line.item_code ?? '-'}</strong> · {line.item_name ?? '-'}</span>
+                          <span className="whitespace-normal sm:text-right">{line.quantity ?? 0} {line.unit_code ?? ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : partRequests.length > 0 ? (
+                    <div className="grid gap-1">
+                      <p className="text-xs font-semibold uppercase text-slate-500">Parça talepleri ({partRequests.length})</p>
+                      {partRequests.slice(0, 4).map((partRequest) => (
+                        <p key={String(partRequest.id)} className="break-words"><strong>{partRequest.part_code ?? '-'}</strong> · {partRequest.part_name} · {partRequest.status_label}</p>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {latestPartOrderContext ? (
+                    <div className="grid min-w-0 gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
+                      <span>Tedarik: <strong>{latestPartOrderContext.part_supplier_label ?? '-'}</strong></span>
+                      <span>Ticari durum: <strong>{latestPartOrderContext.commercial_mode_label ?? '-'}</strong></span>
+                      <span>Teslim: <strong>{latestPartOrderContext.delivery_mode_label ?? '-'}</strong></span>
+                      <span>Alıcı: <strong>{partDeliveryRecipient ?? '-'}</strong></span>
+                      <span>Hedef seri: <strong>{latestPartOrderContext.desired_mikro_series ?? 'Yok'}</strong></span>
+                      {latestPartOrderContext.shipment_required ? <span>Kargo: <strong>{partShipmentStatusLabel}</strong></span> : null}
+                      <span>KDV: <strong>{latestPartOrderContext.tax_label ?? '-'}</strong></span>
+                      <span>Tahsilat: <strong>{latestPartOrderContext.payment_status_label ?? '-'}</strong></span>
+                      {latestPartOrderContext.related_product_serial ? <span className="break-all">Servis verilen ürün seri no: <strong>{latestPartOrderContext.related_product_serial}</strong></span> : null}
+                      {hepsiJetStatusLabel ? <span>HepsiJet: <strong>{hepsiJetStatusLabel}</strong></span> : null}
+                      <span>Tutar: <strong>{latestPartOrderContext.gross_total_label ?? latestPartOrderContext.order_line_total_label ?? '-'}</strong></span>
+                    </div>
+                  ) : null}
+
+                  {(latestPartOrderContext?.readiness?.blockers ?? []).map((blocker) => (
+                    <p key={blocker} className="font-semibold text-amber-800">{blocker}</p>
+                  ))}
+
+                  {partDeliveryAddress ? (
+                    <details className="min-w-0 border-t border-slate-100 pt-2">
+                      <summary className="cursor-pointer font-semibold">Teslimat adresini göster</summary>
+                      <p className="mt-2 break-words">{partDeliveryAddress}</p>
+                    </details>
+                  ) : null}
+
+                  {partOrderSimulation ? (
+                    <div className="grid min-w-0 gap-1 border-t border-slate-100 pt-2">
+                      <p className="font-semibold">Mikro test sipariş simülasyonu kaydedildi.</p>
+                      <p>Gerçek Mikro siparişi oluşturulmadı.</p>
+                      <p className="break-all text-xs text-slate-500">Test referansı: {partOrderSimulation.simulation_reference ?? '-'}</p>
+                    </div>
+                  ) : null}
+
+                  {(['whatsapp', 'sms'] as const).map((channel) => {
+                    const messageState = partOrderMessageChannels[channel]
+
+                    if (!messageState) {
+                      return null
+                    }
+
+                    return (
+                      <div key={channel} data-testid={`part-order-message-${channel}`} className="grid gap-1 border-t border-amber-100 pt-2 text-sm text-amber-950">
+                        <p><strong>{messageState.channel_label ?? (channel === 'whatsapp' ? 'WhatsApp' : 'SMS')}:</strong> {messageState.status_label ?? '-'}</p>
+                        {messageState.status_detail ? <p className="text-xs text-amber-800">{messageState.status_detail}</p> : null}
+                      </div>
+                    )
+                  })}
+
+                  {partOrderPayment ? renderPaymentProviderReferences(partOrderPayment) : null}
+
+                  {latestPartOrderContext?.delivery_mode === 'hand_delivery' && latestPartOrderContext.delivery_status !== 'delivered' ? (
+                    <div className="flex flex-wrap justify-end">
+                      <Button type="button" size="sm" variant="outline" disabled={orderContextStateUpdating} onClick={() => void handleOrderContextStateUpdate('record_delivery')}>
+                        {orderContextStateUpdating ? 'Kaydediliyor...' : 'Elden teslim edildi'}
+                      </Button>
+                    </div>
+                  ) : null}
+                  {latestPartOrderContext?.delivery_mode === 'hand_delivery' && latestPartOrderContext.commercial_mode === 'paid' ? (
+                    <details className="border-t border-slate-100 pt-2 text-xs">
+                      <summary className="cursor-pointer font-semibold">Ödeme durumunu düzelt</summary>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+                        <select id="part-hand-payment-status" defaultValue={latestPartOrderContext.payment_status ?? 'pending'} className="h-9 rounded-md border border-slate-200 bg-white px-2">
+                          <option value="paid">Ödeme alındı</option>
+                          <option value="pending">Ödeme bekleniyor</option>
+                          <option value="cancelled">İptal</option>
+                        </select>
+                        <Input value={orderContextStatusReason} onChange={(event) => setOrderContextStatusReason(event.target.value)} placeholder="Değişiklik nedeni" />
+                        <Button type="button" size="sm" disabled={orderContextStateUpdating} onClick={() => {
+                          const field = document.getElementById('part-hand-payment-status') as HTMLSelectElement | null
+                          void handleOrderContextStateUpdate('set_payment_status', (field?.value ?? 'pending') as 'pending' | 'paid' | 'cancelled')
+                        }}>Kaydet</Button>
+                      </div>
+                    </details>
+                  ) : null}
+                  {latestPartOrderContext?.finance_review_required ? <p className="font-semibold text-rose-700">Teslim sonrası iptal için finans incelemesi gerekiyor.</p> : null}
+                </div>
+              </details>
+            </div>
+          </DetailPanel>
+        ) : null}
+
+        <div
+          data-testid="technical-service-financial-workspace"
+          className="order-60 grid scroll-mt-6 gap-3 rounded-2xl border border-teal-200 bg-white p-4"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-bold text-slate-950">FİNANS VE HAKEDİŞ</p>
+              <p className="mt-1 text-xs text-slate-600">
+                {earningSummaryTechnicianName} · {displayOrEmpty(financeSummary?.scope?.request_code ?? request.mrn, '-')}
+              </p>
+            </div>
+            {financialScopeOptions.length > 1 ? (
+              <div data-testid="financial-scope-selector" className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1" aria-label="Finans kapsamı">
+                {financialScopeOptions.map((option) => (
+                  <Button
+                    key={option.key}
+                    type="button"
+                    size="sm"
+                    variant={financialScope === option.key ? 'default' : 'ghost'}
+                    aria-pressed={financialScope === option.key}
+                    onClick={() => setFinancialScopeByRequest((current) => ({ ...current, [requestStateKey]: option.key }))}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+            ) : financialScopeOptions[0] ? (
+              <Badge data-testid="financial-scope-static" variant="outline">{financialScopeOptions[0].label}</Badge>
+            ) : null}
+          </div>
+
+          {financialWorkspaceLoading && !selectedFinancialPayload ? (
+            <div data-testid="financial-workspace-loading" className="grid gap-2 rounded-xl border border-dashed border-teal-200 bg-teal-50 p-3 text-xs font-semibold text-teal-900">
+              Finans özeti yükleniyor...
+            </div>
+          ) : null}
+          {financialWorkspaceError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+              {financialWorkspaceError}
+            </div>
+          ) : null}
+
+          {selectedFinancialPayload ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <Badge variant={selectedFinancialResultState === 'definitive' ? 'positive' : 'warning'}>{selectedFinancialResultLabel}</Badge>
+                <Badge variant="outline">Hakediş: {isCurrentFinancialScope ? locksmithPayoutStatusLabel : selectedFinancialPayout?.payout_status_label ?? 'Kök toplam'}</Badge>
+                {isCurrentFinancialScope && companyPaymentDecisionPayload?.pending_decision_count ? (
+                  <Badge variant="warning">{companyPaymentDecisionPayload.pending_decision_count} karar bekliyor</Badge>
+                ) : null}
+                {financeSummary?.generated_at ? <span className="text-slate-500">Güncellendi: {dateTimeOrEmpty(financeSummary.generated_at, '-')}</span> : null}
+              </div>
+
+              {financialBlockedReason ? (
+                <div data-testid="financial-result-blocked" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+                  <span>{financialBlockedReason}</span>
+                  {isCurrentFinancialScope && provisionalNetProfitLabel ? <span>Taslak karşılaştırma: {provisionalNetProfitLabel}</span> : null}
+                </div>
+              ) : null}
+
+              {!financialBlockedReason && !earningBaseDraftDirty && isCurrentFinancialScope && hasRouteEarningSuggestion ? (
+                <div data-testid="route-earning-suggestion" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
+                  <div className="grid gap-1">
+                    <strong>Yeni yol hakedişi önerisi: {formatMoneyValue(routeSuggestionAmount)}</strong>
+                    <span>Mevcut onaylı yol hakedişi: {formatMoneyValue(persistedEarningRouteAmount)}</span>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (routeSuggestionAmount !== null) {
+                        updateAssignmentEarningDraft({ routeFeeAmount: String(routeSuggestionAmount) })
+                      }
+                    }}
+                  >
+                    Hakedişte kullan
+                  </Button>
+                </div>
+              ) : null}
+
+              {earningBaseDraftDirty && isCurrentFinancialScope ? (
+                <div data-testid="earning-draft-compact-diff" className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 sm:grid-cols-3">
+                  <p className="font-semibold sm:col-span-3">Kaydedilmemiş değişiklik</p>
+                  <span>İşçilik: <strong>{formatMoneyValue(persistedEarningLaborAmount)} → {formatMoneyValue(earningLaborAmount)}</strong></span>
+                  <span>Yol: <strong>{formatMoneyValue(persistedEarningRouteAmount)} → {formatMoneyValue(earningRouteAmount)}</strong></span>
+                  <span>Toplam: <strong>{activeFinanceLocksmithPayout?.total_amount_label ?? totalTechnicianCostLabel} → {formatMoneyValue(earningTotalAmount)}</strong></span>
+                </div>
+              ) : null}
+
+              {isCurrentFinancialScope && companyPaymentAwaitingAssignment ? (
+                <div data-testid="company-payment-assignment-reconciliation-pending" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                  <p className="font-semibold">Tahsilat dağılımı atamadan sonra hesaplanacak</p>
+                  <p className="mt-1 text-xs">Atama tamamlandıktan sonra tahsilat dağılımı hesaplanacaktır. Bu durum usta atamasını engellemez.</p>
+                </div>
+              ) : isCurrentFinancialScope && companyPaymentEligibleItems.length > 0 ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                  <div>
+                    <p className="font-semibold">{companyPaymentEligibleItems.length} tahsilat için dağıtım kararı bekliyor.</p>
+                    <p className="mt-1 text-xs">{companyPaymentDecisionPayload?.pending_decision_amount_label ?? 'Tutar backend tarafından hesaplanıyor'} · {companyPaymentEligibleItems.length} ödeme</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => document.querySelector('[data-testid="company-payment-decisions-earning"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                  >
+                    Karar alanına git
+                  </Button>
+                </div>
+              ) : null}
+
+              {isCurrentFinancialScope && routeCollectionMatchRows.length > 0 ? (
+                <div data-testid="route-collection-matching" className="grid gap-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-xs text-cyan-950">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold">Yol tahsilatı eşleştirmesi</p>
+                    <span>Aktif usta: <strong>{displayOrEmpty(activeFinanceLocksmithPayout?.technician_name, 'Atama bekliyor')}</strong></span>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                    <MiniMetric label="Onaylı yol hakedişi" value={routeCollectionMatching?.earning_amount_label ?? '0 TL'} />
+                    <MiniMetric label="Tahsil edilen yol" value={routeCollectionMatching?.collection_amount_label ?? '0 TL'} />
+                    <MiniMetric label="Hakedişte karşılanan" value={routeCollectionMatching?.covered_amount_label ?? '0 TL'} />
+                    {routeCollectionResidualAmount > 0 ? <MiniMetric label="Dağıtıma kalan tutar" value={routeCollectionMatching?.residual_allocatable_amount_label ?? formatMoneyValue(routeCollectionResidualAmount)} /> : null}
+                    {routeCollectionCompanyTopUpAmount > 0 ? <MiniMetric label="Şirketin tamamlayacağı fark" value={routeCollectionMatching?.company_top_up_amount_label ?? formatMoneyValue(routeCollectionCompanyTopUpAmount)} /> : null}
+                  </div>
+                  <div className="grid gap-2">
+                    {routeCollectionMatchRows.map((row) => (
+                      <div key={String(row.payment_id)} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cyan-200 bg-white px-3 py-2">
+                        <strong>Payment #{row.payment_id}</strong>
+                        <span>Ödenen: {row.paid_amount_label ?? formatMoneyValue(row.paid_amount)}</span>
+                        <span>Karşılanan: {row.covered_amount_label ?? formatMoneyValue(row.covered_amount)}</span>
+                        {Number(row.residual_allocatable_amount ?? 0) > 0 ? (
+                          <span>Dağıtıma kalan tutar: {row.residual_allocatable_amount_label ?? formatMoneyValue(row.residual_allocatable_amount)}</span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div data-testid="financial-primary-cards" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                <MiniMetric label={isRootFinancialScope ? 'Müşteriden alınan toplam' : 'Müşteriden alınan'} value={selectedFinancialCollection?.total_amount_label ?? '0 TL'} />
+                <MiniMetric label="Usta toplam hakedişi" value={selectedFinancialPayout?.total_amount_label ?? '0 TL'} />
+                <MiniMetric label="Hakediş ödeme kaynağı" value={selectedFinancialPayout?.technician_payment_source_label ?? 'Belirlenmedi'} />
+                <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
+              </div>
+
+              {isRootFinancialScope && selectedFinancialCollection ? (
+                <div data-testid="root-customer-collection-breakdown" className="flex flex-wrap gap-x-4 gap-y-1 rounded-xl border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-950">
+                  <span>Hizmet tahsilatı: <strong>{selectedFinancialCollection.service_total_amount_label ?? '0 TL'}</strong></span>
+                  <span>Parça tahsilatı: <strong>{selectedFinancialCollection.part_amount_label ?? '0 TL'}</strong></span>
+                  {(selectedFinancialCollection.part_amount ?? 0) > 0 ? <span>Parça tahsilatı operasyon farkına dahil değildir.</span> : null}
+                </div>
+              ) : null}
+
+              {selectedIncludedCollectionSources.length > 0 ? (
+                <div data-testid="collection-summary-sources" className="grid gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <strong>Toplama dahil tahsilatlar</strong>
+                    <span>Kaynak toplamı: {selectedFinancialCollection?.included_source_total_label ?? '0 TL'}</span>
+                  </div>
+                  {selectedIncludedCollectionSources.map((source) => (
+                    <div key={`${source.source_type}-${source.source_reference}`} data-testid={`included-collection-source-${source.payment_id ?? source.source_reference}`} className="grid gap-2 rounded-md bg-white/80 px-2 py-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>{source.source_label} · {source.purpose_label ?? 'Tahsilat'} · {source.status_label}</span>
+                        <strong>{source.amount_label}</strong>
+                      </div>
+                      {renderPaymentEarningImpact(source.earning_impact, source.payment_id)}
+                    </div>
+                  ))}
+                  {selectedFinancialCollection?.reconciliation_ok === false ? (
+                    <p data-testid="collection-reconciliation-error" className="font-semibold text-rose-700">
+                      Finans özeti canonical tahsilat kaynaklarıyla eşleşmiyor.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {selectedFinancialPaymentHistory?.context_notice ? (
+                <div data-testid="related-payment-context-notice" className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-950">
+                  {selectedFinancialPaymentHistory.context_notice}
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                  <summary className="cursor-pointer font-semibold text-slate-950">Tahsilat kırılımı</summary>
+                  <div className="mt-3 grid gap-1 sm:grid-cols-2">
+                    <span>Montaj: <strong>{selectedFinancialCollection?.mount_amount_label ?? '0 TL'}</strong></span>
+                    <span>Servis: <strong>{selectedFinancialCollection?.service_amount_label ?? '0 TL'}</strong></span>
+                    <span>Ek servis: <strong>{selectedFinancialCollection?.extra_amount_label ?? '0 TL'}</strong></span>
+                    <span>Yol: <strong>{selectedFinancialCollection?.route_amount_label ?? '0 TL'}</strong></span>
+                    <span>Parça (ayrı): <strong>{selectedFinancialCollection?.part_amount_label ?? '0 TL'}</strong></span>
+                    {(selectedFinancialCollection?.unclassified_amount ?? 0) > 0 ? (
+                      <span className="text-amber-800">Sınıflandırılmamış: <strong>{selectedFinancialCollection?.unclassified_amount_label}</strong></span>
+                    ) : null}
+                  </div>
+                </details>
+                <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                  <summary className="cursor-pointer font-semibold text-slate-950">Hakediş kırılımı</summary>
+                  <div className="mt-3 grid gap-1 sm:grid-cols-2">
+                    <span>İşçilik: <strong>{selectedFinancialPayout?.labor_amount_label ?? '0 TL'}</strong></span>
+                    <span>Yol: <strong>{selectedFinancialPayout?.route_fee_amount_label ?? '0 TL'}</strong></span>
+                    {(selectedFinancialPayout?.company_payment_breakdown ?? [])
+                      .filter((line) => Number(line.amount ?? 0) > 0)
+                      .map((line) => (
+                        <span key={String(line.line_id ?? line.payment_id ?? line.purpose)}>{line.purpose_label ?? 'Ek hakediş'}: <strong>{line.amount_label ?? formatMoneyValue(line.amount)}</strong></span>
+                      ))}
+                    <span>Toplam: <strong>{selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
+                    <span>Ustaya ödenen: <strong>{selectedFinancialPayout?.technician_paid_amount_label ?? '0 TL'}</strong></span>
+                    <span>Kalan: <strong>{selectedFinancialPayout?.technician_remaining_amount_label ?? selectedFinancialPayout?.total_amount_label ?? '0 TL'}</strong></span>
+                  </div>
+                </details>
+              </div>
+
+              {selectedFinancialPaymentHistory && selectedFinancialPaymentHistory.total_count > 0 ? (
+                <section data-testid="financial-payment-records" className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                  <h4 className="font-semibold text-slate-950">Ödeme geçmişi</h4>
+                  {selectedFinancialPaymentHistory.paid_rows.length > 0 ? (
+                    <details data-testid="payment-history-paid" open className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-2">
+                      <summary className="cursor-pointer font-semibold text-emerald-950">Tahsil edilen ödemeler ({selectedFinancialPaymentHistory.paid_count})</summary>
+                      <div className="mt-2 grid gap-2">
+                        {selectedFinancialPaymentHistory.paid_rows.map((payment) => renderFinancialPaymentRecord(payment))}
+                      </div>
+                    </details>
+                  ) : null}
+                  {selectedFinancialPaymentHistory.pending_rows.length > 0 ? (
+                    <details data-testid="payment-history-pending" open className="rounded-lg border border-blue-200 bg-blue-50/50 p-2">
+                      <summary className="cursor-pointer font-semibold text-blue-950">Bekleyen ödeme linkleri ({selectedFinancialPaymentHistory.pending_count})</summary>
+                      <div className="mt-2 grid gap-2">
+                        {selectedFinancialPaymentHistory.pending_rows.map((payment) => renderFinancialPaymentRecord(payment))}
+                      </div>
+                    </details>
+                  ) : null}
+                  {selectedFinancialPaymentHistory.historical_groups.length > 0 ? (
+                    <details data-testid="payment-history-historical" className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                      <summary className="cursor-pointer font-semibold text-slate-950">İptal/başarısız denemeler ({selectedFinancialPaymentHistory.historical_count})</summary>
+                      <div className="mt-2 grid gap-2">
+                        {selectedFinancialPaymentHistory.historical_groups.map((group) => (
+                          <details key={group.key} className="rounded-lg border border-slate-200 bg-white p-2">
+                            <summary className="cursor-pointer">
+                              <span className="font-semibold">{group.relation_label}</span>
+                              <span className="ml-2 text-slate-500">Son durum: {group.latest_status_label ?? '-'}</span>
+                              <span className="ml-2 text-slate-500">{group.attempt_count_label}</span>
+                            </summary>
+                            <div className="mt-2 grid gap-2">
+                              {group.rows.map((payment) => renderFinancialPaymentRecord(payment, true))}
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {isRootFinancialScope && earningBreakdown?.rows ? (
+                <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                  <summary className="cursor-pointer font-semibold text-slate-950">Teknik detay / Geçmiş</summary>
+                  <div className="mt-3 grid gap-2">
+                    {earningBreakdown.rows.map((row) => (
+                      <div key={`${row.id}-${row.mrn}`} className="grid gap-2 rounded-lg bg-slate-50 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_100px_100px_120px_100px]">
+                        <span className="min-w-0 truncate font-semibold">{row.display_mrn ?? row.mrn} · {displayOrEmpty(row.technician_name, 'Usta yok')}</span>
+                        <span>İşçilik: {row.labor_amount_label}</span>
+                        <span>Yol: {row.route_fee_amount_label}</span>
+                        <span>Şirket: {row.company_payment_amount_label}</span>
+                        <strong>Toplam: {row.total_amount_label}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+            </>
+          ) : null}
+          {technicianEarningMessageError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {technicianEarningMessageError}
+            </div>
+          ) : null}
+          {assignmentOfferUpdateError ? (
+            <div data-testid="earning-save-error" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {assignmentOfferUpdateError}
+            </div>
+          ) : null}
+          {assignmentOfferUpdateSuccess ? (
+            <div data-testid="earning-save-success" className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+              {assignmentOfferUpdateSuccess}
+            </div>
+          ) : null}
+          {!isCancelledOrReviewContext && isCurrentFinancialScope ? (
+          <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <div className="grid gap-3 sm:grid-cols-[180px_180px_minmax(0,1fr)]">
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                İşçilik hakedişi
+                <Input
+                  data-testid="earning-labor-input"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="1"
+                  value={earningLaborInput}
+                  onChange={(event) => updateAssignmentEarningDraft({ laborAmount: event.target.value })}
+                  placeholder={persistedEarningLaborAmount !== null ? String(persistedEarningLaborAmount) : '0'}
+                />
+              </label>
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                Yol hakedişi
+                <Input
+                  data-testid="earning-route-input"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="1"
+                  value={earningRouteInput}
+                  onChange={(event) => updateAssignmentEarningDraft({ routeFeeAmount: event.target.value })}
+                  placeholder={persistedEarningRouteAmount !== null ? String(persistedEarningRouteAmount) : '0'}
+                />
+              </label>
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                Hakediş notu / mesaj
+                <Input
+                  data-testid="earning-note-input"
+                  value={earningOperationNote}
+                  onChange={(event) => updateAssignmentEarningDraft({ operationNote: event.target.value })}
+                  placeholder="Ustaya gönderilecek mesaj için operasyon notu"
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge data-testid="earning-draft-state" variant={earningDraftDirty ? 'warning' : 'positive'}>
+                {earningDraftDirty ? 'Taslak — henüz kaydedilmedi' : 'Canonical hakediş kaydedildi'}
+              </Badge>
+              {persistedEarningSnapshot?.persisted_at ? (
+                <span className="text-xs font-medium text-slate-500">Son kayıt: {dateTimeOrEmpty(persistedEarningSnapshot.persisted_at, '-')}</span>
+              ) : null}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-4">
+              <MiniMetric label="İşçilik" value={formatMoneyValue(earningLaborAmount)} />
+              <MiniMetric label="Yol" value={formatMoneyValue(earningRouteAmount)} />
+              <MiniMetric label={additionalEarningMetricLabel} value={formatMoneyValue(persistedCompanyPaymentAmount + draftCompanyPaymentAmount)} />
+              <MiniMetric label="Toplam hakediş" value={formatMoneyValue(earningTotalAmount)} />
+            </div>
+            {renderCompanyPaymentDecisionSection('earning')}
+            {(technicianJobCard?.ops_support_url || technicianJobCard?.preview_url) ? (
+              <div data-testid="earning-secondary-toolbar" className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2">
+                {technicianJobCard?.ops_support_url ? (
+                  <Button asChild type="button" size="sm" variant="outline">
+                    <a href={technicianJobCard.ops_support_url} target="_blank" rel="noreferrer">
+                      <Wrench className="mr-1 h-4 w-4" />
+                      Usta İş Kartını OPS Olarak Yönet
+                    </a>
+                  </Button>
+                ) : null}
+                {technicianJobCard?.preview_url ? (
+                  <Button asChild type="button" size="sm" variant="outline">
+                    <a href={technicianJobCard.preview_url} target="_blank" rel="noreferrer">
+                      <Eye className="mr-1 h-4 w-4" />
+                      Usta Portalını Önizle
+                    </a>
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-xs font-medium text-slate-500">İş kartı aksiyonları usta ataması tamamlandığında kullanılabilir.</p>
+            )}
+            {displayedEarningMessageText ? (
+              <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+                <summary className="cursor-pointer font-semibold">
+                  {earningDraftDirty ? 'Taslak hakediş mesajını göster' : 'Hakediş mesajını göster'}
+                </summary>
+                <pre
+                  data-testid="earning-message-preview"
+                  data-earning-snapshot-hash={persistedEarningSnapshotHash}
+                  className="mt-3 whitespace-pre-wrap break-words font-sans"
+                >
+                  {displayedEarningMessageText}
+                </pre>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => void copyReferenceValue(displayedEarningMessageText, 'Hakediş mesajı kopyalandı.', 'hakediş mesajını')}>
+                    Mesajı kopyala
+                  </Button>
+                  {displayedEarningWhatsappUrl ? (
+                    <Button asChild type="button" size="sm" variant="outline">
+                      <a href={displayedEarningWhatsappUrl} target="_blank" rel="noreferrer">
+                        WhatsApp Aç
+                      </a>
+                    </Button>
+                  ) : null}
+                </div>
+              </details>
+            ) : null}
+            {correctiveEarningResendRequired ? (
+              <div data-testid="earning-corrective-resend-notice" data-corrective-channels="whatsapp,sms" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                <p className="font-semibold">Düzeltici yeniden gönderim gerekli</p>
+                <p className="mt-1">Neden: {COMPANY_PAYMENT_CORRECTIVE_RESEND_REASON}</p>
+                <p className="mt-1">Kanallar: WhatsApp ve SMS</p>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-500">
+                {earningDraftDirty
+                  ? 'Hakediş değişikliklerini kaydetmeden ustaya mesaj gönderilemez.'
+                  : canonicalEarningAssignmentReady
+                  ? 'Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu aksiyon canonical atama hakedişini ayrıca kuyruğa alır.'
+                  : 'Hakediş mesajı ancak seçili usta için Servise Ata tamamlandıktan sonra gönderilebilir.'}
+              </p>
+              <Button
+                data-testid="earning-send-button"
+                data-earning-snapshot-hash={persistedEarningSnapshotHash}
+                type="button"
+                variant="outline"
+                onClick={() => void handleTechnicianEarningMessageCreate()}
+                disabled={!canSendTechnicianEarning || technicianEarningMessageLoading}
+              >
+                {technicianEarningMessageLoading
+                  ? 'Hazırlanıyor...'
+                  : correctiveEarningResendRequired
+                    ? 'Düzeltici hakediş mesajını gönder'
+                    : 'Hakediş bilgisini gönder'}
+              </Button>
+            </div>
+          </div>
+          ) : null}
+        </div>
+
           <DetailPanel
             title="Operasyon Geçmişi / Notlar"
             summary="Operasyon onayı, karar alanı, not ve yorum özeti"
@@ -9558,7 +9544,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
             panelRef={finalCheckRef}
             sectionTarget="finalCheck"
             highlighted={highlightedNextActionTarget === 'finalCheck'}
-            className={opsSectionClass('finalCheck', activeOpsSection)}
+            className={opsSectionClass('finalCheck')}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="text-sm text-slate-600">Son kontrol kararları ve operasyon notları burada özetlenir.</p>
@@ -9589,7 +9575,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           tone="serial"
           open={invoiceSerialsOpen}
           onOpenChange={setInvoiceSerialsOpen}
-          className={opsSectionClass('invoiceSerials', activeOpsSection)}
+          className={opsSectionClass('invoiceSerials')}
         >
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-sm text-slate-600">Diğer serileri kontrol et; uygun olanları aynı montaj kapsamına ekle, gizli ve iade satırları ayrı takip et.</p>
@@ -9684,7 +9670,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           panelRef={fieldCompletionRef}
           sectionTarget="fieldCompletion"
           highlighted={highlightedNextActionTarget === 'fieldCompletion'}
-          className={opsSectionClass('fieldCompletion', activeOpsSection)}
+          className={opsSectionClass('fieldCompletion')}
         >
           <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:p-5">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -10192,7 +10178,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           </section>
         </DetailPanel>
 
-        <DetailPanel title="Düzeltme / Denetim" summary="Alan düzeltmeleri ve onay bekleyen kayıtlar" tone="warning" className="order-75">
+        <DetailPanel title="Düzeltme / Denetim" summary="Alan düzeltmeleri ve onay bekleyen kayıtlar" tone="warning" className="order-[95]">
           <section className="grid gap-4 rounded-2xl border border-amber-100 bg-amber-50 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -10311,7 +10297,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         </DetailPanel>
 
         {shouldRenderHistoryPanel ? (
-        <DetailPanel title="Operasyon Geçmişi" summary="Denetim kayıtları ve durum akışı" tone="history" className={opsSectionClass('history', activeOpsSection)}>
+        <DetailPanel title="Operasyon Geçmişi" summary="Denetim kayıtları ve durum akışı" tone="history" className={opsSectionClass('history')}>
           <section className="rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Operasyon kayıtları</p>
             <div className="mt-4 space-y-3">

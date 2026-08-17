@@ -7620,11 +7620,13 @@ class TechnicalServiceMessagingSettingsService
         array $metadata,
         array $settings,
     ): array {
-        if (! $this->normalLocalAdminExecutionAuthority($settings)
-            || ! (bool) ($settings['messaging_enabled'] ?? false)
+        if (! $this->normalLocalAdminExecutionAuthority($settings)) {
+            return $this->executionBlock('outbound_execution_mode_local', 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.');
+        }
+        if (! (bool) ($settings['messaging_enabled'] ?? false)
             || ! (bool) ($settings['real_send_enabled'] ?? false)
             || (bool) ($settings['queue_paused'] ?? true)) {
-            return $this->executionBlock('outbound_execution_mode_local', 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.');
+            return $this->executionBlock('message_send_settings_disabled', 'Gönderim ayarlardan kapalı.');
         }
 
         $provider = $this->normalizeProviderKey($provider);

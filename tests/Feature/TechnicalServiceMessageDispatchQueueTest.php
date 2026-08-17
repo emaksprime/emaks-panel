@@ -60,6 +60,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         parent::setUp();
 
         $this->travelTo(Carbon::parse('2026-07-21 12:00:00', 'Europe/Istanbul'));
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('m', 32))]);
         Http::preventStrayRequests();
     }
 
@@ -3719,8 +3720,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $result = app(TechnicalServiceMessageDispatchProcessor::class)
             ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905372081633']);
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $result['status']);
-        $this->assertSame('outbound_execution_mode_local', $dispatch->fresh()->last_error_code);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $result['status']);
+        $this->assertSame('message_send_settings_disabled', $dispatch->fresh()->last_error_code);
         $this->assertFalse((bool) data_get($dispatch->fresh()->metadata, 'provider_send_attempted'));
         Http::assertNothingSent();
     }
@@ -4711,6 +4712,18 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'payload' => ['body' => 'Activation öncesi audit mesajı.'],
             'idempotency_key' => 'local-acceptance-historical',
         ]);
+        $historical->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+            'provider_status' => 'local_no_send',
+            'last_error_code' => 'outbound_execution_mode_local',
+            'last_error_message_redacted' => 'Mesaj Lokal çalışma modunda dış sağlayıcıya gönderilmeden kaydedildi.',
+            'metadata' => [
+                ...((array) $historical->metadata),
+                'local_no_send_recorded' => true,
+                'provider_send_attempted' => false,
+                'external_provider_call' => false,
+            ],
+        ])->saveQuietly();
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $historical->status);
 
         [$settings, $owner, $profile] = $this->configureLocalManualAcceptanceContext();
@@ -4788,6 +4801,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $sms->fresh()->status);
         $this->assertSame('7654321', $sms->fresh()->provider_message_id);
         $this->assertSame(0, $historical->fresh()->attempt_count);
+        $historicalProjection = app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($historical->fresh());
+        $this->assertSame('uat_not_sent', $historicalProjection['business_state']);
+        $this->assertSame("UAT'ta gönderilmedi", $historicalProjection['status_label']);
         $actualRecipientOutsideTestAllowlist->refresh();
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED, $actualRecipientOutsideTestAllowlist->status);
         $this->assertSame(0, $actualRecipientOutsideTestAllowlist->attempt_count);
@@ -4832,7 +4848,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'payload' => ['body' => 'Kill-switch sonrası mesaj gönderilmemeli.'],
             'idempotency_key' => 'local-acceptance-disabled',
         ]);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $suppressed->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $suppressed->status);
+        $this->assertSame('message_send_settings_disabled', $suppressed->last_error_code);
         $this->assertSame(3, Http::recorded()->count());
     }
 
@@ -5341,7 +5358,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
     }
 
-    public function test_normal_local_event_suppresses_when_real_send_disabled(): void
+    public function test_normal_local_event_projects_settings_disabled_when_real_send_is_off(): void
     {
         Http::fake();
         [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
@@ -5359,12 +5376,65 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'idempotency_key' => 'normal-local-real-send-disabled',
         ]);
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $dispatch->status);
-        $this->assertSame('outbound_execution_mode_local', $dispatch->last_error_code);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $dispatch->status);
+        $this->assertSame('message_send_settings_disabled', $dispatch->last_error_code);
         $this->assertSame(0, $dispatch->attempt_count);
         $this->assertFalse($settings->normalOutboundWorkerMayProcess($owner));
+        $projection = app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($dispatch->fresh());
+        $this->assertSame('settings_disabled', $projection['business_state']);
+        $this->assertSame('Gönderim ayarlardan kapalı', $projection['status_label']);
         Http::assertNothingSent();
         $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+    }
+
+    public function test_queued_normal_local_event_projects_sender_not_running_after_lease_stops(): void
+    {
+        Http::fake();
+        [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905399999998',
+            'payload' => ['body' => 'Sender durumu projeksiyon testi.'],
+            'idempotency_key' => 'normal-local-sender-stopped',
+        ]);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertTrue($settings->clearOutboundWorkerLease($owner));
+        $projection = app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($dispatch->fresh());
+        $this->assertSame('sender_not_running', $projection['business_state']);
+        $this->assertSame('Gönderim servisi çalışmıyor', $projection['status_label']);
+        Http::assertNothingSent();
+    }
+
+    public function test_provider_readiness_failure_projects_canonical_reason(): void
+    {
+        Http::fake();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'mount_request_created_customer',
+            'message_type' => 'mount_request_created_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '905399999997',
+            'payload' => ['body' => 'Provider readiness projection test.'],
+            'idempotency_key' => 'normal-local-provider-not-ready',
+        ]);
+        $dispatch->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'last_error_code' => 'provider_not_ready',
+            'last_error_message_redacted' => 'Provider kapalı veya readiness eksik.',
+        ])->saveQuietly();
+
+        $projection = app(TechnicalServiceMessageDispatchLogService::class)->compactPaymentStatus($dispatch->fresh());
+
+        $this->assertSame('provider_not_ready', $projection['business_state']);
+        $this->assertSame('Sağlayıcı bağlantısı hazır değil', $projection['status_label']);
+        $this->assertSame('warning', $projection['status_badge_tone']);
+        Http::assertNothingSent();
     }
 
     public function test_duplicate_assignment_event_creates_one_dispatch_per_channel(): void
@@ -5443,8 +5513,10 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             'payload' => ['body' => 'Historical SMS audit row.'],
             'idempotency_key' => 'historical-assignment-sms',
         ]);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $whatsapp->status);
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $sms->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $whatsapp->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $sms->status);
+        $this->assertSame('message_send_settings_disabled', $whatsapp->last_error_code);
+        $this->assertSame('message_send_settings_disabled', $sms->last_error_code);
 
         [$settings, $owner] = $this->configureLocalManualAcceptanceContext(true);
         $this->assertSame(0, app(TechnicalServiceMessageDispatchProcessor::class)->process([

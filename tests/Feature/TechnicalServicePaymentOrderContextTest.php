@@ -49,10 +49,14 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
     public function test_payment_purposes_include_mount_collection_and_part_charge(): void
     {
-        $catalog = collect($this->service()->paymentPurposes())->keyBy('key');
+        $service = $this->service();
+        $catalog = collect($service->paymentPurposes())->keyBy('key');
 
         $this->assertSame('Montaj ücreti tahsilatı', $catalog['mount_collection']['label']);
         $this->assertSame('Parça ödemesi', $catalog['part_charge']['label']);
+        $this->assertSame('W-MONTAJ-1', $service->serviceItemContract('mount_collection')['item_code']);
+        $this->assertSame('W-MONTAJ-2', $service->serviceItemContract('service_charge')['item_code']);
+        $this->assertSame('W-MONTAJ-3', $service->serviceItemContract('route_fee')['item_code']);
     }
 
     public function test_mount_collection_creates_no_shipment_context(): void
@@ -70,11 +74,24 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     {
         [$request] = $this->requestFixture();
         $preview = $this->mountPreview($request);
+        $line = $preview['lines'][0];
 
         $this->assertSame('S', $preview['desired_mikro_series']);
         $this->assertSame('not_authorized', $preview['future_mikro_write_state']);
         $this->assertSame(0, $preview['mikro_write_execution_count']);
-        $this->assertStringContainsString('HİZMET: MONTAJ', $preview['description2_preview']);
+        $this->assertSame('W-MONTAJ-1', $line['item_code']);
+        $this->assertSame('MONTAJ HİZMETİ', $line['item_name']);
+        $this->assertSame('service', $line['line_type']);
+        $this->assertSame('not_applicable', $line['physical_stock_state']);
+        $this->assertFalse($line['shipment_required']);
+        $this->assertSame('20', $line['selected_tax_rate']);
+        $this->assertSame('1200.00', $line['gross_line_total']);
+        $this->assertSame('1000.00', $line['net_line_total']);
+        $this->assertSame('200.00', $line['vat_line_total']);
+        $this->assertSame('1200.00', $preview['gross_total']);
+        $this->assertStringContainsString('TAHSİLAT AMACI: MONTAJ ÖDEMESİ', $preview['description2_preview']);
+        $this->assertStringContainsString('W-MONTAJ-1 - MONTAJ HİZMETİ', $preview['description2_preview']);
+        $this->assertStringContainsString('KDV TUTARI: 200,00 TL', $preview['description2_preview']);
         $this->assertStringNotContainsString('Sipariş oluşturuldu', $preview['description2_preview']);
     }
 
@@ -443,15 +460,23 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
     public function test_paid_mount_context_waits_for_future_mikro_write(): void
     {
+        $this->ensureMikroSimulationTestTable();
         [$request, $session] = $this->requestFixture();
         [, $payment] = $this->pendingMountContext($request, $session);
         $this->observePaid($payment);
+        DB::transaction(fn () => $this->service()->persistMikroOrderSimulationWithinTransaction($payment->fresh()));
 
         $this->assertDatabaseHas(TechnicalServicePaymentOrderContextService::TABLE, [
             'technical_service_mount_payment_id' => $payment->id,
             'state' => 'paid_waiting_mikro_write',
             'future_mikro_write_state' => 'not_authorized',
         ]);
+        $simulation = DB::table(TechnicalServicePaymentOrderContextService::MIKRO_SIMULATION_TABLE)->sole();
+        $simulationPayload = json_decode((string) $simulation->payload_snapshot, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('mount_service', $simulation->order_kind);
+        $this->assertSame('W-MONTAJ-1', data_get($simulationPayload, 'lines.0.item_code'));
+        $this->assertSame('1200.00', data_get($simulationPayload, 'totals.gross_total'));
+        $this->assertFalse((bool) $simulation->mikro_write_attempted);
         Http::assertNothingSent();
     }
 
@@ -2126,11 +2151,7 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
     public function test_part_summary_ignores_newer_mount_context(): void
     {
         [$request] = $this->requestFixture();
-        $partInput = $this->emaksPartInput($request, [
-            'commercial_mode' => 'free',
-            'delivery_mode' => 'hand_delivery',
-            'delivery_target' => 'mrn_customer',
-        ], 600);
+        $partInput = $this->emaksPartInput($request, [], 600);
         $partPreview = $this->service()->preview($request, 'part_charge', $partInput, 600, 'TRY');
         $partContext = $this->service()->prepare($request, 'part_charge', [
             ...$partInput,
@@ -2149,6 +2170,10 @@ class TechnicalServicePaymentOrderContextTest extends TestCase
 
         $this->assertSame((int) $partContext->id, $latestPart['id']);
         $this->assertSame('part_charge', $latestPart['payment_purpose']);
+        $this->assertFalse($latestPart['shipment_record_exists']);
+        $this->assertNull($latestPart['shipment_status']);
+        $this->assertSame('Kargo kaydı henüz oluşturulmadı', $latestPart['shipment_status_label']);
+        $this->assertSame('Entegrasyon kapalı', $latestPart['future_carrier_label']);
     }
 
     public function test_technician_delivery_marks_paid_once(): void

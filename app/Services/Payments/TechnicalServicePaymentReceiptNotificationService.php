@@ -485,6 +485,22 @@ class TechnicalServicePaymentReceiptNotificationService
         $simulation = is_array($payload['mikro_order_simulation'] ?? null) ? $payload['mikro_order_simulation'] : [];
         $billing = is_array($orderContext['billing'] ?? null) ? $orderContext['billing'] : [];
         $shipping = is_array($orderContext['shipping'] ?? null) ? $orderContext['shipping'] : [];
+        $paymentPurpose = strtolower(trim((string) (
+            $orderContext['payment_purpose']
+                ?? $payload['purpose']
+                ?? $payload['charge_type']
+                ?? ''
+        )));
+        $mountPayment = $paymentPurpose === 'mount_collection';
+        $lines = $this->mailLines($orderContext['lines'] ?? []);
+        if ($mountPayment && ($lines === [] || collect($lines)->contains(
+            fn (array $line): bool => ($line['item_code'] ?? null) !== 'W-MONTAJ-1'
+                || ($line['vat_rate'] ?? null) === null
+                || ($line['net_line_total'] ?? null) === null
+                || ($line['vat_line_total'] ?? null) === null,
+        ))) {
+            throw new ConflictHttpException('payment_receipt_mount_service_line_invalid: Montaj bildirimi doğrulanmış W-MONTAJ-1 KDV satırı gerektirir.');
+        }
 
         return [
             'mrn' => $this->stringValue(Arr::get($payload, 'request_code')) ?: $request?->mrn,
@@ -505,10 +521,14 @@ class TechnicalServicePaymentReceiptNotificationService
             'provider_host_reference' => $this->stringValue($payload['provider_host_reference'] ?? null),
             'provider_receipt_reference' => $payment->provider_receipt_reference,
             'provider_status' => $this->providerStatus($payment, $providerResponse),
+            'payment_purpose' => $paymentPurpose !== '' ? $paymentPurpose : null,
+            'payment_purpose_label' => $mountPayment ? 'Montaj ödemesi' : 'Parça ödemesi',
+            'line_section_label' => $mountPayment ? 'HİZMET KALEMLERİ' : 'PARÇALAR',
+            'mount_payment' => $mountPayment,
             'billing' => $this->mailParty($billing, true),
-            'shipping' => $this->mailParty($shipping, false),
-            'delivery_mode' => $this->deliveryModeLabel($orderContext['delivery_mode'] ?? null),
-            'lines' => $this->mailLines($orderContext['lines'] ?? []),
+            'shipping' => $mountPayment ? null : $this->mailParty($shipping, false),
+            'delivery_mode' => $mountPayment ? null : $this->deliveryModeLabel($orderContext['delivery_mode'] ?? null),
+            'lines' => $lines,
             'gross_total' => $this->moneyLabel($orderContext['gross_total'] ?? $payment->amount),
             'net_total' => $this->moneyLabel($orderContext['net_total'] ?? null),
             'vat_total' => $this->moneyLabel($orderContext['vat_total'] ?? null),

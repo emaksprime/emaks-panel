@@ -30,12 +30,20 @@ const inspectViewport = async (browser, name, viewport) => {
   await page.reload({ waitUntil: 'networkidle' })
   await page.getByTestId('load-post-paid-part-projection-scenario').click()
 
-  const sectionTitle = page.getByText('PARÇA / SİPARİŞ VE TESLİMAT', { exact: true })
+  const sectionTitle = page.getByText('PARÇA / SİPARİŞ / TESLİMAT', { exact: true })
   await sectionTitle.waitFor({ state: 'visible' })
   assert(await sectionTitle.count() === 1, `${name}: part/order/shipment section is duplicated`)
 
   const panel = page.locator('details').filter({ has: sectionTitle }).first()
-  assert(await panel.getAttribute('open') !== null, `${name}: canonical part section is not visible by default`)
+  assert(await panel.getAttribute('open') === null, `${name}: part section is not collapsed by default`)
+  const collapsedText = await panel.locator('summary').first().innerText()
+  assert(collapsedText.includes('2 parça · 3.000,00 TL ödendi · Hedef seri S · Teslim: Sevk'), `${name}: compact collapsed summary is wrong`)
+  const referenceY = (await page.getByText('Talep Referansı', { exact: true }).boundingBox())?.y ?? 0
+  const assignmentY = (await page.getByText('Usta / Çilingir Atama', { exact: true }).boundingBox())?.y ?? 0
+  const partY = (await sectionTitle.boundingBox())?.y ?? 0
+  const financeY = (await page.getByText('FİNANS VE HAKEDİŞ', { exact: true }).boundingBox())?.y ?? 0
+  assert(referenceY < assignmentY && assignmentY < partY && partY < financeY, `${name}: main detail section order is wrong`)
+  await panel.locator('summary').first().click()
   const summary = page.getByTestId('part-order-shipment-summary')
   await summary.waitFor({ state: 'visible' })
   const summaryText = await summary.innerText()
@@ -46,8 +54,11 @@ const inspectViewport = async (browser, name, viewport) => {
   assert(summaryText.includes('Iyzico Sandbox'), `${name}: provider mode is missing`)
   assert(summaryText.includes('Payment #205'), `${name}: canonical payment identity is missing`)
   assert(summaryText.includes('Sipariş S serisiyle oluşturulacaktır.'), `${name}: target series S is missing`)
-  assert(summaryText.includes('Kargo hazırlığı bekliyor'), `${name}: shipment state is missing`)
+  assert(summaryText.includes('Teslim şekli: Sevk'), `${name}: delivery mode is missing`)
+  assert(summaryText.includes('Kargo kaydı henüz oluşturulmadı'), `${name}: missing shipment record state is absent`)
+  assert(!summaryText.includes('Kargo hazırlığı bekliyor'), `${name}: synthetic shipment state remains visible`)
   assert(summaryText.includes('Muhasebe maili gönderildi'), `${name}: finance mail status is missing`)
+  assert(await panel.locator('[class*="xl:grid-cols-4"]').count() === 0, `${name}: giant four-card summary remains`)
 
   const details = page.getByTestId('part-order-readonly-details')
   assert(await details.getAttribute('open') === null, `${name}: technical part details are expanded by default`)

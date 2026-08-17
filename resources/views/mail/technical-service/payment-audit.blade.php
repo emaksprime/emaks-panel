@@ -5,6 +5,7 @@
     <title>Iyzico Sandbox Ödeme Bildirimi</title>
 </head>
 <body style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.5;">
+    @php($mountPayment = (bool) ($details['mount_payment'] ?? false))
     <h1 style="font-size: 18px;">Iyzico Sandbox Ödeme Bildirimi</h1>
     <p>{{ $details['note'] ?? 'Bu bildirim provider reconciliation sonucu oluşturulmuştur.' }}</p>
 
@@ -16,6 +17,7 @@
 
     <h2 style="font-size: 15px; margin-top: 20px;">ÖDEME</h2>
     <table cellpadding="6" cellspacing="0" border="0" style="border-collapse: collapse;">
+        <tr><td><strong>TAHSİLAT AMACI</strong></td><td>{{ $details['payment_purpose_label'] ?? '-' }}</td></tr>
         <tr><td><strong>Tutar</strong></td><td>{{ $details['amount'] ?? '-' }} {{ $details['currency'] ?? 'TRY' }}</td></tr>
         <tr><td><strong>Ödeme zamanı</strong></td><td>{{ $details['paid_at'] ?? '-' }}</td></tr>
         <tr><td><strong>Provider link referansı</strong></td><td>{{ $details['provider_reference'] ?? 'Sağlayıcı tarafından dönmedi' }}</td></tr>
@@ -38,16 +40,18 @@
         <tr><td><strong>Fatura kimlik</strong></td><td>{{ data_get($details, 'billing.identity') ?? '-' }}</td></tr>
         <tr><td><strong>Vergi dairesi</strong></td><td>{{ data_get($details, 'billing.tax_office') ?? '-' }}</td></tr>
         <tr><td><strong>Fatura adresi</strong></td><td>{{ data_get($details, 'billing.address') ?? '-' }} · {{ data_get($details, 'billing.district') ?? '-' }} / {{ data_get($details, 'billing.city') ?? '-' }}</td></tr>
-        <tr><td><strong>Teslim alacak kişi</strong></td><td>{{ data_get($details, 'shipping.name') ?? '-' }}</td></tr>
-        <tr><td><strong>Teslim adresi</strong></td><td>{{ data_get($details, 'shipping.address') ?? '-' }} · {{ data_get($details, 'shipping.district') ?? '-' }} / {{ data_get($details, 'shipping.city') ?? '-' }}</td></tr>
-        <tr><td><strong>Teslim biçimi</strong></td><td>{{ $details['delivery_mode'] ?? '-' }}</td></tr>
+        @unless ($mountPayment)
+            <tr><td><strong>Teslim alacak kişi</strong></td><td>{{ data_get($details, 'shipping.name') ?? '-' }}</td></tr>
+            <tr><td><strong>Teslim adresi</strong></td><td>{{ data_get($details, 'shipping.address') ?? '-' }} · {{ data_get($details, 'shipping.district') ?? '-' }} / {{ data_get($details, 'shipping.city') ?? '-' }}</td></tr>
+            <tr><td><strong>Teslim biçimi</strong></td><td>{{ $details['delivery_mode'] ?? '-' }}</td></tr>
+        @endunless
     </table>
 
-    <h2 style="font-size: 15px; margin-top: 20px;">PARÇALAR</h2>
+    <h2 style="font-size: 15px; margin-top: 20px;">{{ $details['line_section_label'] ?? 'PARÇALAR' }}</h2>
     <table cellpadding="6" cellspacing="0" border="1" style="border-collapse: collapse; border-color: #cbd5e1;">
         <thead>
         <tr>
-            <th>Stok kodu / Parça</th><th>Adet</th><th>Brüt birim</th><th>Brüt toplam</th><th>KDV</th><th>Net</th><th>KDV tutarı</th>
+            <th>{{ $mountPayment ? 'Stok kodu / Hizmet' : 'Stok kodu / Parça' }}</th><th>Adet</th><th>Brüt birim</th><th>Brüt toplam</th><th>KDV</th><th>Net</th><th>KDV tutarı</th>
         </tr>
         </thead>
         <tbody>
@@ -62,7 +66,7 @@
                 <td>{{ $line['vat_line_total'] ?? '-' }}</td>
             </tr>
         @empty
-            <tr><td colspan="7">Kanonik parça satırı bulunamadı.</td></tr>
+            <tr><td colspan="7">{{ $mountPayment ? 'Kanonik hizmet satırı bulunamadı.' : 'Kanonik parça satırı bulunamadı.' }}</td></tr>
         @endforelse
         </tbody>
     </table>

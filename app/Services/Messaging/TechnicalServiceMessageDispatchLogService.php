@@ -11,6 +11,10 @@ use Illuminate\Support\Str;
 
 class TechnicalServiceMessageDispatchLogService
 {
+    public function __construct(
+        private readonly TechnicalServiceMessagingSettingsService $settings,
+    ) {}
+
     private const TIMEZONE = 'Europe/Istanbul';
 
     private const STATUS_LABELS = [
@@ -302,7 +306,7 @@ class TechnicalServiceMessageDispatchLogService
             ?? data_get($dispatch->request_payload, 'provider_key')
             ?? data_get($dispatch->request_payload, 'provider');
         $channel = $dispatch->channel ?? data_get($dispatch->request_payload, 'channel');
-        $isLocalUatSuppressed = $this->isLocalUatSuppressed($dispatch);
+        $businessState = $this->dispatchBusinessState($dispatch);
 
         return [
             'dispatch_id' => (int) $dispatch->id,
@@ -311,7 +315,7 @@ class TechnicalServiceMessageDispatchLogService
             'provider_key' => $providerKey,
             'provider_label' => $this->dispatchProviderLabel($dispatch, $providerKey, $channel),
             'status' => (string) $dispatch->status,
-            'business_state' => $isLocalUatSuppressed ? 'uat_not_sent' : (string) $dispatch->status,
+            'business_state' => $businessState,
             'status_label' => $this->dispatchStatusLabel($dispatch, $providerKey, $channel),
             'status_detail' => $this->dispatchStatusDetail($dispatch),
             'status_badge_tone' => $this->statusBadgeTone($dispatch->status, $dispatch),
@@ -566,8 +570,18 @@ class TechnicalServiceMessageDispatchLogService
 
     private function dispatchStatusLabel(TechnicalServiceMessageDispatch $dispatch, ?string $providerKey, ?string $channel): string
     {
-        if ($this->isLocalUatSuppressed($dispatch)) {
+        $businessState = $this->dispatchBusinessState($dispatch);
+        if ($businessState === 'uat_not_sent') {
             return "UAT'ta gönderilmedi";
+        }
+        if ($businessState === 'settings_disabled') {
+            return 'Gönderim ayarlardan kapalı';
+        }
+        if ($businessState === 'provider_not_ready') {
+            return 'Sağlayıcı bağlantısı hazır değil';
+        }
+        if ($businessState === 'sender_not_running') {
+            return 'Gönderim servisi çalışmıyor';
         }
 
         if ($this->isSystemOnlyDispatch($dispatch, $providerKey, $channel)) {
@@ -579,9 +593,33 @@ class TechnicalServiceMessageDispatchLogService
 
     private function dispatchStatusDetail(TechnicalServiceMessageDispatch $dispatch): ?string
     {
-        return $this->isLocalUatSuppressed($dispatch)
-            ? 'Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.'
-            : null;
+        return match ($this->dispatchBusinessState($dispatch)) {
+            'uat_not_sent' => 'Yerel/UAT çalışma modunda dış sağlayıcı çağrısı yapılmadı.',
+            'settings_disabled' => 'Mesaj gönderimi sunucu ayarlarından kapatıldı.',
+            'provider_not_ready' => 'Mesaj sağlayıcısının bağlantı veya kimlik bilgisi hazır değil.',
+            'sender_not_running' => 'Mesaj gönderim servisi çalışmadığı için kayıt kuyrukta bekliyor.',
+            default => null,
+        };
+    }
+
+    private function dispatchBusinessState(TechnicalServiceMessageDispatch $dispatch): string
+    {
+        if ($this->isLocalUatSuppressed($dispatch)) {
+            return 'uat_not_sent';
+        }
+        if ($dispatch->last_error_code === 'message_send_settings_disabled'
+            || $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED) {
+            return 'settings_disabled';
+        }
+        if (in_array($dispatch->last_error_code, ['outbound_provider_set_not_ready', 'provider_not_ready'], true)) {
+            return 'provider_not_ready';
+        }
+        if ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_QUEUED
+            && ($this->settings->outboundWorkerLeaseStatus()['state'] ?? 'none') !== 'active') {
+            return 'sender_not_running';
+        }
+
+        return (string) $dispatch->status;
     }
 
     private function isLocalUatSuppressed(TechnicalServiceMessageDispatch $dispatch): bool
@@ -667,7 +705,13 @@ class TechnicalServiceMessageDispatchLogService
 
     private function statusBadgeTone(?string $status, ?TechnicalServiceMessageDispatch $dispatch = null): string
     {
-        if ($dispatch instanceof TechnicalServiceMessageDispatch && $this->isLocalUatSuppressed($dispatch)) {
+        if ($dispatch instanceof TechnicalServiceMessageDispatch
+            && in_array($this->dispatchBusinessState($dispatch), [
+                'uat_not_sent',
+                'settings_disabled',
+                'provider_not_ready',
+                'sender_not_running',
+            ], true)) {
             return 'warning';
         }
 

@@ -22,15 +22,25 @@ class TechnicalServicePaymentAuditMail extends Mailable
 
     public function build(): self
     {
-        $record = trim((string) ($this->details['srv'] ?? $this->details['mrn'] ?? ''));
+        $mountPayment = (bool) ($this->details['mount_payment'] ?? false);
+        $record = trim((string) ($mountPayment
+            ? ($this->details['mrn'] ?? $this->details['srv'] ?? '')
+            : ($this->details['srv'] ?? $this->details['mrn'] ?? '')));
         $series = trim((string) ($this->details['desired_series'] ?? 'S'));
-
-        return $this
-            ->subject(sprintf(
+        $subject = $mountPayment
+            ? sprintf(
+                '[SANDBOX][%s] Montaj ödemesi alındı%s',
+                $series !== '' ? $series : 'S',
+                $record !== '' ? ' · '.$record : '',
+            )
+            : sprintf(
                 '[SANDBOX][%s] Ödeme alındı%s · Mikro test sipariş simülasyonu',
                 $series !== '' ? $series : 'S',
                 $record !== '' ? ' · '.$record : '',
-            ))
+            );
+
+        return $this
+            ->subject($subject)
             ->view('mail.technical-service.payment-audit')
             ->with([
                 'details' => $this->details,

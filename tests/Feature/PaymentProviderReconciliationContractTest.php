@@ -346,8 +346,8 @@ class PaymentProviderReconciliationContractTest extends TestCase
             'channel' => 'whatsapp',
             'recipient_role' => 'ops',
             'provider_key' => 'evo_whatsapp',
-            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
-            'last_error_code' => 'outbound_execution_mode_local',
+            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'last_error_code' => 'message_send_settings_disabled',
         ]);
         $this->assertDatabaseMissing('technical_service_message_dispatches', [
             'technical_service_request_id' => $request->id,
@@ -564,6 +564,67 @@ class PaymentProviderReconciliationContractTest extends TestCase
                 && ! str_contains($rendered, 'secret-key-must-not-leak');
         });
         $this->assertSame('IYZ-HOST-2000', data_get($paid->fresh()->raw_payload, 'provider_host_reference'));
+    }
+
+    public function test_mount_receipt_uses_canonical_service_line_and_hides_part_and_shipping_placeholders(): void
+    {
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-MOUNT-RECEIPT-1']);
+        $payment = $this->mountPaymentForRequest($request, [
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'operation_order_context_payment',
+                'purpose' => 'mount_collection',
+                'request_code' => $request->mrn,
+                'root_mrn' => $request->mrn,
+                'provider_mode' => 'sandbox',
+                'order_context' => [
+                    'payment_purpose' => 'mount_collection',
+                    'desired_mikro_series' => 'S',
+                    'billing' => ['name_or_title' => 'Montaj Müşterisi'],
+                    'lines' => [[
+                        'item_code' => 'W-MONTAJ-1',
+                        'item_name' => 'MONTAJ HİZMETİ',
+                        'quantity' => 1,
+                        'unit_code' => 'ADET',
+                        'gross_unit_price' => '3500.00',
+                        'gross_line_total' => '3500.00',
+                        'selected_tax_rate' => '20',
+                        'net_line_total' => '2916.67',
+                        'vat_line_total' => '583.33',
+                    ]],
+                    'gross_total' => '3500.00',
+                    'net_total' => '2916.67',
+                    'vat_total' => '583.33',
+                ],
+                'mikro_order_simulation' => [
+                    'simulation_reference' => 'MSIM-MOUNT-RECEIPT-1',
+                    'status' => 'simulated_written',
+                    'desired_series' => 'S',
+                ],
+            ],
+        ]);
+        $details = app(TechnicalServicePaymentReceiptNotificationService::class)->mailDetails($payment);
+        $mail = new TechnicalServicePaymentAuditMail($payment, $details);
+        $mail->build();
+        $rendered = $mail->render();
+
+        $this->assertSame('[SANDBOX][S] Montaj ödemesi alındı · MRN-MOUNT-RECEIPT-1', $mail->subject);
+        $this->assertSame('Montaj ödemesi', $details['payment_purpose_label']);
+        $this->assertSame('HİZMET KALEMLERİ', $details['line_section_label']);
+        $this->assertSame('W-MONTAJ-1', $details['lines'][0]['item_code']);
+        $this->assertSame('%20', $details['lines'][0]['vat_rate']);
+        $this->assertStringContainsString('TAHSİLAT AMACI', $rendered);
+        $this->assertStringContainsString('MONTAJ HİZMETİ', $rendered);
+        $this->assertStringContainsString('2.916,67 TL', $rendered);
+        $this->assertStringContainsString('583,33 TL', $rendered);
+        $this->assertStringContainsString('MSIM-MOUNT-RECEIPT-1', $rendered);
+        $this->assertStringNotContainsString('PARÇALAR', $rendered);
+        $this->assertStringNotContainsString('Kanonik parça satırı bulunamadı', $rendered);
+        $this->assertStringNotContainsString('Teslim alacak kişi', $rendered);
+        $this->assertStringNotContainsString('Teslim adresi', $rendered);
+        $this->assertStringNotContainsString('Kargo hazırlığı', $rendered);
     }
 
     public function test_missing_finance_recipient_records_typed_non_retryable_blocker_without_smtp(): void
