@@ -1287,6 +1287,55 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
+    public function correctPaymentOrderContext(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePaymentOrderContextService $orderContexts,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'expected_context_id' => ['required', 'integer', 'min:1'],
+            'expected_revision' => ['required', 'integer', 'min:1'],
+            'expected_hash' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'source_context_id' => ['required', 'integer', 'min:1'],
+            'source_revision' => ['required', 'integer', 'min:1'],
+            'source_hash' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'reason' => ['required', 'string', 'min:10', 'max:1000'],
+        ]);
+        $headerCorrelationId = trim((string) $request->header('X-Correlation-ID'));
+        $correlationId = Str::isUuid($headerCorrelationId)
+            ? $headerCorrelationId
+            : (string) Str::uuid();
+        $result = $orderContexts->createCorrectionRevision(
+            $technicalServiceRequest,
+            (int) $validated['expected_context_id'],
+            (int) $validated['expected_revision'],
+            (string) $validated['expected_hash'],
+            (int) $validated['source_context_id'],
+            (int) $validated['source_revision'],
+            (string) $validated['source_hash'],
+            (string) $validated['reason'],
+            $request->user(),
+            $correlationId,
+        );
+
+        return response()->json([
+            'ok' => true,
+            'created' => $result['created'],
+            'order_context' => $result['context'],
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            'external_execution' => [
+                'payment_write' => 0,
+                'provider' => 0,
+                'receipt_intent' => 0,
+                'mikro_write' => 0,
+                'hepsijet' => 0,
+                'email' => 0,
+                'whatsapp' => 0,
+                'sms' => 0,
+            ],
+        ]);
+    }
+
     public function createExtraMountFeePayment(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,

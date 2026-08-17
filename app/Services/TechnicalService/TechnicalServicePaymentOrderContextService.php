@@ -56,6 +56,10 @@ class TechnicalServicePaymentOrderContextService
 
     public const PAYMENT_CANCELLED = 'cancelled';
 
+    public const CORRECTION_REASON_FAILED_IYZICO_CREATE_CONTEXT_IDENTITY_REPAIR = 'FAILED_IYZICO_CREATE_CONTEXT_IDENTITY_REPAIR';
+
+    public const CORRECTION_HISTORY_LABEL = 'Ödeme/sipariş bağlamı operasyon düzeltmesiyle yeniden yetkilendirildi.';
+
     private const DESCRIPTION2_VERSION = 1;
 
     private const PART_DESCRIPTION2_VERSION = 3;
@@ -1313,6 +1317,315 @@ class TechnicalServicePaymentOrderContextService
         return $context ? $this->rowProjection($context) : null;
     }
 
+    /**
+     * @return array{context:array<string, mixed>,created:bool}
+     */
+    public function createCorrectionRevision(
+        TechnicalServiceRequest $request,
+        int $expectedLatestContextId,
+        int $expectedLatestRevision,
+        string $expectedLatestHash,
+        int $sourceContextId,
+        int $sourceRevision,
+        string $sourceHash,
+        string $reason,
+        ?Authenticatable $actor,
+        string $correlationId,
+    ): array {
+        $normalizedReason = preg_replace('/\s+/u', ' ', trim($reason)) ?? '';
+        if (mb_strlen($normalizedReason) < 10) {
+            throw ValidationException::withMessages([
+                'reason' => 'Düzeltme nedenini en az 10 karakterle yazınız.',
+            ]);
+        }
+        if ($actor === null) {
+            throw ValidationException::withMessages([
+                'actor' => 'Bağlam düzeltmesi için yetkili OPS kullanıcısı gereklidir.',
+            ]);
+        }
+        if ($expectedLatestContextId < 1 || $expectedLatestRevision < 1
+            || $sourceContextId < 1 || $sourceRevision < 1
+            || ! preg_match('/^[a-f0-9]{64}$/', $expectedLatestHash)
+            || ! preg_match('/^[a-f0-9]{64}$/', $sourceHash)
+            || ! Str::isUuid($correlationId)) {
+            throw ValidationException::withMessages([
+                'order_context' => 'Düzeltme bağlamı kimliği geçersiz.',
+            ]);
+        }
+
+        $commandKey = hash('sha256', implode('|', [
+            'technical-service-payment-order-context-correction-v1',
+            $request->id,
+            $expectedLatestContextId,
+            $expectedLatestRevision,
+            $expectedLatestHash,
+            $sourceContextId,
+            $sourceRevision,
+            $sourceHash,
+            self::CORRECTION_REASON_FAILED_IYZICO_CREATE_CONTEXT_IDENTITY_REPAIR,
+            hash('sha256', $normalizedReason),
+        ]));
+
+        return DB::transaction(function () use (
+            $request,
+            $expectedLatestContextId,
+            $expectedLatestRevision,
+            $expectedLatestHash,
+            $sourceContextId,
+            $sourceRevision,
+            $sourceHash,
+            $normalizedReason,
+            $actor,
+            $correlationId,
+            $commandKey,
+        ): array {
+            $rootRequestId = (int) ($request->parent_request_id ?: $request->id);
+            $lockedRequestIds = TechnicalServiceRequest::query()
+                ->whereIn('id', array_values(array_unique([$rootRequestId, (int) $request->id])))
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->pluck('id')
+                ->map(fn (mixed $id): int => (int) $id)
+                ->all();
+            if (! in_array((int) $request->id, $lockedRequestIds, true)) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Düzeltilecek teknik servis kaydı bulunamadı.',
+                ]);
+            }
+
+            $contexts = DB::table(self::TABLE)
+                ->where('technical_service_request_id', $request->id)
+                ->where('payment_purpose', self::PURPOSE_PART_CHARGE)
+                ->orderBy('revision')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            if ($contexts->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'order_context' => 'Düzeltilecek parça ödeme bağlamı bulunamadı.',
+                ]);
+            }
+
+            $existing = $contexts->first(function (object $context) use ($commandKey): bool {
+                $metadata = $this->contextMetadata($context);
+
+                return hash_equals((string) data_get($metadata, 'correction.command_key', ''), $commandKey);
+            });
+            if ($existing) {
+                return ['context' => $this->rowProjection($existing), 'created' => false];
+            }
+
+            $latest = $contexts->last();
+            if (! $latest
+                || (int) $latest->id !== $expectedLatestContextId
+                || (int) $latest->revision !== $expectedLatestRevision
+                || ! hash_equals((string) $latest->context_hash, $expectedLatestHash)) {
+                throw new ConflictHttpException('PAYMENT_ORDER_CONTEXT_CORRECTION_CONFLICT: Güncel context ID/revision/hash değişti.');
+            }
+
+            $source = $contexts->first(fn (object $context): bool => (int) $context->id === $sourceContextId);
+            if (! $source
+                || (int) $source->revision !== $sourceRevision
+                || ! hash_equals((string) $source->context_hash, $sourceHash)) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Kaynak bağlam aynı talebe ait exact revision/hash ile doğrulanamadı.',
+                ]);
+            }
+            if (is_numeric($source->technical_service_mount_payment_id)) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Ödemeye bağlı context düzeltme kaynağı olarak kullanılamaz.',
+                ]);
+            }
+
+            $sourceMetadata = $this->contextMetadata($source);
+            if ((int) ($sourceMetadata['schema_version'] ?? 0) < 2) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Yalnız kanonik çoklu satır contexti düzeltme kaynağı olabilir.',
+                ]);
+            }
+            $sourceLines = DB::table(self::ITEM_TABLE)
+                ->where('context_id', (int) $source->id)
+                ->orderBy('position')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            if ($sourceLines->isEmpty() || $sourceLines->count() > self::MAX_PART_LINES) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Kaynak bağlamın aktif parça satırları doğrulanamadı.',
+                ]);
+            }
+
+            $sourceProjection = $this->rowProjection($source, false);
+            $decision = $this->commercialDecision(
+                self::PURPOSE_PART_CHARGE,
+                $sourceProjection['part_supplier'],
+                (string) $sourceProjection['commercial_mode'],
+                $sourceProjection['delivery_mode'],
+            );
+            if ((string) $source->tax_mode !== (string) $decision['tax_mode']
+                || $sourceLines->contains(fn (object $line): bool => (string) $line->tax_mode_snapshot !== (string) $decision['tax_mode'])) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Kaynak bağlamın KDV snapshotı ticari kararla uyumlu değil.',
+                ]);
+            }
+            if ((bool) $decision['shipment_required'] && ! is_array($sourceProjection['shipping'])) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Sevk düzeltmesi için kaynak teslimat snapshotı eksik.',
+                ]);
+            }
+
+            $lineTotal = round($sourceLines->sum(fn (object $line): float => (float) $line->line_total), 2);
+            if (abs($lineTotal - (float) $source->order_line_total) > 0.001
+                || $sourceLines->contains(fn (object $line): bool => (string) $line->currency !== (string) $source->currency)) {
+                throw ValidationException::withMessages([
+                    'source_context' => 'Kaynak satır toplamı veya para birimi kanonik context ile uyuşmuyor.',
+                ]);
+            }
+
+            $collectionAmount = (bool) $decision['collection_required'] ? $lineTotal : 0.0;
+            $paymentStatus = (bool) $decision['collection_required'] ? self::PAYMENT_PENDING : self::PAYMENT_NOT_REQUIRED;
+            $corrected = array_replace($sourceProjection, [
+                'state' => 'draft',
+                'desired_mikro_series' => $decision['desired_mikro_series'],
+                'tax_mode' => $decision['tax_mode'],
+                'future_mikro_write_state' => $decision['future_mikro_write_state'],
+                'delivery_status' => 'pending',
+                'payment_collection_mode' => $decision['payment_collection_mode'],
+                'payment_status' => $paymentStatus,
+                'payment_status_source' => 'system',
+                'payment_link_required' => (bool) $decision['payment_link_required'],
+                'collection_required' => (bool) $decision['collection_required'],
+                'collection_amount' => $collectionAmount,
+                'charged_amount' => $collectionAmount,
+                'future_order_trigger' => $decision['future_order_trigger'],
+                'finance_review_required' => false,
+                'shipment_required' => (bool) $decision['shipment_required'],
+                'future_carrier_state' => (bool) $decision['shipment_required']
+                    ? 'waiting_future_integration'
+                    : 'not_required',
+                'payment_status_reason' => null,
+                'request_code' => (string) ($sourceMetadata['request_code'] ?? ($request->service_code ?: $request->mrn)),
+                'root_mrn' => (string) ($sourceMetadata['root_mrn'] ?? ($request->root_mrn ?: $request->mrn)),
+            ]);
+            $corrected['description2_preview'] = $this->renderDescription2($request, $corrected);
+            $corrected['context_hash'] = $this->contextIdentityHash($corrected);
+
+            foreach ([
+                'provider',
+                'provider_profile',
+                'provider_attempt',
+                'provider_result',
+                'provider_reference',
+                'payment_url',
+            ] as $providerMetadataKey) {
+                unset($sourceMetadata[$providerMetadataKey]);
+            }
+            $revision = (int) $latest->revision + 1;
+            $now = now();
+            $sourceMetadata['line_count'] = $sourceLines->count();
+            $sourceMetadata['correction'] = [
+                'reason_code' => self::CORRECTION_REASON_FAILED_IYZICO_CREATE_CONTEXT_IDENTITY_REPAIR,
+                'reason' => $normalizedReason,
+                'history_label' => self::CORRECTION_HISTORY_LABEL,
+                'source_context_id' => (int) $source->id,
+                'source_revision' => (int) $source->revision,
+                'source_hash' => (string) $source->context_hash,
+                'expected_context_id' => (int) $latest->id,
+                'expected_revision' => (int) $latest->revision,
+                'expected_hash' => (string) $latest->context_hash,
+                'corrected_by' => (int) $actor->getAuthIdentifier(),
+                'corrected_at' => $now->toIso8601String(),
+                'correlation_id' => $correlationId,
+                'command_key' => $commandKey,
+            ];
+            $sourceMetadata['external_execution'] = [
+                'payment_write_count' => 0,
+                'provider_call_count' => 0,
+                'mikro_write_count' => 0,
+                'carrier_count' => 0,
+                'message_send_count' => 0,
+            ];
+
+            $payload = (array) $source;
+            unset($payload['id']);
+            $payload = array_replace($payload, [
+                'technical_service_mount_payment_id' => null,
+                'state' => 'draft',
+                'desired_mikro_series' => $corrected['desired_mikro_series'],
+                'tax_mode' => $corrected['tax_mode'],
+                'future_mikro_write_state' => $corrected['future_mikro_write_state'],
+                'future_order_trigger' => $corrected['future_order_trigger'],
+                'finance_review_required' => false,
+                'delivery_status' => 'pending',
+                'payment_collection_mode' => $corrected['payment_collection_mode'],
+                'payment_status' => $paymentStatus,
+                'payment_status_source' => 'system',
+                'payment_status_changed_by' => null,
+                'payment_status_changed_at' => null,
+                'payment_status_reason' => null,
+                'charged_amount' => $collectionAmount,
+                'collection_amount' => $collectionAmount,
+                'payment_link_required' => $corrected['payment_link_required'],
+                'collection_required' => $corrected['collection_required'],
+                'shipment_required' => $corrected['shipment_required'],
+                'future_carrier_state' => $corrected['future_carrier_state'],
+                'description2_preview' => $corrected['description2_preview'],
+                'context_hash' => $corrected['context_hash'],
+                'idempotency_key' => hash('sha256', 'payment-order-context-correction|'.$commandKey),
+                'correlation_id' => $correlationId,
+                'revision' => $revision,
+                'created_by' => $actor->getAuthIdentifier(),
+                'metadata' => json_encode($sourceMetadata, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $contextId = DB::table(self::TABLE)->insertGetId($payload);
+
+            DB::table(self::ITEM_TABLE)->insert($sourceLines->map(function (object $line) use ($contextId, $actor, $now): array {
+                $payload = (array) $line;
+                unset($payload['id']);
+                $payload['context_id'] = $contextId;
+                $payload['created_by'] = $actor->getAuthIdentifier();
+                $payload['updated_by'] = $actor->getAuthIdentifier();
+                $payload['created_at'] = $now;
+                $payload['updated_at'] = $now;
+
+                return $payload;
+            })->all());
+
+            $request->events()->create([
+                'event_type' => 'payment_order_context_corrected',
+                'title' => self::CORRECTION_HISTORY_LABEL,
+                'note' => $normalizedReason,
+                'from_status' => $request->workflow_status,
+                'to_status' => $request->workflow_status,
+                'author_user_id' => $actor->getAuthIdentifier(),
+                'metadata' => [
+                    'reason_code' => self::CORRECTION_REASON_FAILED_IYZICO_CREATE_CONTEXT_IDENTITY_REPAIR,
+                    'order_context_id' => $contextId,
+                    'source_context_id' => (int) $source->id,
+                    'source_revision' => (int) $source->revision,
+                    'source_hash' => (string) $source->context_hash,
+                    'previous_context_id' => (int) $latest->id,
+                    'previous_revision' => (int) $latest->revision,
+                    'previous_hash' => (string) $latest->context_hash,
+                    'revision' => $revision,
+                    'context_hash' => $corrected['context_hash'],
+                    'desired_mikro_series' => $corrected['desired_mikro_series'],
+                    'correlation_id' => $correlationId,
+                    'payment_write_count' => 0,
+                    'provider_call_count' => 0,
+                    'mikro_write_count' => 0,
+                    'message_send_count' => 0,
+                ],
+            ]);
+
+            $created = DB::table(self::TABLE)->where('id', $contextId)->firstOrFail();
+
+            return ['context' => $this->rowProjection($created), 'created' => true];
+        });
+    }
+
     /** @return array<string, mixed> */
     public function finalizeWithoutPayment(object $context, ?Authenticatable $actor): array
     {
@@ -1966,55 +2279,7 @@ class TechnicalServicePaymentOrderContextService
             'description2_version' => $descriptionVersion,
         ];
         $normalized['description2_preview'] = $this->renderDescription2($request, $normalized);
-        $identity = [
-            'request_id' => $normalized['request_id'],
-            'root_request_id' => $normalized['root_request_id'],
-            'srv_request_id' => $normalized['srv_request_id'],
-            'payment_purpose' => $purpose,
-            'context_type' => $contextType,
-            'desired_mikro_series' => $desiredMikroSeries,
-            'tax_mode' => $taxMode,
-            'vat_rate' => $vatRate,
-            'billing' => $billing,
-            'shipping_same_as_billing' => $shippingSameAsBilling,
-            'delivery_target' => $deliveryTarget,
-            'shipping' => $shipping,
-            'part_supplier' => $partSupplier,
-            'commercial_mode' => $commercialMode,
-            'delivery_mode' => $deliveryMode,
-            'collection_allocation' => $collectionAllocation,
-            'part' => $purpose === self::PURPOSE_PART_CHARGE ? null : $this->partIdentity($part),
-            'lines' => $purpose === self::PURPOSE_PART_CHARGE
-                ? collect($lines)
-                    ->sortBy('line_key')
-                    ->map(fn (array $line): array => [
-                        'item_code' => $line['item_code'],
-                        'item_kind' => $line['item_kind'],
-                        'quantity' => number_format((float) $line['quantity'], 3, '.', ''),
-                        'gross_unit_price' => $line['gross_unit_price'],
-                        'gross_line_total' => $line['gross_line_total'],
-                        'selected_tax_basis' => $line['selected_tax_basis'] ?? null,
-                        'selected_tax_pointer' => $line['selected_tax_pointer'] ?? null,
-                        'vat_rate_snapshot' => $line['vat_rate_snapshot'] ?? null,
-                        'currency' => $line['currency'],
-                        'serial_tracking_state' => $line['serial_tracking_state'],
-                        'selected_part_serial' => $line['selected_part_serial'],
-                    ])
-                    ->values()
-                    ->all()
-                : null,
-            'related_product_serial' => $normalized['related_product_serial'],
-            'order_line_total' => number_format($orderLineTotal, 2, '.', ''),
-            'collection_amount' => number_format($collectionAmount, 2, '.', ''),
-            'currency' => $currency,
-            'shipment_required' => $shipmentRequired,
-            'payment_link_required' => $paymentLinkRequired,
-            'payment_status' => $paymentStatus,
-            'future_order_trigger' => $futureOrderTrigger,
-            'future_carrier_state' => $futureCarrierState,
-            'description2_version' => $descriptionVersion,
-        ];
-        $normalized['context_hash'] = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $normalized['context_hash'] = $this->contextIdentityHash($normalized);
 
         return $normalized;
     }
@@ -2914,14 +3179,28 @@ class TechnicalServicePaymentOrderContextService
     }
 
     /** @return array<string, mixed> */
+    private function contextMetadata(object $context): array
+    {
+        if (is_array($context->metadata ?? null)) {
+            return $context->metadata;
+        }
+        if (! is_string($context->metadata ?? null) || trim((string) $context->metadata) === '') {
+            return [];
+        }
+
+        $decoded = json_decode((string) $context->metadata, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /** @return array<string, mixed> */
     private function rowProjection(object $row, bool $includeSelectionTokens = true): array
     {
-        $metadata = is_string($row->metadata ?? null)
-            ? json_decode((string) $row->metadata, true)
-            : (is_array($row->metadata ?? null) ? $row->metadata : []);
+        $metadata = $this->contextMetadata($row);
         $stockSnapshot = is_array($metadata['stock_snapshot'] ?? null) ? $metadata['stock_snapshot'] : [];
         $taxProjection = is_array($metadata['tax_projection'] ?? null) ? $metadata['tax_projection'] : [];
         $lineTaxProfiles = is_array($metadata['line_tax_profiles'] ?? null) ? $metadata['line_tax_profiles'] : [];
+        $correction = is_array($metadata['correction'] ?? null) ? $metadata['correction'] : null;
         $lines = DB::table(self::ITEM_TABLE)
             ->where('context_id', (int) $row->id)
             ->orderBy('position')
@@ -3226,6 +3505,22 @@ class TechnicalServicePaymentOrderContextService
             'description2_version' => (int) $row->description2_version,
             'context_hash' => (string) $row->context_hash,
             'revision' => (int) $row->revision,
+            'correction' => $correction === null ? null : [
+                'reason_code' => $correction['reason_code'] ?? null,
+                'reason' => $correction['reason'] ?? null,
+                'history_label' => $correction['history_label'] ?? self::CORRECTION_HISTORY_LABEL,
+                'source_context_id' => is_numeric($correction['source_context_id'] ?? null)
+                    ? (int) $correction['source_context_id']
+                    : null,
+                'source_revision' => is_numeric($correction['source_revision'] ?? null)
+                    ? (int) $correction['source_revision']
+                    : null,
+                'corrected_by' => is_numeric($correction['corrected_by'] ?? null)
+                    ? (int) $correction['corrected_by']
+                    : null,
+                'corrected_at' => $correction['corrected_at'] ?? null,
+                'correlation_id' => $correction['correlation_id'] ?? null,
+            ],
             'created_at' => $row->created_at,
             'updated_at' => $row->updated_at,
             'mikro_write_execution_count' => 0,
@@ -4107,6 +4402,67 @@ class TechnicalServicePaymentOrderContextService
         $text = trim((string) $value);
 
         return $text !== '' ? $text : null;
+    }
+
+    /** @param array<string, mixed> $context */
+    private function contextIdentityHash(array $context): string
+    {
+        $purpose = (string) $context['payment_purpose'];
+        $identity = [
+            'request_id' => $context['request_id'],
+            'root_request_id' => $context['root_request_id'],
+            'srv_request_id' => $context['srv_request_id'],
+            'payment_purpose' => $purpose,
+            'context_type' => $context['context_type'],
+            'desired_mikro_series' => $context['desired_mikro_series'],
+            'tax_mode' => $context['tax_mode'],
+            'vat_rate' => $context['vat_rate'],
+            'billing' => $context['billing'],
+            'shipping_same_as_billing' => $context['shipping_same_as_billing'],
+            'delivery_target' => $context['delivery_target'],
+            'shipping' => $context['shipping'],
+            'part_supplier' => $context['part_supplier'],
+            'commercial_mode' => $context['commercial_mode'],
+            'delivery_mode' => $context['delivery_mode'],
+            'collection_allocation' => $context['collection_allocation'],
+            'part' => $purpose === self::PURPOSE_PART_CHARGE
+                ? null
+                : $this->partIdentity(is_array($context['part'] ?? null) ? $context['part'] : null),
+            'lines' => $purpose === self::PURPOSE_PART_CHARGE
+                ? collect($context['lines'] ?? [])
+                    ->sortBy('line_key')
+                    ->map(fn (array $line): array => [
+                        'item_code' => $line['item_code'],
+                        'item_kind' => $line['item_kind'],
+                        'quantity' => number_format((float) $line['quantity'], 3, '.', ''),
+                        'gross_unit_price' => $line['gross_unit_price'],
+                        'gross_line_total' => $line['gross_line_total'],
+                        'selected_tax_basis' => $line['selected_tax_basis'] ?? null,
+                        'selected_tax_pointer' => $line['selected_tax_pointer'] ?? null,
+                        'vat_rate_snapshot' => $line['vat_rate_snapshot'] ?? null,
+                        'currency' => $line['currency'],
+                        'serial_tracking_state' => $line['serial_tracking_state'],
+                        'selected_part_serial' => $line['selected_part_serial'] ?? null,
+                    ])
+                    ->values()
+                    ->all()
+                : null,
+            'related_product_serial' => $context['related_product_serial'],
+            'order_line_total' => number_format((float) $context['order_line_total'], 2, '.', ''),
+            'collection_amount' => number_format((float) $context['collection_amount'], 2, '.', ''),
+            'currency' => $context['currency'],
+            'shipment_required' => $context['shipment_required'],
+            'payment_link_required' => $context['payment_link_required'],
+            'payment_status' => $context['payment_status'],
+            'future_order_trigger' => $context['future_order_trigger'],
+            'future_carrier_state' => $context['future_carrier_state'],
+            'description2_version' => $context['description2_version'],
+        ];
+
+        return hash('sha256', json_encode(
+            $identity,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
+        ));
     }
 
     /** @param array<string, mixed>|null $part @return array<string, mixed>|null */

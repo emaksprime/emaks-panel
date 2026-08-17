@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { ServiceRequestDetails } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import type { ServiceRequestAssignmentDraft } from '../../resources/js/components/technical-service/ServiceRequestDetails'
 import { TechnicalServiceKanbanCard } from '../../resources/js/components/technical-service/TechnicalServiceKanbanCard'
-import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionPayload, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinanceCollection, ServiceRequestFinancePayout, ServiceRequestFinanceSummary, ServiceRequestPaymentEarningImpact, ServiceRequestPaymentOrderContext, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
+import type { ServiceRequest, ServiceRequestCanonicalEarningSnapshot, ServiceRequestCompanyPaymentDecisionPayload, ServiceRequestCompanyPaymentDecisionSubmit, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestFinanceCollection, ServiceRequestFinancePayout, ServiceRequestFinanceSummary, ServiceRequestPaymentEarningImpact, ServiceRequestPaymentOrderContext, ServiceRequestTechnicianEarningMessagePayload } from '../../resources/js/components/technical-service/types'
 import '../../resources/css/app.css'
 
 type HarnessState = {
@@ -1311,6 +1311,79 @@ const sandboxAmbiguousCreateRequest = (): ServiceRequest => {
   }
 }
 
+const contextCorrectionEvents: ServiceRequestEvent[] = [
+  {
+    id: '1940',
+    event_type: 'payment_order_context_corrected',
+    event_type_label: 'Ödeme/sipariş bağlamı operasyon düzeltmesiyle yeniden yetkilendirildi.',
+    title: 'Ödeme/sipariş bağlamı operasyon düzeltmesiyle yeniden yetkilendirildi.',
+    title_label: 'Ödeme/sipariş bağlamı operasyon düzeltmesiyle yeniden yetkilendirildi.',
+    note: 'Başarısız Iyzico bağlantı denemesindeki bağlam kimliği düzeltildi.',
+    author_user_id: 1,
+    created_at: '2026-08-17T10:30:00+03:00',
+  },
+]
+
+const contextCorrectionRequest = (): ServiceRequest => {
+  const base = sandboxPendingCreateRequest()
+  const sourceContext = base.saleAndPayment?.part_order_context
+
+  if (!sourceContext) {
+    throw new Error('Correction fixture context missing.')
+  }
+
+  const context: ServiceRequestPaymentOrderContext = {
+    ...sourceContext,
+    id: 9810,
+    payment_id: null,
+    revision: 11,
+    context_hash: 'f'.repeat(64),
+    state: 'draft',
+    state_label: 'Ödeme bağlantısı hazırlanabilir',
+    part_supplier: 'emaks_prime',
+    part_supplier_label: 'EMAKS Prime',
+    commercial_mode: 'paid',
+    commercial_mode_label: 'Ücretli',
+    delivery_mode: 'shipment',
+    delivery_mode_label: 'Sevk',
+    delivery_target: 'billing_address',
+    delivery_target_label: 'Fatura adresi',
+    desired_mikro_series: 'S',
+    tax_label: '%20 · toplam fiyata dahil',
+    payment_status: 'pending',
+    payment_status_label: 'Ödeme bekleniyor',
+    payment_status_source: 'system',
+    payment_status_source_label: 'Sistem',
+    order_line_total: 2000,
+    order_line_total_label: '2.000,00 TL',
+    order_reference_total: 2000,
+    order_reference_total_label: '2.000,00 TL',
+    collection_amount: 2000,
+    collection_amount_label: '2.000,00 TL',
+    gross_total: 2000,
+    gross_total_label: '2.000,00 TL',
+    net_total: 1666.66,
+    net_total_label: '1.666,66 TL',
+    vat_total: 333.34,
+    vat_total_label: '333,34 TL',
+  }
+
+  return {
+    ...base,
+    mrn: 'MRN-DOM-CONTEXT-CORRECTION',
+    saleAndPayment: {
+      ...base.saleAndPayment,
+      part_order_context: context,
+      mount_payments: {
+        rows: [], paid_rows: [], pending_rows: [], cancelled_rows: [], latest: null,
+        paid_total_amount: 0, paid_total_amount_label: '0,00 TL',
+        pending_total_amount: 0, pending_total_amount_label: '0,00 TL',
+        has_paid: false, has_pending: false, has_cancelled: false,
+      },
+    },
+  }
+}
+
 function initialHarnessRequest(): ServiceRequest {
   const persisted = window.sessionStorage.getItem(persistedPartContextStorageKey)
 
@@ -1424,6 +1497,7 @@ function Harness() {
     return state.modalMountCount
   })
   const [request, setRequest] = useState(initialHarnessRequest)
+  const [events, setEvents] = useState<ServiceRequestEvent[]>([])
   const [saveCount, setSaveCount] = useState(0)
   const [lastSavePayload, setLastSavePayload] = useState<HarnessState['lastSavePayload']>(null)
   const [sendCount, setSendCount] = useState(0)
@@ -1470,6 +1544,20 @@ function Harness() {
 
   return (
     <>
+      <button
+        type="button"
+        data-testid="load-context-correction-scenario"
+        onClick={() => {
+          state.boardRefetchCount = 0
+          state.scrollResetCount = 0
+          state.paymentCreateCount = 0
+          state.lastPaymentCreatePayload = null
+          setPaymentCreateCount(0)
+          setLastPaymentCreatePayload(null)
+          setEvents(contextCorrectionEvents)
+          setRequest(contextCorrectionRequest())
+        }}
+      >Bağlam düzeltme senaryosunu yükle</button>
       <button
         type="button"
         data-testid="load-company-payment-scenario"
@@ -1685,7 +1773,7 @@ function Harness() {
       </section>
       <ServiceRequestDetails
         request={request}
-        events={[]}
+        events={events}
         loading={false}
         extraPaymentCreateLoading={paymentCreateInFlight}
         displayMrn={request.mrn}

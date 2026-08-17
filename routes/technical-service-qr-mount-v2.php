@@ -237,6 +237,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::patch('requests/{technicalServiceRequest}/payments/order-context/{orderContext}/state', [TechnicalServiceController::class, 'updatePaymentOrderContextState'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.order-context.state');
+        Route::post('requests/{technicalServiceRequest}/payment-order-context/corrections', [TechnicalServiceController::class, 'correctPaymentOrderContext'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.requests.payment-order-context.corrections.store');
         Route::get('requests/{technicalServiceRequest}/payments/{payment}/status', [TechnicalServiceController::class, 'mountPaymentStatus'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.status');
