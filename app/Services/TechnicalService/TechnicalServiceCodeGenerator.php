@@ -2,26 +2,30 @@
 
 namespace App\Services\TechnicalService;
 
-use App\Models\TechnicalServiceRequest;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class TechnicalServiceCodeGenerator
 {
+    public const ROOT_MRN_SEQUENCE = 'technical_service_root_mrn_sequence';
+
     public function nextMrn(?string $customerName = null, ?CarbonInterface $date = null): string
     {
         $date ??= now();
         $yearMonth = $date->format('ym');
         $day = $date->format('d');
         $initials = $this->customerInitials($customerName);
-        $sequence = $this->nextDailySequence($yearMonth, $day);
+        $sequence = $this->nextGlobalSequence();
 
-        do {
-            $mrn = sprintf('MRN-%s%s%s%04d', $yearMonth, $initials, $day, $sequence);
-            $sequence++;
-        } while (TechnicalServiceRequest::query()->where('mrn', $mrn)->exists());
-
-        return $mrn;
+        return sprintf(
+            'MRN-%s%s%s%s',
+            $yearMonth,
+            $initials,
+            $day,
+            str_pad((string) $sequence, 4, '0', STR_PAD_LEFT),
+        );
     }
 
     public function serviceCodeForRoot(string $rootMrn, int $sequence): string
@@ -29,22 +33,22 @@ class TechnicalServiceCodeGenerator
         return sprintf('SRV-%s-%03d', $this->rootMrnBody($rootMrn), max(1, $sequence));
     }
 
-    private function nextDailySequence(string $yearMonth, string $day): int
+    private function nextGlobalSequence(): int
     {
-        $pattern = sprintf('MRN-%s__%s____', $yearMonth, $day);
-        $max = TechnicalServiceRequest::query()
-            ->where('mrn', 'like', $pattern)
-            ->pluck('mrn')
-            ->map(function (string $mrn): int {
-                if (preg_match('/(\d{4})$/', $mrn, $matches)) {
-                    return (int) $matches[1];
-                }
+        if (DB::getDriverName() !== 'pgsql') {
+            throw new RuntimeException('Global root MRN allocation requires PostgreSQL.');
+        }
 
-                return 0;
-            })
-            ->max();
+        $row = DB::selectOne(
+            "select nextval('technical_service_root_mrn_sequence'::regclass) as sequence_value"
+        );
+        $sequence = (int) ($row?->sequence_value ?? 0);
 
-        return ((int) $max) + 1;
+        if ($sequence < 1) {
+            throw new RuntimeException('Global root MRN sequence returned an invalid value.');
+        }
+
+        return $sequence;
     }
 
     private function customerInitials(?string $customerName): string

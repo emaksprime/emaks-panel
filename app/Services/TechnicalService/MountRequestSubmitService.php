@@ -10,6 +10,7 @@ use App\Models\TechnicalServiceRequestUpload;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class MountRequestSubmitService
@@ -31,6 +32,50 @@ class MountRequestSubmitService
      */
     public function submit(TechnicalServiceMountSession $session, array $payload = []): TechnicalServiceRequest
     {
+        $existing = $this->existingRequestForSession((int) $session->getKey());
+
+        if ($existing instanceof TechnicalServiceRequest) {
+            return $existing->loadMissing(['requestSerials', 'uploads']);
+        }
+
+        $location = $this->resolveLocation($payload);
+
+        /** @var array{request:TechnicalServiceRequest,created:bool} $result */
+        $result = DB::transaction(function () use ($session, $payload, $location): array {
+            $lockedSession = TechnicalServiceMountSession::query()
+                ->whereKey($session->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $existing = $this->existingRequestForSession((int) $lockedSession->getKey());
+
+            if ($existing instanceof TechnicalServiceRequest) {
+                return ['request' => $existing, 'created' => false];
+            }
+
+            return [
+                'request' => $this->createRequest($lockedSession, $payload, $location),
+                'created' => true,
+            ];
+        });
+
+        $request = $result['request'];
+
+        if ($result['created']) {
+            $this->queueRequestCreatedMessages($request);
+        }
+
+        return $request->fresh(['requestSerials', 'uploads']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  array{latitude:?float,longitude:?float,formatted_address:?string,source:?string,accuracy:?string,note:?string,warning:?string,geocode_attempted:bool}  $location
+     */
+    private function createRequest(
+        TechnicalServiceMountSession $session,
+        array $payload,
+        array $location,
+    ): TechnicalServiceRequest {
         $session->loadMissing(['qrLink', 'payments']);
         $link = $session->qrLink;
         $context = $session->context_payload ?? [];
@@ -47,7 +92,6 @@ class MountRequestSubmitService
                 ? self::CHECK_PENDING_WARNING
                 : null,
         ]));
-        $location = $this->resolveLocation($payload);
         $requestContextPayload = Arr::except($context, ['secret', 'token']);
 
         if (($location['warning'] ?? null) !== null) {
@@ -170,6 +214,19 @@ class MountRequestSubmitService
             ],
         ]);
 
+        return $request;
+    }
+
+    private function existingRequestForSession(int $sessionId): ?TechnicalServiceRequest
+    {
+        return TechnicalServiceRequest::query()
+            ->where('mount_session_id', $sessionId)
+            ->oldest('id')
+            ->first();
+    }
+
+    private function queueRequestCreatedMessages(TechnicalServiceRequest $request): void
+    {
         $this->workflowMessages->queueWorkflowDispatches(
             $request->refresh(),
             'new_request_created_ops',
@@ -211,8 +268,6 @@ class MountRequestSubmitService
                 ],
             ],
         );
-
-        return $request->fresh(['requestSerials', 'uploads']);
     }
 
     /**

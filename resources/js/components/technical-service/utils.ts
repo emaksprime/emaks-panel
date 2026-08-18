@@ -117,7 +117,7 @@ export const formatTechnicalServiceMrn = (
   }
 
   const [, year, month, day, sequenceRaw] = match
-  const sequence = sequenceRaw.slice(-3).padStart(3, '0')
+  const sequence = sequenceRaw.padStart(3, '0')
   const location = request.city || request.province || request.district || ''
   const locationCode = normalizeLocationCode(location)
 
