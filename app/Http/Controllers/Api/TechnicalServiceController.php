@@ -1370,14 +1370,16 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        $session = $this->paymentMountSessionForRequest($technicalServiceRequest);
+        $purpose = (string) $validated['purpose'];
+        $paymentScopeRequest = $this->assignmentSettlementService->paymentRequestForPurpose($technicalServiceRequest, $purpose);
+        $session = $this->paymentMountSessionForRequest($paymentScopeRequest);
         $serialIds = collect($validated['selected_serial_ids'] ?? [])
             ->map(fn (mixed $id): int => (int) $id)
             ->filter(fn (int $id): bool => $id > 0)
             ->unique()
             ->values();
         $validSerialIds = TechnicalServiceRequestSerial::query()
-            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->where('technical_service_request_id', $paymentScopeRequest->id)
             ->whereIn('id', $serialIds)
             ->pluck('id')
             ->map(fn (mixed $id): int => (int) $id)
@@ -1388,7 +1390,7 @@ class TechnicalServiceController extends Controller
             ]);
         }
         $selectedSerialSnapshots = TechnicalServiceRequestSerial::query()
-            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->where('technical_service_request_id', $paymentScopeRequest->id)
             ->whereIn('id', $validSerialIds)
             ->orderBy('id')
             ->get(['id', 'mrn', 'linked_mrn', 'serial_number', 'customer_phone'])
@@ -1402,7 +1404,6 @@ class TechnicalServiceController extends Controller
             ->values()
             ->all();
         $currency = strtoupper($validated['currency'] ?? 'TRY');
-        $purpose = (string) $validated['purpose'];
         $chargeType = (string) ($validated['charge_type'] ?? $purpose);
         $isOrderContextPurpose = in_array($purpose, [
             TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION,
@@ -1481,7 +1482,7 @@ class TechnicalServiceController extends Controller
             $freshPaymentRequested = (bool) ($validated['fresh_payment_requested'] ?? false);
             if ($freshPaymentRequested) {
                 $retryPlan = $orderContexts->paymentRetryPlan(
-                    $technicalServiceRequest,
+                    $paymentScopeRequest,
                     $purpose,
                     $orderContextInput,
                     (float) $totalAmount,
@@ -1499,7 +1500,7 @@ class TechnicalServiceController extends Controller
                 if (is_numeric($retryPlan['supersede_payment_id'] ?? null)) {
                     $supersededPayment = TechnicalServiceMountPayment::query()
                         ->whereKey((int) $retryPlan['supersede_payment_id'])
-                        ->where('technical_service_request_id', $technicalServiceRequest->id)
+                        ->where('technical_service_request_id', $paymentScopeRequest->id)
                         ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
                         ->first();
                     if (! $supersededPayment instanceof TechnicalServiceMountPayment) {
@@ -1533,7 +1534,7 @@ class TechnicalServiceController extends Controller
                 }
             }
             $preparedContext = $orderContexts->prepare(
-                $technicalServiceRequest,
+                $paymentScopeRequest,
                 $purpose,
                 $orderContextInput,
                 (float) $totalAmount,
@@ -1604,7 +1605,7 @@ class TechnicalServiceController extends Controller
             $paymentProviderSettings->assertCompanyRecipientAddressReady();
         }
         $companyRecipient = $paymentProviderSettings->companyRecipientForPayment();
-        $customerServiceAddress = trim((string) ($technicalServiceRequest->location_formatted_address ?: $technicalServiceRequest->service_address));
+        $customerServiceAddress = trim((string) ($paymentScopeRequest->location_formatted_address ?: $paymentScopeRequest->service_address));
 
         $source = $isOrderContextPurpose
             ? 'operation_order_context_payment'
@@ -1624,23 +1625,25 @@ class TechnicalServiceController extends Controller
                 'operations_review_required' => false,
                 'recorded_at' => now()->toIso8601String(),
             ],
-            'technical_service_request_id' => $technicalServiceRequest->id,
-            'root_request_id' => $technicalServiceRequest->parent_request_id ?: $technicalServiceRequest->id,
-            'mrn' => $technicalServiceRequest->mrn,
-            'request_code' => $technicalServiceRequest->mrn,
-            'root_mrn' => $technicalServiceRequest->root_mrn ?: $technicalServiceRequest->mrn,
-            'service_code' => $technicalServiceRequest->service_code,
-            'serial_number' => $technicalServiceRequest->serial_number,
-            'customer_name' => $technicalServiceRequest->customer_name,
-            'customer_phone' => $technicalServiceRequest->customer_phone,
+            'technical_service_request_id' => $paymentScopeRequest->id,
+            'root_request_id' => $paymentScopeRequest->parent_request_id ?: $paymentScopeRequest->id,
+            'mrn' => $paymentScopeRequest->mrn,
+            'request_code' => $paymentScopeRequest->service_code ?: $paymentScopeRequest->mrn,
+            'root_mrn' => $paymentScopeRequest->root_mrn ?: $paymentScopeRequest->mrn,
+            'service_code' => $paymentScopeRequest->service_code,
+            'serial_number' => $paymentScopeRequest->serial_number,
+            'customer_name' => $paymentScopeRequest->customer_name,
+            'customer_phone' => $paymentScopeRequest->customer_phone,
+            'initiated_from_request_id' => $technicalServiceRequest->id,
+            'initiated_from_request_code' => $technicalServiceRequest->service_code ?: $technicalServiceRequest->mrn,
             'payment_recipient' => $companyRecipient,
             'payment_recipient_address' => $companyRecipient['company_address'] ?? null,
             'payment_recipient_address_source' => 'technical_service_payment_provider_settings',
             'customer_address' => $customerServiceAddress !== '' ? $customerServiceAddress : null,
             'customer_service_address' => $customerServiceAddress !== '' ? $customerServiceAddress : null,
             'customer_address_role' => 'service_address',
-            'customer_city' => $technicalServiceRequest->customer_city,
-            'customer_district' => $technicalServiceRequest->customer_district,
+            'customer_city' => $paymentScopeRequest->customer_city,
+            'customer_district' => $paymentScopeRequest->customer_district,
             'route_quote_id' => $validated['route_quote_id'] ?? null,
             'technician_id' => isset($validated['technician_id']) ? (int) $validated['technician_id'] : null,
             'selected_serial_ids' => $selectedSerialIds,
@@ -1669,7 +1672,7 @@ class TechnicalServiceController extends Controller
 
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
-            'technical_service_request_id' => $technicalServiceRequest->id,
+            'technical_service_request_id' => $paymentScopeRequest->id,
             'provider' => $providerFamily,
             'provider_reference' => null,
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
@@ -1730,7 +1733,7 @@ class TechnicalServiceController extends Controller
         }
 
         if (! $isCustomerCharge) {
-            $technicalServiceRequest->forceFill([
+            $paymentScopeRequest->forceFill([
                 'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
                 'mount_payment_label' => 'Ek ödeme bekleniyor',
                 'mount_payment_provider' => $payment->provider,
@@ -1740,7 +1743,7 @@ class TechnicalServiceController extends Controller
 
         if ($validSerialIds->isNotEmpty()) {
             TechnicalServiceRequestSerial::query()
-                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->where('technical_service_request_id', $paymentScopeRequest->id)
                 ->whereIn('id', $validSerialIds)
                 ->get()
                 ->each(function (TechnicalServiceRequestSerial $serial) use ($payment): void {
@@ -1757,7 +1760,7 @@ class TechnicalServiceController extends Controller
                 });
         }
 
-        $technicalServiceRequest->events()->create([
+        $paymentScopeRequest->events()->create([
             'event_type' => 'mount_payment_link_created',
             'title' => 'Ödeme linki oluşturuldu',
             'note' => $isCustomerCharge
@@ -1777,6 +1780,7 @@ class TechnicalServiceController extends Controller
                 'order_context_hash' => $preparedContext ? (string) $preparedContext['context']->context_hash : null,
                 'mikro_write_execution_count' => 0,
                 'carrier_execution_count' => 0,
+                'initiated_from_request_id' => $technicalServiceRequest->id,
             ],
         ]);
 
@@ -1801,7 +1805,7 @@ class TechnicalServiceController extends Controller
         TechnicalServicePaymentProviderReconciliationService $reconciliationService,
         TechnicalServicePaymentReceiptNotificationService $receiptNotificationService,
     ): JsonResponse {
-        abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+        abort_unless($this->assignmentSettlementService->paymentIsVisibleFromRequest($payment, $technicalServiceRequest), 404);
 
         if ($request->boolean('retry_receipt') && $request->boolean('sync_provider')) {
             throw ValidationException::withMessages([
@@ -1867,7 +1871,7 @@ class TechnicalServiceController extends Controller
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServiceMountPayment $payment,
     ): JsonResponse {
-        abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+        abort_unless($this->assignmentSettlementService->paymentIsVisibleFromRequest($payment, $technicalServiceRequest), 404);
         $validated = $request->validate([
             'payment_id' => ['required', 'integer', 'min:1'],
             'send_request_id' => ['required', 'uuid'],
@@ -2061,7 +2065,7 @@ class TechnicalServiceController extends Controller
         PaymentProviderManager $paymentProviderManager,
         TechnicalServicePaymentOrderContextService $orderContexts,
     ): JsonResponse {
-        abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+        abort_unless($this->assignmentSettlementService->paymentIsVisibleFromRequest($payment, $technicalServiceRequest), 404);
 
         $validated = $request->validate([
             'reason' => ['nullable', 'string', 'max:500'],
@@ -3484,6 +3488,11 @@ class TechnicalServiceController extends Controller
     ): TechnicalServiceAssignmentOffer {
         $submittedLaborAmount = $this->nullableMoney($offerPayload['labor_amount'] ?? null);
         $laborAmount = $submittedLaborAmount ?? $this->nullableMoney($request->technician_payment_amount);
+        if ($laborAmount === null && ($request->parent_request_id !== null || filled($request->service_code))) {
+            throw ValidationException::withMessages([
+                'assignment_offer.labor_amount' => 'OPS servis bedeli belirlenmeden SRV hakedişi kesinleştirilemez.',
+            ]);
+        }
         $laborAmount ??= 0.0;
         $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount'] ?? null);
         if ($routeFeeAmount === null) {

@@ -140,7 +140,7 @@ const serviceBaseAmount = (serviceType?: string) => {
   if (normalized === 'servis' || normalized === 'ariza') {
     return {
       serviceTypeLabel: normalized === 'ariza' ? 'Arıza' : 'Servis',
-      amount: 1800,
+      amount: null,
     }
   }
 

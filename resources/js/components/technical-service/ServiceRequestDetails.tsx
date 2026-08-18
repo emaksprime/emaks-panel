@@ -303,8 +303,8 @@ type ServiceRequestDetailsProps = {
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string>, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<void>
   onRevisitServiceVisitCreate?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
-  onPartRequestCreate?: (payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null }) => void | Promise<void>
-  onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
+  onPartRequestCreate?: (payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, service_visit_route_fee_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null }) => void | Promise<void>
+  onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, service_visit_route_fee_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onPartRequestManualPaymentConfirm?: (partRequestId: number | string, payload: { explanation: string }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, expected_earning_revision: string, note?: string | null, company_payment_decisions?: ServiceRequestCompanyPaymentDecisionSubmit[] }) => void | Promise<AssignmentOfferUpdateResult | void>
@@ -2052,6 +2052,7 @@ export function ServiceRequestDetails({
   const [partCreateQuantity, setPartCreateQuantity] = useState('1')
   const [partCreateMode, setPartCreateMode] = useState<'free' | 'chargeable'>('free')
   const [partCreateServiceAmount, setPartCreateServiceAmount] = useState('')
+  const [partCreateRouteFeeAmount, setPartCreateRouteFeeAmount] = useState('')
   const [partCreatePartAmount, setPartCreatePartAmount] = useState('')
   const [partCreateNote, setPartCreateNote] = useState('')
   const [partCreateMessage, setPartCreateMessage] = useState('')
@@ -2060,6 +2061,7 @@ export function ServiceRequestDetails({
   const [partDecisionRequestId, setPartDecisionRequestId] = useState<number | string | null>(null)
   const [partDecisionMode, setPartDecisionMode] = useState<'free' | 'chargeable'>('free')
   const [partDecisionServiceAmount, setPartDecisionServiceAmount] = useState('')
+  const [partDecisionRouteFeeAmount, setPartDecisionRouteFeeAmount] = useState('')
   const [partDecisionPartAmount, setPartDecisionPartAmount] = useState('')
   const [partDecisionMessage, setPartDecisionMessage] = useState('')
   const [opsExtraFiles, setOpsExtraFiles] = useState<File[]>([])
@@ -3494,6 +3496,9 @@ export function ServiceRequestDetails({
     ? financeRootPaymentHistory
     : financeCurrentPaymentHistory
   const selectedIncludedCollectionSources = selectedFinancialCollection?.included_collection_sources ?? []
+  const selectedCurrentPartInformation = financialScope === 'current_srv'
+    ? selectedFinancialPaymentHistory?.paid_rows.find((payment) => Number(payment.part_information_amount ?? 0) > 0) ?? null
+    : null
   const selectedFinancialResultState = isCurrentFinancialScope
     ? financialResultState
     : selectedFinancialPayload?.result_state ?? 'definitive'
@@ -4559,6 +4564,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
     setPartDecisionRequestId(partRequest.id)
     setPartDecisionMode(partRequest.charge_decision === 'chargeable' ? 'chargeable' : warrantyIsActive ? 'free' : 'chargeable')
     setPartDecisionServiceAmount(partRequest.service_amount !== null && partRequest.service_amount !== undefined ? String(partRequest.service_amount) : '')
+    setPartDecisionRouteFeeAmount(partRequest.service_visit_route_fee_amount !== null && partRequest.service_visit_route_fee_amount !== undefined ? String(partRequest.service_visit_route_fee_amount) : '')
     setPartDecisionPartAmount(partRequest.part_amount !== null && partRequest.part_amount !== undefined ? String(partRequest.part_amount) : '')
     setPartDecisionMessage(partRequest.customer_message ?? partRequest.partner_message ?? '')
   }
@@ -4574,6 +4580,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
     setPartCreateQuantity('1')
     setPartCreateMode('free')
     setPartCreateServiceAmount('')
+    setPartCreateRouteFeeAmount('')
     setPartCreatePartAmount('')
     setPartCreateNote('')
     setPartCreateMessage('')
@@ -4586,7 +4593,8 @@ errors.lastName = 'Soyad alanı zorunludur.'
 
     const partName = partCreateName.trim()
     const quantity = Math.max(1, Math.round(parseNumericInput(partCreateQuantity) ?? 1))
-    const serviceAmount = parseNumericInput(partCreateServiceAmount) ?? 0
+    const serviceAmount = parseNumericInput(partCreateServiceAmount)
+    const routeFeeAmount = parseNumericInput(partCreateRouteFeeAmount)
     const partAmount = parseNumericInput(partCreatePartAmount) ?? 0
     const note = partCreateNote.trim()
     const message = partCreateMessage.trim()
@@ -4619,6 +4627,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         quantity,
         charge_decision: partCreateMode,
         service_amount: serviceAmount,
+        service_visit_route_fee_amount: routeFeeAmount,
         part_amount: partAmount,
         note: note || null,
         partner_message: partCreateMode === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : message,
@@ -4636,6 +4645,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
     setPartDecisionRequestId(null)
     setPartDecisionMode('free')
     setPartDecisionServiceAmount('')
+    setPartDecisionRouteFeeAmount('')
     setPartDecisionPartAmount('')
     setPartDecisionMessage('')
   }
@@ -4644,7 +4654,8 @@ errors.lastName = 'Soyad alanı zorunludur.'
       return
     }
 
-    const serviceAmount = parseNumericInput(partDecisionServiceAmount) ?? 0
+    const serviceAmount = parseNumericInput(partDecisionServiceAmount)
+    const routeFeeAmount = parseNumericInput(partDecisionRouteFeeAmount)
     const partAmount = parseNumericInput(partDecisionPartAmount) ?? 0
     const message = partDecisionMessage.trim()
 
@@ -4669,6 +4680,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
         partner_message: partDecisionMode === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : message,
         charge_decision: partDecisionMode,
         service_amount: serviceAmount,
+        service_visit_route_fee_amount: routeFeeAmount,
         part_amount: partAmount,
         customer_message: partDecisionMode === 'chargeable' ? message : null,
       })
@@ -6034,13 +6046,19 @@ errors.lastName = 'Soyad alanı zorunludur.'
               Ücretli
             </button>
           </div>
+          <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Child SRV işçilik bedeli (OPS)
+              <Input type="number" inputMode="decimal" min="0" step="1" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} placeholder="Belirlenmedi" />
+            </label>
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Child SRV yol hakedişi (OPS)
+              <Input type="number" inputMode="decimal" min="0" step="1" value={partCreateRouteFeeAmount} onChange={(event) => setPartCreateRouteFeeAmount(event.target.value)} placeholder="Belirlenmedi" />
+            </label>
+          </div>
           {partCreateMode === 'chargeable' ? (
             <div className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                  Servis bedeli
-                  <Input type="number" inputMode="decimal" min="0" step="1" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} />
-                </label>
+              <div className="grid gap-3 sm:grid-cols-2">
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Parça bedeli
                   <Input type="number" inputMode="decimal" min="0" step="1" value={partCreatePartAmount} onChange={(event) => setPartCreatePartAmount(event.target.value)} />
@@ -6096,13 +6114,19 @@ errors.lastName = 'Soyad alanı zorunludur.'
             Ücretli
           </button>
         </div>
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            Child SRV işçilik bedeli (OPS)
+            <Input type="number" inputMode="decimal" min="0" step="1" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} placeholder="Belirlenmedi" />
+          </label>
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            Child SRV yol hakedişi (OPS)
+            <Input type="number" inputMode="decimal" min="0" step="1" value={partDecisionRouteFeeAmount} onChange={(event) => setPartDecisionRouteFeeAmount(event.target.value)} placeholder="Belirlenmedi" />
+          </label>
+        </div>
         {partDecisionMode === 'chargeable' ? (
           <div className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                Servis bedeli
-                <Input type="number" inputMode="decimal" min="0" step="1" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} />
-              </label>
+            <div className="grid gap-3 sm:grid-cols-2">
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Parça bedeli
                 <Input type="number" inputMode="decimal" min="0" step="1" value={partDecisionPartAmount} onChange={(event) => setPartDecisionPartAmount(event.target.value)} />
@@ -6139,6 +6163,43 @@ errors.lastName = 'Soyad alanı zorunludur.'
     </div>
   ) : null
   const selectedHistoryStartTimestamp = selectedHistoryRecord?.technician_arrived_at ?? selectedHistoryRecord?.field_started_at ?? null
+  const renderHistoryDocumentGroup = (
+    title: string,
+    documents: NonNullable<typeof selectedHistoryRecord>['documents'],
+    emptyLabel: string,
+  ) => (
+    <div className="grid gap-2">
+      <p className="text-xs font-semibold text-slate-700">{title}</p>
+      {(documents?.length ?? 0) > 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {documents?.map((document) => {
+            const documentUrl = document.preview_url ?? document.download_url ?? document.url ?? ''
+
+            return (
+              <div key={`${title}-${String(document.id ?? document.field_code ?? document.original_name)}`} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                {document.preview_url ? (
+                  <img src={document.preview_url} alt={document.label ?? document.field_code ?? 'Belge'} className="h-32 w-full object-cover" />
+                ) : (
+                  <div className="flex h-32 items-center justify-center bg-slate-100 text-xs font-semibold text-slate-500">Önizleme yok</div>
+                )}
+                <div className="grid gap-1 px-3 py-2 text-xs">
+                  <span className="font-semibold text-slate-800">{document.label ?? document.field_code ?? 'Belge'}</span>
+                  <span className="text-slate-500">{document.source_label ?? title}</span>
+                  {documentUrl ? (
+                    <a href={documentUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">
+                      Belgeyi aç
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">{emptyLabel}</p>
+      )}
+    </div>
+  )
   const historyRecordModal = selectedHistoryRecord ? (
     <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/55 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="SRV ve ana MRN geçmiş detayı">
       <div className="max-h-[92dvh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-violet-100 bg-white p-5 shadow-2xl">
@@ -6146,6 +6207,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">SRV / Ana MRN Geçmiş Detayı</p>
             <h3 className="mt-1 text-xl font-bold text-slate-950">{selectedHistoryRecord.service_code || selectedHistoryRecord.mrn}</h3>
+            {selectedHistoryRecord.service_code ? <p className="mt-1 text-sm font-semibold text-slate-700">Kök MRN: {selectedHistoryRecord.root_mrn ?? serviceVisitHistory?.root_mrn ?? '-'}</p> : null}
             <p className="mt-1 text-sm text-slate-600">{[selectedHistoryRecord.service_visit_reason_label, selectedHistoryRecord.workflow_status ?? selectedHistoryRecord.status].filter(Boolean).join(' · ')}</p>
           </div>
           <Button type="button" variant="ghost" onClick={() => setHistoryRecordId(null)}>
@@ -6183,35 +6245,11 @@ errors.lastName = 'Soyad alanı zorunludur.'
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Önceki saha belgeleri</p>
-            {(selectedHistoryRecord.documents?.length ?? 0) > 0 ? (
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                {selectedHistoryRecord.documents?.map((document) => {
-                  const documentUrl = document.preview_url ?? document.download_url ?? document.url ?? ''
-
-                  return (
-                    <div key={String(document.id ?? document.field_code ?? document.original_name)} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                      {document.preview_url ? (
-                        <img src={document.preview_url} alt={document.label ?? document.field_code ?? 'Belge'} className="h-32 w-full object-cover" />
-                      ) : (
-                        <div className="flex h-32 items-center justify-center bg-slate-100 text-xs font-semibold text-slate-500">Önizleme yok</div>
-                      )}
-                      <div className="grid gap-2 px-3 py-2 text-xs">
-                        <span className="font-semibold text-slate-800">{document.label ?? document.field_code ?? 'Belge'}</span>
-                        {documentUrl ? (
-                          <a href={documentUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">
-                            Belgeyi aç
-                          </a>
-                        ) : null}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <p className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">Bu kayda ait saha belgesi bulunmuyor.</p>
-            )}
+          <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Saha belgeleri</p>
+            {renderHistoryDocumentGroup('Kök MRN kapı görselleri', selectedHistoryRecord.root_door_photos, 'Kök MRN kapı görseli bulunmuyor.')}
+            {renderHistoryDocumentGroup('Önceki ziyaret saha belgeleri', selectedHistoryRecord.previous_visit_documents, 'Önceki ziyaret saha belgesi bulunmuyor.')}
+            {renderHistoryDocumentGroup('Bu SRV’ye ait belgeler', selectedHistoryRecord.current_documents ?? selectedHistoryRecord.documents, 'Bu SRV’ye ait saha belgesi bulunmuyor.')}
           </section>
         </div>
 
@@ -8321,7 +8359,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                           <p className="font-semibold">{partRequest.charge_decision_label}</p>
                           {partRequest.charge_decision === 'chargeable' ? (
                             <div className="mt-1 grid gap-1">
-                              <p>Servis: {partRequest.service_amount_label ?? formatMoneyValue(partRequest.service_amount ?? 0)} · Parça: {partRequest.part_amount_label ?? formatMoneyValue(partRequest.part_amount ?? 0)} · Toplam: {partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)}</p>
+                              <p>Servis: {partRequest.service_amount_label ?? 'Belirlenmedi'} · Parça: {partRequest.part_amount_label ?? formatMoneyValue(partRequest.part_amount ?? 0)} · Toplam: {partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)}</p>
                               <p className="font-semibold">
                                 {partRequestPaymentPaid && partRequestProviderPaymentReference
                                   ? `Ödeme ref: ${partRequestProviderPaymentReference} ile online alındı.`
@@ -8351,6 +8389,11 @@ errors.lastName = 'Soyad alanı zorunludur.'
                           ) : partRequestIsFree ? <p className="mt-1 font-semibold">Ücretsiz parça.</p> : null}
                         </div>
                       ) : null}
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                        <p>Child SRV işçilik: <strong>{partRequest.service_amount_label ?? 'Belirlenmedi'}</strong></p>
+                        <p className="mt-1">Yol hakedişi: <strong>{partRequest.service_visit_route_fee_amount_label ?? 'Belirlenmedi'}</strong></p>
+                        {partRequest.service_visit_route_fee_source_label ? <p className="mt-1">Kaynak: {partRequest.service_visit_route_fee_source_label}</p> : null}
+                      </div>
                       {['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status) ? (
                         <div className="grid gap-2">
                           <div className="grid gap-2 sm:grid-cols-2">
@@ -9257,6 +9300,14 @@ errors.lastName = 'Soyad alanı zorunludur.'
                 <MiniMetric label="Operasyon farkı" value={selectedFinancialDifferenceLabel} />
               </div>
 
+              {selectedCurrentPartInformation ? (
+                <div data-testid="current-srv-related-part-collection" className="grid gap-1 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-950 sm:grid-cols-2">
+                  <span>Bu ziyaretle ilişkili parça tahsilatı: <strong>{selectedCurrentPartInformation.part_information_amount_label ?? formatMoneyValue(selectedCurrentPartInformation.part_information_amount)}</strong></span>
+                  <span>Parça Talebi: <strong>#{selectedCurrentPartInformation.part_request_id}</strong></span>
+                  <span className="sm:col-span-2">Parça tahsilatı usta hakedişine ve operasyon farkına dahil değildir.</span>
+                </div>
+              ) : null}
+
               {isRootFinancialScope && selectedFinancialCollection ? (
                 <div data-testid="root-customer-collection-breakdown" className="flex flex-wrap gap-x-4 gap-y-1 rounded-xl border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-950">
                   <span>Hizmet tahsilatı: <strong>{selectedFinancialCollection.service_total_amount_label ?? '0 TL'}</strong></span>
@@ -9313,6 +9364,7 @@ errors.lastName = 'Soyad alanı zorunludur.'
                   <div className="mt-3 grid gap-1 sm:grid-cols-2">
                     <span>İşçilik: <strong>{selectedFinancialPayout?.labor_amount_label ?? '0 TL'}</strong></span>
                     <span>Yol: <strong>{selectedFinancialPayout?.route_fee_amount_label ?? '0 TL'}</strong></span>
+                    {selectedFinancialPayout?.route_source_label ? <span>Yol kaynağı: <strong>{selectedFinancialPayout.route_source_label}</strong></span> : null}
                     {(selectedFinancialPayout?.company_payment_breakdown ?? [])
                       .filter((line) => Number(line.amount ?? 0) > 0)
                       .map((line) => (

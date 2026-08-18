@@ -3286,7 +3286,7 @@ export function TechnicalServiceOperationCenter() {
     )
     setAssignOverrideWithoutPayment(false)
     setAssignOverrideReason('')
-    setAssignOfferLaborAmount(assignmentTechnicianLaborAmount !== null ? String(assignmentTechnicianLaborAmount) : '0')
+    setAssignOfferLaborAmount(assignmentTechnicianLaborAmount !== null ? String(assignmentTechnicianLaborAmount) : '')
     setAssignOfferRouteFeeAmount(assignmentRouteFeeAmount !== null ? String(assignmentRouteFeeAmount) : '0')
     setAssignCustomerDirectAmount('')
     setAssignEarningPaymentSource(canonicalAssignmentPaymentSource)
@@ -4484,7 +4484,7 @@ export function TechnicalServiceOperationCenter() {
 
   const handlePartRequestTransition = async (
     partRequestId: number | string,
-    payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null },
+    payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, service_visit_route_fee_amount?: number | null, part_amount?: number | null, customer_message?: string | null },
   ) => {
     if (!selectedId) {
       return
@@ -4511,7 +4511,7 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const handlePartRequestCreate = async (
-    payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null },
+    payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, service_visit_route_fee_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null },
   ) => {
     if (!selectedId) {
       return

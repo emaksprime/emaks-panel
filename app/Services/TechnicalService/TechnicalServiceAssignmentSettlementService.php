@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarningPayment;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
@@ -31,6 +32,10 @@ class TechnicalServiceAssignmentSettlementService
     public const EARNING_PAYMENT_SOURCE_COMPANY = 'company';
 
     public const EARNING_PAYMENT_SOURCE_CUSTOMER_DIRECT = 'customer_direct';
+
+    public const DECISION_SCOPE_CORRECTION = 'scope_correction';
+
+    public const PURPOSE_SERVICE_COMPONENT = 'service_component';
 
     private const ALLOCATION_TABLE = 'technical_service_payment_settlement_allocations';
 
@@ -253,6 +258,383 @@ class TechnicalServiceAssignmentSettlementService
     }
 
     /**
+     * Materializes the canonical child assignment and settlement only when OPS
+     * has supplied both labor and route authorities.
+     *
+     * @return array{materialized:bool,offer:?TechnicalServiceAssignmentOffer,settlement:?TechnicalServiceSettlement,blocker:?string,route_source:?string}
+     */
+    public function materializePartServiceVisitAssignment(
+        TechnicalServicePartRequest $partRequest,
+        TechnicalServiceRequest $serviceVisit,
+        TechnicalServiceTechnician $technician,
+        ?Authenticatable $user = null,
+    ): array {
+        $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
+        $laborAmount = array_key_exists('service_amount', $metadata) && is_numeric($metadata['service_amount'])
+            ? $this->money($metadata['service_amount'])
+            : null;
+        if ($laborAmount === null) {
+            return [
+                'materialized' => false,
+                'offer' => null,
+                'settlement' => null,
+                'blocker' => 'OPS servis bedeli belirlenmedi.',
+                'route_source' => null,
+            ];
+        }
+
+        $routeQuote = TechnicalServiceRouteQuote::query()
+            ->where('technical_service_request_id', $serviceVisit->id)
+            ->where('technician_id', $technician->id)
+            ->where('status', TechnicalServiceRouteQuote::STATUS_CALCULATED)
+            ->latest('id')
+            ->first();
+        $routeSource = $routeQuote instanceof TechnicalServiceRouteQuote ? 'child_route_quote' : null;
+        $routeFeeAmount = $routeQuote instanceof TechnicalServiceRouteQuote && is_numeric($routeQuote->fee_amount)
+            ? $this->money($routeQuote->fee_amount)
+            : null;
+        if ($routeFeeAmount === null
+            && array_key_exists('service_visit_route_fee_amount', $metadata)
+            && is_numeric($metadata['service_visit_route_fee_amount'])) {
+            $routeFeeAmount = $this->money($metadata['service_visit_route_fee_amount']);
+            $routeSource = 'ops_manual';
+        }
+        if ($routeFeeAmount === null) {
+            return [
+                'materialized' => false,
+                'offer' => null,
+                'settlement' => null,
+                'blocker' => 'Child SRV yol hakedişi belirlenmedi.',
+                'route_source' => null,
+            ];
+        }
+
+        $lockedVisit = TechnicalServiceRequest::query()->lockForUpdate()->findOrFail($serviceVisit->id);
+        $activeOffers = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $lockedVisit->id)
+            ->whereIn('status', [
+                TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            ])
+            ->lockForUpdate()
+            ->get();
+        if ($activeOffers->count() > 1) {
+            throw ValidationException::withMessages([
+                'assignment_offer' => 'Child SRV için birden fazla aktif hakediş teklifi bulundu.',
+            ]);
+        }
+
+        $offer = $activeOffers->first();
+        if ($offer instanceof TechnicalServiceAssignmentOffer) {
+            if ((int) $offer->technical_service_technician_id !== (int) $technician->id
+                || $this->minorUnits($offer->labor_amount) !== $this->minorUnits($laborAmount)
+                || $this->minorUnits($offer->route_fee_amount) !== $this->minorUnits($routeFeeAmount)) {
+                throw ValidationException::withMessages([
+                    'assignment_offer' => 'Child SRV için mevcut hakediş teklifi OPS servis/yol tutarlarıyla çelişiyor.',
+                ]);
+            }
+        } else {
+            $offer = TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $lockedVisit->id,
+                'technical_service_technician_id' => $technician->id,
+                'route_quote_id' => $routeQuote?->id,
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => $this->money($laborAmount + $routeFeeAmount),
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                'note' => 'Parça sonrası SRV için OPS onaylı hakediş.',
+                'sent_by' => $user?->getAuthIdentifier(),
+                'sent_at' => now(),
+                'metadata' => [
+                    'source' => 'part_received_service_visit_materialization',
+                    'source_part_request_id' => (int) $partRequest->id,
+                    'confirmed_by_ops' => true,
+                    'route_source' => $routeSource,
+                    'earning_payment_source' => self::EARNING_PAYMENT_SOURCE_COMPANY,
+                ],
+            ]);
+        }
+
+        $lockedVisit->forceFill([
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_payment_amount' => $laborAmount,
+            'travel_fee_amount' => $routeFeeAmount,
+        ])->save();
+        $settlement = $this->persistForAssignment(
+            $lockedVisit->refresh(),
+            $technician,
+            $offer,
+            $routeQuote,
+            $laborAmount,
+            $routeFeeAmount,
+            0.0,
+            $user,
+            self::EARNING_PAYMENT_SOURCE_COMPANY,
+        );
+
+        return [
+            'materialized' => true,
+            'offer' => $offer->refresh(),
+            'settlement' => $settlement,
+            'blocker' => null,
+            'route_source' => $routeSource,
+        ];
+    }
+
+    public function paymentRequestForPurpose(TechnicalServiceRequest $origin, string $purpose): TechnicalServiceRequest
+    {
+        if (strtolower(trim($purpose)) !== TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION) {
+            return $origin;
+        }
+
+        if ($origin->parent_request_id === null && blank($origin->root_mrn)) {
+            return $origin;
+        }
+
+        return TechnicalServiceRequest::query()
+            ->whereKey($origin->parent_request_id)
+            ->whereNull('parent_request_id')
+            ->first()
+            ?? TechnicalServiceRequest::query()
+                ->where('mrn', $origin->root_mrn)
+                ->whereNull('parent_request_id')
+                ->first()
+            ?? $origin;
+    }
+
+    public function paymentIsVisibleFromRequest(
+        TechnicalServiceMountPayment $payment,
+        TechnicalServiceRequest $request,
+    ): bool {
+        $paymentRequest = $payment->technicalServiceRequest()->first();
+        if (! $paymentRequest instanceof TechnicalServiceRequest) {
+            return false;
+        }
+
+        $effectiveRequest = $this->paymentRequestForPurpose($paymentRequest, $this->paymentPurpose($payment));
+        if ((int) $effectiveRequest->id === (int) $request->id) {
+            return true;
+        }
+
+        return strtolower(trim($this->paymentPurpose($payment))) === TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION
+            && (int) $this->paymentRequestForPurpose($request, TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION)->id === (int) $effectiveRequest->id;
+    }
+
+    public function paymentEffectiveServiceRequestId(TechnicalServiceMountPayment $payment): int
+    {
+        $purpose = $this->paymentPurpose($payment);
+        $storedRequest = $payment->technicalServiceRequest()->first();
+        if ($storedRequest instanceof TechnicalServiceRequest
+            && $purpose === TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION) {
+            return (int) $this->paymentRequestForPurpose($storedRequest, $purpose)->id;
+        }
+
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        if ($purpose === 'service_and_part_payment'
+            && $this->minorUnits($payload['service_amount'] ?? 0) > 0
+            && is_numeric($payload['part_request_id'] ?? null)) {
+            $serviceVisitId = TechnicalServicePartRequest::query()
+                ->whereKey((int) $payload['part_request_id'])
+                ->value('service_visit_request_id');
+            if (is_numeric($serviceVisitId)) {
+                return (int) $serviceVisitId;
+            }
+        }
+
+        return (int) $payment->technical_service_request_id;
+    }
+
+    /** @param Collection<int, TechnicalServiceMountPayment> $payments */
+    public function paymentScopeCorrections(Collection $payments): Collection
+    {
+        if (! $this->allocationSchemaAvailable() || $payments->isEmpty()) {
+            return collect();
+        }
+
+        return DB::table(self::ALLOCATION_TABLE)
+            ->whereIn('technical_service_mount_payment_id', $payments->pluck('id')->all())
+            ->where('decision', self::DECISION_SCOPE_CORRECTION)
+            ->where('status', self::ALLOCATION_STATUS_ACTIVE)
+            ->orderBy('id')
+            ->get()
+            ->keyBy(fn (object $row): int => (int) $row->technical_service_mount_payment_id);
+    }
+
+    /**
+     * Appends effective payment scopes without changing paid payments, contexts,
+     * offers or settlements.
+     *
+     * @return array{created:int,allocation_ids:array<int,int>,event_id:?int}
+     */
+    public function applyRootSrvFinanceScopeCorrection(
+        TechnicalServiceRequest $root,
+        TechnicalServiceRequest $child,
+        TechnicalServicePartRequest $partRequest,
+        TechnicalServiceMountPayment $mountPayment,
+        TechnicalServiceMountPayment $servicePartPayment,
+        Authenticatable $actor,
+        string $reason,
+    ): array {
+        $reason = trim($reason);
+        if (mb_strlen($reason) < 10) {
+            throw ValidationException::withMessages(['reason' => 'Düzeltme nedeni en az 10 karakter olmalıdır.']);
+        }
+        if (! $this->allocationSchemaAvailable()) {
+            throw ValidationException::withMessages(['correction' => 'Append-only ödeme dağıtım sahibi hazır değil.']);
+        }
+
+        return DB::transaction(function () use ($root, $child, $partRequest, $mountPayment, $servicePartPayment, $actor, $reason): array {
+            $lockedRequests = TechnicalServiceRequest::query()
+                ->whereIn('id', [$root->id, $child->id])
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+            $lockedRoot = $lockedRequests->get($root->id);
+            $lockedChild = $lockedRequests->get($child->id);
+            $lockedPart = TechnicalServicePartRequest::query()->lockForUpdate()->findOrFail($partRequest->id);
+            $lockedPayments = TechnicalServiceMountPayment::query()
+                ->whereIn('id', [$mountPayment->id, $servicePartPayment->id])
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+            $lockedMount = $lockedPayments->get($mountPayment->id);
+            $lockedServicePart = $lockedPayments->get($servicePartPayment->id);
+
+            if (! $lockedRoot instanceof TechnicalServiceRequest
+                || ! $lockedChild instanceof TechnicalServiceRequest
+                || (int) $lockedChild->parent_request_id !== (int) $lockedRoot->id
+                || (int) $lockedPart->root_request_id !== (int) $lockedRoot->id
+                || (int) $lockedPart->service_visit_request_id !== (int) $lockedChild->id
+                || ! $lockedMount instanceof TechnicalServiceMountPayment
+                || ! $lockedServicePart instanceof TechnicalServiceMountPayment) {
+                throw ValidationException::withMessages(['correction' => 'Root, SRV, parça talebi ve ödeme kimlik zinciri eşleşmiyor.']);
+            }
+            foreach ([$lockedMount, $lockedServicePart] as $payment) {
+                if ($payment->status !== TechnicalServiceMountPayment::STATUS_PAID
+                    || strtoupper((string) $payment->currency) !== 'TRY') {
+                    throw ValidationException::withMessages(['correction' => 'Yalnız paid TRY ödeme geçmişi için kapsam düzeltmesi uygulanabilir.']);
+                }
+            }
+            if ($this->paymentPurpose($lockedMount) !== TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION
+                || $this->paymentPurpose($lockedServicePart) !== 'service_and_part_payment') {
+                throw ValidationException::withMessages(['correction' => 'Ödeme amaçları beklenen mount/service+part sözleşmesiyle eşleşmiyor.']);
+            }
+            $servicePartPayload = is_array($lockedServicePart->raw_payload) ? $lockedServicePart->raw_payload : [];
+            $serviceAmount = $this->money($servicePartPayload['service_amount'] ?? 0);
+            $partAmount = $this->money($servicePartPayload['part_amount'] ?? 0);
+            if ((int) ($servicePartPayload['part_request_id'] ?? 0) !== (int) $lockedPart->id
+                || $this->minorUnits($serviceAmount + $partAmount) !== $this->minorUnits($lockedServicePart->amount)) {
+                throw ValidationException::withMessages(['correction' => 'Servis/parça component ayrımı canonical ödeme tutarıyla eşleşmiyor.']);
+            }
+
+            $settlements = TechnicalServiceSettlement::query()
+                ->whereIn('technical_service_request_id', [$lockedRoot->id, $lockedChild->id])
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('technical_service_request_id');
+            $allocationIds = [];
+            $created = 0;
+            foreach ([
+                [
+                    'payment' => $lockedMount,
+                    'request' => $lockedRoot,
+                    'settlement' => $settlements->get($lockedRoot->id),
+                    'purpose' => TechnicalServicePaymentOrderContextService::PURPOSE_MOUNT_COLLECTION,
+                    'covered' => $this->money($lockedMount->amount),
+                    'current_srv_id' => null,
+                    'note' => $reason.' Effective scope: root MRN.',
+                ],
+                [
+                    'payment' => $lockedServicePart,
+                    'request' => $lockedChild,
+                    'settlement' => $settlements->get($lockedChild->id),
+                    'purpose' => self::PURPOSE_SERVICE_COMPONENT,
+                    'covered' => $serviceAmount,
+                    'current_srv_id' => $lockedChild->id,
+                    'note' => $reason.' Service component applies to child SRV; part component remains outside earning and operation difference.',
+                ],
+            ] as $definition) {
+                $settlement = $definition['settlement'];
+                if (! $settlement instanceof TechnicalServiceSettlement
+                    || ! is_numeric($settlement->technical_service_assignment_offer_id)
+                    || ! is_numeric($settlement->technical_service_technician_id)) {
+                    throw ValidationException::withMessages(['correction' => 'Kapsam düzeltmesi için canonical offer/settlement bulunamadı.']);
+                }
+                $key = implode(':', ['root-srv-finance-scope-v1', $definition['payment']->id, $definition['request']->id]);
+                $existing = DB::table(self::ALLOCATION_TABLE)->where('idempotency_key', $key)->first();
+                if ($existing) {
+                    $allocationIds[] = (int) $existing->id;
+
+                    continue;
+                }
+                $conflict = DB::table(self::ALLOCATION_TABLE)
+                    ->where('technical_service_mount_payment_id', $definition['payment']->id)
+                    ->where('decision', self::DECISION_SCOPE_CORRECTION)
+                    ->where('status', self::ALLOCATION_STATUS_ACTIVE)
+                    ->exists();
+                if ($conflict) {
+                    throw ValidationException::withMessages(['correction' => 'Ödeme için çelişen aktif append-only dağıtım kaydı var.']);
+                }
+
+                $allocationIds[] = (int) DB::table(self::ALLOCATION_TABLE)->insertGetId([
+                    'technical_service_mount_payment_id' => $definition['payment']->id,
+                    'technical_service_settlement_id' => $settlement->id,
+                    'technical_service_request_id' => $definition['request']->id,
+                    'root_request_id' => $lockedRoot->id,
+                    'current_srv_id' => $definition['current_srv_id'],
+                    'technical_service_assignment_offer_id' => $settlement->technical_service_assignment_offer_id,
+                    'technical_service_technician_id' => $settlement->technical_service_technician_id,
+                    'payment_purpose' => $definition['purpose'],
+                    'currency' => 'TRY',
+                    'source_paid_amount' => $definition['payment']->amount,
+                    'covered_amount' => $definition['covered'],
+                    'eligible_amount' => 0,
+                    'decision' => self::DECISION_SCOPE_CORRECTION,
+                    'decision_note' => $definition['note'],
+                    'decided_by' => $actor->getAuthIdentifier(),
+                    'decided_by_name' => trim((string) ($actor->name ?? 'OPS')),
+                    'decided_at' => now(),
+                    'settlement_line_id' => null,
+                    'reversal_of_id' => null,
+                    'status' => self::ALLOCATION_STATUS_ACTIVE,
+                    'idempotency_key' => $key,
+                    'revision' => 1,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $created++;
+            }
+
+            $eventId = null;
+            if ($created > 0) {
+                $event = $lockedRoot->events()->create([
+                    'event_type' => 'root_srv_finance_scope_corrected',
+                    'title' => 'Root / SRV finans kapsamı düzeltildi',
+                    'note' => $reason,
+                    'from_status' => $lockedRoot->workflow_status,
+                    'to_status' => $lockedRoot->workflow_status,
+                    'author_user_id' => $actor->getAuthIdentifier(),
+                    'metadata' => [
+                        'root_request_id' => $lockedRoot->id,
+                        'srv_request_id' => $lockedChild->id,
+                        'part_request_id' => $lockedPart->id,
+                        'mount_payment_id' => $lockedMount->id,
+                        'service_part_payment_id' => $lockedServicePart->id,
+                        'allocation_ids' => $allocationIds,
+                        'append_only' => true,
+                    ],
+                ]);
+                $eventId = (int) $event->id;
+            }
+
+            return ['created' => $created, 'allocation_ids' => $allocationIds, 'event_id' => $eventId];
+        });
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function canonicalEarningSnapshot(
@@ -394,6 +776,7 @@ class TechnicalServiceAssignmentSettlementService
         $payments = $this->eligiblePaymentRows($request, $lock);
         $allocationQuery = DB::table(self::ALLOCATION_TABLE)
             ->whereIn('technical_service_mount_payment_id', $payments->pluck('id')->all())
+            ->whereIn('decision', [self::DECISION_PAY_TECHNICIAN, self::DECISION_RETAIN_COMPANY])
             ->orderBy('id');
         if ($lock) {
             $allocationQuery->lockForUpdate();
@@ -630,6 +1013,7 @@ class TechnicalServiceAssignmentSettlementService
 
                 $existing = DB::table(self::ALLOCATION_TABLE)
                     ->where('technical_service_mount_payment_id', $payment->id)
+                    ->whereIn('decision', [self::DECISION_PAY_TECHNICIAN, self::DECISION_RETAIN_COMPANY])
                     ->where('status', self::ALLOCATION_STATUS_ACTIVE)
                     ->lockForUpdate()
                     ->first();
@@ -810,6 +1194,7 @@ class TechnicalServiceAssignmentSettlementService
 
             $existing = DB::table(self::ALLOCATION_TABLE)
                 ->where('technical_service_mount_payment_id', $lockedPayment->id)
+                ->whereIn('decision', [self::DECISION_PAY_TECHNICIAN, self::DECISION_RETAIN_COMPANY])
                 ->where('status', self::ALLOCATION_STATUS_ACTIVE)
                 ->lockForUpdate()
                 ->first();
@@ -994,6 +1379,7 @@ class TechnicalServiceAssignmentSettlementService
             $lockedPayment = TechnicalServiceMountPayment::query()->whereKey($payment->id)->lockForUpdate()->firstOrFail();
             $allocation = DB::table(self::ALLOCATION_TABLE)
                 ->where('technical_service_mount_payment_id', $lockedPayment->id)
+                ->whereIn('decision', [self::DECISION_PAY_TECHNICIAN, self::DECISION_RETAIN_COMPANY])
                 ->where('status', self::ALLOCATION_STATUS_ACTIVE)
                 ->lockForUpdate()
                 ->first();

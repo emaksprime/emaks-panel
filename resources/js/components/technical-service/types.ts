@@ -418,6 +418,9 @@ export type ServiceRequestServiceVisitHistoryRecord = ServiceRequestServiceVisit
   technician_completed_at?: string | null
   completion_note?: string | null
   documents?: ServiceRequestFieldCompletionDocument[]
+  root_door_photos?: ServiceRequestFieldCompletionDocument[]
+  previous_visit_documents?: ServiceRequestFieldCompletionDocument[]
+  current_documents?: ServiceRequestFieldCompletionDocument[]
   events?: ServiceRequestEvent[]
 }
 
@@ -699,6 +702,8 @@ export type ServiceRequestPaymentEarningImpact = {
 export type ServiceRequestFinancePayout = {
   labor_amount: number
   route_fee_amount: number
+  route_source?: string | null
+  route_source_label?: string | null
   company_payment_amount?: number
   company_payment_breakdown?: ServiceRequestCompanyPaymentBreakdown[]
   company_retained_amount?: number
@@ -788,6 +793,8 @@ export type ServiceRequestPaymentPartContext = {
   part_component_amount_label?: string | null
   part_amount?: number | null
   part_amount_label?: string | null
+  part_information_amount?: number | null
+  part_information_amount_label?: string | null
   total_amount?: number | null
   total_amount_label?: string | null
   operational_difference_included_amount?: number | null
@@ -1017,6 +1024,10 @@ export type ServiceRequestPartRequest = {
   charge_decision_label?: string | null
   service_amount?: number | null
   service_amount_label?: string | null
+  service_visit_route_fee_amount?: number | null
+  service_visit_route_fee_amount_label?: string | null
+  service_visit_route_fee_source?: string | null
+  service_visit_route_fee_source_label?: string | null
   part_amount?: number | null
   part_amount_label?: string | null
   total_amount?: number | null
@@ -1744,6 +1755,8 @@ export type ServiceRequestDoorPhoto = {
 
 export type ServiceRequestFieldCompletionDocument = ServiceRequestDoorPhoto & {
   label?: string | null
+  source?: string | null
+  source_label?: string | null
   review_status?: string | null
   review_note?: string | null
   created_at?: string | null

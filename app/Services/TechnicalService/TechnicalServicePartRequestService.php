@@ -7,6 +7,7 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
+use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
@@ -18,6 +19,7 @@ class TechnicalServicePartRequestService
 {
     public function __construct(
         private readonly TechnicalServiceServiceVisitService $serviceVisits,
+        private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlements,
         private readonly PaymentProviderManager $paymentProviderManager,
         private readonly TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
     ) {}
@@ -165,8 +167,15 @@ class TechnicalServicePartRequestService
 
         $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
         $chargeDecision = $payload['charge_decision'] ?? null;
-        $serviceAmount = array_key_exists('service_amount', $payload) ? round((float) ($payload['service_amount'] ?? 0), 2) : null;
-        $partAmount = array_key_exists('part_amount', $payload) ? round((float) ($payload['part_amount'] ?? 0), 2) : null;
+        $serviceAmount = array_key_exists('service_amount', $payload)
+            ? $this->nullableMoney($payload['service_amount'])
+            : $this->nullableMoney($metadata['service_amount'] ?? null);
+        $serviceVisitRouteFeeAmount = array_key_exists('service_visit_route_fee_amount', $payload)
+            ? $this->nullableMoney($payload['service_visit_route_fee_amount'])
+            : $this->nullableMoney($metadata['service_visit_route_fee_amount'] ?? null);
+        $partAmount = array_key_exists('part_amount', $payload)
+            ? $this->nullableMoney($payload['part_amount'])
+            : $this->nullableMoney($metadata['part_amount'] ?? null);
         $customerMessage = trim((string) ($payload['customer_message'] ?? ''));
 
         if ($chargeDecision === 'chargeable' && ($partAmount ?? 0) <= 0) {
@@ -186,7 +195,9 @@ class TechnicalServicePartRequestService
             $metadata['charge_decision_label'] = $chargeDecision === 'chargeable'
                 ? 'Ücretli'
                 : 'Ücretsiz / garanti kapsamında';
-            $metadata['service_amount'] = $serviceAmount ?? 0.0;
+            $metadata['service_amount'] = $serviceAmount;
+            $metadata['service_visit_route_fee_amount'] = $serviceVisitRouteFeeAmount;
+            $metadata['service_visit_route_fee_source'] = $serviceVisitRouteFeeAmount !== null ? 'ops_manual' : null;
             $metadata['part_amount'] = $partAmount ?? 0.0;
             $metadata['total_amount'] = round(($serviceAmount ?? 0) + ($partAmount ?? 0), 2);
             $metadata['customer_message'] = $customerMessage !== '' ? $customerMessage : null;
@@ -314,57 +325,67 @@ class TechnicalServicePartRequestService
 
     public function createServiceVisit(TechnicalServicePartRequest $partRequest, ?User $user, string $reason = 'spare_part'): TechnicalServiceRequest
     {
-        $existing = $this->existingServiceVisitForPartRequest($partRequest);
-        if ($existing instanceof TechnicalServiceRequest) {
-            return $existing;
-        }
+        return DB::transaction(function () use ($partRequest, $user, $reason): TechnicalServiceRequest {
+            $partRequest = TechnicalServicePartRequest::query()
+                ->with(['request.technicianRecord', 'sourcePartnerAction'])
+                ->lockForUpdate()
+                ->findOrFail($partRequest->id);
+            $existing = $this->existingServiceVisitForPartRequest($partRequest);
+            if ($existing instanceof TechnicalServiceRequest) {
+                return $user instanceof User
+                    ? $this->assignServiceVisitToCurrentTechnician($partRequest, $existing, $user)
+                    : $existing->refresh();
+            }
 
-        if (! in_array($partRequest->status, [
-            TechnicalServicePartRequest::STATUS_RECEIVED,
-            TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
-        ], true)) {
-            throw ValidationException::withMessages([
-                'part_request' => 'SRV oluşturmak için parça teslim alınmış veya servis gerekli olarak işaretlenmiş olmalıdır.',
-            ]);
-        }
+            if (! in_array($partRequest->status, [
+                TechnicalServicePartRequest::STATUS_RECEIVED,
+                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
+            ], true)) {
+                throw ValidationException::withMessages([
+                    'part_request' => 'SRV oluşturmak için parça teslim alınmış veya servis gerekli olarak işaretlenmiş olmalıdır.',
+                ]);
+            }
 
-        $child = $this->serviceVisits->createServiceVisitFromRequest(
-            $partRequest->request()->firstOrFail(),
-            $user,
-            $reason,
-            [
-                'source_part_request' => $partRequest,
-                'source_partner_action_id' => $partRequest->source_partner_action_id,
-                'description' => 'Parça sonrası servis: '.$partRequest->part_name,
-                'copy_operation_control' => false,
-                'parent_event_type' => 'part_request_srv_created',
-                'parent_event_title' => 'Parça sonrası servis oluşturuldu',
-            ],
-        );
-
-        $partRequest->forceFill([
-            'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED,
-            'requires_service_visit' => true,
-            'service_visit_request_id' => $child->id,
-            'metadata' => [
-                ...(is_array($partRequest->metadata) ? $partRequest->metadata : []),
-                'service_visit_created' => [
-                    'request_id' => $child->id,
-                    'mrn' => $child->mrn,
-                    'service_code' => $child->service_code,
-                    'created_at' => now()->toISOString(),
-                    'created_by_user_id' => $user?->id,
+            $child = $this->serviceVisits->createServiceVisitFromRequest(
+                $partRequest->request,
+                $user,
+                $reason,
+                [
+                    'source_part_request' => $partRequest,
+                    'source_partner_action_id' => $partRequest->source_partner_action_id,
+                    'description' => 'Parça sonrası servis: '.$partRequest->part_name,
+                    'copy_operation_control' => false,
+                    'parent_event_type' => 'part_request_srv_created',
+                    'parent_event_title' => 'Parça sonrası servis oluşturuldu',
                 ],
-            ],
-        ])->save();
+            );
 
-        if ($partRequest->sourcePartnerAction instanceof TechnicalServicePartnerJobAction) {
-            $partRequest->sourcePartnerAction->forceFill([
-                'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            $partRequest->forceFill([
+                'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED,
+                'requires_service_visit' => true,
+                'service_visit_request_id' => $child->id,
+                'metadata' => [
+                    ...(is_array($partRequest->metadata) ? $partRequest->metadata : []),
+                    'service_visit_created' => [
+                        'request_id' => $child->id,
+                        'mrn' => $child->mrn,
+                        'service_code' => $child->service_code,
+                        'created_at' => now()->toISOString(),
+                        'created_by_user_id' => $user?->id,
+                    ],
+                ],
             ])->save();
-        }
 
-        return $child->refresh();
+            if ($partRequest->sourcePartnerAction instanceof TechnicalServicePartnerJobAction) {
+                $partRequest->sourcePartnerAction->forceFill([
+                    'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                ])->save();
+            }
+
+            return $user instanceof User
+                ? $this->assignServiceVisitToCurrentTechnician($partRequest->refresh(), $child, $user)
+                : $child->refresh();
+        });
     }
 
     private function existingServiceVisitForPartRequest(TechnicalServicePartRequest $partRequest): ?TechnicalServiceRequest
@@ -398,31 +419,38 @@ class TechnicalServicePartRequestService
         User $user,
     ): TechnicalServiceRequest {
         $parent = $partRequest->request()->with('technicianRecord')->first();
-        if (! $parent instanceof TechnicalServiceRequest || $parent->technical_service_technician_id === null) {
+        $technician = $parent?->technicianRecord;
+        if (! $parent instanceof TechnicalServiceRequest || ! $technician instanceof TechnicalServiceTechnician) {
             return $serviceVisit->refresh();
         }
+
+        $materialization = $this->assignmentSettlements->materializePartServiceVisitAssignment(
+            $partRequest,
+            $serviceVisit,
+            $technician,
+            $user,
+        );
+        $materialized = (bool) ($materialization['materialized'] ?? false);
 
         $metadata = is_array($serviceVisit->operation_control_payload) ? $serviceVisit->operation_control_payload : [];
         $metadata['part_received_service_visit_assignment'] = [
             'source_part_request_id' => $partRequest->id,
             'parent_request_id' => $parent->id,
             'assigned_from_parent_technician_id' => $parent->technical_service_technician_id,
-            'assigned_at' => now()->toISOString(),
+            'assigned_at' => $metadata['part_received_service_visit_assignment']['assigned_at'] ?? now()->toISOString(),
             'assigned_by_user_id' => $user->id,
+            'settlement_materialized' => $materialized,
+            'settlement_blocker' => $materialization['blocker'] ?? null,
         ];
 
         $serviceVisit->forceFill([
             'technical_service_technician_id' => $parent->technical_service_technician_id,
             'technician_name' => $parent->technicianRecord?->name ?: $parent->technician_name,
-            'technician_approval_status' => 'onayladı',
-            'technician_approved_at' => $serviceVisit->technician_approved_at ?? now(),
-            'scheduled_at' => null,
-            'scheduled_date' => null,
-            'scheduled_time' => null,
-            'field_status' => null,
-            'next_action' => 'Usta yeni randevu önerecek',
+            'technician_approval_status' => $materialized ? 'onayladı' : null,
+            'technician_approved_at' => $materialized ? ($serviceVisit->technician_approved_at ?? now()) : null,
+            'next_action' => $materialized ? 'Usta yeni randevu önerecek' : 'OPS servis ve yol hakedişini belirleyecek',
             'status' => 'Atandı',
-            'workflow_status' => 'Usta Onayı Bekleyen',
+            'workflow_status' => $materialized ? 'Usta Onayı Bekleyen' : 'Usta Ataması Bekleyen',
             'operation_control_payload' => $metadata,
             'updated_by_user_id' => $user->id,
         ])->save();
@@ -434,14 +462,16 @@ class TechnicalServicePartRequestService
             $serviceVisit->events()->create([
                 'event_type' => 'part_received_service_visit_assigned',
                 'title' => 'Parça sonrası SRV ustaya açıldı',
-                'note' => 'Usta yeni randevu önerecek.',
+                'note' => $materialized ? 'Usta yeni randevu önerecek.' : 'Servis veya yol hakedişi belirlenmeden settlement kesinleştirilemez.',
                 'from_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
-                'to_status' => 'Usta Onayı Bekleyen',
+                'to_status' => $materialized ? 'Usta Onayı Bekleyen' : 'Usta Ataması Bekleyen',
                 'author_user_id' => $user->id,
                 'metadata' => [
                     'source_part_request_id' => $partRequest->id,
                     'parent_request_id' => $parent->id,
                     'technical_service_technician_id' => $parent->technical_service_technician_id,
+                    'settlement_materialized' => $materialized,
+                    'settlement_blocker' => $materialization['blocker'] ?? null,
                 ],
             ]);
         }
@@ -606,6 +636,12 @@ class TechnicalServicePartRequestService
             'charge_decision_label' => $metadata['charge_decision_label'] ?? null,
             'service_amount' => $metadata['service_amount'] ?? null,
             'service_amount_label' => isset($metadata['service_amount']) ? $this->moneyLabel((float) $metadata['service_amount']) : null,
+            'service_visit_route_fee_amount' => $metadata['service_visit_route_fee_amount'] ?? null,
+            'service_visit_route_fee_amount_label' => isset($metadata['service_visit_route_fee_amount']) ? $this->moneyLabel((float) $metadata['service_visit_route_fee_amount']) : null,
+            'service_visit_route_fee_source' => $metadata['service_visit_route_fee_source'] ?? null,
+            'service_visit_route_fee_source_label' => ($metadata['service_visit_route_fee_source'] ?? null) === 'ops_manual'
+                ? 'OPS tarafından manuel belirlendi'
+                : null,
             'part_amount' => $metadata['part_amount'] ?? null,
             'part_amount_label' => isset($metadata['part_amount']) ? $this->moneyLabel((float) $metadata['part_amount']) : null,
             'total_amount' => $metadata['total_amount'] ?? null,
@@ -795,6 +831,15 @@ class TechnicalServicePartRequestService
     private function moneyLabel(float $amount): string
     {
         return number_format($amount, 0, ',', '.').' TL';
+    }
+
+    private function nullableMoney(mixed $value): ?float
+    {
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        return round((float) $value, 2);
     }
 
     private function primarySerial(TechnicalServiceRequest $request): ?TechnicalServiceRequestSerial
