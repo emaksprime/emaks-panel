@@ -108,6 +108,7 @@ class TechnicalServiceMessageDispatchQueue
                 $targetPhone,
                 (array) ($input['metadata'] ?? []),
                 (string) ($input['rendered_body'] ?? data_get($payload, 'body', '')),
+                (string) ($input['recipient_role'] ?? $input['target_type'] ?? ''),
             );
             if (! $authorization['allowed']) {
                 $code = (string) ($authorization['code'] ?? 'external_execution_control_blocked');

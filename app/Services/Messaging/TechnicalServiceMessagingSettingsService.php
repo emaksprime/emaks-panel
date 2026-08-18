@@ -1267,6 +1267,7 @@ class TechnicalServiceMessagingSettingsService
         string $targetPhone,
         array $metadata,
         string $body = '',
+        ?string $recipientRole = null,
     ): array {
         $settings = $this->settings();
         if ($this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
@@ -1275,6 +1276,7 @@ class TechnicalServiceMessagingSettingsService
                 $provider,
                 $channel,
                 $messageType,
+                (string) $recipientRole,
                 $targetPhone,
                 $body,
                 $metadata,
@@ -5974,7 +5976,13 @@ class TechnicalServiceMessagingSettingsService
 
         $provider = $this->normalizeProviderKey((string) ($input['provider_key'] ?? ''));
         $channel = strtolower(trim((string) ($input['channel'] ?? '')));
-        $role = strtolower(trim((string) ($input['recipient_role'] ?? $input['target_type'] ?? '')));
+        $messageType = trim((string) ($input['message_type'] ?? $input['event'] ?? ''));
+        $role = strtolower(trim((string) (
+            self::MESSAGE_TYPES[$messageType]['recipient_role']
+                ?? $input['recipient_role']
+                ?? $input['target_type']
+                ?? ''
+        )));
         if (! in_array($provider, ['evo_whatsapp', 'nac_sms'], true)
             || ! in_array($channel, ['whatsapp', 'sms'], true)
             || ! in_array($role, ['customer', 'technician', 'ops'], true)) {
@@ -5987,40 +5995,41 @@ class TechnicalServiceMessagingSettingsService
             return $input;
         }
         $testMode = (bool) ($settings['test_mode_enabled'] ?? false);
-        $testRecipientRouting = (bool) ($settings['test_recipient_routing_enabled'] ?? false);
         $originalPhone = $this->normalizePhone((string) (
             $input['recipient_phone']
                 ?? $input['target_phone']
                 ?? $input['effective_target_phone']
                 ?? ''
         ));
-        $targetPhone = $testRecipientRouting
-            ? $this->testPhoneForChannel($settings, $channel)
+        $normalLocalRoleAllowlist = $this->normalLocalAdminExecutionAuthority($settings);
+        $targetPhone = $normalLocalRoleAllowlist
+            ? $originalPhone
             : ($testMode ? $this->testPhoneForRole($settings, $role) : $originalPhone);
-        $routingApplied = ($testRecipientRouting || $testMode) && $targetPhone !== '';
+        $routingApplied = ! $normalLocalRoleAllowlist && $testMode && $targetPhone !== '';
 
+        $input['recipient_role'] = $role;
         $input['recipient_phone'] = $originalPhone;
         $input['target_phone'] = $targetPhone;
         $input['effective_target_phone'] = $targetPhone;
-        $input['test_mode'] = $testRecipientRouting || $testMode;
+        $input['test_mode'] = $normalLocalRoleAllowlist ? false : $testMode;
         $input['test_redirect_applied'] = $routingApplied;
         if (is_array($input['payload'] ?? null)) {
-            if (! $testRecipientRouting) {
-                $input['payload']['test_redirect_applied'] = $input['test_redirect_applied'];
-            } else {
-                unset($input['payload']['test_redirect_applied']);
-            }
+            $input['payload']['test_redirect_applied'] = $input['test_redirect_applied'];
             $input['payload']['target_role'] = $role;
         }
         $input['metadata'] = [
             ...$metadata,
-            'test_recipient_role' => ($testRecipientRouting || $testMode) ? $role : null,
-            'test_recipient_authority' => $testRecipientRouting
-                ? 'admin_channel_settings'
+            'recipient_role_source' => array_key_exists($messageType, self::MESSAGE_TYPES)
+                ? 'message_type_event_map'
+                : 'request_fallback',
+            'test_recipient_role' => ($normalLocalRoleAllowlist || $testMode) ? $role : null,
+            'test_recipient_authority' => $normalLocalRoleAllowlist
+                ? 'admin_role_allowlist'
                 : ($testMode ? 'admin_role_settings' : null),
-            'test_routing_enabled' => $testRecipientRouting,
-            'test_routing_channel' => $testRecipientRouting ? $channel : null,
-            'test_routing_profile' => $testRecipientRouting ? self::LOCAL_MANUAL_ACCEPTANCE_PROFILE : null,
+            'test_routing_enabled' => false,
+            'test_routing_channel' => null,
+            'test_routing_profile' => null,
+            'normal_local_role_allowlist_required' => $normalLocalRoleAllowlist,
         ];
 
         return $input;
@@ -6817,16 +6826,18 @@ class TechnicalServiceMessagingSettingsService
         }
         if ((bool) $settings['messaging_enabled']
             && (bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
-            foreach ([
-                'test_phone' => $this->testPhoneForChannel($settings, 'whatsapp'),
-                'nac_sms.test_phone' => $this->testPhoneForChannel($settings, 'sms'),
-            ] as $field => $phone) {
-                if (! $this->validPhone($phone)) {
-                    throw ValidationException::withMessages([
-                        $field => 'Test yönlendirme açıkken kanalın test telefonu geçerli olmalı.',
-                    ]);
-                }
-            }
+            throw ValidationException::withMessages([
+                'test_recipient_routing_enabled' => 'Global test telefonu yönlendirmesi desteklenmiyor; rol bazlı alıcı allowlisti kullanılmalı.',
+            ]);
+        }
+        if ((bool) $settings['messaging_enabled']
+            && (bool) ($settings['real_send_enabled'] ?? false)
+            && $this->runtimeEnvironment() !== 'production'
+            && $this->executionMode($settings) === self::OUTBOUND_EXECUTION_MODE_LOCAL
+            && ! $this->roleRecipientAllowlistConfigured($settings)) {
+            throw ValidationException::withMessages([
+                'manual_e2e_allowlisted_phones' => 'Müşteri, usta ve OPS alıcıları rol bazlı test gönderim listesinde bulunmalı.',
+            ]);
         }
 
         $manualPortalOrigin = trim((string) ($settings['manual_e2e_partner_portal_origin'] ?? ''));
@@ -7196,6 +7207,10 @@ class TechnicalServiceMessagingSettingsService
             && $this->validPhone((string) ($settings['technician_ops_test_phone'] ?? ''));
         $testRecipientRoutingConfigured = $this->validPhone($this->testPhoneForChannel($settings, 'whatsapp'))
             && $this->validPhone($this->testPhoneForChannel($settings, 'sms'));
+        $roleRecipientAllowlistConfigured = $this->roleRecipientAllowlistConfigured($settings);
+        $globalSharedRecipientOverrideEnabled = (bool) ($settings['test_recipient_routing_enabled'] ?? false);
+        $normalLocalRoleSafetyRequired = $this->normalLocalAdminExecutionAuthority($settings)
+            || $this->localManualAcceptanceIsCurrent($settings);
         $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
         $activeProviderDefinition = self::PROVIDERS[$activeProvider];
         $activeProviderEnabled = $this->providerEnabled($activeProvider, $settings);
@@ -7228,6 +7243,12 @@ class TechnicalServiceMessagingSettingsService
         if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)
             && ! $testRecipientRoutingConfigured) {
             $disabledReasons[] = 'Kanal bazlı test yönlendirme telefonu eksik.';
+        }
+        if ($globalSharedRecipientOverrideEnabled) {
+            $disabledReasons[] = 'Global test telefonu yönlendirmesi kapatılmalı.';
+        }
+        if ($normalLocalRoleSafetyRequired && ! $roleRecipientAllowlistConfigured) {
+            $disabledReasons[] = 'Rol bazlı test alıcı listesi eksik.';
         }
         if ($activeProvider === 'evo_whatsapp' && ! $evoDirect['ready']) {
             $disabledReasons[] = 'Evo Direct API base URL/instance/API key eksik.';
@@ -7265,7 +7286,8 @@ class TechnicalServiceMessagingSettingsService
         $canSendReal = (bool) $settings['messaging_enabled']
             && (bool) $settings['real_send_enabled']
             && (! (bool) $settings['test_mode_enabled'] || $testPhoneConfigured)
-            && (! (bool) ($settings['test_recipient_routing_enabled'] ?? false) || $testRecipientRoutingConfigured)
+            && ! $globalSharedRecipientOverrideEnabled
+            && (! $normalLocalRoleSafetyRequired || $roleRecipientAllowlistConfigured)
             && $realAllowedTypes !== []
             && $activeProviderRealReady
             && $queueReady;
@@ -7277,6 +7299,8 @@ class TechnicalServiceMessagingSettingsService
             'test_phone_configured' => $testPhoneConfigured,
             'test_recipient_routing_enabled' => (bool) ($settings['test_recipient_routing_enabled'] ?? false),
             'test_recipient_routing_configured' => $testRecipientRoutingConfigured,
+            'role_recipient_allowlist_configured' => $roleRecipientAllowlistConfigured,
+            'global_shared_recipient_override_enabled' => $globalSharedRecipientOverrideEnabled,
             'provider_webhook_configured' => $webhookConfigured,
             'provider_secret_configured' => $providerSecretConfigured,
             'evo_direct_api_enabled' => $evoDirect['enabled'],
@@ -7334,10 +7358,13 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
-            return $this->validPhone($this->testPhoneForChannel($settings, 'whatsapp'))
-                && $this->validPhone($this->testPhoneForChannel($settings, 'sms'))
-                    ? 'test_recipient_routing'
-                    : 'blocked_missing_test_recipient';
+            return 'blocked_global_shared_recipient_override';
+        }
+
+        if (($this->normalLocalAdminExecutionAuthority($settings)
+                || $this->localManualAcceptanceIsCurrent($settings))
+            && ! $this->roleRecipientAllowlistConfigured($settings)) {
+            return 'blocked_role_recipient_allowlist';
         }
 
         if ((bool) $settings['test_mode_enabled']) {
@@ -7579,6 +7606,12 @@ class TechnicalServiceMessagingSettingsService
         if ($allowlist === [] || collect($allowlist)->contains(fn (string $phone): bool => ! $this->validPhone($phone))) {
             throw new ConflictHttpException('Yerel manuel kabul için geçerli recipient allowlist zorunlu.');
         }
+        if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
+            throw new ConflictHttpException('Global test telefonu yönlendirmesi kapatılmadan yerel manuel kabul açılamaz.');
+        }
+        if (! $this->roleRecipientAllowlistConfigured($settings)) {
+            throw new ConflictHttpException('Yerel manuel kabul için müşteri, usta ve OPS rol allowlisti zorunlu.');
+        }
         if ((bool) ($settings['test_mode_enabled'] ?? false)) {
             foreach (['customer', 'technician'] as $role) {
                 $roleTestPhone = $this->testPhoneForRole($settings, $role);
@@ -7663,6 +7696,7 @@ class TechnicalServiceMessagingSettingsService
         string $provider,
         string $channel,
         string $messageType,
+        string $recipientRole,
         string $targetPhone,
         string $body,
         array $metadata,
@@ -7686,26 +7720,38 @@ class TechnicalServiceMessagingSettingsService
             return $this->executionBlock('message_type_channel_disabled', 'Dispatch mesaj tipi, kanal veya provider ayarı aktif değil.');
         }
 
-        $target = $this->normalizePhone($targetPhone);
         if ((bool) ($settings['test_recipient_routing_enabled'] ?? false)) {
-            $expectedTestRecipient = $this->testPhoneForChannel($settings, $channel);
-            if (! $this->validPhone($expectedTestRecipient)
-                || ! hash_equals($expectedTestRecipient, $target)) {
-                return $this->executionBlock(
-                    'test_recipient_routing_missing',
-                    'Test yönlendirme numarası tanımlı değil. Gerçek alıcıya gönderim yapılmadı.',
-                );
-            }
+            return $this->executionBlock(
+                'global_shared_test_recipient_override_enabled',
+                'Global test telefonu yönlendirmesi kapatılmadan mesaj gönderilemez.',
+            );
         }
-        $allowlist = array_values(array_filter(array_map(
-            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
-            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
-        )));
-        if ($target === ''
-            || (! (bool) ($settings['test_recipient_routing_enabled'] ?? false)
-                && (bool) ($settings['test_mode_enabled'] ?? false)
-                && ! in_array($target, $allowlist, true))) {
-            return $this->executionBlock('normal_local_recipient_blocked', 'Dispatch recipient test allowlist dışında.');
+
+        $expectedRole = strtolower(trim((string) (self::MESSAGE_TYPES[$messageType]['recipient_role'] ?? '')));
+        $recipientRole = strtolower(trim($recipientRole));
+        if (! in_array($expectedRole, ['customer', 'technician', 'ops'], true)
+            || ! hash_equals($expectedRole, $recipientRole)) {
+            return $this->executionBlock(
+                'normal_local_recipient_role_mismatch',
+                'Mesaj alıcı sınıfı event sözleşmesiyle eşleşmiyor.',
+            );
+        }
+
+        $target = $this->normalizePhone($targetPhone);
+        $roleAllowlistTarget = $this->testPhoneForRole($settings, $expectedRole);
+        $allowlist = $this->normalizedRecipientAllowlist($settings);
+        if (! $this->validPhone($roleAllowlistTarget)
+            || ! in_array($roleAllowlistTarget, $allowlist, true)) {
+            return $this->executionBlock(
+                'normal_local_role_allowlist_not_configured',
+                'Rol bazlı test alıcı listesi hazır değil. Gerçek alıcıya gönderim yapılmadı.',
+            );
+        }
+        if ($target === '' || ! hash_equals($roleAllowlistTarget, $target)) {
+            return $this->executionBlock(
+                'normal_local_recipient_not_allowlisted',
+                'Alıcı test gönderim listesinde değil. Gerçek gönderim yapılmadı.',
+            );
         }
         if (! $this->providerRealReady($provider, $settings, false)) {
             return $this->executionBlock('outbound_provider_set_not_ready', 'Dispatch provider readiness geçmedi.');
@@ -9524,6 +9570,7 @@ SQL,
                 (string) $dispatch->provider_key,
                 (string) $dispatch->channel,
                 (string) $dispatch->message_type,
+                (string) $dispatch->recipient_role,
                 (string) $dispatch->target_phone,
                 $dispatch->bodyForProvider(),
                 $metadata,
@@ -10000,12 +10047,7 @@ SQL,
                 'allowed' => true,
                 'profile' => self::LOCAL_MANUAL_ACCEPTANCE_PROFILE,
                 'created_after' => null,
-                'allowlisted_phones' => (bool) ($settings['test_mode_enabled'] ?? false)
-                    ? array_values(array_filter(array_map(
-                        fn (mixed $phone): string => $this->normalizePhone((string) $phone),
-                        (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
-                    )))
-                    : [],
+                'allowlisted_phones' => $this->normalizedRecipientAllowlist($settings),
             ];
         }
 
@@ -10172,6 +10214,33 @@ SQL,
             : 'technician_ops_test_phone';
 
         return $this->normalizePhone((string) ($settings[$field] ?? ''));
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<int, string>
+     */
+    private function normalizedRecipientAllowlist(array $settings): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+            (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
+        ))));
+    }
+
+    /** @param array<string, mixed> $settings */
+    private function roleRecipientAllowlistConfigured(array $settings): bool
+    {
+        $allowlist = $this->normalizedRecipientAllowlist($settings);
+
+        foreach (['customer', 'technician', 'ops'] as $role) {
+            $phone = $this->testPhoneForRole($settings, $role);
+            if (! $this->validPhone($phone) || ! in_array($phone, $allowlist, true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function validPhone(string $phone): bool

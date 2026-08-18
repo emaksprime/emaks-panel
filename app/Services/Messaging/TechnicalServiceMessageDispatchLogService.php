@@ -586,6 +586,9 @@ class TechnicalServiceMessageDispatchLogService
         if ($businessState === 'test_recipient_missing') {
             return 'Test yönlendirme numarası tanımlı değil';
         }
+        if ($businessState === 'recipient_not_allowlisted') {
+            return 'Alıcı test gönderim listesinde değil';
+        }
 
         if ((bool) $dispatch->test_redirect_applied) {
             return match ($dispatch->status) {
@@ -614,6 +617,7 @@ class TechnicalServiceMessageDispatchLogService
             'provider_not_ready' => 'Mesaj sağlayıcısının bağlantı veya kimlik bilgisi hazır değil.',
             'sender_not_running' => 'Mesaj gönderim servisi çalışmadığı için kayıt kuyrukta bekliyor.',
             'test_recipient_missing' => 'Gerçek alıcıya gönderim yapılmadı.',
+            'recipient_not_allowlisted' => 'Gerçek gönderim yapılmadı.',
             default => null,
         };
     }
@@ -629,6 +633,14 @@ class TechnicalServiceMessageDispatchLogService
         }
         if ($dispatch->last_error_code === 'test_recipient_routing_missing') {
             return 'test_recipient_missing';
+        }
+        if (in_array($dispatch->last_error_code, [
+            'global_shared_test_recipient_override_enabled',
+            'normal_local_recipient_role_mismatch',
+            'normal_local_role_allowlist_not_configured',
+            'normal_local_recipient_not_allowlisted',
+        ], true)) {
+            return 'recipient_not_allowlisted';
         }
         if (in_array($dispatch->last_error_code, ['outbound_provider_set_not_ready', 'provider_not_ready'], true)) {
             return 'provider_not_ready';
