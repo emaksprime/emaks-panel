@@ -35,18 +35,20 @@ const moduleCards = [
         tone: 'from-cyan-700 to-blue-500',
     },
     {
+        kind: 'technical-service',
         title: 'Teknik Servis',
-        description: 'Servis talepleri, teknisyenler ve operasyon dashboarduna geçin.',
-        candidates: [
-            '/technical-service',
-            '/technical-service/dashboard',
-            '/technical-service/serial-query',
-            '/technical-service/technicians',
-            '/technical-service/earnings',
-            '/technical-service/admin',
-        ],
+        description: 'Servis taleplerinin ana Operasyon Merkezi’ni açın.',
+        primaryHref: '/technical-service',
+        pilotHref: '/technical-service/dashboard',
         icon: Headset,
         tone: 'from-emerald-700 to-teal-500',
+    },
+    {
+        title: 'Bayi & Çilingir Kokpiti',
+        description: 'Bayi, üretici, satıcı ve çok rollü partner durumlarını yönetin.',
+        candidates: ['/panel/b2b', '/panel/b2b/partners', '/panel/b2b/users'],
+        icon: UsersRound,
+        tone: 'from-violet-700 to-blue-500',
     },
     {
         title: 'Müşteri Yönetimi',
@@ -83,6 +85,42 @@ function firstVisibleHref(candidates, visibleHrefs) {
     return candidates.find((href) => visibleHrefs.has(href)) ?? null;
 }
 
+function resolveModuleCard(card, visibleHrefs) {
+    if (card.kind !== 'technical-service') {
+        return {
+            ...card,
+            href: firstVisibleHref(card.candidates, visibleHrefs),
+        };
+    }
+
+    const canOpenOperationsCenter = visibleHrefs.has(card.primaryHref);
+    const canOpenPilotDashboard = visibleHrefs.has(card.pilotHref);
+
+    if (!canOpenOperationsCenter && !canOpenPilotDashboard) {
+        return { ...card, href: null };
+    }
+
+    if (!canOpenOperationsCenter) {
+        return {
+            ...card,
+            title: 'Operasyon Dashboard — Pilot',
+            description: 'Pilot / Geliştiriliyor: ana Operasyon Merkezi yerine geçmeyen sınırlı takip ekranı.',
+            href: card.pilotHref,
+            actionLabel: 'Pilot ekranı aç',
+            isPilotOnly: true,
+            visiblePilotHref: null,
+        };
+    }
+
+    return {
+        ...card,
+        href: card.primaryHref,
+        actionLabel: 'Operasyon Merkezi',
+        isPilotOnly: false,
+        visiblePilotHref: canOpenPilotDashboard ? card.pilotHref : null,
+    };
+}
+
 export default function DashboardHome() {
     const { auth, panelNavigation } = usePage().props;
     const visibleHrefs = new Set(
@@ -91,10 +129,7 @@ export default function DashboardHome() {
         ).map((item) => item.href)),
     );
     const visibleCards = moduleCards
-        .map((card) => ({
-            ...card,
-            href: firstVisibleHref(card.candidates, visibleHrefs),
-        }))
+        .map((card) => resolveModuleCard(card, visibleHrefs))
         .filter((card) => card.href !== null);
 
     return (
@@ -139,6 +174,51 @@ export default function DashboardHome() {
                 <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     {visibleCards.map((card) => {
                         const Icon = card.icon;
+
+                        if (card.kind === 'technical-service') {
+                            return (
+                                <article
+                                    key="technical-service"
+                                    className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                                >
+                                    <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${card.tone}`} />
+                                    <div className="flex items-start justify-between gap-4">
+                                        <span className={`grid size-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${card.tone} text-white shadow-sm`}>
+                                            <Icon className="size-6" />
+                                        </span>
+                                        {card.isPilotOnly ? (
+                                            <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">
+                                                Pilot / Geliştiriliyor
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                    <h2 className="mt-5 text-xl font-bold text-slate-950">
+                                        {card.title}
+                                    </h2>
+                                    <p className="mt-2 min-h-12 text-sm leading-6 text-slate-600">
+                                        {card.description}
+                                    </p>
+                                    <div className="mt-5 flex flex-wrap items-center gap-2">
+                                        <Link
+                                            href={card.href}
+                                            className="inline-flex min-h-10 items-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+                                        >
+                                            {card.actionLabel}
+                                            <ArrowRight className="size-4" />
+                                        </Link>
+                                        {card.visiblePilotHref ? (
+                                            <Link
+                                                href={card.visiblePilotHref}
+                                                className="inline-flex min-h-10 items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-900 transition hover:bg-amber-100"
+                                            >
+                                                Operasyon Dashboard — Pilot
+                                                <span className="text-xs font-semibold">Geliştiriliyor</span>
+                                            </Link>
+                                        ) : null}
+                                    </div>
+                                </article>
+                            );
+                        }
 
                         return (
                             <Link

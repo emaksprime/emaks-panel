@@ -1,0 +1,2865 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServiceMessageTemplate;
+use App\Models\TechnicalServiceRequest;
+use App\Models\User;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+class TechnicalServiceMessageTemplateTest extends TestCase
+{
+    use DatabaseMigrations;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertFalse(DB::connection()->getPdo()->inTransaction());
+    }
+
+    public function runDatabaseMigrations(): void
+    {
+        $this->beforeRefreshingDatabase();
+        $this->refreshTestDatabase();
+        $this->afterRefreshingDatabase();
+
+        $this->beforeApplicationDestroyed(function (): void {
+            // The in-memory connection is discarded after each test.
+            RefreshDatabaseState::$migrated = false;
+        });
+    }
+
+    public function test_message_template_can_be_saved_and_previewed_without_send(): void
+    {
+        Http::fake();
+
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'title' => 'Randevu onay test',
+                'body' => 'Merhaba {customer_name}, randevunuz {appointment_date} {appointment_time}.',
+                'required_variables' => ['customer_name', 'appointment_date', 'appointment_time'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('message_templates.preview.preview_ready', true)
+            ->json('message_templates');
+
+        $this->assertDatabaseHas('technical_service_message_templates', [
+            'message_type' => 'appointment_approved_customer',
+            'channel' => 'whatsapp',
+            'active' => true,
+        ]);
+        $this->assertStringContainsString('PR88 Test Müşteri', $payload['preview']['rendered_body']);
+        $this->assertFalse($payload['preview']['send_ready']);
+        Http::assertNothingSent();
+    }
+
+    public function test_admin_sms_template_is_single_body_authority(): void
+    {
+        Http::fake();
+        $firstBody = "EMAKS Prime\n{customer_reference_phrase} montaj talebiniz alındı.\nÜrün: {product_name}\nİlk sürüm";
+        $currentBody = "EMAKS Prime\n{customer_reference_phrase} montaj talebiniz alındı.\nÜrün: {product_name}\nOperasyon ekibimiz sizinle iletişime geçecektir.";
+
+        foreach ([$firstBody, $currentBody] as $body) {
+            $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates', [
+                    'message_type' => 'mount_request_created_customer',
+                    'channel' => 'sms',
+                    'body' => $body,
+                ])
+                ->assertOk();
+        }
+
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'mount_request_created_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Operasyon ekibimiz sizinle iletişime geçecektir.', $preview);
+        $this->assertStringNotContainsString('İlk sürüm', $preview);
+        $this->assertSame(1, TechnicalServiceMessageTemplate::query()->where('active', true)->count());
+        $this->assertSame([1, 2], TechnicalServiceMessageTemplate::query()->orderBy('version')->pluck('version')->all());
+        Http::assertNothingSent();
+    }
+
+    public function test_template_preview_endpoint_renders_default_sample_context(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->assertJsonPath('preview.no_send', true)
+            ->assertJsonFragment(['send_ready' => false]);
+    }
+
+    public function test_message_template_can_be_restored_to_default(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates', [
+                'message_type' => 'payment_link_customer',
+                'channel' => 'sms',
+                'body' => 'Ödeme: {payment_link}',
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/restore-default', [
+                'message_type' => 'payment_link_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('message_templates.template.is_default', true);
+
+        $this->assertSame(0, TechnicalServiceMessageTemplate::query()->where('active', true)->count());
+    }
+
+    public function test_unknown_message_type_and_channel_are_rejected(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'unknown',
+                'channel' => 'whatsapp',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['message_type']);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'fax',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['channel']);
+    }
+
+    public function test_variable_registry_lists_required_variables_and_forbidden_are_rejected(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/message-templates')
+            ->assertOk()
+            ->json('message_templates');
+
+        $this->assertContains('customer_name', collect($payload['variables'])->pluck('key'));
+        $this->assertContains('payment_link_sms', collect($payload['variables'])->pluck('key'));
+        $this->assertContains('confirmation_link_sms', collect($payload['variables'])->pluck('key'));
+        $this->assertContains('technician_job_card_short_url', collect($payload['variables'])->pluck('key'));
+        $this->assertContains('sms_payment_line', collect($payload['variables'])->pluck('key'));
+        $this->assertContains('internal_note', $payload['forbidden_variables']);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'body' => 'Gizli not: {internal_note}',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['body']);
+    }
+
+    public function test_unresolved_undefined_null_and_nan_block_preview_ready(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'body' => 'Merhaba {customer_name} {unknown_variable} undefined null NaN',
+                'context' => [
+                    'customer_name' => 'Burhan Test',
+                    'appointment_date' => '03.07.2026',
+                    'appointment_time' => '14:00',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Bilinmeyen değişken: unknown_variable.']);
+    }
+
+    public function test_missing_payment_and_confirmation_links_block_preview(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'payment_link_customer',
+                'channel' => 'sms',
+                'body' => 'Ödeme linki: {payment_link}',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Link Test',
+                    'payer_state_key' => 'pending_online_payment',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Ödeme linki mesajı için payment_link zorunlu.']);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'customer_approval_request',
+                'channel' => 'whatsapp',
+                'body' => 'Onay: {confirmation_link}',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Onay Test',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Müşteri onayı mesajı için confirmation_link zorunlu.']);
+    }
+
+    public function test_customer_pays_technician_requires_positive_amount_and_formats_try(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'customer_pays_technician_notice',
+                'channel' => 'whatsapp',
+                'body' => 'Ustaya ödenecek tutar: {customer_payment_amount_formatted}',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Tutar Test',
+                    'payer_state_key' => 'customer_pays_technician',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Ustaya ödeme mesajı için pozitif müşteri ödeme tutarı zorunlu.']);
+
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'customer_pays_technician_notice',
+                'channel' => 'whatsapp',
+                'body' => 'Ustaya ödenecek tutar: {customer_payment_amount_formatted}',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Tutar Test',
+                    'payer_state_key' => 'customer_pays_technician',
+                    'customer_payment_amount' => 1250,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('1.250,00 TL', $payload['rendered_body']);
+    }
+
+    public function test_customer_payment_note_customer_pays_technician_whatsapp_includes_cash_transfer_note(): void
+    {
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Ödeme Notu',
+                    'mrn' => 'MRN-PR88-NOTE',
+                    'appointment_date' => '2026-07-08',
+                    'appointment_time' => '14:00 - 16:00',
+                    'payer_state_key' => 'customer_pays_technician',
+                    'customer_payment_amount' => 1250,
+                    'customer_payment_note_text' => 'Ödemeler nakit ve havale kabul edilmektedir.',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringNotContainsString('1.250,00 TL', $body);
+        $this->assertStringNotContainsString('ustaya ödenecek tutar', mb_strtolower($body, 'UTF-8'));
+        $this->assertStringNotContainsString('Ödemeler nakit ve havale kabul edilmektedir.', $body);
+    }
+
+    public function test_customer_payment_note_company_collected_and_no_payment_omit_payment_note(): void
+    {
+        foreach (['company_collected_online', 'no_payment'] as $payerState) {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'appointment_approved_customer',
+                    'channel' => 'whatsapp',
+                    'sample_context' => false,
+                    'context' => [
+                        'customer_name' => 'PR88 Ödeme Yok',
+                        'mrn' => 'MRN-PR88-NO-PAY',
+                        'appointment_date' => '2026-07-08',
+                        'appointment_time' => '14:00 - 16:00',
+                        'payer_state_key' => $payerState,
+                        'customer_payment_note_text' => 'Ödemeler nakit ve havale kabul edilmektedir.',
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            $this->assertStringNotContainsString('Ödemeler nakit ve havale kabul edilmektedir.', $body);
+            $this->assertStringNotContainsString('ustaya ödenecek tutar', mb_strtolower($body, 'UTF-8'));
+        }
+    }
+
+    public function test_company_collected_message_cannot_say_pay_technician(): void
+    {
+        foreach (['appointment_approved_customer', 'customer_pays_technician_notice'] as $messageType) {
+            $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => $messageType,
+                    'channel' => 'whatsapp',
+                    'body' => 'Merhaba {customer_name}, ustaya ödeme yapınız. Randevu {appointment_date} {appointment_time}.',
+                    'sample_context' => false,
+                    'context' => [
+                        'customer_name' => 'PR88 Tahsil Test',
+                        'appointment_date' => '03.07.2026',
+                        'appointment_time' => '14:00',
+                        'customer_payment_amount_formatted' => '1.000,00 TL',
+                        'payer_state_key' => 'company_collected_online',
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', false)
+                ->assertJsonFragment(['Şirket tahsil etmişken müşteri mesajı ustaya ödeme talimatı içeremez.']);
+        }
+    }
+
+    public function test_sms_preview_counts_segments_warns_and_does_not_send(): void
+    {
+        Http::fake();
+
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'body' => 'Merhaba {customer_name}, randevunuz {appointment_date} {appointment_time}. Çağrı linki: https://panel.example.test/uzun-link',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertGreaterThan(0, $payload['sms']['characters']);
+        $this->assertGreaterThanOrEqual(1, $payload['sms']['segments']);
+        $this->assertSame('unicode', $payload['sms']['encoding']);
+        $this->assertNotEmpty($payload['warnings']);
+        Http::assertNothingSent();
+    }
+
+    public function test_voice_script_preview_available_without_voibot_call(): void
+    {
+        Http::fake();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'voice_script',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->assertJsonFragment(['Voibot contract pending; bu sadece voice script önizlemesidir, çağrı yapılmaz.']);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_template_test_evo_direct_path_is_audited_but_cannot_bypass_local_mode(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.example.test/webhook/emaks/evo/send-message',
+            'services.evolution.real_send_enabled' => false,
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.allow_unit_test_http_fake' => true,
+        ]);
+        Http::fake([
+            'n8n.example.test/*' => Http::response(['ok' => true], 200),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'messaging_enabled' => true,
+                'test_mode_enabled' => true,
+                'test_phone' => '905467647428',
+                'active_provider' => 'evo_whatsapp',
+                'message_types' => [
+                    'appointment_approved_customer' => [
+                        'enabled' => true,
+                        'test_send_allowed' => true,
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
+            ->assertJsonPath('test_send.dispatch.target_type', 'shared_test_phone')
+            ->assertJsonPath('test_send.dispatch.target_phone_masked', '9054***428');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_nac_sms_test_send_requires_explicit_sms_approval(): void
+    {
+        Http::fake();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'messaging_enabled' => true,
+                'test_mode_enabled' => true,
+                'test_phone' => '905467647428',
+                'active_provider' => 'nac_sms',
+                'nac_sms' => [
+                    'enabled' => true,
+                    'sender' => 'EMAKS',
+                    'title' => 'EMAKS',
+                ],
+                'message_types' => [
+                    'appointment_approved_customer' => [
+                        'enabled' => true,
+                        'test_send_allowed' => true,
+                        'channel_policy' => 'sms_only',
+                        'sms_mode' => 'test',
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['real_sms_confirmed']);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_template_test_sms_preserves_rendered_payload_but_direct_http_is_suppressed(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::response([
+                'data' => [
+                    'pkgID' => 'PKG-REL4C7-TEST',
+                ],
+            ], 200),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/nac-sms/credentials', [
+                'username' => 'nac-user@example.test',
+                'password' => 'PR88_NAC_CREDENTIAL_TEST_ONLY',
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'messaging_enabled' => true,
+                'test_mode_enabled' => true,
+                'test_phone' => '905467647428',
+                'active_provider' => 'nac_sms',
+                'nac_sms' => [
+                    'enabled' => true,
+                    'profile' => 'legacy_working_http_9587',
+                    'scheme' => 'http',
+                    'host' => 'smslogin.nac.com.tr',
+                    'port' => 9587,
+                    'path' => '/sms/create',
+                    'request_shape' => 'legacy_working_minimal',
+                    'sender' => 'EMAKS PRIME',
+                    'title' => '',
+                    'encoding' => 0,
+                    'validity' => 60,
+                    'recipient_type' => 0,
+                    'use_shared_test_phone' => true,
+                ],
+                'message_types' => [
+                    'appointment_approved_customer' => [
+                        'enabled' => true,
+                        'test_send_allowed' => true,
+                        'channel_policy' => 'sms_only',
+                        'sms_mode' => 'test',
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.nac_sms.test_ready', true);
+
+        $response = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'real_sms_confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
+            ->assertJsonPath('test_send.dispatch.target_type', 'shared_test_phone')
+            ->assertJsonPath('test_send.dispatch.target_phone_masked', '9054***428')
+            ->assertJsonPath('test_send.dispatch.provider_reference', null)
+            ->assertJsonPath('test_send.dispatch.test_type', 'template_test_sms')
+            ->assertJsonPath('test_send.dispatch.encoding', 1);
+
+        $testCode = $response->json('test_send.dispatch.test_code');
+        $customId = $response->json('test_send.dispatch.custom_id');
+        $payloadHash = $response->json('test_send.dispatch.payload_hash');
+        $previewBody = $response->json('test_send.preview.rendered_body');
+        $contentPreview = $response->json('test_send.dispatch.content_preview');
+        $encodedResponse = $response->getContent();
+        $this->assertIsString($testCode);
+        $this->assertMatchesRegularExpression('/^B\d{3,}$/', $testCode);
+        $this->assertMatchesRegularExpression(
+            '/^nac-test-'.$response->json('test_send.dispatch.id').'-T\d{8}-\d{6}-[A-Z0-9]{4}$/',
+            (string) $customId,
+        );
+        $this->assertIsString($payloadHash);
+        $this->assertIsString($previewBody);
+        $this->assertStringContainsString('randevunuz onaylanmıştır', $previewBody);
+        $this->assertStringContainsString('ödenecek tutar', $previewBody);
+        $this->assertStringContainsString('randevunuz onaylanmıştır', (string) $contentPreview);
+        $this->assertStringNotContainsString('Authorization', $encodedResponse);
+        $this->assertStringNotContainsString('Basic ', $encodedResponse);
+        $this->assertStringNotContainsString('nac-user@example.test', $encodedResponse);
+        $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encodedResponse);
+
+        $storedPayload = TechnicalServiceMessageDispatch::query()->where('event', 'template_test_sms')->firstOrFail()->request_payload;
+        $this->assertSame('7428', substr((string) data_get($storedPayload, 'nac_payload_shape.number'), -4));
+        $this->assertSame('EMAKS PRIME', data_get($storedPayload, 'nac_payload_shape.sender'));
+        $this->assertSame('EMAKS TPL '.$testCode, data_get($storedPayload, 'nac_payload_shape.title'));
+        $this->assertSame($customId, data_get($storedPayload, 'nac_payload_shape.customID'));
+        $this->assertSame($previewBody, data_get($storedPayload, 'nac_payload_shape.content'));
+        Http::assertNothingSent();
+    }
+
+    public function test_provider_test_sms_payload_is_audited_without_direct_http(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::response([
+                'data' => [
+                    'pkgID' => 'PKG-PROVIDER-TEST',
+                ],
+            ], 200),
+        ]);
+
+        $this->configureNacSmsTestSettings();
+
+        $response = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/nac-sms/test-send', [
+                'real_sms_confirmed' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('provider_test.dispatch.status', 'suppressed_real_send_disabled')
+            ->assertJsonPath('provider_test.dispatch.test_type', 'provider_test_sms')
+            ->assertJsonPath('provider_test.dispatch.provider_reference', null)
+            ->assertJsonPath('provider_test.dispatch.encoding', 1);
+
+        $testCode = $response->json('provider_test.dispatch.test_code');
+        $payload = TechnicalServiceMessageDispatch::query()->where('event', 'provider_test_sms')->firstOrFail()->request_payload;
+        $this->assertSame('EMAKS TEST '.$testCode, data_get($payload, 'nac_payload_shape.title'));
+        $this->assertStringContainsString('EMAKS Prime SMS altyapı testi', (string) data_get($payload, 'nac_payload_shape.content'));
+        $this->assertStringContainsString('Gönderim zamanı', (string) data_get($payload, 'nac_payload_shape.content'));
+        Http::assertNothingSent();
+    }
+
+    public function test_nac_sms_fake_error_endpoint_is_not_called_and_response_remains_redacted(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::response([
+                'err' => [
+                    'status' => 530,
+                    'code' => 1033,
+                    'message' => 'Basic password=SECRET failed',
+                ],
+            ], 530),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/nac-sms/credentials', [
+                'username' => 'nac-user@example.test',
+                'password' => 'PR88_NAC_CREDENTIAL_TEST_ONLY',
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'messaging_enabled' => true,
+                'test_mode_enabled' => true,
+                'test_phone' => '905467647428',
+                'active_provider' => 'nac_sms',
+                'nac_sms' => [
+                    'enabled' => true,
+                    'profile' => 'legacy_working_http_9587',
+                    'scheme' => 'http',
+                    'host' => 'smslogin.nac.com.tr',
+                    'port' => 9587,
+                    'path' => '/sms/create',
+                    'request_shape' => 'legacy_working_minimal',
+                    'sender' => 'EMAKS PRIME',
+                ],
+            ])
+            ->assertOk();
+
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'real_sms_confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
+            ->json('test_send');
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encoded);
+        $this->assertStringNotContainsString('SECRET', $encoded);
+        Http::assertNothingSent();
+    }
+
+    public function test_template_test_sms_keeps_body_same_but_generates_unique_title_custom_id_and_payload_hash_each_click(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::response([
+                'data' => [
+                    'pkgID' => 'PKG-REL4C8-TEST',
+                ],
+            ], 200),
+        ]);
+
+        $this->configureNacSmsTestSettings();
+
+        foreach (range(1, 2) as $ignored) {
+            $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/test-send', [
+                    'confirmed' => true,
+                    'real_sms_confirmed' => true,
+                    'message_type' => 'appointment_approved_customer',
+                    'channel' => 'sms',
+                ])
+                ->assertOk()
+                ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled');
+        }
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('event', 'template_test_sms')
+            ->oldest('id')
+            ->get();
+
+        $this->assertCount(2, $dispatches);
+
+        $first = $dispatches[0]->request_payload;
+        $second = $dispatches[1]->request_payload;
+
+        foreach ([$first, $second] as $payload) {
+            $this->assertMatchesRegularExpression('/^B\d{3,}$/', $payload['test_code']);
+            $this->assertMatchesRegularExpression('/^T\d{8}-\d{6}-[A-Z0-9]{4}$/', $payload['internal_test_code']);
+            $this->assertStringContainsString($payload['test_code'], $payload['title']);
+            $this->assertStringNotContainsString($payload['test_code'], $payload['text']);
+            $this->assertStringContainsString($payload['internal_test_code'], $payload['custom_id']);
+            $this->assertStringContainsString($payload['test_code'], $payload['nac_payload_shape']['title']);
+            $this->assertStringNotContainsString($payload['test_code'], $payload['nac_payload_shape']['content']);
+            $this->assertStringNotContainsString($payload['internal_test_code'], $payload['nac_payload_shape']['title']);
+            $this->assertStringNotContainsString($payload['internal_test_code'], $payload['nac_payload_shape']['content']);
+            $this->assertSame($payload['custom_id'], $payload['nac_payload_shape']['customID']);
+            $this->assertSame('template_test_sms', $payload['test_type']);
+            $this->assertSame('rendered_template_preview', $payload['content_source']);
+            $this->assertSame(1, $payload['encoding']);
+        }
+
+        $this->assertNotSame($first['test_code'], $second['test_code']);
+        $this->assertNotSame($first['internal_test_code'], $second['internal_test_code']);
+        $this->assertNotSame($first['title'], $second['title']);
+        $this->assertSame($first['text'], $second['text']);
+        $this->assertSame($first['template_body_hash'], $second['template_body_hash']);
+        $this->assertNotSame($first['custom_id'], $second['custom_id']);
+        $this->assertNotSame($first['payload_hash'], $second['payload_hash']);
+        $this->assertSame($first['payload_hash'], $second['previous_payload_hash']);
+        Http::assertNothingSent();
+    }
+
+    public function test_repeated_template_test_keeps_body_and_payload_lineage_without_direct_http(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::sequence()
+                ->push([
+                    'data' => [
+                        'pkgID' => 'PKG-REL4C8-FIRST',
+                    ],
+                ], 200)
+                ->push([
+                    'err' => [
+                        'status' => 417,
+                        'code' => 'ERR_SMS_PKG_DUPLICATION',
+                        'message' => 'Same SMS package was already sent.',
+                    ],
+                ], 200),
+        ]);
+
+        $this->configureNacSmsTestSettings();
+
+        $first = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'real_sms_confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
+            ->json('test_send.dispatch');
+
+        $second = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'real_sms_confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
+            ->assertJsonPath('test_send.dispatch.provider_reference', null)
+            ->json('test_send.dispatch');
+
+        $this->assertNotSame($first['test_code'], $second['test_code']);
+        $this->assertNotSame($first['payload_hash'], $second['payload_hash']);
+        $this->assertSame($first['payload_hash'], $second['previous_payload_hash']);
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('event', 'template_test_sms')
+            ->oldest('id')
+            ->get();
+        $this->assertSame($dispatches[0]->request_payload['text'], $dispatches[1]->request_payload['text']);
+        $this->assertSame($dispatches[0]->request_payload['template_body_hash'], $dispatches[1]->request_payload['template_body_hash']);
+
+        $encoded = json_encode($second, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('Authorization', $encoded);
+        $this->assertStringNotContainsString('Basic ', $encoded);
+        $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encoded);
+        Http::assertNothingSent();
+    }
+
+    public function test_template_test_send_refuses_blockers_and_voice_channel(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'body' => 'Merhaba {unknown_variable}',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['template']);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'voice_script',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['channel']);
+    }
+
+    public function test_customer_whatsapp_canonical_template_has_operational_format_and_no_random_talep_suffix(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $body = $payload['rendered_body'];
+
+        $this->assertStringContainsString('EMAKS Prime Teknik Servis', $body);
+        $this->assertStringContainsString("Sayın PR88 Test Müşteri,\nMRN-REL4C-0001 numaralı montaj randevunuz onaylanmıştır.", $body);
+        $this->assertStringContainsString("Randevu Bilgileri\nTarih: 03.07.2026", $body);
+        $this->assertStringContainsString('Saat Aralığı:', $body);
+        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', $body);
+        $this->assertStringContainsString('Not: Ödemeler nakit ve havale kabul edilmektedir.', $body);
+        $this->assertStringNotContainsString('MRN:', $body);
+        $this->assertStringNotContainsString('SRV:', $body);
+        $this->assertStringNotContainsString('Ödeme:', $body);
+        $this->assertStringNotContainsString('Talep:', $body);
+        $this->assertStringNotContainsString('Yeni randevu:', $body);
+    }
+
+    public function test_template_readability_customer_whatsapp_is_sectioned_and_not_dense(): void
+    {
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertGreaterThanOrEqual(9, substr_count($body, "\n"));
+        $this->assertStringContainsString("\n\nRandevu Bilgileri\n", $body);
+        $this->assertStringNotContainsString('EMAKS Prime Teknik Servis Sayın', $body);
+        $this->assertStringNotContainsString('MRN:', $body);
+        $this->assertStringNotContainsString('SRV:', $body);
+        $this->assertStringNotContainsString('Ödeme:', $body);
+        $this->assertStringNotContainsString('Talep:', $body);
+        $this->assertStringNotContainsString('undefined', $body);
+        $this->assertStringNotContainsString('null', $body);
+    }
+
+    public function test_customer_sms_canonical_template_is_short_and_reports_segments(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringStartsWith("EMAKS Prime\nMRN-REL4C-0001 numaralı montaj randevunuz onaylanmıştır.", $payload['rendered_body']);
+        $this->assertStringContainsString('Ustaya ödenecek tutar: 1.250,00 TL.', $payload['rendered_body']);
+        $this->assertStringNotContainsString('MRN:', $payload['rendered_body']);
+        $this->assertStringNotContainsString('SRV:', $payload['rendered_body']);
+        $this->assertStringNotContainsString('Ödeme:', $payload['rendered_body']);
+        $this->assertStringNotContainsString('Talep:', $payload['rendered_body']);
+        $this->assertStringNotContainsString('Adres:', $payload['rendered_body']);
+        $this->assertStringNotContainsString('Harita:', $payload['rendered_body']);
+        $this->assertGreaterThan(0, $payload['sms']['characters']);
+        $this->assertGreaterThanOrEqual(1, $payload['sms']['segments']);
+        $this->assertGreaterThanOrEqual(4, $payload['sms']['line_count']);
+    }
+
+    public function test_whatsapp_preview_preserves_line_breaks_and_sms_keeps_clean_short_lines(): void
+    {
+        $whatsapp = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->json('preview.rendered_body');
+
+        $sms = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'body' => "EMAKS\nSayın {customer_name}\nMRN: {mrn}",
+            ])
+            ->assertOk()
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString("EMAKS Prime Teknik Servis\n\nSayın", $whatsapp);
+        $this->assertStringContainsString("\n\nRandevu Bilgileri\n", $whatsapp);
+        $this->assertStringNotContainsString('EMAKS Prime Teknik Servis Sayın', $whatsapp);
+        $this->assertStringContainsString("\n", $sms);
+        $this->assertSame("EMAKS\nSayın PR88 Test Müşteri\nMRN: MRN-REL4C-0001", $sms);
+    }
+
+    public function test_sms_readability_clean_sms_templates_avoid_whatsapp_only_fields_and_block_long_sms(): void
+    {
+        $technician = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Kart https://e.ms/job/PR88', $technician);
+        $this->assertStringContainsString('Randevu 03.07.2026 14:00 - 16:00', $technician);
+        $this->assertStringNotContainsString('13:00 - 19:00 arası', $technician);
+        $this->assertStringNotContainsString('Adres:', $technician);
+        $this->assertStringNotContainsString('Harita:', $technician);
+        $this->assertStringNotContainsString('Hakediş Özeti', $technician);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'body' => str_repeat('Türkçe uzun SMS metni. ', 22),
+                'required_variables' => [],
+                'optional_variables' => [],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['SMS 4 veya daha fazla segment; admin override olmadan gönderilemez.']);
+    }
+
+    public function test_technician_whatsapp_template_includes_job_card_and_safe_earning_summary(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $body = $payload['rendered_body'];
+
+        $this->assertStringContainsString('Yeni iş kartı hazır.', $body);
+        $this->assertStringContainsString("Servis Kaydı\nMRN: MRN-REL4C-0001", $body);
+        $this->assertStringContainsString('Müşteri Bilgileri', $body);
+        $this->assertStringContainsString('Müşteri: PR88 Test Müşteri', $body);
+        $this->assertStringContainsString('Telefon: 905555555555', $body);
+        $this->assertStringContainsString('Adres: Test Mah. Örnek Sok. No:1', $body);
+        $this->assertStringContainsString("Randevu\n03.07.2026 14:00 - 16:00", $body);
+        $this->assertStringNotContainsString('13:00 - 19:00 arası', $body);
+        $this->assertStringContainsString("İş Kartı\nhttps://panel.example.test/partner/jobs/PR88-REL4C", $body);
+        $this->assertStringContainsString('Hakediş Özeti', $body);
+        $this->assertStringContainsString('İşçilik/Montaj: 900,00 TL', $body);
+        $this->assertStringContainsString('Yol: 350,00 TL', $body);
+        $this->assertStringContainsString('Toplam: 1.250,00 TL', $body);
+        $this->assertStringNotContainsString('internal_note', $body);
+    }
+
+    public function test_technician_template_uses_safe_earning_summary_when_amounts_are_missing(): void
+    {
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Usta Test',
+                    'customer_phone' => '905551112233',
+                    'address' => 'Test Sokak No:1',
+                    'mrn' => 'PR88-REL4C1-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00 - 16:00',
+                    'technician_job_card_url' => 'https://panel.example.test/partner/jobs/PR88-REL4C1',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Hakediş bilgisi paneldeki iş kartında görülebilir.', $body);
+    }
+
+    public function test_appointment_window_rules_render_customer_boundaries_and_exact_technician_ranges(): void
+    {
+        $base = [
+            'message_type' => 'appointment_approved_customer',
+            'channel' => 'whatsapp',
+            'sample_context' => false,
+            'context' => [
+                'customer_name' => 'PR88 Pencere Test',
+                'mrn' => 'PR88-REL4C1-MRN',
+                'appointment_date' => '2026-07-03',
+                'payer_state_key' => 'no_payment_required',
+            ],
+        ];
+
+        $morning = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                ...$base,
+                'context' => [...$base['context'], 'appointment_time' => '10:00'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $noon = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                ...$base,
+                'context' => [...$base['context'], 'appointment_time' => '12:00'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $lastMorningMinute = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                ...$base,
+                'context' => [...$base['context'], 'appointment_time' => '12:59'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $boundaryAfternoon = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                ...$base,
+                'context' => [...$base['context'], 'appointment_time' => '13:00'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $afternoon = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                ...$base,
+                'context' => [...$base['context'], 'appointment_time' => '14:00'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $explicit = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                ...$base,
+                'context' => [...$base['context'], 'appointment_time' => '10:00 - 12:00'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Saat Aralığı: 09:00 - 13:00 arası', $morning);
+        $this->assertStringContainsString('Saat Aralığı: 09:00 - 13:00 arası', $noon);
+        $this->assertStringContainsString('Saat Aralığı: 09:00 - 13:00 arası', $lastMorningMinute);
+        $this->assertStringContainsString('Saat Aralığı: 13:00 - 19:00 arası', $boundaryAfternoon);
+        $this->assertStringContainsString('Saat Aralığı: 13:00 - 19:00 arası', $afternoon);
+        $this->assertStringContainsString('Saat Aralığı: 09:00 - 13:00 arası', $explicit);
+        $this->assertStringNotContainsString('null', $morning);
+        $this->assertStringNotContainsString('undefined', $afternoon);
+    }
+
+    public function test_missing_appointment_window_blocks_customer_appointment_template(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Eksik Saat',
+                    'mrn' => 'PR88-REL4C1-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'payer_state_key' => 'no_payment_required',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Müşteri randevu aralığı belirlenmeli.']);
+    }
+
+    public function test_customer_sms_uses_customer_window_and_technician_sms_uses_exact_time(): void
+    {
+        $customer = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'montaj',
+                    'customer_name' => 'PR88 SMS Sınır',
+                    'mrn' => 'MRN-REL4C11-SMS',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '13:00',
+                    'payer_state_key' => 'no_payment_required',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Aralık: 13:00 - 19:00 arası', $customer);
+        $this->assertStringNotContainsString('13:00 - 13:00', $customer);
+
+        $technician = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Usta SMS',
+                    'customer_phone' => '905551112233',
+                    'mrn' => 'MRN-REL4C11-USTA',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00 - 16:00',
+                    'technician_job_card_url' => 'https://panel.example.test/partner/jobs/PR88-REL4C11',
+                    'technician_job_card_short_url' => 'https://e.ms/job/R4C11',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Randevu 03.07.2026 14:00 - 16:00', $technician);
+        $this->assertStringContainsString('Kart https://e.ms/job/R4C11', $technician);
+        $this->assertStringNotContainsString('13:00 - 19:00 arası', $technician);
+    }
+
+    public function test_technician_message_requires_and_renders_job_card_url(): void
+    {
+        $baseContext = [
+            'customer_name' => 'PR88 Usta Test',
+            'customer_phone' => '905551112233',
+            'address' => 'Test Sokak No:1',
+            'mrn' => 'PR88-REL4C1-MRN',
+            'appointment_date' => '2026-07-03',
+            'appointment_time' => '14:00 - 16:00',
+        ];
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $baseContext,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Usta mesajı için iş kartı linki zorunlu.']);
+
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    ...$baseContext,
+                    'technician_job_card_url' => 'https://panel.example.test/partner/jobs/PR88-REL4C1',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString("İş Kartı\nhttps://panel.example.test/partner/jobs/PR88-REL4C1", $body);
+        $this->assertStringContainsString("Randevu\n03.07.2026 14:00 - 16:00", $body);
+        $this->assertStringNotContainsString('13:00 - 19:00 arası', $body);
+    }
+
+    public function test_technician_exact_time_blocks_without_exact_time(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Usta Test',
+                    'customer_phone' => '905551112233',
+                    'address' => 'Test Sokak No:1',
+                    'mrn' => 'PR88-REL4C11-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'technician_job_card_url' => 'https://panel.example.test/partner/jobs/PR88-REL4C11',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Usta mesajı için tam randevu saati gerekli.']);
+    }
+
+    public function test_customer_message_does_not_require_job_card_url(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Müşteri Test',
+                    'mrn' => 'PR88-REL4C1-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'payer_state_key' => 'no_payment_required',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true);
+    }
+
+    public function test_customer_appointment_template_rejects_earning_and_payment_placeholders(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'body' => 'Randevu {appointment_date_formatted} {appointment_customer_window}. İşçilik {labor_amount_formatted}.',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'Ekonomik Alan Testi',
+                    'appointment_date' => '2026-08-12',
+                    'appointment_time' => '14:00',
+                    'labor_amount_formatted' => '1.000,00 TL',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Müşteri randevu mesajı hakediş veya ödeme değişkeni içeremez: labor_amount_formatted.']);
+    }
+
+    public function test_customer_payer_state_guards_apply_to_appointment_templates(): void
+    {
+        $companyCollected = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Tahsil Test',
+                    'mrn' => 'PR88-REL4C1-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'payer_state_key' => 'company_collected_online',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringNotContainsString('Ustaya ayrıca ödeme yapmanız gerekmez.', $companyCollected);
+        $this->assertStringNotContainsString('Ödeme:', $companyCollected);
+        $this->assertStringNotContainsString('ustaya ödeme', mb_strtolower($companyCollected, 'UTF-8'));
+
+        $customerPays = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Ustaya Ödeme',
+                    'mrn' => 'PR88-REL4C1-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'payer_state_key' => 'customer_pays_technician',
+                    'customer_payment_amount' => 1250,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringNotContainsString('1.250,00 TL', $customerPays);
+        $this->assertStringNotContainsString('ustaya ödenecek tutar', mb_strtolower($customerPays, 'UTF-8'));
+        $this->assertStringNotContainsString('Ödeme:', $customerPays);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Eksik Tutar',
+                    'mrn' => 'PR88-REL4C1-MRN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'payer_state_key' => 'customer_pays_technician',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true);
+    }
+
+    public function test_customer_reference_mount_uses_mrn_sentence_and_service_uses_srv_without_mrn(): void
+    {
+        $mount = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'montaj',
+                    'customer_name' => 'PR88 Montaj Müşteri',
+                    'mrn' => 'MRN-REL4C5-MONTAJ',
+                    'srv' => 'SRV-REL4C5-HIDDEN',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '10:00',
+                    'payer_state_key' => 'no_payment_required',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('MRN-REL4C5-MONTAJ numaralı montaj randevunuz onaylanmıştır.', $mount);
+        $this->assertStringNotContainsString('MRN:', $mount);
+        $this->assertStringNotContainsString('SRV:', $mount);
+
+        $service = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'servis',
+                    'customer_name' => 'PR88 Servis Müşteri',
+                    'mrn' => 'MRN-REL4C5-INTERNAL',
+                    'srv' => 'SRV-REL4C5-SERVIS',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'payer_state_key' => 'no_payment_required',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('SRV-REL4C5-SERVIS numaralı servis randevunuz onaylanmıştır.', $service['rendered_body']);
+        $this->assertStringNotContainsString('MRN-REL4C5-INTERNAL', $service['rendered_body']);
+        $this->assertSame('servis', $service['context']['customer_job_type_label']);
+        $this->assertSame('SRV-REL4C5-SERVIS', $service['context']['customer_reference_code']);
+        $this->assertSame('MRN-REL4C5-INTERNAL', $service['context']['customer_hidden_internal_references']['mrn'] ?? null);
+    }
+
+    public function test_customer_whatsapp_no_internal_labels_and_payment_line_is_natural(): void
+    {
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'montaj',
+                    'customer_name' => 'PR88 Ustaya Ödeme',
+                    'mrn' => 'MRN-REL4C5-PAY',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '14:00',
+                    'payer_state_key' => 'customer_pays_technician',
+                    'customer_payment_amount' => 1750,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('MRN-REL4C5-PAY numaralı montaj randevunuz onaylanmıştır.', $body);
+        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.750,00 TL.', $body);
+        $this->assertStringNotContainsString('MRN:', $body);
+        $this->assertStringNotContainsString('SRV:', $body);
+        $this->assertStringNotContainsString('Ödeme:', $body);
+        $this->assertStringNotContainsString('Talep:', $body);
+    }
+
+    public function test_customer_sms_service_uses_srv_sentence_without_mrn_and_stays_readable(): void
+    {
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'servis',
+                    'customer_name' => 'PR88 SMS Müşteri',
+                    'mrn' => 'MRN-REL4C5-HIDDEN',
+                    'srv' => 'SRV-REL4C5-SMS',
+                    'appointment_date' => '2026-07-03',
+                    'appointment_time' => '09:00',
+                    'payer_state_key' => 'no_payment_required',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('SRV-REL4C5-SMS numaralı servis randevunuz onaylanmıştır.', $preview['rendered_body']);
+        $this->assertStringNotContainsString('MRN-REL4C5-HIDDEN', $preview['rendered_body']);
+        $this->assertStringNotContainsString('MRN:', $preview['rendered_body']);
+        $this->assertStringNotContainsString('SRV:', $preview['rendered_body']);
+        $this->assertStringNotContainsString('Ödeme:', $preview['rendered_body']);
+        $this->assertLessThanOrEqual(2, $preview['sms']['segments']);
+    }
+
+    public function test_payment_link_customer_uses_natural_reference_and_blocks_company_collected(): void
+    {
+        $servicePayment = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'payment_link_customer',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'servis',
+                    'customer_name' => 'PR88 Link Müşteri',
+                    'mrn' => 'MRN-REL4C5-HIDDEN',
+                    'srv' => 'SRV-REL4C5-LINK',
+                    'payment_link' => 'https://sandbox.iyzi.link/rel4c5',
+                    'payment_link_sms' => 'https://e.ms/pay/R4C5',
+                    'payment_amount_formatted' => '1.250,00 TL',
+                    'payer_state_key' => 'pending_online_payment',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('SRV-REL4C5-LINK numaralı servis için ödeme bağlantınız:', $servicePayment);
+        $this->assertStringContainsString('https://e.ms/pay/R4C5', $servicePayment);
+        $this->assertStringNotContainsString('MRN-REL4C5-HIDDEN', $servicePayment);
+        $this->assertStringNotContainsString('MRN:', $servicePayment);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'payment_link_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'job_type' => 'montaj',
+                    'customer_name' => 'PR88 Tahsil Müşteri',
+                    'mrn' => 'MRN-REL4C5-COLLECTED',
+                    'payment_link' => 'https://sandbox.iyzi.link/rel4c5',
+                    'payment_amount_formatted' => '1.250,00 TL',
+                    'payer_state_key' => 'company_collected_online',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Şirket tahsil etmişken müşteriye ödeme linki mesajı gönderilemez.']);
+    }
+
+    public function test_technician_template_still_has_operational_labels(): void
+    {
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_technician',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('MRN: MRN-REL4C-0001', $body);
+        $this->assertStringContainsString('SRV: SRV-REL4C', $body);
+        $this->assertStringContainsString('Müşteri:', $body);
+        $this->assertStringContainsString('İş Kartı', $body);
+    }
+
+    public function test_template_catalog_all_required_message_types_have_defaults(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/message-templates')
+            ->assertOk()
+            ->json('message_templates');
+
+        $templates = collect($payload['templates']);
+        foreach ([
+            'mount_request_created_customer',
+            'appointment_approved_customer',
+            'appointment_updated_customer',
+            'payment_link_customer',
+            'customer_pays_technician_notice',
+            'customer_approval_request',
+            'future_survey_customer',
+            'appointment_approved_technician',
+            'appointment_updated_technician',
+            'assignment_offer_technician',
+            'earnings_message_technician',
+            'completion_submitted_ops',
+            'support_request_ops',
+            'job_rejected_ops',
+            'price_revision_requested_ops',
+        ] as $messageType) {
+            $this->assertTrue(
+                $templates->contains(fn (array $template): bool => $template['message_type'] === $messageType),
+                "Missing default template for {$messageType}",
+            );
+        }
+
+        $this->assertTrue($templates->every(fn (array $template): bool => trim((string) $template['body']) !== ''));
+    }
+
+    public function test_whatsapp_includes_company_payment_component_and_total(): void
+    {
+        $preview = $this->earningMessagePreview('whatsapp', $this->companyPaymentEarningContext());
+        $body = (string) $preview['rendered_body'];
+
+        $this->assertStringContainsString('İşçilik: 3.000,00 TL', $body);
+        $this->assertStringContainsString('Yol: 1.400,00 TL', $body);
+        $this->assertStringContainsString('Ek servis: 600,00 TL', $body);
+        $this->assertStringContainsString('Toplam hakedişiniz: 5.000,00 TL', $body);
+        $this->assertStringNotContainsString('Toplam hakedişiniz: 4.400,00 TL', $body);
+    }
+
+    public function test_sms_includes_company_payment_component_and_total(): void
+    {
+        $preview = $this->earningMessagePreview('sms', $this->companyPaymentEarningContext());
+        $body = (string) $preview['rendered_body'];
+
+        $this->assertStringContainsString('Iscilik: 3.000,00 TL', $body);
+        $this->assertStringContainsString('Yol: 1.400,00 TL', $body);
+        $this->assertStringContainsString('Ek servis: 600,00 TL', $body);
+        $this->assertStringContainsString('Toplam: 5.000,00 TL', $body);
+        $this->assertStringContainsString('B028', $body);
+        $this->assertStringNotContainsString('Toplam: 4.400,00 TL', $body);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_company_payable_is_not_presented_as_technician_paid(): void
+    {
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $body = (string) $this->earningMessagePreview($channel, $this->companyPaymentEarningContext())['rendered_body'];
+
+            $this->assertStringContainsString(
+                $channel === 'sms'
+                    ? 'Hakedisiniz EMAKS Prime tarafindan yapilacaktir.'
+                    : 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.',
+                $body,
+            );
+            $this->assertStringNotContainsString($channel === 'sms' ? 'Odendi' : 'Ödendi', $body);
+        }
+    }
+
+    public function test_payer_state_company_is_rendered_in_both_channels(): void
+    {
+        $context = $this->companyPaymentEarningContext();
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $this->earningMessagePreview($channel, $context);
+            $body = (string) $preview['rendered_body'];
+
+            $this->assertStringContainsString('EMAKS Prime', $body);
+            $this->assertSame($context['earning_revision'], data_get($preview, 'context.earning_revision'));
+            $this->assertSame($context['snapshot_hash'], data_get($preview, 'context.snapshot_hash'));
+        }
+    }
+
+    public function test_technician_earning_message_allows_company_collected_payable_state_from_nested_snapshot(): void
+    {
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $this->earningMessagePreview($channel, $this->nestedCompanyPaymentEarningContext());
+            $body = (string) $preview['rendered_body'];
+
+            $this->assertTrue($preview['preview_ready']);
+            $this->assertSame([], $preview['blockers']);
+            $this->assertSame(600, data_get($preview, 'context.company_payment_amount'));
+            $this->assertSame('payable', data_get($preview, 'context.technician_payment_status_key'));
+            $this->assertSame('Ödenecek', data_get($preview, 'context.technician_payment_status_label'));
+            $this->assertStringContainsString('600,00 TL', $body);
+            $this->assertStringContainsString('5.000,00 TL', $body);
+            $this->assertStringContainsString(
+                $channel === 'sms'
+                    ? 'Hakedisiniz EMAKS Prime tarafindan yapilacaktir.'
+                    : 'Hakedişiniz EMAKS Prime tarafından yapılacaktır.',
+                $body,
+            );
+            $this->assertStringNotContainsString($channel === 'sms' ? 'Odendi' : 'Ödendi', $body);
+        }
+    }
+
+    public function test_sms_and_whatsapp_use_same_nested_earning_revision_and_snapshot_hash(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $whatsapp = $this->earningMessagePreview('whatsapp', $context);
+        $sms = $this->earningMessagePreview('sms', $context);
+
+        $this->assertSame(data_get($whatsapp, 'context.earning_revision'), data_get($sms, 'context.earning_revision'));
+        $this->assertSame(data_get($whatsapp, 'context.earning_snapshot_hash'), data_get($sms, 'context.earning_snapshot_hash'));
+        $this->assertSame(data_get($context, 'earning_snapshot.revision'), data_get($sms, 'context.earning_revision'));
+        $this->assertSame(data_get($context, 'earning_snapshot.snapshot_hash'), data_get($sms, 'context.earning_snapshot_hash'));
+    }
+
+    public function test_route_fee_formatted_exists_for_positive_and_zero_nested_snapshot(): void
+    {
+        $positive = $this->earningMessagePreview('whatsapp', $this->nestedCompanyPaymentEarningContext());
+        $zeroContext = $this->nestedCompanyPaymentEarningContext();
+        $zeroContext['earning_snapshot']['route_fee_amount'] = 0;
+        $zeroContext['earning_snapshot']['total_amount'] = 3600;
+        $zeroContext['earning_snapshot']['technician_remaining_amount'] = 3600;
+        $zero = $this->earningMessagePreview('whatsapp', $zeroContext);
+
+        $this->assertSame('1.400,00 TL', data_get($positive, 'context.route_fee_formatted'));
+        $this->assertSame('0,00 TL', data_get($zero, 'context.route_fee_formatted'));
+        $this->assertStringNotContainsString('Yol:', (string) $zero['rendered_body']);
+    }
+
+    public function test_rendered_snapshot_mismatch_fails_before_dispatch_creation_contract(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $context['earning_snapshot']['total_amount'] = 4999;
+
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->json('preview');
+
+        $this->assertContains('EARNING_MESSAGE_SNAPSHOT_MISMATCH', $preview['blockers']);
+    }
+
+    public function test_customer_pays_technician_state_does_not_render_company_payment(): void
+    {
+        $context = [
+            ...$this->companyPaymentEarningContext(),
+            'company_payment_amount' => 0,
+            'company_payment_breakdown' => [],
+            'total_amount' => 4400,
+            'technician_remaining_amount' => 4400,
+            'customer_collection_amount' => 0,
+            'payer_state_key' => 'customer_pays_technician',
+            'technician_payment_model_label' => 'Müşteri ödemesi',
+            'technician_payment_source_label' => 'Müşteri',
+            'technician_payment_status_label' => 'Ödenecek',
+            'customer_collection_source_label' => 'Ustaya doğrudan ödenecek',
+        ];
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $body = (string) $this->earningMessagePreview($channel, $context)['rendered_body'];
+
+            $this->assertStringNotContainsString('Şirket ödemesi', $body);
+            $this->assertStringNotContainsString('Şirket/', $body);
+            $this->assertStringContainsString(
+                $channel === 'sms'
+                    ? 'Hakedisiniz musteri tarafindan odenecektir.'
+                    : 'Hakedişiniz müşteri tarafından ödenecektir.',
+                $body,
+            );
+            $this->assertStringContainsString('4.400,00 TL', $body);
+        }
+    }
+
+    public function test_technician_earning_template_has_single_owner(): void
+    {
+        $workflow = file_get_contents(base_path('app/Services/TechnicalService/TechnicalServiceWorkflowService.php'));
+        $registry = file_get_contents(base_path('app/Services/Messaging/TechnicalServiceMessageTypeRegistry.php'));
+
+        $this->assertIsString($workflow);
+        $this->assertIsString($registry);
+        $this->assertStringContainsString('$this->messageTemplates->preview([', $workflow);
+        $this->assertStringNotContainsString('technicianEarningsMessageText', $workflow);
+        $this->assertStringContainsString('Merhaba {technician_name},', $registry);
+    }
+
+    public function test_technician_whatsapp_uses_natural_turkish_copy(): void
+    {
+        $body = (string) $this->earningMessagePreview('whatsapp', $this->nestedCompanyPaymentEarningContext())['rendered_body'];
+
+        $this->assertStringStartsWith("Merhaba Test Usta,\n\n", $body);
+        $this->assertStringContainsString("numaralı iş için hakedişiniz güncellendi.\n\n", $body);
+        $this->assertStringContainsString("\n\nİş kartınız:\nhttp://", $body);
+    }
+
+    public function test_technician_whatsapp_contains_no_internal_payment_terms(): void
+    {
+        $body = mb_strtolower((string) $this->earningMessagePreview('whatsapp', $this->nestedCompanyPaymentEarningContext())['rendered_body'], 'UTF-8');
+
+        foreach (['payer_state', 'payable', 'settlement', 'müşteri tahsilatı', 'ödeme modeli', 'company payment', 'şirket ödemesi'] as $term) {
+            $this->assertStringNotContainsString($term, $body);
+        }
+    }
+
+    public function test_technician_whatsapp_renders_human_company_payable_sentence(): void
+    {
+        $body = (string) $this->earningMessagePreview('whatsapp', $this->nestedCompanyPaymentEarningContext())['rendered_body'];
+
+        $this->assertStringContainsString('Hakedişiniz EMAKS Prime tarafından yapılacaktır.', $body);
+        $this->assertStringNotContainsString('Hakediş ödemeniz EMAKS Prime tarafından yapılmıştır.', $body);
+    }
+
+    public function test_technician_whatsapp_renders_human_company_paid_sentence(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $context['earning_snapshot']['technician_paid_amount'] = 5000;
+        $context['earning_snapshot']['technician_remaining_amount'] = 0;
+        $context['earning_snapshot']['technician_payment_status_key'] = 'paid';
+        $context['earning_snapshot']['technician_payment_status_label'] = 'Ödendi';
+        $body = (string) $this->earningMessagePreview('whatsapp', $context)['rendered_body'];
+
+        $this->assertStringContainsString('Hakediş ödemeniz EMAKS Prime tarafından yapılmıştır.', $body);
+        $this->assertStringNotContainsString('Hakedişiniz EMAKS Prime tarafından yapılacaktır.', $body);
+    }
+
+    public function test_company_payment_component_uses_human_business_label(): void
+    {
+        $serviceBody = (string) $this->earningMessagePreview('whatsapp', $this->nestedCompanyPaymentEarningContext())['rendered_body'];
+        $routeContext = $this->nestedCompanyPaymentEarningContext();
+        $routeContext['earning_snapshot']['company_payment_breakdown'][0]['purpose'] = 'route_fee';
+        $routeContext['earning_snapshot']['company_payment_breakdown'][0]['purpose_label'] = 'INTERNAL_ROUTE_CODE';
+        $routeBody = (string) $this->earningMessagePreview('whatsapp', $routeContext)['rendered_body'];
+
+        $this->assertStringContainsString('Ek servis: 600,00 TL', $serviceBody);
+        $this->assertStringContainsString('Yol farkı: 600,00 TL', $routeBody);
+        $this->assertStringNotContainsString('INTERNAL_ROUTE_CODE', $routeBody);
+    }
+
+    public function test_unknown_company_payment_component_blocks_before_send(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $context['earning_snapshot']['company_payment_breakdown'][0]['purpose'] = 'internal_unknown_component';
+
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->json('preview');
+
+        $this->assertContains('EARNING_MESSAGE_COMPONENT_LABEL_UNKNOWN', $preview['blockers']);
+        $this->assertStringNotContainsString('internal_unknown_component', (string) $preview['rendered_body']);
+    }
+
+    public function test_zero_components_are_not_rendered(): void
+    {
+        $context = $this->nestedCompanyPaymentEarningContext();
+        $context['earning_snapshot']['labor_amount'] = 0;
+        $context['earning_snapshot']['route_fee_amount'] = 1400;
+        $context['earning_snapshot']['company_payment_amount'] = 600;
+        $context['earning_snapshot']['total_amount'] = 2000;
+        $context['earning_snapshot']['technician_remaining_amount'] = 2000;
+        $body = (string) $this->earningMessagePreview('whatsapp', $context)['rendered_body'];
+
+        $this->assertStringNotContainsString('İşçilik:', $body);
+        $this->assertStringContainsString('Yol: 1.400,00 TL', $body);
+        $this->assertStringContainsString('Ek servis: 600,00 TL', $body);
+    }
+
+    public function test_sms_contains_real_line_feed_characters(): void
+    {
+        $preview = $this->earningMessagePreview('sms', $this->nestedCompanyPaymentEarningContext());
+        $body = (string) $preview['rendered_body'];
+
+        $this->assertStringContainsString("EMAKS Prime\n\nMRN-", $body);
+        $this->assertStringContainsString("\n\nHakedisiniz EMAKS Prime tarafindan yapilacaktir.\n", $body);
+        $this->assertGreaterThanOrEqual(9, substr_count($body, "\n"));
+        $this->assertSame(substr_count($body, "\n") + 1, $preview['sms']['line_count']);
+    }
+
+    public function test_sms_contains_no_literal_backslash_n(): void
+    {
+        $body = (string) $this->earningMessagePreview('sms', $this->nestedCompanyPaymentEarningContext())['rendered_body'];
+
+        $this->assertStringNotContainsString('\\n', $body);
+        $this->assertStringNotContainsString('<br', mb_strtolower($body, 'UTF-8'));
+    }
+
+    public function test_sms_segment_count_uses_final_rendered_body(): void
+    {
+        $preview = $this->earningMessagePreview('sms', $this->nestedCompanyPaymentEarningContext());
+        $body = (string) $preview['rendered_body'];
+        $expectedSegments = mb_strlen($body) <= 160 ? 1 : (int) ceil(mb_strlen($body) / 153);
+
+        $this->assertSame(mb_strlen($body), $preview['sms']['characters']);
+        $this->assertSame($expectedSegments, $preview['sms']['segments']);
+        $this->assertSame('gsm', $preview['sms']['encoding']);
+    }
+
+    public function test_old_default_active_template_can_be_version_refreshed_through_template_service(): void
+    {
+        $admin = $this->admin();
+        TechnicalServiceMessageTemplate::query()->create([
+            'template_key' => 'earnings_message_technician.whatsapp.default',
+            'message_type' => 'earnings_message_technician',
+            'channel' => 'whatsapp',
+            'provider_key' => 'evo_whatsapp',
+            'title' => 'Eski varsayılan',
+            'body' => 'Eski sistem varsayılanı',
+            'active' => true,
+            'locale' => 'tr',
+            'version' => 1,
+            'required_variables' => [],
+            'optional_variables' => [],
+            'validation_rules' => [],
+            'metadata' => ['source' => 'legacy_default'],
+            'created_by' => $admin->id,
+            'updated_by' => $admin->id,
+        ]);
+
+        $template = $this->actingAs($admin)
+            ->postJson('/api/technical-service/message-templates/restore-default', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => 'whatsapp',
+                'provider_key' => 'evo_whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('message_templates.template.is_default', true)
+            ->json('message_templates.template');
+
+        $this->assertStringStartsWith('Merhaba {technician_name},', $template['body']);
+        $this->assertSame(0, TechnicalServiceMessageTemplate::query()->where('active', true)->count());
+    }
+
+    public function test_user_customized_template_is_not_silently_overwritten(): void
+    {
+        $customBody = "Merhaba {technician_name},\n\nÖzel metin\n\n{technician_earning_summary_block}\n\nİş kartınız:\n{technician_job_card_url}";
+        $template = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => 'whatsapp',
+                'provider_key' => 'evo_whatsapp',
+                'body' => $customBody,
+            ])
+            ->assertOk()
+            ->json('message_templates.template');
+
+        $this->assertFalse($template['is_default']);
+        $this->assertSame($customBody, $template['body']);
+        $this->assertSame($customBody, TechnicalServiceMessageTemplate::query()->where('active', true)->sole()->body);
+    }
+
+    public function test_active_template_and_default_registry_do_not_create_parallel_renderers(): void
+    {
+        $service = file_get_contents(base_path('app/Services/Messaging/TechnicalServiceMessageTemplateService.php'));
+        $workflow = file_get_contents(base_path('app/Services/TechnicalService/TechnicalServiceWorkflowService.php'));
+
+        $this->assertIsString($service);
+        $this->assertIsString($workflow);
+        $this->assertStringContainsString('return $this->templateByKey(', $service);
+        $this->assertStringContainsString('$this->messageTemplates->preview([', $workflow);
+        $this->assertStringNotContainsString('technicianEarningsMessageText', $workflow);
+    }
+
+    public function test_mount_request_customer_template_uses_business_context_without_internal_reference_labels(): void
+    {
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'mount_request_created_customer',
+                    'channel' => $channel,
+                    'sample_context' => false,
+                    'context' => [
+                        'customer_name' => 'Montaj Müşterisi',
+                        'mrn' => 'MRN-MNJ-TEST-001',
+                        'customer_reference_phrase' => 'MNJ-TEST-001 numaralı',
+                        'product_name' => 'Akıllı Kilit',
+                        'product_model' => 'EK-2026',
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            if ($channel === 'whatsapp') {
+                $this->assertStringContainsString('MNJ-TEST-001 numaralı', $body);
+                $this->assertStringNotContainsString('MRN:', $body);
+            } else {
+                $this->assertStringContainsString('MRN: MRN-MNJ-TEST-001', $body);
+                $this->assertStringNotContainsString('MNJ-TEST-001 numaralı', $body);
+            }
+            $this->assertStringContainsString('Akilli Kilit', str_replace('ı', 'i', $body));
+            $this->assertStringNotContainsString('SRV:', $body);
+        }
+    }
+
+    public function test_mount_request_sms_stays_below_segment_limit(): void
+    {
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'mount_request_created_customer',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'Montaj Müşterisi',
+                    'mrn' => 'MRN-2608DD060004',
+                    'customer_reference_phrase' => 'MRN-2608DD060004 numaralı',
+                    'product_name' => 'Akıllı Kilit Çok Uzun Ürün Tanımı',
+                    'product_model' => 'MODEL-2026-UZUN',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('EMAKS Prime', $preview['rendered_body']);
+        $this->assertStringContainsString('MRN: MRN-2608DD060004', $preview['rendered_body']);
+        $this->assertStringContainsString('Ekibimiz sizinle iletisime gececek.', $preview['rendered_body']);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_appointment_cancelled_technician_whatsapp_contains_job_card(): void
+    {
+        $context = $this->technicianCancellationContext();
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_cancelled_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        foreach (['MRN-2608DD060004', 'SRV-2608DD060004-001', 'İptal Müşterisi', '08.08.2026', '14:00 - 16:00', 'Müşteri talebi'] as $required) {
+            $this->assertStringContainsString($required, $body);
+        }
+        $this->assertStringContainsString("İş Kartı\n{$context['technician_job_card_url']}", $body);
+    }
+
+    public function test_appointment_cancelled_technician_sms_contains_job_card(): void
+    {
+        $context = $this->technicianCancellationContext();
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_cancelled_technician',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('Randevu iptal edildi.', $preview['rendered_body']);
+        $this->assertStringContainsString('MRN: MRN-2608DD060004', $preview['rendered_body']);
+        $this->assertStringContainsString('SRV: SRV-2608DD060004-001', $preview['rendered_body']);
+        $this->assertStringContainsString("Kart {$context['technician_job_card_short_url']}", $preview['rendered_body']);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_customer_language_policy_all_customer_templates(): void
+    {
+        foreach ([
+            'appointment_approved_customer',
+            'appointment_updated_customer',
+            'payment_link_customer',
+            'customer_pays_technician_notice',
+            'customer_approval_request',
+            'future_survey_customer',
+        ] as $messageType) {
+            foreach (['whatsapp', 'sms'] as $channel) {
+                $preview = $this->actingAs($this->admin())
+                    ->postJson('/api/technical-service/message-templates/preview', [
+                        'message_type' => $messageType,
+                        'channel' => $channel,
+                        'context' => [
+                            'job_type' => 'servis',
+                            'mrn' => 'MRN-REL4C6-HIDDEN',
+                            'srv' => 'SRV-REL4C6-CUSTOMER',
+                            'payer_state_key' => $messageType === 'customer_pays_technician_notice'
+                                ? 'customer_pays_technician'
+                                : 'no_payment_required',
+                            'customer_payment_amount' => 1250,
+                            'customer_payment_amount_formatted' => '1.250,00 TL',
+                        ],
+                    ])
+                    ->assertOk()
+                    ->assertJsonPath('preview.preview_ready', true)
+                    ->json('preview.rendered_body');
+
+                $this->assertStringContainsString('SRV-REL4C6-CUSTOMER numaralı servis', $preview);
+                $this->assertStringNotContainsString('MRN-REL4C6-HIDDEN', $preview);
+                $this->assertStringNotContainsString('MRN:', $preview);
+                $this->assertStringNotContainsString('SRV:', $preview);
+                $this->assertStringNotContainsString('Talep:', $preview);
+                $this->assertStringNotContainsString('Ödeme:', $preview);
+                $this->assertStringNotContainsString('Request:', $preview);
+                $this->assertStringNotContainsString('Job:', $preview);
+                $this->assertStringNotContainsString('hakediş', mb_strtolower($preview, 'UTF-8'));
+                $this->assertStringNotContainsString('Ödemeler nakit veya havale', $preview);
+            }
+        }
+    }
+
+    public function test_current_srv_customer_approval_passes_role_body_validation(): void
+    {
+        $root = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-APPROVAL-ROOT-001',
+            'customer_name' => 'Canonical Root Customer',
+            'customer_phone' => '05321112233',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Canonical root address',
+            'product_name' => 'Approval Product',
+            'service_type' => 'Montaj',
+            'status' => 'Tamamlandı',
+        ]);
+        $child = TechnicalServiceRequest::query()->create([
+            'mrn' => 'SRV-APPROVAL-001',
+            'root_mrn' => $root->mrn,
+            'service_code' => 'SRV-APPROVAL-001',
+            'parent_request_id' => $root->id,
+            'customer_name' => 'Stale Child Customer',
+            'customer_phone' => '05559998877',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Current SRV address',
+            'product_name' => 'Approval Product',
+            'service_type' => 'Servis',
+            'status' => 'Tamamlandı',
+        ]);
+        $approvalUrl = 'http://10.0.28.64:8000/mount-approval/canonical-approval-token';
+        $previews = [];
+
+        foreach (['whatsapp', 'sms'] as $channel) {
+            $preview = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'customer_approval_request',
+                    'channel' => $channel,
+                    'sample_context' => false,
+                    'technical_service_request_id' => $child->id,
+                    'context' => [
+                        'confirmation_link' => $approvalUrl,
+                        'confirmation_link_sms' => $approvalUrl,
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview');
+
+            $this->assertSame($root->mrn, data_get($preview, 'context.mrn'));
+            $this->assertSame($child->service_code, data_get($preview, 'context.srv'));
+            $this->assertSame($child->service_code, data_get($preview, 'context.customer_reference_code'));
+            $this->assertSame('Canonical Root Customer', data_get($preview, 'context.customer_name'));
+            $this->assertSame($root->mrn, data_get($preview, 'context.customer_hidden_internal_references.mrn'));
+            $this->assertStringContainsString($child->service_code, (string) $preview['rendered_body']);
+            $this->assertStringNotContainsString($root->mrn, (string) $preview['rendered_body']);
+            $this->assertStringContainsString($approvalUrl, (string) $preview['rendered_body']);
+            $previews[$channel] = $preview;
+        }
+
+        $this->assertSame(
+            data_get($previews, 'whatsapp.context.confirmation_link'),
+            data_get($previews, 'sms.context.confirmation_link_sms'),
+        );
+        Http::assertNothingSent();
+    }
+
+    public function test_customer_approval_whatsapp_body_contains_naked_url(): void
+    {
+        $url = 'http://10.0.28.64:8000/service-job-confirmation/clickable-token-001';
+        $body = $this->customerApprovalWhatsappPreviewBody($url);
+        $lines = explode("\n", $body);
+
+        $this->assertSame(1, substr_count($body, $url));
+        $this->assertContains('Onay bağlantınız:', $lines);
+        $this->assertContains($url, $lines);
+        $this->assertSame($url, $lines[array_search($url, $lines, true)]);
+        Http::assertNothingSent();
+    }
+
+    public function test_customer_approval_whatsapp_body_contains_no_markdown_link(): void
+    {
+        $url = 'http://10.0.28.64:8000/service-job-confirmation/clickable-token-002';
+        $body = $this->customerApprovalWhatsappPreviewBody($url);
+
+        $this->assertSame(0, preg_match('/\[[^\]]+\]\([^)]+\)/u', $body));
+        $this->assertStringNotContainsString("<{$url}>", $body);
+        $this->assertStringNotContainsString('\\'.$url, $body);
+        $this->assertStringNotContainsString($url.'.', $body);
+        $this->assertStringNotContainsString($url.',', $body);
+        Http::assertNothingSent();
+    }
+
+    public function test_sms_readability_policy_all_default_sms_templates(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/message-templates')
+            ->assertOk()
+            ->json('message_templates.templates');
+
+        foreach (collect($payload)->where('channel', 'sms') as $template) {
+            $preview = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => $template['message_type'],
+                    'channel' => 'sms',
+                ])
+                ->assertOk()
+                ->json('preview');
+
+            $this->assertStringNotContainsString('https://www.google.com/maps', $preview['rendered_body']);
+            $this->assertStringNotContainsString('Test Mah. Örnek Sok.', $preview['rendered_body']);
+            $this->assertStringNotContainsString('https://panel.example.test/partner/jobs', $preview['rendered_body']);
+            $this->assertStringNotContainsString('Ödemeler nakit veya havale', $preview['rendered_body']);
+            $this->assertLessThan(4, $preview['sms']['segments'], $template['message_type'].' SMS is too long.');
+        }
+    }
+
+    public function test_assignment_sms_contains_required_compact_fields(): void
+    {
+        $context = $this->canonicalAssignmentMessageContext([
+            'technician_name' => 'Test Usta',
+            'mrn' => 'MRN-2607MM180001',
+            'customer_name' => 'REL 4E Test Müşteri',
+            'customer_phone' => '905372081633',
+            'address' => 'Pamukkale Test Mahallesi Güvenli Sokak No 17 Denizli',
+            'product_name' => 'Çelik Kapı Kilidi Test Ürünü',
+            'serial_no' => 'SN-ASSIGNMENT-001',
+            'maps_url' => 'https://www.google.com/maps/search/?api=1&query=37.916%2C29.117',
+            'labor_amount_formatted' => '3.000,00 TL',
+            'route_fee_formatted' => '200,00 TL',
+            'technician_earning_total_formatted' => '3.200,00 TL',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 200,
+            'total_amount' => 3200,
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=81&job_id=247',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/247',
+        ]);
+
+        $sms = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'assignment_offer_technician',
+                'channel' => 'sms',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $body = $sms['rendered_body'];
+        foreach ([
+            'EMAKS Prime',
+            'MRN-2607MM180001',
+            'Musteri: REL 4E Test Musteri',
+            'Urun: Celik Kapi Kilidi Test Urunu',
+            'Iscilik: 3.000,00 TL',
+            'Yol: 200,00 TL',
+            'Toplam: 3.200,00 TL',
+            'Is karti:',
+            'http://10.0.28.64:8000/pj/247',
+        ] as $required) {
+            $this->assertStringContainsString($required, $body);
+        }
+        $this->assertSame('gsm', $sms['sms']['encoding']);
+        $this->assertLessThan(4, $sms['sms']['segments']);
+        $this->assertStringNotContainsString('/technical-service/ops-support/', $body);
+        $this->assertStringNotContainsString('/portal-preview', $body);
+        $this->assertStringNotContainsString('undefined', $body);
+        $this->assertStringNotContainsString('null', $body);
+
+        $whatsapp = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'assignment_offer_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Merhaba Test Usta,', $whatsapp);
+        $this->assertStringContainsString($context['technician_job_card_url'], $whatsapp);
+        $this->assertStringContainsString($context['maps_url'], $whatsapp);
+        $this->assertStringContainsString('Seri No: SN-ASSIGNMENT-001', $whatsapp);
+        $this->assertStringNotContainsString($context['technician_job_card_short_url'], $whatsapp);
+    }
+
+    public function test_assignment_whatsapp_contains_full_earning_and_job_url(): void
+    {
+        $context = $this->canonicalAssignmentMessageContext([
+            'technician_name' => 'Test Usta',
+            'mrn' => 'MRN-ASSIGNMENT-WA-001',
+            'srv' => 'SRV-ASSIGNMENT-WA-001',
+            'customer_name' => 'Atama Müşterisi',
+            'customer_phone' => '905300000001',
+            'address' => 'Atama Mahallesi No 1 İstanbul',
+            'maps_url' => 'https://www.google.com/maps/search/?api=1&query=41.008%2C28.978',
+            'product_name' => 'Akıllı Kilit',
+            'serial_no' => 'SN-WA-001',
+            'labor_amount_formatted' => '3.000,00 TL',
+            'route_fee_formatted' => '1.420,00 TL',
+            'technician_earning_total_formatted' => '4.420,00 TL',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1420,
+            'total_amount' => 4420,
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=257',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/257',
+        ]);
+
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'assignment_offer_technician',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        foreach ([
+            'SRV-ASSIGNMENT-WA-001 numaralı servis işi size atanmıştır.',
+            'Müşteri: Atama Müşterisi',
+            'Telefon: 905300000001',
+            'Adres: Atama Mahallesi No 1 İstanbul',
+            $context['maps_url'],
+            'Ürün: Akıllı Kilit',
+            'Seri No: SN-WA-001',
+            'İşçilik: 3.000,00 TL',
+            'Yol: 1.420,00 TL',
+            'Toplam hakedişiniz: 4.420,00 TL',
+            $context['technician_job_card_url'],
+            'Lütfen randevu saati öneriniz.',
+        ] as $required) {
+            $this->assertStringContainsString($required, $body);
+        }
+    }
+
+    public function test_whatsapp_and_sms_use_same_earning_snapshot(): void
+    {
+        $context = $this->canonicalAssignmentMessageContext([
+            'technician_name' => 'Test Usta',
+            'mrn' => 'MRN-SAME-SNAPSHOT-001',
+            'customer_name' => 'Aynı Snapshot Müşteri',
+            'customer_phone' => '905300000001',
+            'address' => 'Aynı Snapshot Adresi',
+            'maps_url' => 'https://www.google.com/maps/search/?api=1&query=41.008%2C28.978',
+            'product_name' => 'Snapshot Kilit',
+            'serial_no' => 'SN-SNAPSHOT-001',
+            'labor_amount_formatted' => '3.000,00 TL',
+            'route_fee_formatted' => '1.420,00 TL',
+            'technician_earning_total_formatted' => '4.420,00 TL',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1420,
+            'total_amount' => 4420,
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=258',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/258',
+        ]);
+
+        $bodies = collect(['whatsapp', 'sms'])->mapWithKeys(function (string $channel) use ($context): array {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'assignment_offer_technician',
+                    'channel' => $channel,
+                    'sample_context' => false,
+                    'context' => $context,
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            return [$channel => $body];
+        });
+
+        $this->assertStringContainsString('4.420,00 TL', $bodies['whatsapp']);
+        $this->assertStringContainsString('4.420,00 TL', $bodies['sms']);
+        $this->assertStringNotContainsString('3.000,00 TL\nİş kartı', $bodies['sms']);
+        $this->assertSame(1, substr_count($bodies['whatsapp'], '4.420,00 TL'));
+        $this->assertSame(1, substr_count($bodies['sms'], '4.420,00 TL'));
+    }
+
+    public function test_sms_compliance_sms_footer_is_separate_from_internal_custom_id(): void
+    {
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'context' => [
+                    'sms_custom_id' => 'nac-template-test-T20260703-084712-X9K3',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringNotContainsString('nac-template-test', $preview['rendered_body']);
+        $this->assertStringNotContainsString('T20260703-084712-X9K3', $preview['rendered_body']);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_sms_compliance_footer_can_be_visible_without_exposing_custom_id(): void
+    {
+        $preview = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+                'body' => "EMAKS Prime\n{customer_appointment_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}\nB028",
+                'context' => [
+                    'sms_custom_id' => 'nac-template-test-T20260703-084712-X9K3',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+
+        $this->assertStringContainsString('B028', $preview['rendered_body']);
+        $this->assertStringNotContainsString('nac-template-test', $preview['rendered_body']);
+        $this->assertStringNotContainsString('T20260703-084712-X9K3', $preview['rendered_body']);
+        $this->assertLessThan(4, $preview['sms']['segments']);
+    }
+
+    public function test_sms_compliance_provider_auto_mode_does_not_mutate_template_body(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::response([
+                'data' => [
+                    'pkgID' => 'PKG-SMS-COMPLIANCE-BODY',
+                ],
+            ], 200),
+        ]);
+
+        $this->configureNacSmsTestSettings();
+
+        $response = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'real_sms_confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled')
+            ->assertJsonPath('test_send.dispatch.test_type', 'template_test_sms');
+
+        $previewBody = $response->json('test_send.preview.rendered_body');
+        $contentPreview = $response->json('test_send.dispatch.content_preview');
+        $dispatch = TechnicalServiceMessageDispatch::query()->where('event', 'template_test_sms')->firstOrFail();
+        $payload = $dispatch->request_payload;
+
+        $this->assertSame($previewBody, $contentPreview);
+        $this->assertSame($previewBody, $payload['text']);
+        $this->assertSame($previewBody, $payload['nac_payload_shape']['content']);
+        $this->assertSame('rendered_template_preview', $payload['content_source']);
+        $this->assertStringNotContainsString('panel NAC SMS testi', $previewBody);
+        $this->assertStringNotContainsString('panel NAC SMS ayar testi', $previewBody);
+        $this->assertStringNotContainsString('EMAKS Prime test SMS', $previewBody);
+        $this->assertStringNotContainsString($payload['test_code'], $previewBody);
+        $this->assertStringNotContainsString($payload['internal_test_code'], $previewBody);
+        Http::assertNothingSent();
+    }
+
+    public function test_sms_compliance_footer_keeps_basic_auth_and_credentials_hidden(): void
+    {
+        Http::fake([
+            'smslogin.nac.com.tr:9587/*' => Http::response([
+                'data' => [
+                    'pkgID' => 'PKG-SMS-COMPLIANCE-SECRET',
+                ],
+            ], 200),
+        ]);
+
+        $this->configureNacSmsTestSettings();
+
+        $response = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/test-send', [
+                'confirmed' => true,
+                'real_sms_confirmed' => true,
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'sms',
+            ])
+            ->assertOk()
+            ->assertJsonPath('test_send.dispatch.status', 'suppressed_real_send_disabled');
+
+        $dispatch = TechnicalServiceMessageDispatch::query()->where('event', 'template_test_sms')->firstOrFail();
+        $encodedResponse = $response->getContent();
+        $encodedDispatch = json_encode([
+            'request_payload' => $dispatch->request_payload,
+            'response_payload' => $dispatch->response_payload,
+            'error_message' => $dispatch->error_message,
+        ], JSON_THROW_ON_ERROR);
+
+        foreach ([$encodedResponse, $encodedDispatch] as $encoded) {
+            $this->assertStringNotContainsString('Authorization', $encoded);
+            $this->assertStringNotContainsString('Basic ', $encoded);
+            $this->assertStringNotContainsString('nac-user@example.test', $encoded);
+            $this->assertStringNotContainsString('PR88_NAC_CREDENTIAL_TEST_ONLY', $encoded);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_template_audit_all_active_templates_pass_time_language_and_event_policy(): void
+    {
+        $templates = collect($this->actingAs($this->admin())
+            ->getJson('/api/technical-service/message-templates')
+            ->assertOk()
+            ->json('message_templates.templates'));
+
+        foreach ($templates->where('active', true) as $template) {
+            $previewResponse = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => $template['message_type'],
+                    'channel' => $template['channel'],
+                    'provider_key' => $template['provider_key'] ?? null,
+                ])
+                ->assertOk();
+            $preview = $previewResponse->json('preview');
+            $this->assertTrue(
+                (bool) ($preview['preview_ready'] ?? false),
+                $template['template_key'].' blockers: '.json_encode($preview['blockers'] ?? [], JSON_UNESCAPED_UNICODE),
+            );
+
+            $body = (string) $preview['rendered_body'];
+            $this->assertStringNotContainsString('undefined', mb_strtolower($body, 'UTF-8'), $template['template_key']);
+            $this->assertStringNotContainsString('null', mb_strtolower($body, 'UTF-8'), $template['template_key']);
+            $this->assertStringNotContainsString('NaN', $body, $template['template_key']);
+            $this->assertStringNotContainsString('{', $body, $template['template_key']);
+            $this->assertStringNotContainsString('}', $body, $template['template_key']);
+
+            if (($preview['recipient_role'] ?? null) === 'customer') {
+                $this->assertStringNotContainsString('MRN:', $body, $template['template_key']);
+                $this->assertStringNotContainsString('SRV:', $body, $template['template_key']);
+                $this->assertStringNotContainsString('Talep:', $body, $template['template_key']);
+                $this->assertStringNotContainsString('Ödeme:', $body, $template['template_key']);
+            }
+
+            if (($preview['recipient_role'] ?? null) === 'technician'
+                && in_array($template['message_type'], [
+                    'appointment_approved_technician',
+                    'appointment_updated_technician',
+                ], true)) {
+                $this->assertStringContainsString('14:00 - 16:00', $body, $template['template_key']);
+                $this->assertStringNotContainsString('13:00 - 19:00 arası', $body, $template['template_key']);
+            }
+
+            if (($template['channel'] ?? null) === 'sms') {
+                $this->assertLessThan(4, $preview['sms']['segments'], $template['template_key'].' SMS is too long.');
+            }
+
+            if ($template['message_type'] === 'job_rejected_ops') {
+                $this->assertStringContainsString('Usta işi reddetti.', $body);
+                $this->assertStringContainsString('Usta:', $body);
+                $this->assertTrue(
+                    str_contains($body, 'Reddetme Nedeni:') || str_contains($body, 'Neden:'),
+                    'job_rejected_ops reason missing',
+                );
+                $this->assertTrue(
+                    str_contains($body, 'Reddetme Tarihi:') || str_contains($body, 'Tarih:'),
+                    'job_rejected_ops time missing',
+                );
+                $this->assertStringContainsString('Yeniden atama', $body);
+            }
+        }
+    }
+
+    public function test_ops_template_job_rejected_catalog_has_actor_reason_and_next_action_fields(): void
+    {
+        $jobRejected = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'job_rejected_ops',
+                'channel' => 'whatsapp',
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Usta işi reddetti.', $jobRejected);
+        $this->assertStringContainsString('İş: SRV: SRV-REL4C / MRN: MRN-REL4C-0001', $jobRejected);
+        $this->assertStringContainsString('Usta: Test Usta', $jobRejected);
+        $this->assertStringContainsString('Reddetme Nedeni:', $jobRejected);
+        $this->assertStringContainsString('Yeniden atama yapılmalı.', $jobRejected);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'job_rejected_ops',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'internal_job_reference' => 'MRN: PR88-REL4C6',
+                    'technician_name' => 'Test Usta',
+                    'technician_phone' => '905444444444',
+                    'rejected_at_formatted' => '03.07.2026 14:35',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', false)
+            ->assertJsonFragment(['Zorunlu değişken eksik: rejection_reason.']);
+
+        foreach ([
+            'support_request_ops' => ['Talep Eden:', 'Konu:', 'Açıklama:'],
+            'price_revision_requested_ops' => ['Önceki Tutar:', 'Yeni Talep:', 'Açıklama:'],
+            'completion_submitted_ops' => ['Usta işi tamamladığını bildirdi.', 'Sonraki Aksiyon:'],
+        ] as $messageType => $needles) {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => $messageType,
+                    'channel' => 'whatsapp',
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            foreach ($needles as $needle) {
+                $this->assertStringContainsString($needle, $body);
+            }
+        }
+    }
+
+    public function test_preview_sample_can_switch_mount_service_and_payer_state(): void
+    {
+        $mount = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'context' => [
+                    'job_type' => 'montaj',
+                    'mrn' => 'MRN-REL4C6-MOUNT',
+                    'srv' => '',
+                    'payer_state_key' => 'customer_pays_technician',
+                    'customer_payment_amount' => 1250,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('MRN-REL4C6-MOUNT numaralı montaj randevunuz onaylanmıştır.', $mount);
+        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', $mount);
+
+        $service = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'context' => [
+                    'job_type' => 'servis',
+                    'mrn' => 'MRN-REL4C6-HIDDEN',
+                    'srv' => 'SRV-REL4C6-SERVICE',
+                    'payer_state_key' => 'company_collected_online',
+                    'customer_payment_amount' => 0,
+                    'customer_payment_amount_formatted' => '',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('SRV-REL4C6-SERVICE numaralı servis randevunuz onaylanmıştır.', $service);
+        $this->assertStringNotContainsString('MRN-REL4C6-HIDDEN', $service);
+        $this->assertStringNotContainsString('ustaya ödeme', mb_strtolower($service, 'UTF-8'));
+    }
+
+    public function test_no_block_panel_not_red_and_warning_panel_not_yellow_without_warnings(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-admin.tsx'));
+
+        $this->assertIsString($source);
+        $normalizedSource = preg_replace('/\s+/u', ' ', $source);
+        $this->assertIsString($normalizedSource);
+        $this->assertStringContainsString('templateBlockPanelClass', $source);
+        $this->assertStringContainsString('border-emerald-100 bg-emerald-50 text-emerald-900', $source);
+        $this->assertStringContainsString('templateWarningPanelClass', $source);
+        $this->assertStringContainsString('border-slate-200 bg-white text-slate-700', $source);
+        $this->assertStringContainsString('Preview sample senaryosu', $normalizedSource);
+        $this->assertStringContainsString('Montaj / MRN', $normalizedSource);
+        $this->assertStringContainsString('Servis / SRV', $normalizedSource);
+        $this->assertStringContainsString('12:00 - müşteri sabah', $normalizedSource);
+        $this->assertStringContainsString('13:00 - müşteri öğleden sonra', $normalizedSource);
+        $this->assertStringContainsString('14:00 - 16:00 net usta saati', $normalizedSource);
+        $this->assertStringContainsString('Eksik saat / blok testi', $normalizedSource);
+    }
+
+    public function test_non_admin_and_public_cannot_access_template_api(): void
+    {
+        $this->getJson('/api/technical-service/message-templates')->assertUnauthorized();
+
+        $this->actingAs(User::factory()->create(['role_code' => 'ops']))
+            ->postJson('/api/technical-service/message-templates', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'body' => 'Merhaba {customer_name}',
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_admin_ui_contains_template_section_and_no_send_audit_controls(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-admin.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('Şablonlar', $source);
+        $this->assertStringContainsString('Template / preview / değişken doğrulama', $source);
+        $this->assertStringContainsString('WhatsApp Şablonları', $source);
+        $this->assertStringContainsString('SMS Şablonları', $source);
+        $this->assertStringContainsString('Sesli Arama Scriptleri', $source);
+        $this->assertStringContainsString('Değişken ekle', $source);
+        $this->assertStringContainsString('Önizleme', $source);
+        $this->assertStringContainsString('Varsayılana dön', $source);
+        $this->assertStringContainsString('Henüz önizleme alınmadı.', $source);
+        $this->assertStringContainsString('Blok yok.', $source);
+        $this->assertStringContainsString('whitespace-pre-wrap', $source);
+        $this->assertStringContainsString('Seçili SMS şablonu no-send audit kaydı olarak oluşturulacak', $source);
+        $this->assertStringContainsString('SMS şablonu NAC payload doğrulamasıyla no-send audit kaydı olarak tutulur', $source);
+        $this->assertStringContainsString('NAC No-send Test Kaydı', $source);
+        $this->assertStringContainsString('No-send test kaydı', $source);
+        $this->assertStringNotContainsString('tek gerçek SMS gönderilecek', $source);
+        $this->assertStringContainsString('shared test phone', $source);
+        $this->assertStringContainsString('Müşteri mesajları teknik alan isimleriyle', $source);
+        $this->assertStringContainsString('servis/SRV mesajında müşteriye MRN', $source);
+        $this->assertStringContainsString('Müşteri referansı', $source);
+        $this->assertStringContainsString('Gizlenen iç referans', $source);
+        $this->assertStringContainsString('Müşteri aralığı', $source);
+        $this->assertStringContainsString('Usta net saati', $source);
+        $this->assertStringNotContainsString('Blok yok veya henüz preview alınmadı.', $source);
+        $this->assertStringContainsString('Direct endpoint:', $source);
+        $this->assertStringContainsString('Legacy working HTTP 9587', $source);
+        $this->assertStringContainsString('templateTestResultClass', $source);
+        $this->assertStringContainsString("dispatch.status === 'sent'", $source);
+        $this->assertStringContainsString('dispatch.duplicate', $source);
+        $this->assertStringContainsString('Test tipi:', $source);
+        $this->assertStringContainsString('Gönderilen içerik:', $source);
+        $this->assertStringContainsString('NAC encoding:', $source);
+        $this->assertStringContainsString('Paket kodu:', $source);
+        $this->assertStringContainsString('Custom ID:', $source);
+        $this->assertStringContainsString('Payload hash:', $source);
+        $this->assertStringContainsString('Şablon metni değiştirilmeden', $source);
+    }
+
+    public function test_admin_ui_has_section_navigation_and_separates_admin_areas(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-admin.tsx'));
+
+        $this->assertIsString($source);
+        foreach ([
+            'Genel / Panel',
+            'Ödeme',
+            'Mail',
+            'Mesajlaşma',
+            'Şablonlar',
+            'Kuyruk / Loglar',
+            'Entegrasyonlar',
+            'SMS API / NAC',
+            'Mikro API',
+            'Provider Credentials',
+            'Operation Catalog',
+        ] as $label) {
+            $this->assertStringContainsString($label, $source);
+        }
+
+        $this->assertStringContainsString("activeAdminSection === 'templates'", $source);
+        $this->assertStringContainsString("activeAdminSection === 'payment'", $source);
+        $this->assertStringContainsString("activeAdminSection === 'mail'", $source);
+        $this->assertStringContainsString("activeMessagingSection === 'nac_sms'", $source);
+        $this->assertStringContainsString("activeIntegrationSection === 'mikro_api'", $source);
+    }
+
+    public function test_preview_state_ui_copy_is_not_contradictory(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-admin.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('Önizleme alınmadı', $source);
+        $this->assertStringContainsString('Önizleme hazır', $source);
+        $this->assertStringContainsString('Blok var', $source);
+        $this->assertStringContainsString('Önizleme hazır, uyarı var', $source);
+        $this->assertStringContainsString('Önizleme oluşturulamadı', $source);
+        $this->assertStringContainsString('Blok yok.', $source);
+        $this->assertStringNotContainsString('Blok yok veya henüz preview alınmadı.', $source);
+    }
+
+    /** @return array<string, string> */
+    private function technicianCancellationContext(): array
+    {
+        return [
+            'mrn' => 'MRN-2608DD060004',
+            'srv' => 'SRV-2608DD060004-001',
+            'customer_name' => 'İptal Müşterisi',
+            'appointment_date_formatted' => '08.08.2026',
+            'appointment_exact_time_range' => '14:00 - 16:00',
+            'cancellation_reason' => 'Müşteri talebi',
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?partner_id=8&job_id=433',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/433',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function companyPaymentEarningContext(): array
+    {
+        $revision = str_repeat('c', 64);
+
+        return [
+            'technician_name' => 'Test Usta',
+            'mrn' => 'MRN-COMPANY-PAYMENT-198',
+            'srv' => 'SRV-COMPANY-PAYMENT-198-001',
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1400,
+            'base_total_amount' => 4400,
+            'company_payment_amount' => 600,
+            'company_payment_breakdown' => [[
+                'line_id' => 11,
+                'payment_id' => 198,
+                'purpose' => 'service_payment',
+                'purpose_label' => 'Ek servis',
+                'source' => 'extra_service',
+                'amount' => 600,
+                'amount_label' => '600,00 TL',
+                'status' => 'payable',
+            ]],
+            'total_amount' => 5000,
+            'technician_paid_amount' => 0,
+            'technician_remaining_amount' => 5000,
+            'customer_collection_amount' => 5000,
+            'payer_state_key' => 'company_collected_company_pays_technician',
+            'technician_payment_model_label' => 'Şirket ödemesi',
+            'technician_payment_source_label' => 'EMAKS Prime',
+            'technician_payment_status_key' => 'payable',
+            'technician_payment_status_label' => 'Ödenecek',
+            'customer_collection_source_label' => 'EMAKS Prime tarafından alındı',
+            'earning_revision' => $revision,
+            'snapshot_hash' => $revision,
+            'technician_job_card_url' => 'http://10.0.28.64:8000/partner/service-jobs?job_id=198',
+            'technician_job_card_short_url' => 'http://10.0.28.64:8000/pj/198',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function canonicalAssignmentMessageContext(array $context): array
+    {
+        $labor = round((float) ($context['labor_amount'] ?? 0), 2);
+        $route = round((float) ($context['route_fee_amount'] ?? 0), 2);
+        $total = round((float) ($context['total_amount'] ?? $labor + $route), 2);
+        $revision = hash('sha256', json_encode([
+            $context['mrn'] ?? null,
+            $context['srv'] ?? null,
+            $labor,
+            $route,
+            $total,
+        ], JSON_THROW_ON_ERROR));
+
+        return [
+            'request_code' => $context['srv'] ?? $context['mrn'] ?? null,
+            'technician_name' => 'Test Usta',
+            'labor_amount' => $labor,
+            'route_fee_amount' => $route,
+            'company_payment_amount' => 0,
+            'company_payment_breakdown' => [],
+            'total_amount' => $total,
+            'technician_paid_amount' => 0,
+            'technician_remaining_amount' => $total,
+            'customer_collection_amount' => 0,
+            'payer_state_key' => 'customer_pays_technician',
+            'technician_payment_model_label' => 'Müşteri ödemesi',
+            'technician_payment_source_label' => 'Müşteri',
+            'technician_payment_status_key' => 'payable',
+            'technician_payment_status_label' => 'Ödenecek',
+            'customer_collection_source_label' => 'Müşteri',
+            ...$context,
+            'earning_snapshot' => [
+                'assignment_id' => 101,
+                'technician_id' => 202,
+                'request_id' => 303,
+                'mrn' => $context['mrn'] ?? null,
+                'srv' => $context['srv'] ?? null,
+                'labor_amount' => $labor,
+                'route_fee_amount' => $route,
+                'company_payment_amount' => 0,
+                'company_payment_breakdown' => [],
+                'total_amount' => $total,
+                'technician_paid_amount' => 0,
+                'technician_remaining_amount' => $total,
+                'customer_collection_amount' => 0,
+                'payer_state' => 'customer_pays_technician',
+                'technician_payment_model_label' => 'Müşteri ödemesi',
+                'technician_payment_source_label' => 'Müşteri',
+                'technician_payment_status_key' => 'payable',
+                'technician_payment_status_label' => 'Ödenecek',
+                'customer_collection_source_label' => 'Müşteri',
+                'revision' => $revision,
+                'snapshot_hash' => $revision,
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function nestedCompanyPaymentEarningContext(): array
+    {
+        $context = $this->companyPaymentEarningContext();
+
+        return [
+            'technician_name' => $context['technician_name'],
+            'mrn' => $context['mrn'],
+            'srv' => $context['srv'],
+            'technician_job_card_url' => $context['technician_job_card_url'],
+            'technician_job_card_short_url' => $context['technician_job_card_short_url'],
+            'earning_snapshot' => [
+                'schema_version' => 3,
+                'assignment_id' => 106,
+                'technician_id' => 111,
+                'labor_amount' => $context['labor_amount'],
+                'route_fee_amount' => $context['route_fee_amount'],
+                'company_payment_amount' => $context['company_payment_amount'],
+                'company_payment_breakdown' => $context['company_payment_breakdown'],
+                'total_amount' => $context['total_amount'],
+                'technician_paid_amount' => $context['technician_paid_amount'],
+                'technician_remaining_amount' => $context['technician_remaining_amount'],
+                'customer_collection_amount' => $context['customer_collection_amount'],
+                'payer_state' => $context['payer_state_key'],
+                'technician_payment_model_label' => $context['technician_payment_model_label'],
+                'technician_payment_source_label' => $context['technician_payment_source_label'],
+                'technician_payment_status_key' => $context['technician_payment_status_key'],
+                'technician_payment_status_label' => $context['technician_payment_status_label'],
+                'customer_collection_source_label' => $context['customer_collection_source_label'],
+                'revision' => $context['earning_revision'],
+                'snapshot_hash' => $context['snapshot_hash'],
+            ],
+        ];
+    }
+
+    /** @param array<string, mixed> $context @return array<string, mixed> */
+    private function earningMessagePreview(string $channel, array $context): array
+    {
+        return $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'earnings_message_technician',
+                'channel' => $channel,
+                'sample_context' => false,
+                'context' => $context,
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview');
+    }
+
+    private function customerApprovalWhatsappPreviewBody(string $url): string
+    {
+        return (string) $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'customer_approval_request',
+                'channel' => 'whatsapp',
+                'context' => [
+                    'confirmation_link' => $url,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+    }
+
+    private function admin(): User
+    {
+        return User::factory()->create(['role_code' => 'admin']);
+    }
+
+    private function configureNacSmsTestSettings(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/nac-sms/credentials', [
+                'username' => 'nac-user@example.test',
+                'password' => 'PR88_NAC_CREDENTIAL_TEST_ONLY',
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'messaging_enabled' => true,
+                'test_mode_enabled' => true,
+                'test_phone' => '905467647428',
+                'active_provider' => 'nac_sms',
+                'nac_sms' => [
+                    'enabled' => true,
+                    'profile' => 'legacy_working_http_9587',
+                    'scheme' => 'http',
+                    'host' => 'smslogin.nac.com.tr',
+                    'port' => 9587,
+                    'path' => '/sms/create',
+                    'request_shape' => 'legacy_working_minimal',
+                    'sender' => 'EMAKS PRIME',
+                    'title' => '',
+                    'encoding' => 0,
+                    'validity' => 60,
+                    'recipient_type' => 0,
+                    'use_shared_test_phone' => true,
+                ],
+                'message_types' => [
+                    'appointment_approved_customer' => [
+                        'enabled' => true,
+                        'test_send_allowed' => true,
+                        'channel_policy' => 'sms_only',
+                        'sms_mode' => 'test',
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.nac_sms.test_ready', true);
+    }
+}

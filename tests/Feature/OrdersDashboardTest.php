@@ -10,11 +10,12 @@ use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class OrdersDashboardTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -23,11 +24,12 @@ class OrdersDashboardTest extends TestCase
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelDataSourcesSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
     }
 
     public function test_orders_alinan_all_scope_sends_filter_payload_to_gateway(): void
     {
-        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+        $this->fakeIsolatedHttp([self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []])]);
 
         $admin = User::factory()->create([
             'role_code' => 'admin',
@@ -65,7 +67,7 @@ class OrdersDashboardTest extends TestCase
 
     public function test_orders_alinan_representative_scope_sends_user_rep_code(): void
     {
-        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+        $this->fakeIsolatedHttp([self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []])]);
 
         $user = User::factory()->create([
             'role_code' => 'viewer',
@@ -108,7 +110,7 @@ class OrdersDashboardTest extends TestCase
 
     public function test_orders_alinan_representative_scope_without_user_rep_code_uses_safe_no_match_payload(): void
     {
-        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+        $this->fakeIsolatedHttp([self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []])]);
 
         $user = User::factory()->create([
             'role_code' => 'viewer',
@@ -146,7 +148,7 @@ class OrdersDashboardTest extends TestCase
 
     public function test_orders_alinan_all_scope_resource_keeps_all_payload_even_with_user_rep_code(): void
     {
-        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+        $this->fakeIsolatedHttp([self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []])]);
 
         $user = User::factory()->create([
             'role_code' => 'viewer',
@@ -185,7 +187,7 @@ class OrdersDashboardTest extends TestCase
 
     public function test_orders_alinan_all_deny_override_forces_representative_scope_payload(): void
     {
-        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+        $this->fakeIsolatedHttp([self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []])]);
 
         RoleResourcePermission::query()->updateOrCreate(
             ['role_code' => 'viewer', 'resource_code' => 'orders_alinan_all'],
@@ -233,7 +235,7 @@ class OrdersDashboardTest extends TestCase
 
     public function test_orders_verilen_sends_brand_product_and_delivery_filters_to_gateway(): void
     {
-        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+        $this->fakeIsolatedHttp([self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []])]);
 
         $user = User::factory()->create([
             'role_code' => 'admin',

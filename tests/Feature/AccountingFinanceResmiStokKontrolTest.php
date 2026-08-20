@@ -12,11 +12,12 @@ use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class AccountingFinanceResmiStokKontrolTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     private const RESOURCE_CODE = 'accounting_finance_resmi_stok_kontrol';
 
@@ -29,6 +30,7 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
         $this->withoutVite();
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
     }
 
     public function test_admin_can_see_accounting_finance_resmi_stok_kontrol_by_default(): void
@@ -119,8 +121,8 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
 
     public function test_data_endpoint_uses_panel_gateway_source_code_and_frontend_has_no_hardcoded_webhook(): void
     {
-        Http::fake([
-            '*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['row_type' => 'summary', 'Kategori' => 'Toplam', 'NetStokEtkisi' => 0],

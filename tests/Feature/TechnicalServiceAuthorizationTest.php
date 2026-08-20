@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningsPeriod;
+use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Models\UserAccess;
@@ -130,7 +132,9 @@ class TechnicalServiceAuthorizationTest extends TestCase
         $earning = $this->earning();
 
         $this->actingAs($user)->get('/technical-service/earnings')->assertForbidden();
-        $this->actingAs($user)->postJson("/api/technical-service/earnings/{$earning->id}/mark-paid")->assertOk();
+        $this->actingAs($user)->postJson("/api/technical-service/earnings/{$earning->id}/mark-paid", [
+            'amount' => 1100,
+        ])->assertOk();
     }
 
     public function test_serial_query_permission_controls_mikro_and_warranty_apis(): void
@@ -181,7 +185,9 @@ class TechnicalServiceAuthorizationTest extends TestCase
         $this->actingAs($admin)->get('/technical-service/technicians')->assertOk();
         $this->actingAs($admin)->get('/technical-service/earnings')->assertOk();
         $this->actingAs($admin)->get('/technical-service/admin')->assertOk();
-        $this->actingAs($admin)->postJson("/api/technical-service/earnings/{$earning->id}/mark-paid")->assertOk();
+        $this->actingAs($admin)->postJson("/api/technical-service/earnings/{$earning->id}/mark-paid", [
+            'amount' => 1100,
+        ])->assertOk();
     }
 
     public function test_admin_users_resource_payload_groups_technical_service_resources(): void
@@ -267,7 +273,27 @@ class TechnicalServiceAuthorizationTest extends TestCase
             'status' => 'draft',
         ]);
 
-        return TechnicalServiceEarning::query()->create([
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-AUTH-EARNING-'.uniqid(),
+            'customer_name' => 'Yetki Müşteri',
+            'customer_phone' => '905300000001',
+            'customer_city' => 'Adana',
+            'customer_district' => 'Seyhan',
+            'service_address' => 'Yetki adres',
+            'product_name' => 'Test Ürün',
+            'product_model' => 'M1',
+            'serial_number' => 'SN-AUTH',
+            'service_type' => 'Montaj',
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'priority' => 'Orta',
+            'risk_level' => 'Orta',
+            'completed_at' => '2026-05-02 10:00:00',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+
+        $earning = TechnicalServiceEarning::query()->create([
             'period_id' => $period->id,
             'technical_service_technician_id' => $technician->id,
             'technician_name_snapshot' => 'Ada Usta',
@@ -282,5 +308,40 @@ class TechnicalServiceAuthorizationTest extends TestCase
             'grand_total' => 1100,
             'status' => 'Ödenecek',
         ]);
+        $item = $earning->items()->create([
+            'technical_service_request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'job_date' => '2026-05-02 10:00:00',
+            'customer_city' => 'Adana',
+            'customer_district' => 'Seyhan',
+            'service_type' => 'Montaj',
+            'product_name' => 'Test Ürün',
+            'serial_number' => 'SN-AUTH',
+            'labor_amount' => 1000,
+            'travel_round_trip_km' => 10,
+            'travel_billable_km' => 0,
+            'travel_fee_amount' => 100,
+            'line_total' => 1100,
+        ]);
+        TechnicalServiceSettlement::query()->create([
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $request->id,
+            'request_code' => $request->service_code,
+            'root_mrn' => $request->root_mrn ?: $request->mrn,
+            'technical_service_technician_id' => $technician->id,
+            'technical_service_earning_item_id' => $item->id,
+            'currency' => 'TRY',
+            'labor_earning_amount' => 1000,
+            'route_earning_amount' => 100,
+            'technician_earning_total' => 1100,
+            'company_payable_amount' => 1100,
+            'company_remaining_amount' => 1100,
+            'status' => TechnicalServiceSettlement::STATUS_FINALIZED,
+            'settlement_source' => 'auth_test',
+            'completed_at' => $request->completed_at,
+            'finalized_at' => $request->completed_at,
+        ]);
+
+        return $earning;
     }
 }

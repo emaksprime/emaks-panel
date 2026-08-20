@@ -19,6 +19,7 @@ class UpdateTechnicalServiceTechnicianWorkflowRequest extends FormRequest
     {
         return [
             'technical_service_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
+            'b2b_partner_id' => ['nullable', 'integer', 'exists:b2b_partners,id'],
             'technician_name' => ['required_without:technical_service_technician_id', 'nullable', 'string', 'max:255'],
             'technician_approval_status' => ['nullable', 'string', Rule::in(['bekliyor', 'onayladı', 'revize_talebi'])],
             'technician_revision_note' => ['nullable', 'string', 'max:2000'],

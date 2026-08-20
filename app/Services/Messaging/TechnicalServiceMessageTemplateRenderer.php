@@ -1,0 +1,591 @@
+<?php
+
+namespace App\Services\Messaging;
+
+use App\Models\TechnicalServiceMessageTemplate;
+use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
+use Illuminate\Support\Str;
+
+class TechnicalServiceMessageTemplateRenderer
+{
+    public function __construct(
+        private readonly TechnicalServiceMessageTypeRegistry $types,
+        private readonly TechnicalServiceMessageVariableRegistry $variables,
+    ) {}
+
+    /**
+     * @param  array<string, mixed>  $template
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function render(array $template, array $context): array
+    {
+        $body = (string) ($template['body'] ?? '');
+        $messageType = (string) ($template['message_type'] ?? '');
+        $channel = (string) ($template['channel'] ?? TechnicalServiceMessageTemplate::CHANNEL_WHATSAPP);
+        $placeholders = $this->placeholders($body);
+        $templateRequired = $this->requiredFromTemplate($template);
+        $required = $templateRequired === []
+            ? $this->types->requiredVariables($messageType)
+            : $templateRequired;
+        $missing = $this->missingVariables($required, $context);
+        $forbidden = array_values(array_intersect($placeholders, $this->variables->forbiddenVariables()));
+        $unknown = array_values(array_diff($placeholders, array_keys($this->variables->definitions()), $this->variables->forbiddenVariables()));
+        $unresolved = array_values(array_unique([...$missing, ...$unknown, ...$forbidden]));
+        $rendered = $this->replacePlaceholders($body, $context);
+        if ($channel === TechnicalServiceMessageTemplate::CHANNEL_SMS) {
+            $rendered = $this->normalizeSmsText($rendered);
+            if (in_array($messageType, ['assignment_offer_technician', 'earnings_message_technician'], true)) {
+                $rendered = implode("\n", array_map(
+                    static fn (string $line): string => Str::ascii($line),
+                    explode("\n", $rendered),
+                ));
+            }
+        }
+        $warnings = [];
+        $blockers = [];
+
+        foreach ($missing as $variable) {
+            $blockers[] = "Zorunlu değişken eksik: {$variable}.";
+        }
+
+        foreach ($unknown as $variable) {
+            $blockers[] = "Bilinmeyen değişken: {$variable}.";
+        }
+
+        foreach ($forbidden as $variable) {
+            $blockers[] = "Yasak değişken kullanılamaz: {$variable}.";
+        }
+
+        $this->appendRenderedTextBlockers($rendered, $blockers);
+        $this->appendMessageTypeBlockers($messageType, $rendered, $placeholders, $context, $blockers, $warnings);
+        $this->appendChannelBlockers($messageType, $channel, $placeholders, $context, $blockers);
+
+        $sms = $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+            ? $this->smsMetadata($rendered, $warnings, $blockers)
+            : null;
+
+        if ($channel === TechnicalServiceMessageTemplate::CHANNEL_VOICE_SCRIPT) {
+            $warnings[] = 'Voibot contract pending; bu sadece voice script önizlemesidir, çağrı yapılmaz.';
+        }
+
+        return [
+            'rendered_body' => $rendered,
+            'placeholders' => $placeholders,
+            'required_variables' => $required,
+            'missing_variables' => $missing,
+            'unresolved_variables' => $unresolved,
+            'warnings' => array_values(array_unique($warnings)),
+            'blockers' => array_values(array_unique($blockers)),
+            'sms' => $sms,
+            'preview_ready' => $blockers === [],
+            'send_ready' => false,
+            'payer_state_key' => $context['payer_state_key'] ?? null,
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function placeholders(string $body): array
+    {
+        preg_match_all('/\{([a-zA-Z0-9_]+)\}/', $body, $matches);
+
+        return array_values(array_unique($matches[1] ?? []));
+    }
+
+    /**
+     * @param  array<string, mixed>  $template
+     * @return array<int, string>
+     */
+    private function requiredFromTemplate(array $template): array
+    {
+        return collect($template['required_variables'] ?? [])
+            ->filter(fn (mixed $value): bool => is_string($value) && trim($value) !== '')
+            ->map(fn (string $value): string => trim($value))
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<int, string>  $required
+     * @param  array<string, mixed>  $context
+     * @return array<int, string>
+     */
+    private function missingVariables(array $required, array $context): array
+    {
+        return collect($required)
+            ->filter(fn (string $variable): bool => ! array_key_exists($variable, $context) || $this->blank($context[$variable]))
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function replacePlaceholders(string $body, array $context): string
+    {
+        $rendered = preg_replace_callback('/\{([a-zA-Z0-9_]+)\}/', function (array $matches) use ($context): string {
+            $key = (string) $matches[1];
+            $value = $context[$key] ?? null;
+
+            if (! array_key_exists($key, $context)) {
+                return $matches[0];
+            }
+
+            if ($this->blank($value)) {
+                return '';
+            }
+
+            if (is_bool($value)) {
+                return $value ? 'Evet' : 'Hayır';
+            }
+
+            if (is_scalar($value)) {
+                return (string) $value;
+            }
+
+            return $matches[0];
+        }, $body) ?? $body;
+
+        $rendered = preg_replace('/[ \t]+/', ' ', trim($rendered)) ?? trim($rendered);
+
+        return preg_replace("/(\r?\n){3,}/", "\n\n", $rendered) ?? $rendered;
+    }
+
+    private function normalizeSmsText(string $rendered): string
+    {
+        $lines = preg_split('/\r?\n/', trim($rendered)) ?: [];
+        $lines = collect($lines)
+            ->map(fn (string $line): string => preg_replace('/[ \t]{2,}/', ' ', trim($line)) ?? trim($line))
+            ->all();
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @param  array<int, string>  $blockers
+     */
+    private function appendRenderedTextBlockers(string $rendered, array &$blockers): void
+    {
+        if (str_contains($rendered, '{') || str_contains($rendered, '}')) {
+            $blockers[] = 'Render çıktısında çözülmemiş değişken kaldı.';
+        }
+
+        if (preg_match('/\b(undefined|null|nan)\b/i', $rendered) === 1) {
+            $blockers[] = 'Render çıktısında undefined/null/NaN ifadesi var.';
+        }
+
+        if (preg_match('/https?:\/\/\s*($|\.)/i', $rendered) === 1) {
+            $blockers[] = 'Render çıktısında boş link var.';
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<int, string>  $placeholders
+     * @param  array<int, string>  $blockers
+     * @param  array<int, string>  $warnings
+     */
+    private function appendMessageTypeBlockers(string $messageType, string $rendered, array $placeholders, array $context, array &$blockers, array &$warnings): void
+    {
+        $payerState = (string) ($context['payer_state_key'] ?? '');
+
+        if (in_array($messageType, [
+            'appointment_approved_customer',
+            'appointment_updated_customer',
+            'customer_approval_request',
+            'future_survey_customer',
+        ], true)) {
+            $this->appendCustomerFacingLabelBlockers($rendered, $context, $blockers);
+        }
+
+        if (in_array($messageType, [
+            'appointment_approved_customer',
+            'appointment_updated_customer',
+        ], true)) {
+            if ($this->blank($context['appointment_customer_window'] ?? null)) {
+                $blockers[] = 'Müşteri randevu aralığı belirlenmeli.';
+            }
+
+            $economicPlaceholders = array_values(array_intersect($placeholders, [
+                'labor_amount_formatted',
+                'route_fee_formatted',
+                'company_payment_amount_formatted',
+                'technician_earning_total_formatted',
+                'technician_earning_summary_text',
+                'technician_earning_summary_block',
+                'technician_earning_sms_summary',
+                'technician_payment_model_label',
+                'technician_payment_source_label',
+                'technician_payment_status_label',
+                'customer_payment_amount_formatted',
+                'payment_instruction_text',
+                'payment_instruction_block',
+                'sms_payment_line',
+                'payment_link',
+                'payment_link_sms',
+            ]));
+            if ($economicPlaceholders !== []) {
+                $blockers[] = 'Müşteri randevu mesajı hakediş veya ödeme değişkeni içeremez: '.implode(', ', $economicPlaceholders).'.';
+            }
+        }
+
+        if (in_array($messageType, [
+            'appointment_approved_technician',
+            'appointment_updated_technician',
+            'assignment_offer_technician',
+        ], true)) {
+            if ($messageType !== 'assignment_offer_technician' && $this->blank($context['appointment_exact_time_range'] ?? null)) {
+                $blockers[] = 'Usta mesajı için tam randevu saati gerekli.';
+            }
+
+            if ($this->blank($context['technician_job_card_url'] ?? null)) {
+                $blockers[] = 'Usta mesajı için iş kartı linki zorunlu.';
+            }
+
+            if ($this->blank($context['maps_url'] ?? null)) {
+                $warnings[] = 'Harita linki yok; harita satırı boş bırakıldı.';
+            }
+        }
+
+        if (in_array($messageType, ['payment_link_customer', 'part_fee_payment_link_customer'], true)) {
+            $this->appendCustomerFacingLabelBlockers($rendered, $context, $blockers);
+
+            if ($this->blank($context['payment_link'] ?? null) && $this->blank($context['payment_link_sms'] ?? null)) {
+                $blockers[] = 'Ödeme linki mesajı için payment_link zorunlu.';
+            }
+
+            $selectedPaymentId = (int) ($context['selected_payment_id'] ?? 0);
+            $selectedPaymentStatus = strtolower(trim((string) ($context['selected_payment_status'] ?? '')));
+            if ($selectedPaymentId <= 0) {
+                $blockers[] = 'Gönderilecek ödeme bağlantısı belirlenemedi. Lütfen aktif ödeme kaydını seçin.';
+            } elseif ($selectedPaymentStatus !== 'pending') {
+                $blockers[] = 'Seçilen ödeme bağlantısı aktif bekleyen durumda değil; gönderilemez.';
+            }
+        }
+
+        if ($messageType === 'customer_approval_request'
+            && $this->blank($context['confirmation_link'] ?? null)
+            && $this->blank($context['confirmation_link_sms'] ?? null)) {
+            $blockers[] = 'Müşteri onayı mesajı için confirmation_link zorunlu.';
+        }
+
+        if ($messageType === 'customer_pays_technician_notice') {
+            $this->appendCustomerFacingLabelBlockers($rendered, $context, $blockers);
+
+            if ($payerState !== TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN) {
+                $blockers[] = 'Ustaya ödeme bilgilendirmesi sadece customer_pays_technician durumunda hazır olur.';
+            }
+
+            if ($this->money($context['customer_payment_amount'] ?? null) <= 0.0
+                || $this->blank($context['customer_payment_amount_formatted'] ?? null)) {
+                $blockers[] = 'Ustaya ödeme mesajı için pozitif müşteri ödeme tutarı zorunlu.';
+            }
+        }
+
+        if (in_array($messageType, ['assignment_offer_technician', 'earnings_message_technician'], true)) {
+            $this->appendEarningSnapshotBlockers($messageType, $rendered, $context, $blockers);
+        }
+
+        if ($this->guardsCustomerPaymentInstructions($messageType, $context)
+            && in_array($payerState, [
+                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE,
+                TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL,
+            ], true) && $this->containsPayTechnicianPhrase($rendered)) {
+            $blockers[] = 'Şirket tahsil etmişken müşteri mesajı ustaya ödeme talimatı içeremez.';
+        }
+
+        if (str_ends_with($messageType, '_ops') && (string) ($context['recipient_role'] ?? 'ops') === 'customer') {
+            $blockers[] = 'OPS/internal şablonları müşteri alıcısına hazır sayılamaz.';
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function guardsCustomerPaymentInstructions(string $messageType, array $context): bool
+    {
+        if ((string) ($context['recipient_role'] ?? '') !== 'customer') {
+            return false;
+        }
+
+        return in_array($messageType, [
+            'appointment_approved_customer',
+            'appointment_updated_customer',
+            'payment_link_customer',
+            'part_fee_payment_link_customer',
+            'customer_pays_technician_notice',
+        ], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<int, string>  $blockers
+     */
+    private function appendEarningSnapshotBlockers(string $messageType, string $rendered, array $context, array &$blockers): void
+    {
+        $snapshot = $context['earning_snapshot'] ?? null;
+        if (! is_array($snapshot) || $snapshot === []) {
+            return;
+        }
+
+        $mismatch = false;
+        foreach ([
+            'labor_amount',
+            'route_fee_amount',
+            'company_payment_amount',
+            'total_amount',
+            'technician_paid_amount',
+            'technician_remaining_amount',
+        ] as $key) {
+            if (! array_key_exists($key, $snapshot)
+                || ! is_numeric($snapshot[$key])
+                || ! is_numeric($context[$key] ?? null)
+                || abs($this->money($snapshot[$key]) - $this->money($context[$key])) > 0.01
+            ) {
+                $mismatch = true;
+            }
+        }
+
+        $componentTotal = $this->money($snapshot['labor_amount'] ?? null)
+            + $this->money($snapshot['route_fee_amount'] ?? null)
+            + $this->money($snapshot['company_payment_amount'] ?? null);
+        if (abs($componentTotal - $this->money($snapshot['total_amount'] ?? null)) > 0.01) {
+            $mismatch = true;
+        }
+
+        $breakdownTotal = collect((array) ($snapshot['company_payment_breakdown'] ?? []))
+            ->filter(fn (mixed $line): bool => is_array($line))
+            ->sum(fn (array $line): float => $this->money($line['amount'] ?? null));
+        if (abs($breakdownTotal - $this->money($snapshot['company_payment_amount'] ?? null)) > 0.01) {
+            $mismatch = true;
+        }
+
+        $zeroEarning = $this->money($snapshot['total_amount'] ?? null) <= 0.0;
+        if ($zeroEarning && $messageType === 'earnings_message_technician') {
+            $blockers[] = 'EARNING_MESSAGE_NO_EARNING';
+        }
+
+        if ((array) ($context['technician_earning_unknown_component_codes'] ?? []) !== []) {
+            $blockers[] = 'EARNING_MESSAGE_COMPONENT_LABEL_UNKNOWN';
+        }
+
+        if (! $zeroEarning) {
+            foreach ([
+                'technician_payment_status_key',
+                'technician_payment_status_label',
+                'technician_payment_source_label',
+                'customer_collection_source_label',
+            ] as $key) {
+                if (trim((string) ($snapshot[$key] ?? '')) === ''
+                    || ! hash_equals(trim((string) $snapshot[$key]), trim((string) ($context[$key] ?? '')))
+                ) {
+                    $mismatch = true;
+                }
+            }
+        }
+
+        $revision = trim((string) ($snapshot['revision'] ?? ''));
+        $snapshotHash = trim((string) ($snapshot['snapshot_hash'] ?? $revision));
+        if ($revision === ''
+            || $snapshotHash === ''
+            || ! hash_equals($revision, trim((string) ($context['earning_revision'] ?? '')))
+            || ! hash_equals($snapshotHash, trim((string) ($context['earning_snapshot_hash'] ?? '')))
+        ) {
+            $mismatch = true;
+        }
+
+        foreach ([
+            'labor_amount' => 'labor_amount_formatted',
+            'route_fee_amount' => 'route_fee_formatted',
+            'company_payment_amount' => 'company_payment_amount_formatted',
+            'total_amount' => 'technician_earning_total_formatted',
+        ] as $amountKey => $formattedKey) {
+            $formattedAmount = trim((string) ($context[$formattedKey] ?? ''));
+            if ($this->money($snapshot[$amountKey] ?? null) > 0.0
+                && ($formattedAmount === '' || ! str_contains($rendered, $formattedAmount))) {
+                $mismatch = true;
+            }
+        }
+
+        if ($zeroEarning) {
+            $zeroSentence = 'Bu iş için hakediş 0 TL olarak belirlenmiştir.';
+            if (! str_contains($rendered, $zeroSentence) && ! str_contains($rendered, Str::ascii($zeroSentence))) {
+                $mismatch = true;
+            }
+        } else {
+            $paymentSentence = trim((string) ($context['technician_payment_sentence'] ?? ''));
+            if ($paymentSentence === ''
+                || (! str_contains($rendered, $paymentSentence) && ! str_contains($rendered, Str::ascii($paymentSentence)))
+            ) {
+                $mismatch = true;
+            }
+        }
+
+        $lowerRendered = mb_strtolower($rendered, 'UTF-8');
+        foreach (['payer_state', 'payable', 'settlement', 'customer collection', 'müşteri tahsilatı', 'ödeme modeli', 'company payment', 'şirket ödemesi'] as $internalTerm) {
+            if (str_contains($lowerRendered, $internalTerm)) {
+                $blockers[] = 'EARNING_MESSAGE_INTERNAL_TERM_EXPOSED';
+            }
+        }
+
+        if (str_contains($rendered, '\\n')
+            || str_contains($lowerRendered, '<br')
+            || preg_match('/\[[^\]]+\]\(https?:\/\//u', $rendered) === 1
+        ) {
+            $blockers[] = 'EARNING_MESSAGE_UNSAFE_LINE_OR_LINK_FORMAT';
+        }
+
+        if ($mismatch) {
+            $blockers[] = 'EARNING_MESSAGE_SNAPSHOT_MISMATCH';
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<int, string>  $blockers
+     */
+    private function appendCustomerFacingLabelBlockers(string $rendered, array $context, array &$blockers): void
+    {
+        if (preg_match('/\b(MRN|SRV|Talep|Ödeme|Request|Job):/u', $rendered) === 1) {
+            $blockers[] = 'Müşteri mesajı teknik alan etiketi içeremez: MRN:, SRV:, Talep:, Ödeme:, Request:, Job:.';
+        }
+
+        $hiddenMrn = $context['customer_hidden_internal_references']['mrn'] ?? null;
+        if (is_string($hiddenMrn) && $hiddenMrn !== '' && str_contains($rendered, $hiddenMrn)) {
+            $blockers[] = 'Servis/SRV müşteri mesajında iç MRN gösterilemez.';
+        }
+
+        $lower = mb_strtolower($rendered, 'UTF-8');
+        foreach ([
+            'hakediş' => 'Müşteri mesajı hakediş bilgisi içeremez.',
+            'admin review' => 'Müşteri mesajı admin review/internal süreç metni içeremez.',
+            'provider token' => 'Müşteri mesajı provider token içeremez.',
+            'provider_reference' => 'Müşteri mesajı provider reference içeremez.',
+            'raw_provider' => 'Müşteri mesajı raw provider alanı içeremez.',
+            'raw json' => 'Müşteri mesajı raw JSON/error metni içeremez.',
+            'internal_note' => 'Müşteri mesajı internal note içeremez.',
+        ] as $needle => $message) {
+            if (str_contains($lower, $needle)) {
+                $blockers[] = $message;
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $placeholders
+     * @param  array<int, string>  $blockers
+     */
+    private function appendChannelBlockers(string $messageType, string $channel, array $placeholders, array $context, array &$blockers): void
+    {
+        if ($channel !== TechnicalServiceMessageTemplate::CHANNEL_SMS) {
+            return;
+        }
+
+        foreach (['address', 'maps_url', 'maps_url_line', 'technician_job_card_url', 'technician_earning_summary_block', 'technician_visible_note_block', 'payment_link', 'confirmation_link'] as $variable) {
+            if (in_array($variable, $placeholders, true)) {
+                $blockers[] = "SMS şablonunda uzun/ham değişken kullanılamaz: {$variable}.";
+            }
+        }
+
+        if ($messageType === 'payment_link_customer' && $this->blank($context['payment_link_sms'] ?? null)) {
+            $blockers[] = 'SMS ödeme mesajı için kısa ödeme linki zorunlu.';
+        }
+
+        if ($messageType === 'customer_approval_request' && $this->blank($context['confirmation_link_sms'] ?? null)) {
+            $blockers[] = 'SMS müşteri onayı için kısa onay linki zorunlu.';
+        }
+
+        if (in_array($messageType, [
+            'appointment_approved_technician',
+            'appointment_updated_technician',
+            'assignment_offer_technician',
+            'earnings_message_technician',
+        ], true) && $this->blank($context['technician_job_card_short_url'] ?? null)) {
+            $blockers[] = 'Usta SMS mesajı için kısa iş kartı linki zorunlu.';
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $warnings
+     * @param  array<int, string>  $blockers
+     * @return array<string, mixed>
+     */
+    private function smsMetadata(string $rendered, array &$warnings, array &$blockers): array
+    {
+        $characters = mb_strlen($rendered);
+        $unicode = preg_match('/[^\x{0000}-\x{007F}]/u', $rendered) === 1;
+        $singleLimit = $unicode ? 70 : 160;
+        $multiLimit = $unicode ? 67 : 153;
+        $segments = $characters <= $singleLimit ? 1 : (int) ceil($characters / $multiLimit);
+
+        if ($unicode) {
+            $warnings[] = 'SMS Türkçe/Unicode karakter içeriyor; segment sayısı artabilir.';
+        }
+
+        if ($segments > 1) {
+            $warnings[] = "SMS {$segments} segment olarak hesaplandı.";
+        }
+
+        if ($segments >= 3) {
+            $warnings[] = 'SMS 3+ segment; metin kısaltılmalı.';
+        }
+
+        if ($segments >= 4) {
+            $blockers[] = 'SMS 4 veya daha fazla segment; admin override olmadan gönderilemez.';
+        }
+
+        if (str_contains($rendered, 'http')) {
+            $warnings[] = 'SMS link içeriyor; link uzunluğu segment sayısını etkiler.';
+        }
+
+        return [
+            'characters' => $characters,
+            'segments' => $segments,
+            'encoding' => $unicode ? 'unicode' : 'gsm',
+            'contains_link' => str_contains($rendered, 'http'),
+            'line_count' => substr_count($rendered, "\n") + 1,
+        ];
+    }
+
+    private function containsPayTechnicianPhrase(string $rendered): bool
+    {
+        $text = mb_strtolower($rendered, 'UTF-8');
+        $text = str_replace([
+            'ustaya ayrıca ödeme yapmanız gerekmez',
+            'ustaya ödeme yapmanız gerekmez',
+        ], '', $text);
+
+        foreach ([
+            'ustaya ödeme',
+            'ustaya öde',
+            'ustaya ödemeniz',
+            'çilingire ödeme',
+        ] as $needle) {
+            if (str_contains($text, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function blank(mixed $value): bool
+    {
+        if ($value === null) {
+            return true;
+        }
+
+        if (is_string($value)) {
+            return trim($value) === '';
+        }
+
+        return false;
+    }
+
+    private function money(mixed $value): float
+    {
+        return round((float) ($value ?? 0), 2);
+    }
+}

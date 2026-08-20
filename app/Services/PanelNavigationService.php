@@ -6,6 +6,7 @@ use App\Models\Button;
 use App\Models\Page;
 use App\Models\Role;
 use App\Models\User;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
 class PanelNavigationService
@@ -20,6 +21,7 @@ class PanelNavigationService
         '/technical-service',
         '/technical-service/dashboard',
         '/technical-service/serial-query',
+        '/technical-service/qr-products',
         '/technical-service/technicians',
         '/stock',
         '/orders/alinan',
@@ -33,8 +35,7 @@ class PanelNavigationService
 
     public function __construct(
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -44,6 +45,7 @@ class PanelNavigationService
         if (! $user) {
             return [
                 'groups' => [],
+                'resources' => [],
                 'currentPage' => null,
                 'role' => null,
                 'meta' => $this->meta(),
@@ -57,6 +59,7 @@ class PanelNavigationService
 
         return [
             'groups' => $this->navigationGroups($pages),
+            'resources' => $this->access->resourceCodesFor($user)->sort()->values()->all(),
             'currentPage' => $currentPage ? $this->pagePayload($currentPage, $user) : null,
             'role' => $this->rolePayload($user->role),
             'meta' => $this->meta(),
@@ -71,6 +74,10 @@ class PanelNavigationService
 
         if ($this->access->userCanAccess($user, 'dashboard')) {
             return '/dashboard';
+        }
+
+        if ($this->access->userCanAccess($user, 'partner.dashboard.view')) {
+            return '/partner/dashboard';
         }
 
         return $this->firstAccessibleRouteFor($user) ?? '/dashboard';
@@ -104,6 +111,7 @@ class PanelNavigationService
             '/technical-service',
             '/technical-service/dashboard',
             '/technical-service/serial-query',
+            '/technical-service/qr-products',
             '/technical-service/technicians',
         ];
 
@@ -210,7 +218,7 @@ class PanelNavigationService
                         'pageOrder' => $item->sort_order,
                         'item' => [
                             'id' => $page->id,
-                            'title' => $item->label ?: $page->name,
+                            'title' => $this->navigationItemTitle($page->route, $item->label ?: $page->name),
                             'href' => $page->route,
                             'icon' => $item->icon ?: $page->icon,
                         ],
@@ -237,6 +245,13 @@ class PanelNavigationService
             ->values();
     }
 
+    private function navigationItemTitle(string $route, string $title): string
+    {
+        return $this->normalizePath($route) === '/technical-service/dashboard'
+            ? 'Operasyon Dashboard — Pilot'
+            : $title;
+    }
+
     /**
      * @return array{name: string, slug: string, isSuperAdmin: bool}|null
      */
@@ -261,10 +276,10 @@ class PanelNavigationService
         return [
             'brand' => config('panel.brand'),
             'environment' => app()->environment(),
-            'host' => parse_url((string) config('app.url'), PHP_URL_HOST),
-            'publicUrl' => config('panel.public_url'),
-            'apiBaseUrl' => config('panel.api_base_url'),
-            'webhookBaseUrl' => config('panel.webhook_base_url'),
+            'host' => PartnerPortalPublicUrl::panelHost(),
+            'publicUrl' => PartnerPortalPublicUrl::panelBaseUrl(),
+            'apiBaseUrl' => PartnerPortalPublicUrl::panelApiBaseUrl(),
+            'webhookBaseUrl' => PartnerPortalPublicUrl::panelWebhookBaseUrl(),
             'workflowUrls' => config('panel.workflow_urls'),
             'generatedAt' => now()->toIso8601String(),
         ];

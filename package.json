@@ -8,8 +8,8 @@
         "dev": "vite",
         "format": "prettier --write resources/",
         "format:check": "prettier --check resources/",
-        "lint": "eslint . --fix",
-        "lint:check": "eslint .",
+        "lint": "node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js . --fix",
+        "lint:check": "node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js .",
         "types:check": "tsc --noEmit"
     },
     "devDependencies": {

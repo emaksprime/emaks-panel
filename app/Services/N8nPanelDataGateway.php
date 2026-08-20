@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\DataSource;
 use App\Models\DataSourceCache;
+use App\Services\Mikro\MikroParityContract;
+use App\Services\Mikro\MikroParitySource;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
@@ -12,12 +14,88 @@ use RuntimeException;
 
 class N8nPanelDataGateway
 {
+    private const PARITY_N8N_HOST = 'hook.emaksprime.com.tr';
+
+    /**
+     * Internal parity reads are code-owned and never resolve a DataSource row. This
+     * keeps the dedicated SQL out of generic page/admin datasource execution paths.
+     *
+     * @param  array<string, mixed>  $parameters
+     * @return array<string, mixed>
+     */
+    public function readForParity(MikroParitySource $source, array $parameters): array
+    {
+        $contract = app(MikroParityContract::class);
+        $sourceDefinition = $contract->source($source);
+        $parameters = $contract->validatedParameters($source, $parameters);
+        $url = trim((string) config('panel.n8n_gateway_url'));
+        $token = (string) config('panel.n8n_token');
+
+        $this->assertParityEndpoint($url);
+        if (app()->isProduction() && trim($token) === '') {
+            throw new RuntimeException('Production ortaminda PANEL_N8N_TOKEN olmadan n8n gateway istegi atilamaz.');
+        }
+
+        $payload = [
+            'source_code' => $source->value,
+            'bypass_cache' => true,
+            'params' => $parameters,
+            'allowed_params' => $sourceDefinition['allowed_params'],
+            'query_template' => $sourceDefinition['query_template'],
+            'data_source' => [
+                'code' => $source->value,
+                'name' => 'Internal Mikro parity source',
+                'db_type' => 'n8n_json',
+                'active' => false,
+                'query_template_available' => true,
+                'connection_meta' => [
+                    'driver' => 'n8n_json',
+                    'sql_policy' => 'mikro_parity_read_only',
+                ],
+            ],
+        ];
+        $headers = ['Content-Type' => 'application/json'];
+        if (trim($token) !== '') {
+            $headers['x-panel-token'] = $token;
+        }
+
+        try {
+            $response = Http::acceptJson()
+                ->asJson()
+                ->withHeaders($headers)
+                ->timeout(60)
+                ->post($url, $payload);
+        } catch (ConnectionException $exception) {
+            throw new RuntimeException('N8N_PARITY_CONNECTION_FAILED', previous: $exception);
+        }
+
+        if (! $response->successful()) {
+            throw new RuntimeException('N8N_PARITY_HTTP_'.$response->status());
+        }
+
+        $json = $response->json();
+        if (! is_array($json) || ($json['ok'] ?? true) === false) {
+            throw new RuntimeException('N8N_PARITY_INVALID_RESPONSE');
+        }
+
+        $rows = $json['rows'] ?? [];
+        if (! is_array($rows) || count(array_filter($rows, 'is_array')) !== count($rows)) {
+            throw new RuntimeException('N8N_PARITY_ROWS_INVALID');
+        }
+
+        return $contract->normalizeN8n($source, array_values($rows));
+    }
+
     /**
      * @param  array<string, mixed>  $filters
      * @return array{rows: array<int, array<string, mixed>>, meta: array<string, mixed>, request: array<string, mixed>}
      */
     public function run(string $sourceCode, array $filters, ?DataSource $dataSource = null): array
     {
+        if (str_starts_with($sourceCode, 'parity_')) {
+            throw new RuntimeException('MIKRO_PARITY_SOURCE_REQUIRES_INTERNAL_TYPED_PATH');
+        }
+
         $connectionMeta = $dataSource?->connection_meta ?? [];
         $url = trim((string) ($connectionMeta['endpoint_url'] ?? config('panel.n8n_gateway_url')));
         $token = (string) config('panel.n8n_token');
@@ -154,6 +232,20 @@ class N8nPanelDataGateway
                     || str_contains($lowerKey, 'api_key');
             })
             ->all();
+    }
+
+    private function assertParityEndpoint(string $url): void
+    {
+        $parts = parse_url($url);
+        $path = is_array($parts) ? rtrim((string) ($parts['path'] ?? ''), '/') : '';
+
+        if ($url === ''
+            || ! is_array($parts)
+            || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
+            || strtolower(trim((string) ($parts['host'] ?? ''))) !== self::PARITY_N8N_HOST
+            || $path !== '/webhook/panel-data-source-run-local-v2') {
+            throw new RuntimeException('MIKRO_PARITY_N8N_ENDPOINT_NOT_ALLOWLISTED');
+        }
     }
 
     private function runnableQueryTemplate(?DataSource $dataSource): string

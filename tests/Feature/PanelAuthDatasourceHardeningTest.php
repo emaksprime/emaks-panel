@@ -17,11 +17,12 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class PanelAuthDatasourceHardeningTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -30,6 +31,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelDataSourcesSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
     }
 
     public function test_canonical_datasources_are_seeded_without_overwriting_sales_main(): void
@@ -155,8 +157,8 @@ class PanelAuthDatasourceHardeningTest extends TestCase
 
     public function test_sales_main_labels_use_user_facing_turkish(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -185,7 +187,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        ], expectedRequests: 2);
 
         $user = User::factory()->create(['role_code' => 'admin']);
 
@@ -219,7 +221,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
 
     public function test_empty_proforma_queries_return_friendly_messages_without_gateway_call(): void
     {
-        Http::fake();
+        $this->fakeIsolatedHttp([], expectedRequests: 0);
 
         $this->actingAs(User::factory()->create(['role_code' => 'proforma']))
             ->postJson('/api/data/proforma')
@@ -279,8 +281,8 @@ class PanelAuthDatasourceHardeningTest extends TestCase
 
     public function test_authorized_data_api_calls_gateway(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['stok_kodu' => 'STK-1', 'stok_adi' => 'Test Urun', 'toplam_miktar' => 3],

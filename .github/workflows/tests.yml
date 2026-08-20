@@ -14,10 +14,18 @@ on:
       - master
       - workos
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         php-version: ['8.3', '8.4', '8.5']
 
@@ -29,19 +37,36 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
+          extensions: pdo_pgsql
           tools: composer:v2
-          coverage: xdebug
+          coverage: none
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-php-${{ matrix.php-version }}-${{ hashFiles('composer.lock', 'composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-php-${{ matrix.php-version }}-
 
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: '22'
 
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
       - name: Install Node Dependencies
         run: npm i
 
       - name: Install Dependencies
-        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+        run: composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader
 
       - name: Copy Environment File
         run: cp .env.example .env
@@ -52,5 +77,68 @@ jobs:
       - name: Build Assets
         run: npm run build
 
+      - name: Pull PostgreSQL 16 image
+        run: docker pull postgres:16-alpine
+
       - name: Tests
-        run: ./vendor/bin/phpunit
+        shell: pwsh
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -TestPath tests -ExcludeGroup postgresql-isolation -PostgresDataTmpfsSize 4g -TestTimeoutSeconds 1200 -EvidenceDirectory "${{ runner.temp }}/pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}"
+
+      - name: Upload PostgreSQL CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+
+  postgresql-isolation:
+    name: postgresql-isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_pgsql
+          tools: composer:v2
+          coverage: none
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-php-8.4-${{ hashFiles('composer.lock', 'composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-php-8.4-
+
+      - name: Install Dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Copy Environment File
+        run: cp .env.example .env
+
+      - name: Generate Application Key
+        run: php artisan key:generate
+
+      - name: Pull PostgreSQL 16 image
+        run: docker pull postgres:16-alpine
+
+      - name: PostgreSQL isolation tests
+        shell: pwsh
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -EvidenceDirectory "${{ runner.temp }}/pr92-ci-evidence-postgresql-isolation-php-8.4-attempt-${{ github.run_attempt }}"
+
+      - name: Upload PostgreSQL isolation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr92-ci-evidence-postgresql-isolation-php-8.4-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr92-ci-evidence-postgresql-isolation-php-8.4-attempt-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7

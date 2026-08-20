@@ -10,11 +10,12 @@ use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class StockManagementCleanCriticalAdminTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -25,6 +26,7 @@ class StockManagementCleanCriticalAdminTest extends TestCase
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelDataSourcesSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
     }
 
     public function test_stock_page_uses_dedicated_dashboard_without_proforma_actions(): void
@@ -217,8 +219,8 @@ class StockManagementCleanCriticalAdminTest extends TestCase
 
     public function test_stock_data_api_exposes_stock_scope_and_requires_explicit_scope(): void
     {
-        Http::fake([
-            '*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['stok_kodu' => 'LOCK-1', 'stok_adi' => 'Kilit', 'kategori' => 'AKILLI KİLİT', 'kategori_kodu' => 'A1', 'toplam_miktar' => 5],
@@ -227,7 +229,7 @@ class StockManagementCleanCriticalAdminTest extends TestCase
                 'request' => [],
                 'meta' => [],
             ]),
-        ]);
+        ], expectedRequests: 2);
 
         $locksUser = User::factory()->create(['role_code' => 'stock', 'aktif' => true]);
         $allUser = User::factory()->create(['role_code' => 'manager', 'aktif' => true]);

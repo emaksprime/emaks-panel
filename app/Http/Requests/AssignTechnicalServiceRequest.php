@@ -19,29 +19,49 @@ class AssignTechnicalServiceRequest extends FormRequest
     {
         return [
             'technical_service_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
+            'b2b_partner_id' => ['nullable', 'integer', 'exists:b2b_partners,id'],
             'technician_name' => ['required_without:technical_service_technician_id', 'nullable', 'string', 'max:255'],
-            'travel_round_trip_km' => ['required', 'numeric', 'min:0'],
+            'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
+            'travel_round_trip_km' => ['required_without:route_quote_id', 'nullable', 'numeric', 'min:0'],
             'mount_payment_missing' => ['nullable', 'boolean'],
+            'mount_exclusion_acknowledged' => ['nullable', 'boolean'],
+            'mount_exclusion_note' => ['nullable', 'string', 'max:2000'],
             'appointment_time_slot' => ['nullable', 'string', 'in:10:00 - 12:00,12:00 - 14:00,14:00 - 16:00,16:00 - 18:00'],
             'override_without_payment' => ['nullable', 'boolean'],
             'override_reason' => ['required_if:override_without_payment,true', 'nullable', 'string', 'min:5', 'max:2000'],
             'note' => ['nullable', 'string', 'max:2000'],
+            'assignment_offer' => ['nullable', 'array'],
+            'assignment_offer.labor_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.route_fee_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.total_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.customer_direct_to_technician_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.currency' => ['nullable', 'string', 'max:8'],
+            'assignment_offer.note' => ['nullable', 'string', 'max:2000'],
+            'labor_amount' => ['nullable', 'numeric', 'min:0'],
+            'travel_amount' => ['nullable', 'numeric', 'min:0'],
+            'customer_direct_to_technician_amount' => ['nullable', 'numeric', 'min:0'],
+            'earning_payment_source' => ['nullable', 'string', 'in:company,customer_direct'],
+            'earning_note' => ['nullable', 'string', 'max:2000'],
+            'expected_current_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
+            'expected_assignment_offer_id' => ['nullable', 'integer', 'exists:technical_service_assignment_offers,id'],
+            'expected_earning_revision' => ['nullable', 'string', 'size:64'],
+            'confirm_assignment' => ['nullable', 'boolean'],
         ];
     }
 
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
-            if (! $this->boolean('mount_payment_missing')) {
-                return;
-            }
+            $hasFinalEarningPayload = $this->hasAny([
+                'labor_amount',
+                'travel_amount',
+                'customer_direct_to_technician_amount',
+                'earning_note',
+                'confirm_assignment',
+            ]);
 
-            if (! $this->boolean('override_without_payment')) {
-                $validator->errors()->add('override_without_payment', 'Montaj Hariç işler için operasyon onayı zorunludur.');
-            }
-
-            if (mb_strlen(trim((string) $this->input('override_reason'))) < 5) {
-                $validator->errors()->add('override_reason', 'Atama nedeni en az 5 karakter olmalıdır.');
+            if ($hasFinalEarningPayload && ! $this->boolean('confirm_assignment')) {
+                $validator->errors()->add('confirm_assignment', 'Son hakediş onayı zorunludur.');
             }
         });
     }

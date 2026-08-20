@@ -40,4 +40,9 @@ class TechnicalServiceEarningItem extends Model
     {
         return $this->belongsTo(TechnicalServiceEarning::class, 'earning_id');
     }
+
+    public function request(): BelongsTo
+    {
+        return $this->belongsTo(TechnicalServiceRequest::class, 'technical_service_request_id');
+    }
 }

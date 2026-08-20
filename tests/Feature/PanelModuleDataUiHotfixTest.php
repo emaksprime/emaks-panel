@@ -17,11 +17,12 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Symfony\Component\HttpKernel\Exception\HttpException;
+use Tests\Support\InteractsWithTestHttpIsolation;
 use Tests\TestCase;
 
 class PanelModuleDataUiHotfixTest extends TestCase
 {
-    use RefreshDatabase;
+    use InteractsWithTestHttpIsolation, RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -30,6 +31,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->seed(PanelMetadataSeeder::class);
         $this->seed(PanelDataSourcesSeeder::class);
         $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->useTestPanelDataSourceGateway();
     }
 
     public function test_module_pages_use_expected_datasources_and_sales_dashboard_component(): void
@@ -478,8 +480,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($source->active);
         $this->assertNotSame('', trim((string) $source->query_template));
 
-        Http::fake([
-            '*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -559,8 +561,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_customer_search_enforces_scope_access(): void
     {
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
         $onlineUser = User::factory()->create(['role_code' => 'sales', 'aktif' => true, 'temsilci_kodu' => null]);
@@ -593,9 +595,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['rep_code'] ?? null) === null;
         });
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
+        ], expectedRequests: 0);
 
         $this->actingAs($onlineUser)
             ->postJson('/api/data/sales_customer_search', [
@@ -607,9 +609,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         Http::assertNothingSent();
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
+        ], expectedRequests: 0);
 
         $bayiUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
         DB::table('panel.user_access')->updateOrInsert(
@@ -627,8 +629,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         Http::assertNothingSent();
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
         $this->actingAs($bayiUser)
@@ -649,8 +651,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['rep_code'] ?? null) === null;
         });
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
         $allUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true, 'temsilci_kodu' => null]);
@@ -682,8 +684,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['rep_code'] ?? null) === null;
         });
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
         $repUser = User::factory()->create(['role_code' => 'sales', 'aktif' => true, 'temsilci_kodu' => '0039']);
@@ -715,9 +717,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['rep_code'] ?? null) === '0039';
         });
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
+        ], expectedRequests: 0);
 
         $this->actingAs($repUser)
             ->postJson('/api/data/sales_customer_search', [
@@ -729,9 +731,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         Http::assertNothingSent();
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
+        ], expectedRequests: 0);
 
         $noRepUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true, 'temsilci_kodu' => null]);
         DB::table('panel.user_access')->updateOrInsert(
@@ -749,9 +751,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         Http::assertNothingSent();
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
+        ], expectedRequests: 0);
 
         $twoSegmentUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true, 'temsilci_kodu' => null]);
         foreach ([
@@ -797,8 +799,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('excluded_from_total', $salesMainQuery);
         $this->assertStringContainsString("N'KONSINYE' AS satir_tipi", $salesMainQuery);
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -810,7 +812,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        ], expectedRequests: 3);
 
         app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
             'scope_key' => 'online_perakende',
@@ -920,8 +922,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'Model P', 'satir_adi' => 'Model P', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS', 'konsinye_tutari' => 222],
@@ -963,8 +965,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1012,8 +1014,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['product_filter'] ?? null) === '720 fvp';
         });
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1133,7 +1135,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        ], expectedRequests: 2);
 
         DB::table('panel.data_source_cache')->delete();
 
@@ -1197,8 +1199,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'Model P', 'satir_adi' => 'Model P', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
@@ -1226,8 +1228,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'Model P', 'satir_adi' => 'Model P', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
@@ -1255,8 +1257,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            '*' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
@@ -1284,8 +1286,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
@@ -1313,8 +1315,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame(['DDL720 FVP', 'DDL720 MVP'], array_column($multiProductPayload['breakdown']['groups'], 'label'));
         $this->assertSame(['DDL720 FVP', 'DDL720 MVP'], array_column($multiProductPayload['productOptions'], 'label'));
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1356,8 +1358,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_selected_customer_empty_rows_return_empty_dataset_without_502(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [],
             ]),
@@ -1383,8 +1385,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_empty_rows_return_empty_dataset_without_customer_filter(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [],
             ]),
@@ -1410,8 +1412,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 4, 30, 12, 0, 0));
 
         try {
-            Http::fake([
-                'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+            $this->fakeIsolatedHttp([
+                self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                     'ok' => true,
                     'rows' => [],
                 ]),
@@ -1436,8 +1438,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 4, 30, 12, 0, 0));
 
         try {
-            Http::fake([
-                'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+            $this->fakeIsolatedHttp([
+                self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                     'ok' => true,
                     'rows' => [],
                 ]),
@@ -1462,8 +1464,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 4, 30, 12, 0, 0));
 
         try {
-            Http::fake([
-                'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+            $this->fakeIsolatedHttp([
+                self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                     'ok' => true,
                     'rows' => [],
                 ]),
@@ -1485,8 +1487,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_online_and_bayi_scope_allow_without_representative_code_sends_null_rep_code(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1498,7 +1500,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ],
                 ],
             ]),
-        ]);
+        ], expectedRequests: 2);
 
         $onlineUser = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
         UserAccess::query()->create([
@@ -1545,8 +1547,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_online_empty_special_source_stays_scoped_without_main_dashboard_fallback(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [],
             ]),
@@ -1591,8 +1593,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_konsinye_rows_are_excluded_from_totals_while_teshir_rows_are_included(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1679,8 +1681,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_customer_filter_chart_uses_customer_items_with_account_flags(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -1977,8 +1979,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertFalse((bool) $bulent['allowAll']);
         $this->assertNull($bulent['navigateTo'] ?? null);
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -2109,8 +2111,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_explicit_representative_scope_uses_scope_rep_code_in_gateway_payload(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -2194,8 +2196,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_explicit_representative_scope_works_without_user_representative_code(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -2248,8 +2250,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_main_entry_with_explicit_rep_scopes_does_not_grant_all_scope(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -2330,8 +2332,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_customer_breakdown_keeps_customer_rows_under_groups(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     [
@@ -2415,8 +2417,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_breakdown_keeps_same_title_customers_distinct_by_cari_code(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'cari_grup_adi' => 'Group A', 'adet' => 2, 'ciro' => 200],
@@ -2574,9 +2576,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
     {
         DB::table('panel.data_source_cache')->delete();
 
-        Http::fake([
-            '*' => Http::response(['ok' => true, 'rows' => []]),
-        ]);
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response(['ok' => true, 'rows' => []]),
+        ], expectedRequests: 2);
 
         $admin = User::factory()->create([
             'role_code' => 'admin',
@@ -2720,14 +2722,14 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_customer_datasource_codes_can_be_called_without_page_records(): void
     {
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['cari_kodu' => 'M-1', 'cari_adi' => 'Test Müşteri'],
                 ],
             ]),
-        ]);
+        ], expectedRequests: 2);
 
         $user = User::factory()->create(['role_code' => 'customer']);
 
@@ -2761,7 +2763,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'connection_meta' => [
                 'driver' => 'n8n_json',
                 'method' => 'POST',
-                'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
+                'endpoint_url' => self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL,
                 'response_rows_key' => 'rows',
                 'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
                 'source_reference' => 'CariService.cs',
@@ -2769,8 +2771,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'active' => true,
         ]);
 
-        Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+        $this->fakeIsolatedHttp([
+            self::TEST_PANEL_DATA_SOURCE_GATEWAY_URL => Http::response([
                 'ok' => true,
                 'rows' => [],
             ]),
