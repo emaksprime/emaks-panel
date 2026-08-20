@@ -37,10 +37,15 @@ $script:EvidenceStdErrFile = $null
 $script:EvidenceJunitFile = $null
 $script:EvidenceResultFile = $null
 $script:EvidenceFailureSummaryFile = $null
+$script:EvidencePostgreSqlStateFile = $null
+$script:EvidencePostgreSqlInspectFile = $null
+$script:EvidencePostgreSqlReadyFile = $null
+$script:EvidencePostgreSqlLogFile = $null
 $script:TestCommand = $null
 $script:FailureMessage = $null
 $script:SensitiveValues = @()
 $script:Versions = [ordered]@{}
+$script:PostgreSqlEvidence = [ordered]@{}
 
 $projectRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
 $removedDatabaseVariables = @(
@@ -308,6 +313,148 @@ function Invoke-BoundedProcess {
 
     if (-not $process.Start()) {
         throw 'bounded_process_start_failed'
+    }
+
+    $streamToEvidence = $StdOutPath -ne '' -or $StdErrPath -ne ''
+
+    if ($streamToEvidence) {
+        $encoding = [Text.UTF8Encoding]::new($false)
+        $stdoutBuilder = [Text.StringBuilder]::new()
+        $stderrBuilder = [Text.StringBuilder]::new()
+        $stdoutWriter = $null
+        $stderrWriter = $null
+        $timedOut = $false
+
+        try {
+            if ($StdOutPath -ne '') {
+                Write-RedactedEvidenceText -Path $StdOutPath -Text ''
+                $stdoutWriter = [IO.StreamWriter]::new($StdOutPath, $false, $encoding)
+                $stdoutWriter.AutoFlush = $true
+            }
+
+            if ($StdErrPath -ne '') {
+                Write-RedactedEvidenceText -Path $StdErrPath -Text ''
+                $stderrWriter = [IO.StreamWriter]::new($StdErrPath, $false, $encoding)
+                $stderrWriter.AutoFlush = $true
+            }
+
+            $stdoutComplete = $false
+            $stderrComplete = $false
+            $stdoutTask = $process.StandardOutput.ReadLineAsync()
+            $stderrTask = $process.StandardError.ReadLineAsync()
+            $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+            $drainDeadline = $null
+
+            while (-not ($process.HasExited -and $stdoutComplete -and $stderrComplete)) {
+                $madeProgress = $false
+
+                if (-not $stdoutComplete -and $stdoutTask.IsCompleted) {
+                    $line = $stdoutTask.GetAwaiter().GetResult()
+
+                    if ($null -eq $line) {
+                        $stdoutComplete = $true
+                    }
+                    else {
+                        [void] $stdoutBuilder.AppendLine($line)
+
+                        if ($stdoutWriter) {
+                            $stdoutWriter.WriteLine((Protect-EvidenceText -Text $line))
+                        }
+
+                        $stdoutTask = $process.StandardOutput.ReadLineAsync()
+                    }
+
+                    $madeProgress = $true
+                }
+
+                if (-not $stderrComplete -and $stderrTask.IsCompleted) {
+                    $line = $stderrTask.GetAwaiter().GetResult()
+
+                    if ($null -eq $line) {
+                        $stderrComplete = $true
+                    }
+                    else {
+                        [void] $stderrBuilder.AppendLine($line)
+
+                        if ($stderrWriter) {
+                            $stderrWriter.WriteLine((Protect-EvidenceText -Text $line))
+                        }
+
+                        $stderrTask = $process.StandardError.ReadLineAsync()
+                    }
+
+                    $madeProgress = $true
+                }
+
+                if (-not $process.HasExited -and [DateTime]::UtcNow -ge $deadline) {
+                    $timedOut = $true
+
+                    try {
+                        $process.Kill()
+                        $terminated = $process.WaitForExit(5000)
+
+                        if (-not $terminated -and -not $process.HasExited) {
+                            $script:CleanupFailed = $true
+                        }
+                    }
+                    catch {
+                        $script:CleanupFailed = $true
+                    }
+
+                    $drainDeadline = [DateTime]::UtcNow.AddSeconds(10)
+                }
+
+                if ($drainDeadline -and [DateTime]::UtcNow -ge $drainDeadline -and
+                    -not ($stdoutComplete -and $stderrComplete)) {
+                    $script:CleanupFailed = $true
+                    break
+                }
+
+                if (-not $madeProgress) {
+                    Start-Sleep -Milliseconds 10
+                }
+            }
+
+            if ($process.HasExited) {
+                $process.WaitForExit()
+            }
+        }
+        catch {
+            if (-not $process.HasExited) {
+                try {
+                    $process.Kill()
+                    [void] $process.WaitForExit(5000)
+                }
+                catch {
+                    $script:CleanupFailed = $true
+                }
+            }
+
+            throw
+        }
+        finally {
+            if ($stdoutWriter) {
+                $stdoutWriter.Dispose()
+            }
+
+            if ($stderrWriter) {
+                $stderrWriter.Dispose()
+            }
+        }
+
+        $stdout = $stdoutBuilder.ToString()
+        $stderr = $stderrBuilder.ToString()
+
+        if ($timedOut) {
+            throw 'bounded_process_timeout'
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StdOut = $stdout
+            StdErr = $stderr
+            Pid = $process.Id
+        }
     }
 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
@@ -1199,6 +1346,96 @@ function Invoke-ExactCleanup {
     }
 }
 
+function Write-PostgreSqlContainerEvidence {
+    param([Parameter(Mandatory)][string] $Phase)
+
+    if (-not $script:EvidenceDirectory) {
+        return
+    }
+
+    $capture = [ordered]@{
+        captured_at_utc = [DateTime]::UtcNow.ToString('o')
+        phase = $Phase
+        container_id = $script:ContainerId
+        container_name = $script:ContainerName
+        present = $false
+        state = 'unavailable'
+        health = 'unavailable'
+        restart_count = $null
+        exit_code = $null
+        oom_killed = $null
+        inspect_exit_code = $null
+        pg_isready_exit_code = $null
+        pg_isready_result = 'unavailable'
+        logs_exit_code = $null
+        capture_error = $null
+    }
+    $inspectText = '{}'
+    $readyText = 'PG_ISREADY_UNAVAILABLE'
+    $logText = 'POSTGRESQL_LOGS_UNAVAILABLE'
+
+    try {
+        if (-not $script:DockerBinary -or -not $script:ContainerId) {
+            throw 'postgresql_container_identity_unavailable'
+        }
+
+        $inspect = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+            'container', 'inspect', '--format', '{{json .State}}', $script:ContainerId
+        ) -TimeoutSeconds 15
+        $capture.inspect_exit_code = $inspect.ExitCode
+
+        if ($inspect.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($inspect.StdOut)) {
+            $capture.present = $true
+            $inspectText = $inspect.StdOut.Trim()
+            $state = $inspectText | ConvertFrom-Json
+            $capture.state = [string] $state.Status
+            $capture.health = if ($state.Health) { [string] $state.Health.Status } else { 'none' }
+            $capture.exit_code = [int] $state.ExitCode
+            $capture.oom_killed = [bool] $state.OOMKilled
+
+            $restart = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+                'container', 'inspect', '--format', '{{.RestartCount}}', $script:ContainerId
+            ) -TimeoutSeconds 15
+
+            if ($restart.ExitCode -eq 0 -and $restart.StdOut.Trim() -match '^\d+$') {
+                $capture.restart_count = [int] $restart.StdOut.Trim()
+            }
+
+            $ready = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+                'exec', $script:ContainerId, 'sh', '-ec',
+                'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+            ) -TimeoutSeconds 15
+            $capture.pg_isready_exit_code = $ready.ExitCode
+            $readyText = ($ready.StdOut + $ready.StdErr).Trim()
+            $capture.pg_isready_result = if ([string]::IsNullOrWhiteSpace($readyText)) {
+                'no_output'
+            }
+            else {
+                $readyText
+            }
+
+            $logs = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+                'container', 'logs', '--tail', '300', '--timestamps', $script:ContainerId
+            ) -TimeoutSeconds 30
+            $capture.logs_exit_code = $logs.ExitCode
+            $logText = ($logs.StdOut + $logs.StdErr).Trim()
+        }
+        else {
+            $inspectText = ($inspect.StdOut + $inspect.StdErr).Trim()
+            $capture.capture_error = 'postgresql_container_inspect_failed'
+        }
+    }
+    catch {
+        $capture.capture_error = Protect-EvidenceText -Text $_.Exception.Message
+    }
+
+    Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlInspectFile -Text $inspectText
+    Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlReadyFile -Text $readyText
+    Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlLogFile -Text $logText
+    Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlStateFile -Text ($capture | ConvertTo-Json -Depth 8)
+    $script:PostgreSqlEvidence = $capture
+}
+
 $runFailed = $false
 $testCount = 0
 $assertionCount = 0
@@ -1245,6 +1482,10 @@ try {
     $script:EvidenceJunitFile = Join-Path $script:EvidenceDirectory 'junit.xml'
     $script:EvidenceResultFile = Join-Path $script:EvidenceDirectory 'result.json'
     $script:EvidenceFailureSummaryFile = Join-Path $script:EvidenceDirectory 'failure-summary.txt'
+    $script:EvidencePostgreSqlStateFile = Join-Path $script:EvidenceDirectory 'postgresql-state.json'
+    $script:EvidencePostgreSqlInspectFile = Join-Path $script:EvidenceDirectory 'postgresql-inspect-state.json'
+    $script:EvidencePostgreSqlReadyFile = Join-Path $script:EvidenceDirectory 'postgresql-pg-isready.txt'
+    $script:EvidencePostgreSqlLogFile = Join-Path $script:EvidenceDirectory 'postgresql-container.log'
 
     $composerCommand = Get-Command 'composer' -ErrorAction SilentlyContinue
     $script:Versions = [ordered]@{
@@ -1451,6 +1692,32 @@ try {
         exclude_groups = @($ExcludeGroup)
         timeout_seconds = $TestTimeoutSeconds
     }
+    Write-RedactedEvidenceText -Path $script:EvidenceStdOutFile -Text ''
+    Write-RedactedEvidenceText -Path $script:EvidenceStdErrFile -Text ''
+    Write-RedactedEvidenceText -Path $script:EvidenceJunitFile -Text ''
+    Write-RedactedEvidenceText -Path $script:EvidenceFailureSummaryFile -Text 'RUN_IN_PROGRESS'
+    Write-PostgreSqlContainerEvidence -Phase 'before_test'
+    $preliminaryResult = [ordered]@{
+        schema_version = 1
+        run_id = $script:Nonce
+        started_at_utc = $script:RunStartedAtUtc
+        stage = 'focused_test_running'
+        result = 'running'
+        exit_code = $null
+        cleanup = 'pending'
+        command = $script:TestCommand
+        versions = $script:Versions
+        database = [ordered]@{
+            engine = 'postgresql'
+            major_version = 16
+            name = $script:DatabaseName
+            container_id = $script:ContainerId
+            canonical_uat_connection = 0
+            canonical_uat_write = 0
+        }
+        postgresql_diagnostics = $script:PostgreSqlEvidence
+    }
+    Write-RedactedEvidenceText -Path $script:EvidenceResultFile -Text ($preliminaryResult | ConvertTo-Json -Depth 12)
 
     try {
         $testResult = Invoke-BoundedProcess -FilePath $script:PhpBinary -ArgumentList $phpUnitArguments -TimeoutSeconds $TestTimeoutSeconds -Environment $childEnvironment -RemoveEnvironment $removedDatabaseVariables -StdOutPath $script:EvidenceStdOutFile -StdErrPath $script:EvidenceStdErrFile
@@ -1549,6 +1816,7 @@ catch {
     $script:FailureMessage = $_.Exception.Message
 }
 finally {
+    Write-PostgreSqlContainerEvidence -Phase 'before_cleanup'
     Invoke-ExactCleanup
 }
 
@@ -1604,11 +1872,16 @@ if ($script:EvidenceDirectory) {
                 canonical_uat_connection = 0
                 canonical_uat_write = 0
             }
+            postgresql_diagnostics = $script:PostgreSqlEvidence
             evidence = [ordered]@{
                 stdout = 'stdout.log'
                 stderr = 'stderr.log'
                 junit = if (Test-Path -LiteralPath $script:EvidenceJunitFile) { 'junit.xml' } else { $null }
                 failure_summary = 'failure-summary.txt'
+                postgresql_state = 'postgresql-state.json'
+                postgresql_inspect_state = 'postgresql-inspect-state.json'
+                postgresql_pg_isready = 'postgresql-pg-isready.txt'
+                postgresql_container_log = 'postgresql-container.log'
                 redacted_before_persistence = $true
             }
             failed_tests = @(Get-JunitFailureRecords)
