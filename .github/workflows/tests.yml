@@ -81,7 +81,16 @@ jobs:
 
       - name: Tests
         shell: pwsh
-        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -TestPath tests -ExcludeGroup postgresql-isolation -TestTimeoutSeconds 1200
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -TestPath tests -ExcludeGroup postgresql-isolation -TestTimeoutSeconds 1200 -EvidenceDirectory "${{ runner.temp }}/pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}"
+
+      - name: Upload PostgreSQL CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
 
   postgresql-isolation:
     name: postgresql-isolation
@@ -122,4 +131,13 @@ jobs:
 
       - name: PostgreSQL isolation tests
         shell: pwsh
-        run: ./scripts/testing/Run-Rel4gPostgres.ps1
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -EvidenceDirectory "${{ runner.temp }}/pr92-ci-evidence-postgresql-isolation-php-8.4-attempt-${{ github.run_attempt }}"
+
+      - name: Upload PostgreSQL isolation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr92-ci-evidence-postgresql-isolation-php-8.4-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr92-ci-evidence-postgresql-isolation-php-8.4-attempt-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7

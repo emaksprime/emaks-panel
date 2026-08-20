@@ -7,12 +7,15 @@ param(
     [string[]] $ExcludeGroup = @(),
 
     [ValidateRange(30, 1800)]
-    [int] $TestTimeoutSeconds = 600
+    [int] $TestTimeoutSeconds = 600,
+
+    [string] $EvidenceDirectory = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$requestedEvidenceDirectory = $EvidenceDirectory
 
 $script:Stage = 'preflight'
 $script:ContainerId = $null
@@ -28,6 +31,16 @@ $script:CleanupFailed = $false
 $script:DatabaseName = $null
 $script:RunStartedAtUtc = [DateTime]::UtcNow.ToString('o')
 $script:TestExitCode = $null
+$script:EvidenceDirectory = $null
+$script:EvidenceStdOutFile = $null
+$script:EvidenceStdErrFile = $null
+$script:EvidenceJunitFile = $null
+$script:EvidenceResultFile = $null
+$script:EvidenceFailureSummaryFile = $null
+$script:TestCommand = $null
+$script:FailureMessage = $null
+$script:SensitiveValues = @()
+$script:Versions = [ordered]@{}
 
 $projectRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
 $removedDatabaseVariables = @(
@@ -39,6 +52,214 @@ $removedDatabaseVariables = @(
     'PGSERVICE',
     'PGSERVICEFILE'
 )
+
+function Protect-EvidenceText {
+    param([AllowEmptyString()][string] $Text)
+
+    $safe = [string] $Text
+
+    foreach ($value in $script:SensitiveValues) {
+        if (-not [string]::IsNullOrEmpty($value)) {
+            $safe = $safe.Replace([string] $value, '[REDACTED]')
+        }
+    }
+
+    $safe = [regex]::Replace(
+        $safe,
+        '(?im)\b(DB_PASSWORD|PGPASSWORD|POSTGRES_PASSWORD|API_KEY|TOKEN|SECRET)\b(\s*[:=]\s*)[^\s\r\n]+',
+        '$1$2[REDACTED]'
+    )
+    $safe = [regex]::Replace(
+        $safe,
+        '(?im)(Authorization\s*:\s*)(?:Bearer|Basic)\s+[^\s\r\n]+',
+        '$1[REDACTED]'
+    )
+    $safe = [regex]::Replace(
+        $safe,
+        '(?i)(postgres(?:ql)?://)[^@\s/]+@',
+        '$1[REDACTED]@'
+    )
+
+    return $safe
+}
+
+function Write-RedactedEvidenceText {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [AllowEmptyString()][string] $Text
+    )
+
+    if (-not $script:EvidenceDirectory) {
+        throw 'evidence_directory_unavailable'
+    }
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $evidencePrefix = $script:EvidenceDirectory.TrimEnd('\', '/') + $separator
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+
+    if (-not $fullPath.StartsWith($evidencePrefix, $comparison)) {
+        throw 'evidence_file_scope_invalid'
+    }
+
+    [IO.File]::WriteAllText($fullPath, (Protect-EvidenceText -Text $Text), [Text.UTF8Encoding]::new($false))
+}
+
+function Protect-EvidenceFile {
+    param([Parameter(Mandatory)][string] $Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        Write-RedactedEvidenceText -Path $Path -Text ([IO.File]::ReadAllText($Path))
+    }
+}
+
+function New-EvidenceDirectory {
+    param(
+        [AllowEmptyString()][string] $RequestedPath,
+        [Parameter(Mandatory)][string] $Nonce
+    )
+
+    $path = if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+        Join-Path ([IO.Path]::GetTempPath()) ('emaks-pr92-rel4g-evidence-' + $Nonce)
+    }
+    else {
+        $RequestedPath
+    }
+    $fullPath = [IO.Path]::GetFullPath($path)
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $projectPrefix = $projectRoot.TrimEnd('\', '/') + $separator
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+
+    if ($fullPath -eq $projectRoot -or $fullPath.StartsWith($projectPrefix, $comparison)) {
+        throw 'evidence_directory_inside_repository'
+    }
+
+    if (Test-Path -LiteralPath $fullPath) {
+        if (-not (Get-Item -LiteralPath $fullPath).PSIsContainer -or
+            @(Get-ChildItem -LiteralPath $fullPath -Force).Count -ne 0) {
+            throw 'evidence_directory_not_empty'
+        }
+    }
+    else {
+        [void] (New-Item -ItemType Directory -Path $fullPath)
+    }
+
+    if ($IsWindows) {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $security.AddAccessRule($rule)
+        Set-Acl -LiteralPath $fullPath -AclObject $security
+    }
+    else {
+        $mode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute
+        [IO.File]::SetUnixFileMode($fullPath, $mode)
+
+        if ([IO.File]::GetUnixFileMode($fullPath) -ne $mode) {
+            throw 'evidence_directory_permissions_invalid'
+        }
+    }
+
+    return $fullPath
+}
+
+function Get-OptionalToolVersion {
+    param(
+        [Parameter(Mandatory)][string] $FilePath,
+        [Parameter(Mandatory)][string[]] $ArgumentList
+    )
+
+    try {
+        $result = Invoke-BoundedProcess -FilePath $FilePath -ArgumentList $ArgumentList -TimeoutSeconds 30
+
+        if ($result.ExitCode -ne 0) {
+            return 'unavailable'
+        }
+
+        return (@($result.StdOut -split '\r?\n' | Where-Object { $_ -ne '' })[0]).Trim()
+    }
+    catch {
+        return 'unavailable'
+    }
+}
+
+function Get-JunitFailureRecords {
+    if (-not $script:EvidenceJunitFile -or -not (Test-Path -LiteralPath $script:EvidenceJunitFile)) {
+        return @()
+    }
+
+    try {
+        [xml] $junit = Get-Content -LiteralPath $script:EvidenceJunitFile -Raw
+        $records = @()
+
+        foreach ($testCase in @($junit.SelectNodes('//testcase[error or failure]'))) {
+            $detail = $testCase.SelectSingleNode('./error | ./failure')
+            $records += [ordered]@{
+                class = $testCase.GetAttribute('class')
+                method = $testCase.GetAttribute('name')
+                type = $detail.GetAttribute('type')
+                message = (Protect-EvidenceText -Text $detail.InnerText.Trim())
+                file = $testCase.GetAttribute('file')
+                line = $testCase.GetAttribute('line')
+            }
+        }
+
+        return $records
+    }
+    catch {
+        return @()
+    }
+}
+
+function Get-FirstExceptionSummary {
+    $records = @(Get-JunitFailureRecords)
+    $firstError = @($records | Where-Object { $_.type -notlike '*ExpectationFailedException' } | Select-Object -First 1)
+    $record = if ($firstError.Count -gt 0) { $firstError[0] } elseif ($records.Count -gt 0) { $records[0] } else { $null }
+
+    if ($record) {
+        return @(
+            'TEST_CLASS: ' + $record.class
+            'TEST_METHOD: ' + $record.method
+            'EXCEPTION_CLASS: ' + $record.type
+            'TEST_FILE: ' + $record.file
+            'TEST_LINE: ' + $record.line
+            'EXCEPTION_BLOCK:'
+            $record.message
+        ) -join "`n"
+    }
+
+    $combined = ''
+
+    foreach ($path in @($script:EvidenceStdOutFile, $script:EvidenceStdErrFile)) {
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            $combined += [IO.File]::ReadAllText($path) + "`n"
+        }
+    }
+
+    $lines = @($combined -split '\r?\n')
+    $start = -1
+
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match 'Test Errored|PDOException|QueryException|ErrorException|RuntimeException|TypeError') {
+            $start = $index
+            break
+        }
+    }
+
+    if ($start -lt 0) {
+        return 'EXCEPTION_BLOCK_UNAVAILABLE'
+    }
+
+    $end = [Math]::Min($lines.Count - 1, $start + 120)
+    return ($lines[$start..$end] -join "`n").Trim()
+}
 
 function Invoke-BoundedProcess {
     param(
@@ -55,7 +276,11 @@ function Invoke-BoundedProcess {
 
         [hashtable] $Environment = @{},
 
-        [string[]] $RemoveEnvironment = @()
+        [string[]] $RemoveEnvironment = @(),
+
+        [string] $StdOutPath = '',
+
+        [string] $StdErrPath = ''
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -102,15 +327,36 @@ function Invoke-BoundedProcess {
             $script:CleanupFailed = $true
         }
 
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+
+        if ($StdOutPath -ne '') {
+            Write-RedactedEvidenceText -Path $StdOutPath -Text $stdout
+        }
+
+        if ($StdErrPath -ne '') {
+            Write-RedactedEvidenceText -Path $StdErrPath -Text $stderr
+        }
+
         throw 'bounded_process_timeout'
     }
 
     $process.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+
+    if ($StdOutPath -ne '') {
+        Write-RedactedEvidenceText -Path $StdOutPath -Text $stdout
+    }
+
+    if ($StdErrPath -ne '') {
+        Write-RedactedEvidenceText -Path $StdErrPath -Text $stderr
+    }
 
     return [pscustomobject]@{
         ExitCode = $process.ExitCode
-        StdOut = $stdoutTask.GetAwaiter().GetResult()
-        StdErr = $stderrTask.GetAwaiter().GetResult()
+        StdOut = $stdout
+        StdErr = $stderr
         Pid = $process.Id
     }
 }
@@ -993,10 +1239,30 @@ try {
     $databaseName = 'emaks_pr92_rel4g_test_' + $script:Nonce
     $script:DatabaseName = $databaseName
     $databaseUser = 'rel4g_' + $script:Nonce
+    $script:EvidenceDirectory = New-EvidenceDirectory -RequestedPath $requestedEvidenceDirectory -Nonce $script:Nonce
+    $script:EvidenceStdOutFile = Join-Path $script:EvidenceDirectory 'stdout.log'
+    $script:EvidenceStdErrFile = Join-Path $script:EvidenceDirectory 'stderr.log'
+    $script:EvidenceJunitFile = Join-Path $script:EvidenceDirectory 'junit.xml'
+    $script:EvidenceResultFile = Join-Path $script:EvidenceDirectory 'result.json'
+    $script:EvidenceFailureSummaryFile = Join-Path $script:EvidenceDirectory 'failure-summary.txt'
+
+    $composerCommand = Get-Command 'composer' -ErrorAction SilentlyContinue
+    $script:Versions = [ordered]@{
+        php = Get-OptionalToolVersion -FilePath $script:PhpBinary -ArgumentList @('--version')
+        phpunit = Get-OptionalToolVersion -FilePath $script:PhpBinary -ArgumentList @('vendor/phpunit/phpunit/phpunit', '--version')
+        laravel = Get-OptionalToolVersion -FilePath $script:PhpBinary -ArgumentList @('artisan', '--version')
+        composer = if ($composerCommand -and $composerCommand.Source) {
+            Get-OptionalToolVersion -FilePath ([IO.Path]::GetFullPath($composerCommand.Source)) -ArgumentList @('--version')
+        }
+        else {
+            'unavailable'
+        }
+    }
 
     $passwordBytes = [byte[]]::new(36)
     [Security.Cryptography.RandomNumberGenerator]::Fill($passwordBytes)
     $databasePassword = [Convert]::ToBase64String($passwordBytes)
+    $script:SensitiveValues += $databasePassword
 
     $script:Stage = 'temporary_credentials'
     $script:TemporaryDirectory = New-SecureTemporaryDirectory -Nonce $script:Nonce
@@ -1163,7 +1429,7 @@ try {
     }
 
     $script:Stage = 'focused_test'
-    $junitFile = Join-Path $script:TemporaryDirectory 'phpunit-junit.xml'
+    $junitFile = $script:EvidenceJunitFile
     $testSelectionArguments = Resolve-TestSelectionArguments
     $phpUnitArguments = @(
         'vendor/phpunit/phpunit/phpunit',
@@ -1177,11 +1443,27 @@ try {
         '--fail-on-skipped',
         '--fail-on-incomplete'
     ) + $testSelectionArguments
+    $script:TestCommand = [ordered]@{
+        executable = $script:PhpBinary
+        arguments = $phpUnitArguments
+        test_paths = @($TestPath)
+        filter = $Filter
+        exclude_groups = @($ExcludeGroup)
+        timeout_seconds = $TestTimeoutSeconds
+    }
 
     try {
-        $testResult = Invoke-BoundedProcess -FilePath $script:PhpBinary -ArgumentList $phpUnitArguments -TimeoutSeconds $TestTimeoutSeconds -Environment $childEnvironment -RemoveEnvironment $removedDatabaseVariables
+        $testResult = Invoke-BoundedProcess -FilePath $script:PhpBinary -ArgumentList $phpUnitArguments -TimeoutSeconds $TestTimeoutSeconds -Environment $childEnvironment -RemoveEnvironment $removedDatabaseVariables -StdOutPath $script:EvidenceStdOutFile -StdErrPath $script:EvidenceStdErrFile
     }
     catch {
+        foreach ($path in @($script:EvidenceStdOutFile, $script:EvidenceStdErrFile)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+                Write-RedactedEvidenceText -Path $path -Text ''
+            }
+        }
+
+        Protect-EvidenceFile -Path $script:EvidenceJunitFile
+        Write-RedactedEvidenceText -Path $script:EvidenceFailureSummaryFile -Text (Get-FirstExceptionSummary)
         $runnerClass = if ($_.Exception.Message -in @('bounded_process_start_failed', 'bounded_process_timeout')) {
             $_.Exception.Message
         }
@@ -1196,9 +1478,11 @@ try {
     $testExitCode = [int] $testResult.ExitCode
     $script:TestExitCode = $testExitCode
     $script:Stage = 'focused_test_exit_' + $testExitCode
+    Protect-EvidenceFile -Path $script:EvidenceJunitFile
 
     if ($testExitCode -ne 0) {
         $testText = $testResult.StdOut + "`n" + $testResult.StdErr
+        Write-RedactedEvidenceText -Path $script:EvidenceFailureSummaryFile -Text (Get-FirstExceptionSummary)
         $knownMethods = @(
             'test_profile_rejects_canonical_port_and_non_test_database_name',
             'test_profile_uses_postgresql_16_on_dynamic_loopback_port',
@@ -1223,6 +1507,8 @@ try {
         $script:Stage = 'focused_test_' + $failureClass
         throw 'focused_test_failed'
     }
+
+    Write-RedactedEvidenceText -Path $script:EvidenceFailureSummaryFile -Text 'NO_TEST_FAILURE'
 
     $script:Stage = 'focused_test_summary'
 
@@ -1260,6 +1546,7 @@ try {
 }
 catch {
     $runFailed = $true
+    $script:FailureMessage = $_.Exception.Message
 }
 finally {
     Invoke-ExactCleanup
@@ -1280,6 +1567,61 @@ if (-not $runFailed -and -not $script:CleanupFailed) {
     }
 }
 
+if ($script:EvidenceDirectory) {
+    try {
+        foreach ($path in @($script:EvidenceStdOutFile, $script:EvidenceStdErrFile)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+                Write-RedactedEvidenceText -Path $path -Text ''
+            }
+        }
+
+        Protect-EvidenceFile -Path $script:EvidenceJunitFile
+
+        if (-not (Test-Path -LiteralPath $script:EvidenceFailureSummaryFile)) {
+            Write-RedactedEvidenceText -Path $script:EvidenceFailureSummaryFile -Text (Get-FirstExceptionSummary)
+        }
+
+        $resultPayload = [ordered]@{
+            schema_version = 1
+            run_id = $script:Nonce
+            started_at_utc = $script:RunStartedAtUtc
+            finished_at_utc = [DateTime]::UtcNow.ToString('o')
+            stage = $script:Stage
+            result = if ($runFailed -or $script:CleanupFailed) { 'failed' } else { 'passed' }
+            exit_code = $script:TestExitCode
+            cleanup = if ($script:CleanupFailed) { 'failed' } else { 'complete' }
+            failure_message = Protect-EvidenceText -Text ([string] $script:FailureMessage)
+            command = $script:TestCommand
+            versions = $script:Versions
+            database = [ordered]@{
+                engine = 'postgresql'
+                major_version = 16
+                name = $script:DatabaseName
+                container_id = $script:ContainerId
+                container_name = $script:ContainerName
+                network_id = $script:NetworkId
+                network_name = $script:NetworkName
+                canonical_uat_connection = 0
+                canonical_uat_write = 0
+            }
+            evidence = [ordered]@{
+                stdout = 'stdout.log'
+                stderr = 'stderr.log'
+                junit = if (Test-Path -LiteralPath $script:EvidenceJunitFile) { 'junit.xml' } else { $null }
+                failure_summary = 'failure-summary.txt'
+                redacted_before_persistence = $true
+            }
+            failed_tests = @(Get-JunitFailureRecords)
+        }
+        Write-RedactedEvidenceText -Path $script:EvidenceResultFile -Text ($resultPayload | ConvertTo-Json -Depth 12)
+    }
+    catch {
+        $runFailed = $true
+        $script:Stage = 'evidence_write_failed'
+        $script:FailureMessage = $_.Exception.Message
+    }
+}
+
 $runEvidence = [ordered]@{
     run_id = $script:Nonce
     database_name = $script:DatabaseName
@@ -1290,7 +1632,30 @@ $runEvidence = [ordered]@{
 }
 Write-Output ('RUN_EVIDENCE: ' + ($runEvidence | ConvertTo-Json -Compress))
 
+if ($script:EvidenceDirectory) {
+    Write-Output ('EVIDENCE_DIRECTORY: ' + $script:EvidenceDirectory)
+}
+
 if ($runFailed -or $script:CleanupFailed) {
+    if ($script:EvidenceFailureSummaryFile -and (Test-Path -LiteralPath $script:EvidenceFailureSummaryFile)) {
+        Write-Output 'FIRST_EXCEPTION_BEGIN'
+        Get-Content -LiteralPath $script:EvidenceFailureSummaryFile | Write-Output
+        Write-Output 'FIRST_EXCEPTION_END'
+    }
+
+    foreach ($stream in @(
+        [ordered]@{ Name = 'STDOUT'; Path = $script:EvidenceStdOutFile },
+        [ordered]@{ Name = 'STDERR'; Path = $script:EvidenceStdErrFile }
+    )) {
+        Write-Output ($stream.Name + '_TAIL_BEGIN')
+
+        if ($stream.Path -and (Test-Path -LiteralPath $stream.Path)) {
+            Get-Content -LiteralPath $stream.Path -Tail 200 | Write-Output
+        }
+
+        Write-Output ($stream.Name + '_TAIL_END')
+    }
+
     Write-Output ('HARNESS: FAIL stage=' + $script:Stage)
     Write-Output ('CLEANUP: ' + $(if ($script:CleanupFailed) { 'FAIL' } else { 'PASS' }))
     exit 1
