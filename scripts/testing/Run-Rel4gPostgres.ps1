@@ -6,6 +6,15 @@ param(
 
     [string[]] $ExcludeGroup = @(),
 
+    [ValidateScript({
+        if ($_ -cnotmatch '^[1-9][0-9]*[mg]$') {
+            throw 'PostgresDataTmpfsSize must be a positive integer followed by m or g.'
+        }
+
+        return $true
+    })]
+    [string] $PostgresDataTmpfsSize = '512m',
+
     [ValidateRange(30, 1800)]
     [int] $TestTimeoutSeconds = 600,
 
@@ -41,11 +50,32 @@ $script:EvidencePostgreSqlStateFile = $null
 $script:EvidencePostgreSqlInspectFile = $null
 $script:EvidencePostgreSqlReadyFile = $null
 $script:EvidencePostgreSqlLogFile = $null
+$script:EvidencePostgreSqlMountFile = $null
+$script:EvidencePostgreSqlDiskFile = $null
 $script:TestCommand = $null
 $script:FailureMessage = $null
 $script:SensitiveValues = @()
 $script:Versions = [ordered]@{}
 $script:PostgreSqlEvidence = [ordered]@{}
+$script:PostgreSqlEvidenceHistory = @()
+
+$null = $PostgresDataTmpfsSize -cmatch '^([1-9][0-9]*)([mg])$'
+
+try {
+    [decimal] $tmpfsUnits = $Matches[1]
+    [decimal] $tmpfsMultiplier = if ($Matches[2] -ceq 'g') { 1GB } else { 1MB }
+    [decimal] $tmpfsBytes = $tmpfsUnits * $tmpfsMultiplier
+
+    if ($tmpfsBytes -gt [uint64]::MaxValue) {
+        throw 'postgres_data_tmpfs_size_overflow'
+    }
+
+    $script:PostgresDataTmpfsSize = $PostgresDataTmpfsSize
+    $script:PostgresDataTmpfsSizeBytes = [uint64] $tmpfsBytes
+}
+catch {
+    throw 'postgres_data_tmpfs_size_invalid_or_overflow'
+}
 
 $projectRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
 $removedDatabaseVariables = @(
@@ -962,11 +992,21 @@ function Assert-EphemeralDockerIsolation {
     $script:Stage = 'container_tmpfs_mount'
     $mountJson = (Invoke-RequiredProcess -FilePath $script:DockerBinary -ArgumentList @('container', 'inspect', '--format', '{{json .Mounts}}', $script:ContainerId) -TimeoutSeconds 10).StdOut.Trim()
     $mounts = @($mountJson | ConvertFrom-Json)
+    $hostMountJson = (Invoke-RequiredProcess -FilePath $script:DockerBinary -ArgumentList @('container', 'inspect', '--format', '{{json .HostConfig.Mounts}}', $script:ContainerId) -TimeoutSeconds 10).StdOut.Trim()
+    $hostMounts = @($hostMountJson | ConvertFrom-Json)
+    $hostDataMounts = @($hostMounts | Where-Object {
+        $_.Type -eq 'tmpfs' -and $_.Target -eq '/var/lib/postgresql/data'
+    })
 
     if ($mounts.Count -ne 1 -or
         $mounts[0].Type -ne 'tmpfs' -or
         $mounts[0].Destination -ne '/var/lib/postgresql/data') {
         throw 'postgres_data_mount_not_exact_tmpfs'
+    }
+
+    if ($hostDataMounts.Count -ne 1 -or
+        [uint64] $hostDataMounts[0].TmpfsOptions.SizeBytes -ne $script:PostgresDataTmpfsSizeBytes) {
+        throw 'postgres_data_tmpfs_size_mismatch'
     }
 
     $script:Stage = 'container_loopback_port'
@@ -1364,14 +1404,26 @@ function Write-PostgreSqlContainerEvidence {
         restart_count = $null
         exit_code = $null
         oom_killed = $null
+        requested_tmpfs_size = $script:PostgresDataTmpfsSize
+        requested_tmpfs_size_bytes = $script:PostgresDataTmpfsSizeBytes
+        actual_tmpfs_size_bytes = $null
+        actual_tmpfs_mode = $null
         inspect_exit_code = $null
+        mount_inspect_exit_code = $null
         pg_isready_exit_code = $null
         pg_isready_result = 'unavailable'
+        data_df_exit_code = $null
+        data_df_result = 'unavailable'
+        data_used_bytes = $null
+        data_available_bytes = $null
+        data_capacity_percent = $null
         logs_exit_code = $null
         capture_error = $null
     }
     $inspectText = '{}'
+    $mountText = 'POSTGRESQL_MOUNT_INSPECT_UNAVAILABLE'
     $readyText = 'PG_ISREADY_UNAVAILABLE'
+    $diskText = 'POSTGRESQL_DATA_DF_UNAVAILABLE'
     $logText = 'POSTGRESQL_LOGS_UNAVAILABLE'
 
     try {
@@ -1401,6 +1453,24 @@ function Write-PostgreSqlContainerEvidence {
                 $capture.restart_count = [int] $restart.StdOut.Trim()
             }
 
+            $mount = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+                'container', 'inspect', '--format', '{{json .HostConfig.Mounts}}', $script:ContainerId
+            ) -TimeoutSeconds 15
+            $capture.mount_inspect_exit_code = $mount.ExitCode
+            $mountText = ($mount.StdOut + $mount.StdErr).Trim()
+
+            if ($mount.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($mount.StdOut)) {
+                $mounts = @($mount.StdOut.Trim() | ConvertFrom-Json)
+                $dataMounts = @($mounts | Where-Object {
+                    $_.Type -eq 'tmpfs' -and $_.Target -eq '/var/lib/postgresql/data'
+                })
+
+                if ($dataMounts.Count -eq 1) {
+                    $capture.actual_tmpfs_size_bytes = [uint64] $dataMounts[0].TmpfsOptions.SizeBytes
+                    $capture.actual_tmpfs_mode = [int] $dataMounts[0].TmpfsOptions.Mode
+                }
+            }
+
             $ready = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
                 'exec', $script:ContainerId, 'sh', '-ec',
                 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
@@ -1412,6 +1482,30 @@ function Write-PostgreSqlContainerEvidence {
             }
             else {
                 $readyText
+            }
+
+            $disk = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
+                'exec', $script:ContainerId, 'sh', '-ec',
+                'df -h /var/lib/postgresql/data; printf "\nDF_KP\n"; df -kP /var/lib/postgresql/data'
+            ) -TimeoutSeconds 15
+            $capture.data_df_exit_code = $disk.ExitCode
+            $diskText = ($disk.StdOut + $disk.StdErr).Trim()
+            $capture.data_df_result = if ([string]::IsNullOrWhiteSpace($diskText)) {
+                'no_output'
+            }
+            else {
+                $diskText
+            }
+
+            if ($disk.ExitCode -eq 0) {
+                $diskLines = @($disk.StdOut -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $diskDataLine = $diskLines | Select-Object -Last 1
+
+                if ($diskDataLine -match '^\S+\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)%\s+\S+$') {
+                    $capture.data_used_bytes = [uint64] $Matches[2] * 1KB
+                    $capture.data_available_bytes = [uint64] $Matches[3] * 1KB
+                    $capture.data_capacity_percent = [int] $Matches[4]
+                }
             }
 
             $logs = Invoke-BoundedProcess -FilePath $script:DockerBinary -ArgumentList @(
@@ -1430,10 +1524,13 @@ function Write-PostgreSqlContainerEvidence {
     }
 
     Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlInspectFile -Text $inspectText
+    Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlMountFile -Text $mountText
     Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlReadyFile -Text $readyText
+    Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlDiskFile -Text $diskText
     Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlLogFile -Text $logText
     Write-RedactedEvidenceText -Path $script:EvidencePostgreSqlStateFile -Text ($capture | ConvertTo-Json -Depth 8)
     $script:PostgreSqlEvidence = $capture
+    $script:PostgreSqlEvidenceHistory += $capture
 }
 
 $runFailed = $false
@@ -1486,6 +1583,8 @@ try {
     $script:EvidencePostgreSqlInspectFile = Join-Path $script:EvidenceDirectory 'postgresql-inspect-state.json'
     $script:EvidencePostgreSqlReadyFile = Join-Path $script:EvidenceDirectory 'postgresql-pg-isready.txt'
     $script:EvidencePostgreSqlLogFile = Join-Path $script:EvidenceDirectory 'postgresql-container.log'
+    $script:EvidencePostgreSqlMountFile = Join-Path $script:EvidenceDirectory 'postgresql-mount-inspect.json'
+    $script:EvidencePostgreSqlDiskFile = Join-Path $script:EvidenceDirectory 'postgresql-data-df.txt'
 
     $composerCommand = Get-Command 'composer' -ErrorAction SilentlyContinue
     $script:Versions = [ordered]@{
@@ -1551,7 +1650,7 @@ try {
         '--network', $script:NetworkName,
         '--label', 'emaks.rel4g.scope=wp0a',
         '--label', ('emaks.rel4g.nonce=' + $script:Nonce),
-        '--mount', 'type=tmpfs,destination=/var/lib/postgresql/data,tmpfs-size=536870912,tmpfs-mode=0700',
+        '--mount', ('type=tmpfs,destination=/var/lib/postgresql/data,tmpfs-size=' + $script:PostgresDataTmpfsSizeBytes + ',tmpfs-mode=0700'),
         '--publish', '127.0.0.1:0:5432',
         '--env-file', $environmentFile,
         '--health-cmd', 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
@@ -1716,6 +1815,7 @@ try {
             canonical_uat_write = 0
         }
         postgresql_diagnostics = $script:PostgreSqlEvidence
+        postgresql_diagnostics_history = @($script:PostgreSqlEvidenceHistory)
     }
     Write-RedactedEvidenceText -Path $script:EvidenceResultFile -Text ($preliminaryResult | ConvertTo-Json -Depth 12)
 
@@ -1873,6 +1973,7 @@ if ($script:EvidenceDirectory) {
                 canonical_uat_write = 0
             }
             postgresql_diagnostics = $script:PostgreSqlEvidence
+            postgresql_diagnostics_history = @($script:PostgreSqlEvidenceHistory)
             evidence = [ordered]@{
                 stdout = 'stdout.log'
                 stderr = 'stderr.log'
@@ -1880,7 +1981,9 @@ if ($script:EvidenceDirectory) {
                 failure_summary = 'failure-summary.txt'
                 postgresql_state = 'postgresql-state.json'
                 postgresql_inspect_state = 'postgresql-inspect-state.json'
+                postgresql_mount_inspect = 'postgresql-mount-inspect.json'
                 postgresql_pg_isready = 'postgresql-pg-isready.txt'
+                postgresql_data_df = 'postgresql-data-df.txt'
                 postgresql_container_log = 'postgresql-container.log'
                 redacted_before_persistence = $true
             }

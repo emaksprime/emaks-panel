@@ -82,7 +82,7 @@ jobs:
 
       - name: Tests
         shell: pwsh
-        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -TestPath tests -ExcludeGroup postgresql-isolation -TestTimeoutSeconds 1200 -EvidenceDirectory "${{ runner.temp }}/pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}"
+        run: ./scripts/testing/Run-Rel4gPostgres.ps1 -TestPath tests -ExcludeGroup postgresql-isolation -PostgresDataTmpfsSize 4g -TestTimeoutSeconds 1200 -EvidenceDirectory "${{ runner.temp }}/pr92-ci-evidence-php-${{ matrix.php-version }}-attempt-${{ github.run_attempt }}"
 
       - name: Upload PostgreSQL CI evidence
         if: always()
